@@ -231,7 +231,7 @@ func parseDBURL(t *testing.T, value string) dbConfig {
 
 func buildRokuban(t *testing.T, root, dir string) string {
 	t.Helper()
-	sourcePath, err := filepath.Abs(filepath.Join(root, "internal", "worker", "ingest.go"))
+	sourcePath, err := filepath.Abs(filepath.Join(root, "internal", "ingest", "ingest.go"))
 	if err != nil {
 		t.Fatalf("resolving ingest source: %v", err)
 	}

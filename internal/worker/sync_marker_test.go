@@ -112,7 +112,7 @@ func TestSyncWorkersMarkSiteOnlyWhenSyncCompletes(t *testing.T) {
 	for _, tc := range epgCases {
 		t.Run("epg/"+tc.name, func(t *testing.T) {
 			t.Parallel()
-			pool := setupTestPool(t)
+			pool := testutil.SetupDB(t)
 			fx := &epgFixture{services: services, programs: programs}
 			fake := newEpgFake(t, fx)
 			w := &EpgSyncWorker{
@@ -169,7 +169,7 @@ func TestSyncWorkersMarkSiteOnlyWhenSyncCompletes(t *testing.T) {
 	for _, tc := range tunerCases {
 		t.Run("tuner/"+tc.name, func(t *testing.T) {
 			t.Parallel()
-			pool := setupTestPool(t)
+			pool := testutil.SetupDB(t)
 			fx := &tunerFixture{tuners: tuners}
 			w := newTunerSyncWorker(t, pool, fx)
 			w.Markers = pgstoretest.Reservations(pool)

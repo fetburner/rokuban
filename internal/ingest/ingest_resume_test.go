@@ -1,4 +1,4 @@
-package worker
+package ingest
 
 import (
 	"bytes"
@@ -21,6 +21,8 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/fsink"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -118,7 +120,7 @@ func TestIngestWorker_UncleanRestartUsesRangeZeroAndKeepsVisibleTemp(t *testing.
 	t.Cleanup(srv.Close)
 
 	mediaDir := t.TempDir()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -130,9 +132,9 @@ func TestIngestWorker_UncleanRestartUsesRangeZeroAndKeepsVisibleTemp(t *testing.
 		Precheck: pgstoretest.Media(pool),
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
-	args := IngestJobArgs{Site: "default", RecordID: "rec-resume"}
+	args := jobs.IngestJobArgs{Site: "default", RecordID: "rec-resume"}
 	firstWork := make(chan error, 1)
-	go func() { firstWork <- runWorkerViaJobQFake(ctx, w, args) }()
+	go func() { firstWork <- jobqfaketest.RunWorkerOnce(ctx, w, args) }()
 	select {
 	case <-firstChunkFlushed:
 	case <-time.After(5 * time.Second):
@@ -176,7 +178,7 @@ func TestIngestWorker_UncleanRestartUsesRangeZeroAndKeepsVisibleTemp(t *testing.
 
 	secondTemp := ingestTempWriterFilePath(filepath.Dir(fullPath), args.Site, args.RecordID, 2)
 	retryDone := make(chan error, 1)
-	go func() { retryDone <- runWorkerViaJobQFake(context.Background(), w, args) }()
+	go func() { retryDone <- jobqfaketest.RunWorkerOnce(context.Background(), w, args) }()
 	select {
 	case <-retryStreamStarted:
 	case <-time.After(5 * time.Second):
@@ -219,7 +221,7 @@ func TestIngestWorker_UncleanRestartUsesRangeZeroAndKeepsVisibleTemp(t *testing.
 
 func TestIngestWorker_RejectsSymlinkedCleanHandoff(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}

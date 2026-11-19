@@ -191,6 +191,10 @@ linters:
             - "!${config-path}/internal/encode/encode_publish_test.go"
             - "!${config-path}/internal/encode/encode_publish_desired_test.go"
             - "!${config-path}/internal/encode/encode_reconcile_test.go"
+            # worker から移した既存の ingest のテスト。
+            - "!${config-path}/internal/ingest/fixtures_test.go"
+            - "!${config-path}/internal/ingest/ingest_cut_policy_test.go"
+            - "!${config-path}/internal/ingest/ingest_test.go"
             # worker から移した既存の転送・削除のテスト。
             - "!${config-path}/internal/storagemaint/delete_reconcile_test.go"
             - "!${config-path}/internal/storagemaint/delete_reconcile_removed_encoded_test.go"
@@ -293,6 +297,7 @@ linters:
             - "${config-path}/**"
             - "!${config-path}/internal/worker/**"
             - "!${config-path}/internal/cmdetect/**"
+            - "!${config-path}/internal/ingest/**"
             - "!$test"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/cmdetect
@@ -321,6 +326,7 @@ linters:
             - "${config-path}/**"
             - "!${config-path}/internal/worker/**"
             - "!${config-path}/internal/encode/**"
+            - "!${config-path}/internal/ingest/**"
             - "!${config-path}/cmd/rokuban/**"
             - "!$test"
           deny:
@@ -334,10 +340,24 @@ linters:
             - "${config-path}/**"
             - "!${config-path}/internal/worker/**"
             - "!${config-path}/internal/storagemaint/**"
+            - "!${config-path}/internal/ingest/**"
             - "!$test"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/storagemaint
               desc: storagemaint imports are limited to internal/worker and internal/storagemaint
+        ingest-worker-only:
+          # 不変条件 1: ingest は mirakc と FS に依存する。api がそれに依存しないよう、本番コードからの import を worker と cmd/rokuban に閉じ込める。depguard は直接の import しか見ないので、api-role の internal/worker の禁止は ingest を覆わない（ingest を直接 import されても止めるのはこの規則）。
+          # 置き場の検査（ProbeIngestStorage）を起動コードで呼ぶため、cmd/rokuban を除外に加える（encode-worker-only と同じ）。
+          list-mode: lax
+          files:
+            - "${config-path}/**"
+            - "!${config-path}/internal/worker/**"
+            - "!${config-path}/internal/ingest/**"
+            - "!${config-path}/cmd/rokuban/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/fetburner/rokuban/internal/ingest
+              desc: ingest imports are limited to internal/worker, internal/ingest, and cmd/rokuban
         worker-tsstat:
           # 不変条件 6: ingest は TS を読まず、TS の読者は解析ジョブへ閉じ込める。
           list-mode: lax
@@ -347,6 +367,7 @@ linters:
             - "${config-path}/internal/thumbnail/**"
             - "${config-path}/internal/encode/**"
             - "${config-path}/internal/storagemaint/**"
+            - "${config-path}/internal/ingest/**"
             - "!$test"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/tsstat

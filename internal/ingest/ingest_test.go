@@ -1,4 +1,4 @@
-package worker
+package ingest
 
 import (
 	"bytes"
@@ -32,6 +32,7 @@ import (
 	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobq"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -140,7 +141,7 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -152,9 +153,9 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-001")
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-001"}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-001"}
 
-	err := runWorkerViaJobQFake(context.Background(), w, job)
+	err := jobqfaketest.RunWorkerOnce(context.Background(), w, job)
 	testutil.RequireNoError(t, err, "Work() error")
 
 	var relPath string
@@ -265,7 +266,7 @@ func TestIngestWorker_SiteMismatch(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -280,9 +281,9 @@ func TestIngestWorker_SiteMismatch(t *testing.T) {
 	})
 	insertTestRecordSyncForSite(t, pool, "site-b", recordingID, "rec-mismatch", 327361024000099)
 
-	job := IngestJobArgs{Site: "site-b", RecordID: "rec-mismatch"}
+	job := jobs.IngestJobArgs{Site: "site-b", RecordID: "rec-mismatch"}
 
-	err := runWorkerViaJobQFake(context.Background(), w, job)
+	err := jobqfaketest.RunWorkerOnce(context.Background(), w, job)
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
@@ -308,7 +309,7 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -322,9 +323,9 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 	})
 	insertTestRecordSyncForSite(t, pool, "site-a", recordingID, "rec-match", 327361024000098)
 
-	job := IngestJobArgs{Site: "site-a", RecordID: "rec-match"}
+	job := jobs.IngestJobArgs{Site: "site-a", RecordID: "rec-match"}
 
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
+	if err := jobqfaketest.RunWorkerOnce(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error = %v, want nil for matching site", err)
 	}
 
@@ -484,7 +485,7 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -496,9 +497,9 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-partial")
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-partial"}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-partial"}
 
-	err := runWorkerViaJobQFake(context.Background(), w, job)
+	err := jobqfaketest.RunWorkerOnce(context.Background(), w, job)
 	testutil.RequireNoError(t, err, "Work() error")
 
 	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
@@ -587,7 +588,7 @@ func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -602,7 +603,7 @@ func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-follow")
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-follow"}), "Work()")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.IngestJobArgs{Site: "default", RecordID: "rec-follow"}), "Work()")
 	path := filepath.Join(w.MediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 	got, err := os.ReadFile(path)
 	testutil.RequireNoError(t, err, "reading committed file")
@@ -657,7 +658,7 @@ func TestIngestWorker_FollowPollingIsRateLimited(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -675,7 +676,7 @@ func TestIngestWorker_FollowPollingIsRateLimited(t *testing.T) {
 	const window = 1200 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), window)
 	defer cancel()
-	err := runWorkerViaJobQFake(ctx, w, IngestJobArgs{Site: "default", RecordID: "rec-rate"})
+	err := jobqfaketest.RunWorkerOnce(ctx, w, jobs.IngestJobArgs{Site: "default", RecordID: "rec-rate"})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Work() error = %v, want context deadline error", err)
 	}
@@ -765,7 +766,7 @@ func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -780,7 +781,7 @@ func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-catchup")
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-catchup"}), "Work()")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.IngestJobArgs{Site: "default", RecordID: "rec-catchup"}), "Work()")
 	got, err := os.ReadFile(filepath.Join(w.MediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID))))
 	testutil.RequireNoError(t, err, "reading committed file")
 	if !bytes.Equal(got, full) {
@@ -846,7 +847,7 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 			}))
 			t.Cleanup(srv.Close)
 
-			pool := setupTestPool(t)
+			pool := testutil.SetupDB(t)
 			if pool == nil {
 				return
 			}
@@ -862,7 +863,7 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 			insertTestRecordSync(t, pool, recordingID, tt.recordID)
 
 			before := ingestJobResults()
-			err := runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: tt.recordID})
+			err := jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.IngestJobArgs{Site: "default", RecordID: tt.recordID})
 			if err == nil {
 				t.Fatal("Work() = nil, want jobq.ErrDiscard")
 			}
@@ -951,7 +952,7 @@ func TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -966,7 +967,7 @@ func TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries(t *testing.T) {
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-notready")
-	if err := runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-notready"}); err != nil {
+	if err := jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.IngestJobArgs{Site: "default", RecordID: "rec-notready"}); err != nil {
 		t.Fatalf("Work() = %v, want nil（204 と 206/0 は接続失敗ではない）", err)
 	}
 	got, err := os.ReadFile(filepath.Join(w.MediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID))))
@@ -1017,7 +1018,7 @@ func TestIngestWorker_FollowingCaughtUpKeepsProgressFresh(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -1037,7 +1038,7 @@ func TestIngestWorker_FollowingCaughtUpKeepsProgressFresh(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- runWorkerViaJobQFake(ctx, w, IngestJobArgs{Site: "default", RecordID: "rec-fresh"})
+		done <- jobqfaketest.RunWorkerOnce(ctx, w, jobs.IngestJobArgs{Site: "default", RecordID: "rec-fresh"})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1136,7 +1137,7 @@ func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -1151,7 +1152,7 @@ func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-unknown")
-	if err := runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-unknown"}); err != nil {
+	if err := jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.IngestJobArgs{Site: "default", RecordID: "rec-unknown"}); err != nil {
 		t.Fatalf("Work() = %v, want nil（未知の status はジョブ内で再試行する）", err)
 	}
 	got, err := os.ReadFile(filepath.Join(w.MediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID))))
@@ -1182,7 +1183,7 @@ func TestIngestWorker_PermanentlyUnknownStatusIsBounded(t *testing.T) {
 		Content: mirakc.ContentInfo{Path: "/recording/test/forever-unknown.m2ts"},
 	}, []byte{})
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -1201,7 +1202,7 @@ func TestIngestWorker_PermanentlyUnknownStatusIsBounded(t *testing.T) {
 	defer cancel()
 	// 上限（mirakc.MaxConsecutiveRetries = 5）に達すれば数秒で error を返す。返らなければ
 	// カウンタがリセットされ続けている。
-	if err := runWorkerViaJobQFake(ctx, w, IngestJobArgs{Site: "default", RecordID: recordID}); err == nil {
+	if err := jobqfaketest.RunWorkerOnce(ctx, w, jobs.IngestJobArgs{Site: "default", RecordID: recordID}); err == nil {
 		t.Fatal("Work() = nil, want an error（未知の status が続いたら上限で止まる）")
 	}
 	// determineRelPath の 1 回 + 上限までの 6 回。余裕を見て 10 で切る。
@@ -1250,7 +1251,7 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -1261,12 +1262,12 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-mismatch")
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-mismatch"}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-mismatch"}
 
 	// 即座に失敗で終わる経路（再試行の予算を使い切るまで 500 を返す経路は約 6 秒
 	// かかるので使わない）で、本当の失敗が failure として数えられることを固定する。
 	before := ingestJobResults()
-	err := runWorkerViaJobQFake(context.Background(), w, job)
+	err := jobqfaketest.RunWorkerOnce(context.Background(), w, job)
 	if err == nil {
 		t.Fatal("expected error for size mismatch, got nil")
 	}
@@ -1286,7 +1287,7 @@ func TestIngestWorker_HashMismatch(t *testing.T) {
 	expectedSHA256 := sha256Hex(wrongData)
 	fake := newSHA256IngestFake(t, recordID, tsData, "test/hash-mismatch.m2ts", &expectedSHA256)
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -1302,9 +1303,9 @@ func TestIngestWorker_HashMismatch(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 		Precheck:      pgstoretest.Media(pool),
 	}
-	job := IngestJobArgs{Site: "default", RecordID: recordID}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: recordID}
 
-	err := runWorkerViaJobQFake(context.Background(), w, job)
+	err := jobqfaketest.RunWorkerOnce(context.Background(), w, job)
 	if err == nil {
 		t.Fatal("expected error for hash mismatch, got nil")
 	}
@@ -1478,7 +1479,7 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -1499,9 +1500,9 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 		return w
 	}
 	worker := newWorker()
-	job := IngestJobArgs{Site: "default", RecordID: recordID}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: recordID}
 
-	firstErr := runWorkerViaJobQFake(context.Background(), worker, job)
+	firstErr := jobqfaketest.RunWorkerOnce(context.Background(), worker, job)
 	if _, ok := jobq.SnoozeDelay(firstErr); !ok {
 		t.Fatalf("first Work() error = %v, want slice snooze", firstErr)
 	}
@@ -1538,7 +1539,7 @@ FROM recording_ingest_checkpoints WHERE recording_id = $1`, recordingID).Scan(&h
 
 	completed := false
 	for slice := 1; slice <= 5; slice++ {
-		err := runWorkerViaJobQFake(context.Background(), worker, job)
+		err := jobqfaketest.RunWorkerOnce(context.Background(), worker, job)
 		if err == nil {
 			completed = true
 			break
@@ -1588,7 +1589,7 @@ func newLateSHA256IngestRun(t *testing.T, tc lateSHA256IngestCase) *lateSHA256In
 	setIngestSHA256Rate(t, 47) // 3760 バイト / 47 B/s = 80 秒
 	contentPath := "test/sha256-late.m2ts"
 	run := &lateSHA256IngestRun{tsData: tsData, contentPath: contentPath}
-	run.pool = setupTestPool(t)
+	run.pool = testutil.SetupDB(t)
 	if run.pool == nil {
 		return nil
 	}
@@ -1623,8 +1624,8 @@ func newLateSHA256IngestRun(t *testing.T, tc lateSHA256IngestCase) *lateSHA256In
 	return run
 }
 
-func (run *lateSHA256IngestRun) job() IngestJobArgs {
-	return IngestJobArgs{Site: "default", RecordID: run.recordID}
+func (run *lateSHA256IngestRun) job() jobs.IngestJobArgs {
+	return jobs.IngestJobArgs{Site: "default", RecordID: run.recordID}
 }
 
 func (run *lateSHA256IngestRun) offsets() []int64 {
@@ -1652,7 +1653,7 @@ func parseRangeOffset(header string) int64 {
 
 func (run *lateSHA256IngestRun) runPending(t *testing.T, first bool, beforeResults map[string]float64, durationBefore uint64) {
 	t.Helper()
-	err := runWorkerViaJobQFake(context.Background(), run.worker, run.job())
+	err := jobqfaketest.RunWorkerOnce(context.Background(), run.worker, run.job())
 	if _, ok := jobq.SnoozeDelay(err); !ok {
 		t.Fatalf("pending Work error = %v, want jobq snooze", err)
 	}
@@ -1705,7 +1706,7 @@ func (run *lateSHA256IngestRun) complete(t *testing.T, tc lateSHA256IngestCase) 
 		oldTime := time.Now().Add(-2 * time.Minute)
 		testutil.RequireNoError(t, os.Chtimes(tempPath, oldTime, oldTime), "aging temp mtime past SHA-256 deadline")
 	}
-	return runWorkerViaJobQFake(context.Background(), run.worker, run.job())
+	return jobqfaketest.RunWorkerOnce(context.Background(), run.worker, run.job())
 }
 
 func (run *lateSHA256IngestRun) assertCompletion(t *testing.T, tc lateSHA256IngestCase, beforeResults map[string]float64, durationBefore uint64, mismatchesBefore float64, workErr error) {
@@ -1816,7 +1817,7 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 			}
 			fake := newSHA256IngestFake(t, recordID, tsData, "test/optional-"+tt.name+".m2ts", contentSHA256)
 
-			pool := setupTestPool(t)
+			pool := testutil.SetupDB(t)
 			if pool == nil {
 				return
 			}
@@ -1832,9 +1833,9 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 				Precheck:      pgstoretest.Media(pool),
 			}
 			w.CMDetectionStore = pgstoretest.Analysis(pool)
-			job := IngestJobArgs{Site: "default", RecordID: recordID}
+			job := jobs.IngestJobArgs{Site: "default", RecordID: recordID}
 
-			err := runWorkerViaJobQFake(context.Background(), w, job)
+			err := jobqfaketest.RunWorkerOnce(context.Background(), w, job)
 			if tt.wantError {
 				if err == nil {
 					t.Fatal("Work() error = nil, want hash mismatch")
@@ -1874,7 +1875,7 @@ func TestIngestWorker_UsesSHA256ThatArrivesDuringFinalSync(t *testing.T) {
 	setIngestSHA256Rate(t, 47)
 	const recordID = "rec-hash-during-sync"
 	fake, setHash := newLateHashIngestFake(t, recordID, tsData, "test/hash-during-sync.m2ts")
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -1909,8 +1910,8 @@ func TestIngestWorker_UsesSHA256ThatArrivesDuringFinalSync(t *testing.T) {
 	var logOutput bytes.Buffer
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logOutput, nil)))
 	t.Cleanup(func() { slog.SetDefault(originalLogger) })
-	job := IngestJobArgs{Site: "default", RecordID: recordID}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work")
+	job := jobs.IngestJobArgs{Site: "default", RecordID: recordID}
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "Work")
 	if !strings.Contains(logOutput.String(), "sha256_verification=verified") {
 		t.Errorf("logs = %q, want late hash verified in the same job", logOutput.String())
 	}
@@ -1958,7 +1959,7 @@ func TestIngestWorker_DoesNotWaitWhenHEADLengthIsUnknown(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -1978,8 +1979,8 @@ func TestIngestWorker_DoesNotWaitWhenHEADLengthIsUnknown(t *testing.T) {
 	var logOutput bytes.Buffer
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logOutput, nil)))
 	t.Cleanup(func() { slog.SetDefault(originalLogger) })
-	job := IngestJobArgs{Site: "default", RecordID: "rec-unknown-head-length"}
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work with unknown HEAD length")
+	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-unknown-head-length"}
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "Work with unknown HEAD length")
 	if !strings.Contains(logOutput.String(), "sha256_verification=timeout_skipped") {
 		t.Errorf("logs = %q, want timeout_skipped without waiting", logOutput.String())
 	}
@@ -2010,7 +2011,7 @@ func (w partialErrorWriter) Write(p []byte) (int, error) {
 // 転送途中の定期 fsync を入れる変異も、イベント列が変わるため検出する。
 func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 	tsData := makeTSData(20)
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -2071,9 +2072,9 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 		Precheck:      pgstoretest.Media(pool),
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
-	job := IngestJobArgs{Site: "default", RecordID: recordID}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: recordID}
 
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "Work() error")
 
 	eventsMu.Lock()
 	gotEvents := slices.Clone(events)
@@ -2107,7 +2108,7 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tsData := makeTSData(20)
-			pool := setupTestPool(t)
+			pool := testutil.SetupDB(t)
 			if pool == nil {
 				return
 			}
@@ -2144,9 +2145,9 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 				Precheck:      pgstoretest.Media(pool),
 			}
 			w.CMDetectionStore = pgstoretest.Analysis(pool)
-			job := IngestJobArgs{Site: "default", RecordID: recordID}
+			job := jobs.IngestJobArgs{Site: "default", RecordID: recordID}
 
-			if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
+			if err := jobqfaketest.RunWorkerOnce(context.Background(), w, job); err == nil {
 				t.Fatal("first Work() error = nil, want injected durability failure")
 			}
 			var assetCount int
@@ -2163,7 +2164,7 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 			// 再試行では実装本来の opener に戻す。失敗した試行とは別の writer temp へ
 			// Range 0 から取り直して、正しい原本を公開できることを確認する。
 			openIngestFile = originalOpenFile
-			testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "retry Work() error")
+			testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "retry Work() error")
 
 			fullPath := filepath.Join(mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
 			gotData, err := os.ReadFile(fullPath)
@@ -2252,7 +2253,7 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 		StallTimeout:  200 * time.Millisecond,
 	}
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -2264,9 +2265,9 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-stall")
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-stall"}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-stall"}
 
-	err := runWorkerViaJobQFake(context.Background(), w, job)
+	err := jobqfaketest.RunWorkerOnce(context.Background(), w, job)
 	testutil.RequireNoError(t, err, "Work() error")
 
 	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
@@ -2283,12 +2284,6 @@ func strPtr(s string) *string { return &s }
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
-}
-
-// setupTestPool はマイグレーション済みのテスト用プールを返す。
-func setupTestPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	return testutil.SetupDB(t)
 }
 
 // noProgramRecordSyncProgramID は insertTestRecordSync が使う固定の program_id。
@@ -2436,7 +2431,7 @@ func newUnreservedLinkedIngestEnv(t *testing.T, recordID, contentPath string) *l
 
 func newLinkedIngestEnvWithReservedPath(t *testing.T, recordID, contentPath string, reserve bool) *linkedIngestEnv {
 	t.Helper()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		t.Skip("no test database")
 	}
@@ -2482,7 +2477,7 @@ func (e *linkedIngestEnv) reserveCanonicalPath(t *testing.T) {
 }
 
 func (e *linkedIngestEnv) run() error {
-	return runWorkerViaJobQFake(context.Background(), e.w, IngestJobArgs{Site: "default", RecordID: e.recordID})
+	return jobqfaketest.RunWorkerOnce(context.Background(), e.w, jobs.IngestJobArgs{Site: "default", RecordID: e.recordID})
 }
 
 func (e *linkedIngestEnv) assetCount(t *testing.T) int {
@@ -2756,7 +2751,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -2768,10 +2763,10 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, recordID)
 
-	job := IngestJobArgs{Site: "default", RecordID: recordID}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: recordID}
 
 	// 1 回目: 転送・コミットは成功するが、DeleteRecord は失敗する。
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "first Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "first Work() error")
 
 	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
 	fullPath := filepath.Join(mediaDir, filepath.FromSlash(ingestTestCommittedRelPath(t, pool, recordingID)))
@@ -2797,7 +2792,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 
 	// record_sweep が「まだ mirakc に record がある」ことを検知して同じジョブ引数を
 	// 再投入したのと同じ状況を、同じ job で Work をもう一度呼ぶことで再現する。
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
+	if err := jobqfaketest.RunWorkerOnce(context.Background(), w, job); err != nil {
 		t.Fatalf("second Work() error: %v", err) // (a)
 	}
 	if _, ok := readIngestProgress(t, pool, recordingID); ok {
@@ -2838,7 +2833,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 }
 
 // --- M3-14 (issue #103): encode policy (keep_original / encode_profiles) の
-// スナップショット。resolveAndSnapshotEncodePolicy（internal/worker/ingest.go）が
+// スナップショット。resolveAndSnapshotEncodePolicy（internal/ingest/ingest.go）が
 // ingest コミット tx 内で recordings に焼くことをエンドツーエンドで確認する。
 
 // newMirakcRecordFake は 1 件の record と固定 stream を mirakc.Client 経由で返す。
@@ -2968,7 +2963,7 @@ func TestAlreadyCommittedIngestRemovesOnlyTempLinkedToCanonical(t *testing.T) {
 	t.Parallel()
 	for _, linked := range []bool{true, false} {
 		t.Run(fmt.Sprintf("linked=%v", linked), func(t *testing.T) {
-			pool := setupTestPool(t)
+			pool := testutil.SetupDB(t)
 			if pool == nil {
 				return
 			}
@@ -2985,7 +2980,7 @@ func TestAlreadyCommittedIngestRemovesOnlyTempLinkedToCanonical(t *testing.T) {
 			} else if err := os.WriteFile(tempPath, []byte("another attempt"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			w := &IngestWorker{Publisher: pgstoretest.Media(pool), Enqueuer: newRecordingEnqueuer(), Precheck: pgstoretest.Media(pool), MediaDir: mediaDir}
+			w := &IngestWorker{Publisher: pgstoretest.Media(pool), Enqueuer: jobqfaketest.NewRecordingEnqueuer(), Precheck: pgstoretest.Media(pool), MediaDir: mediaDir}
 			w.handleAlreadyCommittedIngest(context.Background(), mirakc.NewClient(fake.URL(), nil),
 				jobs.IngestJobArgs{Site: "default", RecordID: recordID}, recordingID, slog.Default())
 
@@ -3045,7 +3040,7 @@ func (p ingestCleanupPrecheck) GetLiveMediaAssetRecordingID(context.Context, str
 
 func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -3077,7 +3072,7 @@ func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
 	fake := mirakctest.New(t)
 	fake.SetRecords([]mirakc.Record{{ID: recordID}})
 
-	enqueuer := newRecordingEnqueuer()
+	enqueuer := jobqfaketest.NewRecordingEnqueuer()
 	w := &IngestWorker{Publisher: pgstoretest.Media(pool), Enqueuer: enqueuer, Precheck: pgstoretest.Media(pool)}
 	w.handleAlreadyCommittedIngest(context.Background(), mirakc.NewClient(fake.URL(), nil),
 		jobs.IngestJobArgs{Site: "default", RecordID: recordID}, recordingID, slog.Default())
@@ -3091,7 +3086,7 @@ func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
 	passEnqueuer := runEncodeReconcilePassArgs(t, &encode.EncodeReconcileWorker{Profiles: config.EncodeConfig{
 		Profiles: []config.EncodeProfile{cutFFmpegProfile()},
 	}, Media: pgstoretest.Media(pool),
-	}, EncodeReconcileArgs{RecordingID: recordingID})
+	}, jobs.EncodeReconcileArgs{RecordingID: recordingID})
 	if got := countEncodeJobs(t, passEnqueuer, recordingID, "cut"); got != 0 {
 		t.Errorf("cut encode jobs after targeted pass = %d, want 0", got)
 	}
@@ -3133,7 +3128,7 @@ func encodePolicyRowExists(t *testing.T, pool *pgxpool.Pool, recordingID int64) 
 	return count == 1
 }
 
-func countEncodeJobs(t *testing.T, enqueuer *recordingEnqueuer, recordingID int64, profile string) int {
+func countEncodeJobs(t *testing.T, enqueuer *jobqfaketest.RecordingEnqueuer, recordingID int64, profile string) int {
 	t.Helper()
 	count := 0
 	for _, args := range enqueuedArgs[jobs.EncodeJobArgs](enqueuer, jobs.EncodeJobArgs{}.Kind()) {
@@ -3144,7 +3139,7 @@ func countEncodeJobs(t *testing.T, enqueuer *recordingEnqueuer, recordingID int6
 	return count
 }
 
-func countEncodeJobsForRecording(t *testing.T, enqueuer *recordingEnqueuer, recordingID int64) int {
+func countEncodeJobsForRecording(t *testing.T, enqueuer *jobqfaketest.RecordingEnqueuer, recordingID int64) int {
 	return countEnqueuedForRecording(t, enqueuer, jobs.EncodeJobArgs{}.Kind(), recordingID)
 }
 
@@ -3154,7 +3149,7 @@ func countEncodeJobsForRecording(t *testing.T, enqueuer *recordingEnqueuer, reco
 // reconcile 実行後に encode ジョブが投入される」を確認する。
 func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -3182,11 +3177,11 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-base"}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-policy-base"}
 
-	w.Enqueuer = newRecordingEnqueuer()
+	w.Enqueuer = jobqfaketest.NewRecordingEnqueuer()
 	ctx := context.Background()
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, job), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, job), "Work() error")
 
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "until_encoded" {
@@ -3195,7 +3190,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	if !slices.Equal(profiles, []string{"h265"}) {
 		t.Errorf("encode_profiles = %v, want [h265]", profiles)
 	}
-	if got := countEnqueuedForRecording(t, w.Enqueuer.(*recordingEnqueuer), "encode_reconcile", recordingID); got != 1 {
+	if got := countEnqueuedForRecording(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), "encode_reconcile", recordingID); got != 1 {
 		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", got)
 	}
 	passEnqueuer := runEncodeReconcilePassArgs(t, &encode.EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool)},
@@ -3213,7 +3208,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 // ことも合わせて確認する。
 func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -3262,11 +3257,11 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-override"}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-policy-override"}
 
-	w.Enqueuer = newRecordingEnqueuer()
+	w.Enqueuer = jobqfaketest.NewRecordingEnqueuer()
 	workCtx := context.Background()
-	testutil.RequireNoError(t, runWorkerViaJobQFake(workCtx, w, job), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(workCtx, w, job), "Work() error")
 
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "until_encoded" {
@@ -3275,7 +3270,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 	if !slices.Equal(profiles, []string{"h265"}) {
 		t.Errorf("encode_profiles = %v, want [h265] (override should win over base's [h264])", profiles)
 	}
-	if got := countEnqueuedForRecording(t, w.Enqueuer.(*recordingEnqueuer), "encode_reconcile", recordingID); got != 1 {
+	if got := countEnqueuedForRecording(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), "encode_reconcile", recordingID); got != 1 {
 		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", got)
 	}
 	passEnqueuer := runEncodeReconcilePassArgs(t, &encode.EncodeReconcileWorker{Profiles: encodeConfigWith("h264", "h265"), Media: pgstoretest.Media(pool)},
@@ -3300,7 +3295,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 // keepOriginal を 'always' に倒して書くことを確認する。
 func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -3349,11 +3344,11 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-drift"}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-policy-drift"}
 
-	w.Enqueuer = newRecordingEnqueuer()
+	w.Enqueuer = jobqfaketest.NewRecordingEnqueuer()
 	workCtx := context.Background()
-	testutil.RequireNoError(t, runWorkerViaJobQFake(workCtx, w, job), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(workCtx, w, job), "Work() error")
 
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "always" {
@@ -3363,7 +3358,7 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 		t.Errorf("encode_profiles = %v, want empty", profiles)
 	}
 
-	jobCount := countEncodeJobsForRecording(t, w.Enqueuer.(*recordingEnqueuer), recordingID)
+	jobCount := countEncodeJobsForRecording(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), recordingID)
 	if jobCount != 0 {
 		t.Errorf("encode jobs = %d, want 0", jobCount)
 	}
@@ -3376,7 +3371,7 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 // program_snapshots / reservations 行が無い）。
 func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -3398,11 +3393,11 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-none"}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-policy-none"}
 
-	w.Enqueuer = newRecordingEnqueuer()
+	w.Enqueuer = jobqfaketest.NewRecordingEnqueuer()
 	ctx := context.Background()
-	testutil.RequireNoError(t, runWorkerViaJobQFake(ctx, w, job), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, job), "Work() error")
 
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "always" {
@@ -3412,7 +3407,7 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 		t.Errorf("encode_profiles = %v, want empty (default, unchanged)", profiles)
 	}
 
-	jobCount := countEncodeJobsForRecording(t, w.Enqueuer.(*recordingEnqueuer), recordingID)
+	jobCount := countEncodeJobsForRecording(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), recordingID)
 	if jobCount != 0 {
 		t.Errorf("encode jobs = %d, want 0", jobCount)
 	}
@@ -3447,7 +3442,7 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 // 決定を変えるならこのテストも一緒に変える。
 func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -3503,10 +3498,10 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-gced"}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-policy-gced"}
 
-	w.Enqueuer = newRecordingEnqueuer()
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
+	w.Enqueuer = jobqfaketest.NewRecordingEnqueuer()
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "Work() error")
 
 	// 凍結そのものはスキップされない（issue #159）。行はあり、値が既定値になる。
 	if !encodePolicyRowExists(t, pool, recordingID) {
@@ -3520,7 +3515,7 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 	if len(profiles) != 0 {
 		t.Errorf("encode_profiles = %v, want empty （予約の h265 は GC で失われている。issue #214）", profiles)
 	}
-	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID, "h265"); got != 0 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), recordingID, "h265"); got != 0 {
 		t.Errorf("encode jobs for h265 = %d, want 0 "+
 			"（原本は keep_original='always' で残るがエンコードは投入されない。issue #214）", got)
 	}
@@ -3543,7 +3538,7 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 // （DELETE してから CreateManualReservation で作り直す）。
 func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -3587,11 +3582,11 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-rematerialized"}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-policy-rematerialized"}
 
-	w.Enqueuer = newRecordingEnqueuer()
+	w.Enqueuer = jobqfaketest.NewRecordingEnqueuer()
 	workCtx := context.Background()
-	testutil.RequireNoError(t, runWorkerViaJobQFake(workCtx, w, job), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(workCtx, w, job), "Work() error")
 
 	keepOriginal, profiles := encodePolicyOfRecording(t, pool, recordingID)
 	if keepOriginal != "until_encoded" {
@@ -3600,7 +3595,7 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	if !slices.Equal(profiles, []string{"h265"}) {
 		t.Errorf("encode_profiles = %v, want [h265] (予約の再実体化を跨いで解決できているはず)", profiles)
 	}
-	if got := countEnqueuedForRecording(t, w.Enqueuer.(*recordingEnqueuer), "encode_reconcile", recordingID); got != 1 {
+	if got := countEnqueuedForRecording(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), "encode_reconcile", recordingID); got != 1 {
 		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", got)
 	}
 	passEnqueuer := runEncodeReconcilePassArgs(t, &encode.EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool)},
@@ -3615,10 +3610,10 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 // source='rule'（DeriveRecordingSource が「作成時点で予約があり、intent
 // action='record' の行は無かった」ことを保証する）の録画で放送イベントキーの
 // JOIN が失敗する異常系を再現し、slog.Warn に識別子が残ることを確認する
-// （レビュー指摘: internal/worker/ingest.go:539-547 の「引けなかった」を黙って
+// （レビュー指摘: resolveEncodePolicy の「引けなかった」を黙って
 // return nil にしない、の rule 側）。
 func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -3655,7 +3650,7 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-rule-gone"}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-policy-rule-gone"}
 
 	var logBuf bytes.Buffer
 	prevLogger := slog.Default()
@@ -3663,7 +3658,7 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
 	workCtx := context.Background()
-	testutil.RequireNoError(t, runWorkerViaJobQFake(workCtx, w, job), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(workCtx, w, job), "Work() error")
 
 	logText := logBuf.String()
 	if !strings.Contains(logText, "level=WARN") {
@@ -3707,7 +3702,7 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 // 異常ではないが、encode policy が既定値に凍結された事実は運用上追跡できる必要が
 // ある。
 func TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -3731,7 +3726,7 @@ func TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable(t *t
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-manual-unresolved"}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-policy-manual-unresolved"}
 
 	var logBuf bytes.Buffer
 	prevLogger := slog.Default()
@@ -3739,7 +3734,7 @@ func TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable(t *t
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
 	workCtx := context.Background()
-	testutil.RequireNoError(t, runWorkerViaJobQFake(workCtx, w, job), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(workCtx, w, job), "Work() error")
 
 	logText := logBuf.String()
 	if !strings.Contains(logText, "level=INFO") {
@@ -3771,7 +3766,7 @@ func TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable(t *t
 // して予約解決を失敗させる。recordings.source は作成時の manual snapshot を保持する
 // ので、unattributed と混同せず Warn になることを確認する。
 func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -3818,14 +3813,14 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 		Precheck:      pgstoretest.Media(pool),
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
-	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-manual-gced"}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-policy-manual-gced"}
 
 	var logBuf bytes.Buffer
 	prevLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "Work() error")
 
 	logText := logBuf.String()
 	if !strings.Contains(logText, "level=WARN") {
@@ -3888,7 +3883,7 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 				StallTimeout:  5 * time.Second,
 			}
 
-			pool := setupTestPool(t)
+			pool := testutil.SetupDB(t)
 			if pool == nil {
 				return
 			}
@@ -3902,8 +3897,8 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 			})
 			insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, recordID, 327361024000101)
 
-			job := IngestJobArgs{Site: "tokyo", RecordID: recordID}
-			testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
+			job := jobs.IngestJobArgs{Site: "tokyo", RecordID: recordID}
+			testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "Work() error")
 
 			q := sqlcgen.New(pool)
 			asset, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingID})
@@ -3940,7 +3935,7 @@ func TestIngestWorker_DegenerateContentPath_Rejected(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -3953,8 +3948,8 @@ func TestIngestWorker_DegenerateContentPath_Rejected(t *testing.T) {
 	})
 	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, recordID, 327361024000103)
 
-	job := IngestJobArgs{Site: "tokyo", RecordID: recordID}
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
+	job := jobs.IngestJobArgs{Site: "tokyo", RecordID: recordID}
+	if err := jobqfaketest.RunWorkerOnce(context.Background(), w, job); err == nil {
 		t.Fatal("Work() error = nil, want non-nil for a record with no usable content path")
 	}
 
@@ -4007,7 +4002,7 @@ func TestIngestWorker_SameContentFilenameGetsUniquePaths(t *testing.T) {
 
 	mediaDir := t.TempDir()
 
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -4030,12 +4025,12 @@ func TestIngestWorker_SameContentFilenameGetsUniquePaths(t *testing.T) {
 		Precheck:      pgstoretest.Media(pool),
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
-	jobA := IngestJobArgs{Site: "default", RecordID: "rec-collide-a"}
-	jobB := IngestJobArgs{Site: "default", RecordID: "rec-collide-b"}
+	jobA := jobs.IngestJobArgs{Site: "default", RecordID: "rec-collide-a"}
+	jobB := jobs.IngestJobArgs{Site: "default", RecordID: "rec-collide-b"}
 
-	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, jobA), "first Work() error")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobA), "first Work() error")
 	w.MirakcClients["default"] = mirakc.NewClient(fakeB.URL(), nil)
-	if err := runWorkerViaJobQFake(context.Background(), w, jobB); err != nil {
+	if err := jobqfaketest.RunWorkerOnce(context.Background(), w, jobB); err != nil {
 		t.Fatalf("second Work() error: %v (same filename %q must get a fresh path)", err, filepath.Base(sharedContentPath))
 	}
 
@@ -4087,7 +4082,7 @@ func TestIngestWorker_SameContentFilenameGetsUniquePaths(t *testing.T) {
 // 一時ファイル方式が事前チェック無しでも既に満たしている。
 func TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -4133,9 +4128,9 @@ func TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile(t *te
 	}
 	reserveTestIngestPath(t, w.Publisher, newRecordingID, conflictRelPath)
 
-	job := IngestJobArgs{Site: "default", RecordID: recordID}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: recordID}
 
-	err := runWorkerViaJobQFake(ctx, w, job)
+	err := jobqfaketest.RunWorkerOnce(ctx, w, job)
 	if err == nil {
 		t.Fatal("Work() error = nil, want an explicit failure for a conflicting rel_path")
 	}
@@ -4181,7 +4176,7 @@ func TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile(t *te
 // 付きの別パスを割り当てることを確認する。
 func TestIngestWorker_UsesFreshPathWhenFilenameHasTombstone(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -4220,9 +4215,9 @@ func TestIngestWorker_UsesFreshPathWhenFilenameHasTombstone(t *testing.T) {
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-reuse-new"}
+	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-reuse-new"}
 
-	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
+	if err := jobqfaketest.RunWorkerOnce(ctx, w, job); err != nil {
 		t.Fatalf("Work() error = %v, want nil", err)
 	}
 
@@ -4324,4 +4319,17 @@ func setFastIngestFollow(t *testing.T) {
 	ingestFollowPace.pollMax = 10 * time.Millisecond
 	ingestFollowPace.retryDelay = func(int) time.Duration { return 5 * time.Millisecond }
 	t.Cleanup(func() { ingestFollowPace = prev })
+}
+
+// 区切り + 処理余白の上限は River の既定 JobTimeout より長く、rescue 待ちより短い。
+func TestIngestWorker_TimeoutFitsBeforeRescue(t *testing.T) {
+	t.Parallel()
+	args := jobs.IngestJobArgs{}
+	got := args.Spec().Timeout(args)
+	if got != 5*time.Minute {
+		t.Errorf("Timeout() = %v, want 5m", got)
+	}
+	if got := ingestTransferSlice; got != 4*time.Minute {
+		t.Errorf("ingest transfer slice = %v, want 4m", got)
+	}
 }

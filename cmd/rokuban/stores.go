@@ -9,8 +9,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/ingest"
 	"github.com/fetburner/rokuban/internal/jobs"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // storeFlagName は `server` サブコマンドのプロセスが置き場をマウントするフラグ名。
@@ -214,7 +214,7 @@ func probeIngestStorageAtStartup(roles, queues []string, roots map[string]string
 		return false, nil
 	}
 	for _, name := range sortedKeys(roots) {
-		if err := worker.ProbeIngestStorage(roots[name]); err != nil {
+		if err := ingest.ProbeIngestStorage(roots[name]); err != nil {
 			return false, fmt.Errorf("validating ingest storage of store %q: %w", name, err)
 		}
 	}

@@ -1,4 +1,4 @@
-package worker
+package ingest
 
 import (
 	"bytes"
@@ -21,6 +21,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/fsink"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -34,7 +35,7 @@ import (
 // 原本を並行 ingest しても、それぞれ別の canonical path と全バイトを保持することを確かめる。
 func TestIngestWorker_ConcurrentSameFilenameUsesDistinctPaths(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 
 	const contentPath = "shared/concurrent.m2ts"
@@ -73,8 +74,8 @@ func TestIngestWorker_ConcurrentSameFilenameUsesDistinctPaths(t *testing.T) {
 	}
 	wA.CMDetectionStore = pgstoretest.Analysis(pool)
 	wB.CMDetectionStore = pgstoretest.Analysis(pool)
-	jobA := IngestJobArgs{Site: "default", RecordID: "rec-concurrent-a"}
-	jobB := IngestJobArgs{Site: "default", RecordID: "rec-concurrent-b"}
+	jobA := jobs.IngestJobArgs{Site: "default", RecordID: "rec-concurrent-a"}
+	jobB := jobs.IngestJobArgs{Site: "default", RecordID: "rec-concurrent-b"}
 
 	type result struct {
 		data        []byte
@@ -84,10 +85,10 @@ func TestIngestWorker_ConcurrentSameFilenameUsesDistinctPaths(t *testing.T) {
 	}
 	results := make(chan result, 2)
 	go func() {
-		results <- result{data: tsDataA, recordID: jobA.RecordID, recordingID: recordingIDA, err: runWorkerViaJobQFake(context.Background(), wA, jobA)}
+		results <- result{data: tsDataA, recordID: jobA.RecordID, recordingID: recordingIDA, err: jobqfaketest.RunWorkerOnce(context.Background(), wA, jobA)}
 	}()
 	go func() {
-		results <- result{data: tsDataB, recordID: jobB.RecordID, recordingID: recordingIDB, err: runWorkerViaJobQFake(context.Background(), wB, jobB)}
+		results <- result{data: tsDataB, recordID: jobB.RecordID, recordingID: recordingIDB, err: jobqfaketest.RunWorkerOnce(context.Background(), wB, jobB)}
 	}()
 
 	for i := 0; i < 2; i++ {
@@ -222,7 +223,7 @@ func runCanonicalOrphanSurvives(
 	linkedWhilePaused bool,
 	install func(t *testing.T, pool *pgxpool.Pool, paused func(), wait <-chan struct{}),
 ) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -379,7 +380,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 
 	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pool := setupTestPool(t)
+			pool := testutil.SetupDB(t)
 			mediaDir := t.TempDir()
 			contentPath := fmt.Sprintf("stop-points/%s.m2ts", strings.ReplaceAll(tt.name, " ", "-"))
 			tsData := makeTSDataFill(byte(0x30 + i))
@@ -399,7 +400,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 				Precheck:      pgstoretest.Media(pool),
 			}
 			w.CMDetectionStore = pgstoretest.Analysis(pool)
-			job := IngestJobArgs{Site: "default", RecordID: recordID}
+			job := jobs.IngestJobArgs{Site: "default", RecordID: recordID}
 
 			originalRename := linkIngestFile
 			originalSync := syncIngestParentDir
@@ -412,7 +413,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			t.Cleanup(restoreHooks)
 			tt.installFailure(t, pool)
 
-			if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
+			if err := jobqfaketest.RunWorkerOnce(context.Background(), w, job); err == nil {
 				t.Fatal("first Work() returned nil despite the injected stop point")
 			}
 			assertIngestAssetCount(t, pool, recordingID, 0)
@@ -441,7 +442,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			}
 
 			restoreHooks()
-			testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "retry Work() error")
+			testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "retry Work() error")
 			assertIngestAssetCount(t, pool, recordingID, 1)
 			if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
 				t.Errorf("DeleteRecord calls after retry = %d, want 1", got)

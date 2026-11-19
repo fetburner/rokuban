@@ -1,4 +1,4 @@
-package worker
+package ingest
 
 import (
 	"context"
@@ -165,7 +165,7 @@ func TestIngestWorkerSkipsStorageProbeAlreadyDoneAtStartup(t *testing.T) {
 		RecordTarget:   target,
 		MediaDir:       mediaDir,
 		MediaStoreName: "tokyo",
-		storageProbed:  true,
+		StorageProbed:  true,
 	}
 	if err := worker.Work(context.Background(), jobs.IngestJobArgs{Site: "tokyo", RecordID: "r1"}); err == nil || strings.Contains(err.Error(), "validating ingest storage") {
 		t.Fatalf("Work() error = %v, want the lookup error without a probe", err)

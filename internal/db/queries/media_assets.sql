@@ -13,7 +13,7 @@ FROM recording_ingest_progress p
 WHERE p.recording_id = sqlc.arg('recording_id')
 RETURNING id;
 
--- ingest の冪等性チェック用。worker/ingest.go の Work は転送を始める前にこれで
+-- ingest の冪等性チェック用。ingest/ingest.go の Work は転送を始める前にこれで
 -- 「この recording_id の original はもうコミット済みか」を確認する
 -- （不変条件 3「コミット = DB 行」。行が無ければまだコミットされていない）。
 -- 該当行が無ければ pgx.ErrNoRows を返す。
@@ -21,7 +21,7 @@ RETURNING id;
 SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1 AND kind = 'original';
 
--- ingest の転送前ヒント用（issue #197）。worker/ingest.go の Work が
+-- ingest の転送前ヒント用（issue #197）。ingest/ingest.go の Work が
 -- record 固有の一時ファイルを開く前に、別のまだ削除されていない
 -- （state <> 'deleted'。'active' に限らず、delete_reconcile の unlink 前後の
 -- 中間状態である 'deleting' も含む）media_asset が同じ rel_path を既に使って

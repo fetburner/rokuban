@@ -1,4 +1,4 @@
-package worker
+package ingest
 
 import (
 	"context"
@@ -314,12 +314,12 @@ type IngestWorker struct {
 	MediaStoreName   string
 	CMDetect         config.CMDetectConfig
 
-	// probeMu は storageProbed を守り、ProbeIngestStorage の同時実行を 1 本にする。
-	// storageProbed は ProbeIngestStorage が成功済みかを示す。起動時に目印を確認できず
-	// probe を保留したときだけ false で始まる（NewWorkers が Deps から渡す）。
+	// probeMu は StorageProbed を守り、ProbeIngestStorage の同時実行を 1 本にする。
+	// StorageProbed は ProbeIngestStorage が成功済みかを示す。起動時に目印を確認できず
+	// probe を保留したときだけ false で始まる（worker.NewWorkers が Deps から渡す）。
 	// sync.Once は最初の失敗を固定してしまうので使わない。
 	probeMu       sync.Mutex
-	storageProbed bool
+	StorageProbed bool
 
 	// CutProfiles は cut: true のプロファイル名（config から注入）。凍結時の
 	// クランプ（resolveAndSnapshotEncodePolicy）に使う。
@@ -350,13 +350,13 @@ func (w *IngestWorker) ensureStorageProbed() error {
 	}
 	w.probeMu.Lock()
 	defer w.probeMu.Unlock()
-	if w.storageProbed {
+	if w.StorageProbed {
 		return nil
 	}
 	if err := ProbeIngestStorage(w.MediaDir); err != nil {
 		return fmt.Errorf("validating ingest storage: %w", err)
 	}
-	w.storageProbed = true
+	w.StorageProbed = true
 	return nil
 }
 
@@ -1041,8 +1041,14 @@ func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirak
 	if enqueueErr := cmdetect.EnqueueCMDetectionIfNeeded(ctx, w.CMDetectionStore, w.Enqueuer, recordingID, w.MediaStoreName); enqueueErr != nil {
 		log.Error("ingest: failed to enqueue CM detection job", "recording_id", recordingID, "err", enqueueErr)
 	}
-	if enqueueErr := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailReconcileArgs{RecordingID: recordingID}); enqueueErr != nil {
-		log.Error("ingest: failed to enqueue thumbnail reconcile", "recording_id", recordingID, "err", enqueueErr)
+	var thumbErr error
+	if w.Enqueuer == nil {
+		thumbErr = errors.New("ingest: job enqueuer is nil")
+	} else {
+		_, thumbErr = w.Enqueuer.Enqueue(ctx, jobs.ThumbnailReconcileArgs{RecordingID: recordingID})
+	}
+	if thumbErr != nil {
+		log.Error("ingest: failed to enqueue thumbnail reconcile", "recording_id", recordingID, "err", thumbErr)
 	}
 	if enqueueErr := tsscan.EnqueueScan(ctx, w.Enqueuer, recordingID, w.MediaStoreName); enqueueErr != nil {
 		log.Error("ingest: failed to enqueue TS scan", "recording_id", recordingID, "err", enqueueErr)

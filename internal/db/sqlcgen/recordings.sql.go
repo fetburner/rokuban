@@ -438,7 +438,7 @@ type FreezeRecordingEncodePolicyParams struct {
 // 切り出されたため、凍結 = この行の INSERT（不変条件 3「コミット = DB 行」・
 // 不変条件 10「意味を持たない行を作らない」: 行が無い = 未凍結、行がある =
 // 凍結済み。既定値との区別不能が構造的に消える）。ON CONFLICT を付けない ---
-// 呼び出し元 internal/worker/ingest.go の resolveAndSnapshotEncodePolicy は
+// 呼び出し元 internal/ingest/ingest.go の resolveAndSnapshotEncodePolicy は
 // CreateMediaAsset（同じく ON CONFLICT 無しの INSERT）と同一 tx から 1 回だけ
 // 呼ばれる（Work が転送開始前に GetOriginalMediaAssetID で冪等性チェックする
 // ため、この tx 自体が録画ごとに 1 回しか実行されない）。凍結する理由・瞬間・

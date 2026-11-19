@@ -2,13 +2,14 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -23,23 +24,33 @@ func runWorkerViaJobQFake[T jobq.Args](ctx context.Context, worker jobq.Worker[T
 	return jobqfaketest.RunWorkerOnce(ctx, worker, args)
 }
 
-type mirakcRoundTripperFunc func(*http.Request) (*http.Response, error)
-
-func (f mirakcRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
-
 // TestNewWorkersInjectsIngestPrecheck runs the registered ingest worker through the registry.
 // The original row exists only in the DB: Work must find it through the injected precheck,
 // skip transfer, and clear stale progress for that recording.
+// insertRecordSyncForTest は録画に対応する record_sync 行を 1 件作る。番組は持たせず、
+// 番組スナップショットの無い録画と対応させる（ingest の検査は insertTestRecordSync を参照）。
+func insertRecordSyncForTest(t *testing.T, pool *pgxpool.Pool, recordingID int64, recordID string) {
+	t.Helper()
+	testutil.RequireNoError(t, sqlcgen.New(pool).UpsertRecordSync(context.Background(), sqlcgen.UpsertRecordSyncParams{
+		Site:        "default",
+		RecordID:    recordID,
+		RecordingID: &recordingID,
+		ProgramID:   327361024000001,
+		Status:      "finished",
+		Tags:        []string{},
+	}), "inserting test record_sync")
+}
+
 func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
 
 	const recordID = "rec-new-workers-precheck"
 	recordingID := dbtest.Recording(t, pool)
-	insertTestRecordSync(t, pool, recordingID, recordID)
+	insertRecordSyncForTest(t, pool, recordingID, recordID)
 	media := pgstoretest.Media(pool)
 	seedOriginalAsset(t, pool, t.TempDir(), recordingID, "sites/default/new-workers-precheck.m2ts", []byte("x"))
 	testutil.RequireNoError(t, media.UpsertIngestProgress(context.Background(), store.IngestProgress{
@@ -65,7 +76,9 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 		}},
 	})
 	testutil.RequireNoError(t, registry.Work(context.Background(), jobs.IngestJobArgs{Site: store.DefaultSite, RecordID: recordID}), "registered ingest worker Work()")
-	if _, ok := readIngestProgress(t, pool, recordingID); ok {
+	var progressRows int
+	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_ingest_progress WHERE recording_id = $1`, recordingID).Scan(&progressRows), "counting recording_ingest_progress")
+	if progressRows != 0 {
 		t.Error("registered ingest worker did not clear stale progress")
 	}
 }
@@ -126,27 +139,6 @@ func enqueuedArgs[T jobq.Args](enqueuer *recordingEnqueuer, kind string) []T {
 	return found
 }
 
-func countEnqueuedForRecording(t *testing.T, enqueuer *recordingEnqueuer, kind string, recordingID int64) int {
-	t.Helper()
-	count := 0
-	for _, args := range enqueuer.Enqueued(kind) {
-		encoded, err := json.Marshal(args)
-		if err != nil {
-			t.Fatalf("encoding %s args: %v", kind, err)
-		}
-		var keyed struct {
-			RecordingID int64 `json:"recording_id"`
-		}
-		if err := json.Unmarshal(encoded, &keyed); err != nil {
-			t.Fatalf("decoding %s args: %v", kind, err)
-		}
-		if keyed.RecordingID == recordingID {
-			count++
-		}
-	}
-	return count
-}
-
 // epg_sync のパス完了はヒント経路の 1 つ: RulerPassArgs を投入して評価を早める
 // （docs/recording.md §3.1「EPG 同期の完了」）。
 func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
@@ -169,19 +161,6 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 	testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT revision FROM ruler_input_revisions WHERE site = $1`, testSite).Scan(&revision), "reading ruler input revision")
 	if revision != 1 {
 		t.Fatalf("ruler input revision = %d, want 1 after EPG sync", revision)
-	}
-}
-
-// 区切り + 処理余白の上限は River の既定 JobTimeout より長く、rescue 待ちより短い。
-func TestIngestWorker_TimeoutFitsBeforeRescue(t *testing.T) {
-	t.Parallel()
-	args := jobs.IngestJobArgs{}
-	got := args.Spec().Timeout(args)
-	if got != 5*time.Minute {
-		t.Errorf("Timeout() = %v, want 5m", got)
-	}
-	if got := ingestTransferSlice; got != 4*time.Minute {
-		t.Errorf("ingest transfer slice = %v, want 4m", got)
 	}
 }
 

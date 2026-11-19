@@ -8,7 +8,7 @@
 -- 「どの予約を引くか」を決める結合キーとしてだけ使う。番組の事実のスナップ
 -- ショット自体（title 等）はここでは要らない。この 2 つの jsonb（base /
 -- overrides）を扱う箇所は reservation.EffectiveOptions を通す（CLAUDE.md 不変条件
--- 9/12 の教訓）。呼び出し側（internal/worker/ingest.go）の責務。
+-- 9/12 の教訓）。呼び出し側（internal/ingest/ingest.go）の責務。
 --
 -- 宛先は recordings.reservation_id（bigint FK、ON DELETE SET NULL だった。
 -- issue #158 で列自体を削除済み）ではなく放送イベントキー

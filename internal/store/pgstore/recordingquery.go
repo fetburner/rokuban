@@ -116,7 +116,7 @@ var (
         WHERE rs.recording_id = r.id AND rs.status IN ('recording', 'finished')
     ) AS has_ingestable_record,
     -- has_abnormally_ended_record は「record が canceled / failed で終わった」。
-    -- **述語は worker の終端条件と一致させる**（internal/worker/ingest.go の
+    -- **述語は worker の終端条件と一致させる**（internal/ingest/ingest.go の
     -- RecordFollowReader の status hook が errIngestRecordEndedAbnormally を返す status の集合）。
     --
     -- この列が要るのは、取り消した録画の recording_ingest_progress 行が

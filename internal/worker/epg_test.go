@@ -52,6 +52,8 @@ func newEpgFake(t *testing.T, fx *epgFixture) *mirakctest.Fake {
 	return fake
 }
 
+func strPtr(s string) *string { return &s }
+
 func msPtr(t time.Time) *mirakc.Milliseconds {
 	m := mirakc.Milliseconds(t)
 	return &m
@@ -117,7 +119,7 @@ func allPrograms(t *testing.T, pool *pgxpool.Pool) []sqlcgen.EpgProgram {
 
 func TestEpgSyncWorker_FullSync(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	now := time.Now().Truncate(time.Second)
 
 	fx := &epgFixture{
@@ -208,7 +210,7 @@ func TestEpgSyncWorker_FullSync(t *testing.T) {
 // 全量同期は冪等。2 回走っても行が増えず、内容が更新される。
 func TestEpgSyncWorker_IdempotentAndUpdates(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	now := time.Now().Truncate(time.Second)
 
 	fx := &epgFixture{
@@ -251,7 +253,7 @@ func TestEpgSyncWorker_IdempotentAndUpdates(t *testing.T) {
 // EPG から消えた番組・サービスは observed_at スイープで削除される。
 func TestEpgSyncWorker_RemovesVanishedRows(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	now := time.Now().Truncate(time.Second)
 
 	keep := testProgram(32736, 1024, 1, "残る番組", now.Add(time.Hour), 30*time.Minute)
@@ -297,7 +299,7 @@ func TestEpgSyncWorker_RemovesVanishedRows(t *testing.T) {
 // プロジェクション全体を消さないこと。
 func TestEpgSyncWorker_EmptyResponseKeepsProjection(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	now := time.Now().Truncate(time.Second)
 
 	fx := &epgFixture{
@@ -342,7 +344,7 @@ func TestEpgSyncWorker_EmptyResponseKeepsProjection(t *testing.T) {
 // そのチャンネルの番組を消さず、番組を返したチャンネルは通常どおりスイープすること。
 func TestEpgSyncWorker_SweepIsPerChannel(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	now := time.Now().Truncate(time.Second)
 
 	// GR/27 = ＯＨＫ（network 32678、サービス 5168 / 5169）
@@ -396,7 +398,7 @@ func TestEpgSyncWorker_SweepIsPerChannel(t *testing.T) {
 // （スイープをサービス単位にしてしまうとこの行が残ってしまう）
 func TestEpgSyncWorker_SweepsSubServiceWhenChannelObserved(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	now := time.Now().Truncate(time.Second)
 
 	main := testProgram(32678, 5168, 1, "親サービスの番組", now.Add(time.Hour), time.Hour)
@@ -431,7 +433,7 @@ func TestEpgSyncWorker_SweepsSubServiceWhenChannelObserved(t *testing.T) {
 // （startAt なしばかりが返る異常時に番組表を消さない）。
 func TestEpgSyncWorker_NoProjectableProgramsKeepsProjection(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	now := time.Now().Truncate(time.Second)
 
 	fx := &epgFixture{
@@ -456,7 +458,7 @@ func TestEpgSyncWorker_NoProjectableProgramsKeepsProjection(t *testing.T) {
 // ローリングウィンドウ: 放送終了から猶予を超えた番組は、mirakc が返し続けても刈り取る。
 func TestEpgSyncWorker_PrunesAiredPrograms(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	now := time.Now().Truncate(time.Second)
 
 	oldProgram := testProgram(32736, 1024, 1, "3 日前の番組", now.Add(-72*time.Hour), time.Hour)
@@ -492,7 +494,7 @@ func TestEpgSyncWorker_PrunesAiredPrograms(t *testing.T) {
 // 投影できない番組・サービスは捨てて同期は続行する。
 func TestEpgSyncWorker_SkipsUnprojectableRows(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	now := time.Now().Truncate(time.Second)
 
 	noStart := testProgram(32736, 1024, 9, "開始時刻なし", now.Add(time.Hour), time.Hour)
@@ -560,7 +562,7 @@ func TestEpgSyncWorker_SkipsUnprojectableRows(t *testing.T) {
 // マルチ編成の実番組は name を持つので残る（issue #17 の決定）。
 func TestEpgSyncWorker_SkipsShadowSubServicePrograms(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	now := time.Now().Truncate(time.Second)
 
 	// GR/27 に親 1024 とサブ 1025 / 1026。ＮＨＫ総合１/２ 相当の構成。
@@ -617,7 +619,7 @@ func TestEpgSyncWorker_SkipsShadowSubServicePrograms(t *testing.T) {
 // epgBatchSize を超える件数がチャンク分割されて全件入ること。
 func TestEpgSyncWorker_BatchesLargeSync(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	now := time.Now().Truncate(time.Second)
 
 	const total = epgBatchSize*2 + 3
@@ -651,7 +653,7 @@ func TestEpgSyncWorker_BatchesLargeSync(t *testing.T) {
 // issue #139 のテスト規律）。
 func TestEpgSyncWorker_SiteMismatch(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 
 	fx := &epgFixture{
 		services: []mirakc.Service{testService(32736, 1024, 1, "ＮＨＫ総合", "27")},
@@ -676,7 +678,7 @@ func TestEpgSyncWorker_SiteMismatch(t *testing.T) {
 // されることを確認する（TestEpgSyncWorker_SiteMismatch と対になる両方向の確認）。
 func TestEpgSyncWorker_SiteMatch(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 
 	fx := &epgFixture{
 		services: []mirakc.Service{testService(32736, 1024, 1, "ＮＨＫ総合", "27")},

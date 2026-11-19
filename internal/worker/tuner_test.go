@@ -65,7 +65,7 @@ func allTuners(t *testing.T, pool *pgxpool.Pool) []sqlcgen.TunerSync {
 // 全量取得 → upsert → スイープの 1 パス。
 func TestTunerSyncWorker_FullSync(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
 		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
 		{Index: 1, Name: "PX-W3U4_S1", Types: []string{"BS", "CS"}, IsAvailable: true},
@@ -109,7 +109,7 @@ func TestTunerSyncWorker_FullSync(t *testing.T) {
 // 使用中かどうかは型で表せないので、worker 側で使用中のチューナーを置くことはできない。
 func TestTunerSyncWorker_DoesNotProjectRuntimeState(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
 		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
 	}}
@@ -139,7 +139,7 @@ WHERE table_name = 'tuner_sync'
 // （epg_services が未知の channel_type のサービスだけ捨てるのと同じ規律）。
 func TestTunerSyncWorker_SkipsTunerWithUnknownChannelType(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
 		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
 		{Index: 1, Name: "未来の受信機", Types: []string{"GR", "ISDB-T3"}, IsAvailable: true},
@@ -160,7 +160,7 @@ func TestTunerSyncWorker_SkipsTunerWithUnknownChannelType(t *testing.T) {
 // types が空のチューナーは投影する（どの cap にも数えられないだけで無害）。
 func TestTunerSyncWorker_ProjectsTunerWithoutTypes(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
 		{Index: 0, Name: "設定ミスのチューナー", Types: []string{}, IsAvailable: true},
 	}}
@@ -181,7 +181,7 @@ func TestTunerSyncWorker_ProjectsTunerWithoutTypes(t *testing.T) {
 // （tuner_sync が空 = 判定しない）、警告が黙って消える。
 func TestTunerSyncWorker_SkipsSweepOnEmptyResponse(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
 		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
 	}}
@@ -214,7 +214,7 @@ func TestTunerSyncWorker_SkipsSweepOnEmptyResponse(t *testing.T) {
 // 非ゼロは信頼できるがゼロは「大丈夫」を意味しない、という非対称な読み方は
 // metrics.CapacityOverages のコメント側の責務。ここでは配線だけを見る。
 func TestTunerSyncWorker_SetsCapacityOverageGauge(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	start := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 
 	// GR 1 本に対して別チャンネル 2 予約 → 1 区間が超過。
@@ -266,7 +266,7 @@ INSERT INTO reservations (site, program_id, base) VALUES ($1, $2, '{}')`,
 // #139 のテスト規律）。
 func TestTunerSyncWorker_SiteMismatch(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
 		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
@@ -295,7 +295,7 @@ func TestTunerSyncWorker_SiteMismatch(t *testing.T) {
 // 両方向の確認）。
 func TestTunerSyncWorker_SiteMatch(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
 		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},

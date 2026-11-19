@@ -6,6 +6,7 @@ import (
 	"github.com/fetburner/rokuban/internal/cmdetect"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/encode"
+	"github.com/fetburner/rokuban/internal/ingest"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -115,7 +116,7 @@ type Deps struct {
 	// IngestStores は ingest が書き込む置き場を規則から選ぶ契約。
 	IngestStores    store.IngestStoreChooser
 	TransferOverlap time.Duration
-	// IngestStorageProbed は起動時に ProbeIngestStorage が成功したかを示す。
+	// IngestStorageProbed は起動時に ingest.ProbeIngestStorage が成功したかを示す。
 	// false なら IngestWorker が最初の ingest で、目印を照合した後に probe する。
 	IngestStorageProbed bool
 	ScratchDir          string
@@ -186,8 +187,8 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	workers := jobq.NewRegistry()
 	registerStoreRoutedWorkers(workers, deps)
 	riveradapter.Register(workers, newIngestRoute(deps, func(d *Deps) jobq.Worker[jobs.IngestJobArgs] {
-		return &IngestWorker{
-			storageProbed:       d.IngestStorageProbed,
+		return &ingest.IngestWorker{
+			StorageProbed:       d.IngestStorageProbed,
 			Enqueuer:            d.Enqueuer,
 			MirakcClients:       d.MirakcClients,
 			Publisher:           d.MediaPublish,

@@ -1,4 +1,4 @@
-package worker
+package ingest
 
 import (
 	"context"
@@ -17,6 +17,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/jobqfake"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -66,7 +67,7 @@ func ingestDurationSamples(t *testing.T) uint64 {
 }
 
 func TestIngestWorker_DeadlineIsCountedAsFailure(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -81,9 +82,9 @@ func TestIngestWorker_DeadlineIsCountedAsFailure(t *testing.T) {
 
 	beforeResults := ingestJobResults()
 	durationBefore := ingestDurationSamples(t)
-	err := runWorkerViaJobQFake(ctx, w,
+	err := jobqfaketest.RunWorkerOnce(ctx, w,
 
-		IngestJobArgs{Site: "default", RecordID: "rec-timeout-metrics"},
+		jobs.IngestJobArgs{Site: "default", RecordID: "rec-timeout-metrics"},
 	)
 	if err == nil {
 		t.Fatal("Work() with an expired deadline returned nil")
@@ -99,7 +100,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	setIngestSHA256Rate(t, 47)
 	const recordID = "rec-sha256-river-complete"
 	fake, _ := newLateHashIngestFake(t, recordID, tsData, "test/sha-wait.m2ts")
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -200,7 +201,7 @@ func (worker snoozeResultCapturingIngestWorker) Work(ctx context.Context, args j
 // canceled context without depending on a queue-specific cancellation type.
 func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 	t.Run("Work returns an error", func(t *testing.T) {
-		pool := setupTestPool(t)
+		pool := testutil.SetupDB(t)
 		if pool == nil {
 			return
 		}
@@ -221,9 +222,9 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 		cancel()
 
 		before := ingestJobResults()
-		err := runWorkerViaJobQFake(ctx, w,
+		err := jobqfaketest.RunWorkerOnce(ctx, w,
 
-			IngestJobArgs{Site: "default", RecordID: "rec-remote-cancel-err"},
+			jobs.IngestJobArgs{Site: "default", RecordID: "rec-remote-cancel-err"},
 		)
 		if err == nil {
 			t.Fatal("Work() = nil, want an error（ctx を取り消した状態では最初の DB 取得で失敗する）")
@@ -232,7 +233,7 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 	})
 
 	t.Run("Work returns nil", func(t *testing.T) {
-		pool := setupTestPool(t)
+		pool := testutil.SetupDB(t)
 		if pool == nil {
 			return
 		}
@@ -262,9 +263,9 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 		dbtest.MediaAsset(t, pool, recordingID)
 
 		before := ingestJobResults()
-		err := runWorkerViaJobQFake(ctx, w,
+		err := jobqfaketest.RunWorkerOnce(ctx, w,
 
-			IngestJobArgs{Site: "default", RecordID: recordID},
+			jobs.IngestJobArgs{Site: "default", RecordID: recordID},
 		)
 		if err != nil {
 			t.Fatalf("Work() = %v, want nil", err)
@@ -273,7 +274,7 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 	})
 
 	t.Run("Work returns the context cause", func(t *testing.T) {
-		pool := setupTestPool(t)
+		pool := testutil.SetupDB(t)
 		if pool == nil {
 			return
 		}
@@ -305,8 +306,8 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 		durationBefore := ingestDurationSamples(t)
 		// net/http は取り消し時に context.Cause(ctx) を返し、それは context.Canceled を
 		// 包まない。だから ingest の分類は errors.Is(err, cause) の項も見る必要がある。
-		_ = runWorkerViaJobQFake(ctx, w,
-			IngestJobArgs{Site: "default", RecordID: "rec-remote-cancel-cause"},
+		_ = jobqfaketest.RunWorkerOnce(ctx, w,
+			jobs.IngestJobArgs{Site: "default", RecordID: "rec-remote-cancel-cause"},
 		)
 		assertIngestResultDeltas(t, before, nil, "context cancellation with cause")
 		if got := ingestDurationSamples(t); got != durationBefore {
@@ -316,7 +317,7 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 }
 
 func TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored(t *testing.T) {
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
@@ -339,8 +340,8 @@ func TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored(t *testing.T) {
 		Precheck:      pgstoretest.Media(pool),
 	}
 	worker.CMDetectionStore = pgstoretest.Analysis(pool)
-	if err := runWorkerViaJobQFake(context.Background(), worker,
-		IngestJobArgs{Site: "default", RecordID: recordID}); err != nil {
+	if err := jobqfaketest.RunWorkerOnce(context.Background(), worker,
+		jobs.IngestJobArgs{Site: "default", RecordID: recordID}); err != nil {
 		t.Fatalf("Work() = %v, want best-effort enqueue failures to be ignored", err)
 	}
 	for _, want := range []string{

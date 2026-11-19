@@ -16,7 +16,7 @@ import (
 // Deps.LoopMarkers の配線が外れると、ワーカーの Markers が nil になって印が黙って書かれなくなる。
 func TestNewWorkersRegisteredSyncJobsWriteSiteMarkers(t *testing.T) {
 	t.Parallel()
-	pool := setupTestPool(t)
+	pool := testutil.SetupDB(t)
 	now := time.Now().Truncate(time.Second)
 
 	fake := mirakctest.New(t)
