@@ -23,14 +23,12 @@ type thumbnailPlan struct {
 	RecordedSeek int64
 }
 
-// thumbnailTimeline derives the chapter timeline of a candidate row. The bool is
-// false when the recording has neither a CM detection nor user-owned chapters.
-func thumbnailTimeline(p store.ThumbnailReselectCandidate) (chapters.Timeline, bool) {
-	if !p.Detected && !p.Owned {
-		return nil, false
-	}
+// thumbnailTimeline derives the chapter timeline of a candidate row. Rows come only
+// from ListThumbnailReselectCandidates, which already drops rows with neither a CM
+// detection nor user-owned chapters.
+func thumbnailTimeline(p store.ThumbnailReselectCandidate) chapters.Timeline {
 	auto := chapters.AutoSpans(p.CMRanges, p.ProgramDurationMs)
-	return chapters.Derive(p.Owned, p.UserSpans, auto, p.ProgramDurationMs), true
+	return chapters.Derive(p.Owned, p.UserSpans, auto, p.ProgramDurationMs)
 }
 
 // thumbnailInputsOf returns the usable input files of a candidate row.
