@@ -286,7 +286,7 @@ type ListMissingEncodeProfilesRow struct {
 //     encoded が無い (recording_id, profile)。設定では絞らない）
 //   - 録画単位: view `encodable_recordings`（ごみ箱でない・原本が active）
 //   - プロファイル単位: 関数 `encodable_profile(rec_id, profile, known_profiles,
-//     cut_profiles)`（空でない・現在の設定にある・cut なら確認済み）
+//     cut_profiles)`（現在の設定にある・cut なら確認済み）
 //   - 試行上限: 関数 `encode_attempts_exhausted(rec_id, profile, attempt_limit)`
 //     （failed かつ domain attempt 数が上限以上）
 //   - 作り直し: view `unsatisfied_encode_rebuilds`（要求行のうち、押した時点の keep と
@@ -326,7 +326,7 @@ type ListMissingEncodeProfilesRow struct {
 //   - encodable_recordings = ごみ箱でなく、原本 media_assets が active（ingest
 //     コミット済みで、until_encoded で物理削除されていない）。対象録画を絞った
 //     即時パスもこのクエリを使うため、全件パスとごみ箱の扱いがずれない
-//   - encodable_profile = 現在の設定に存在する非空のプロファイルで、cut なら
+//   - encodable_profile = 現在の設定に存在するプロファイルで、cut なら
 //     recording_chapter_ownership の行がある（不変条件 10: 行の存在 = ユーザーが
 //     確認済み）。設定から消えたプロファイルを候補に含めると、投入しても
 //     EncodeWorker が `unknown encode profile` で弾く（encode.go）録画が窓を

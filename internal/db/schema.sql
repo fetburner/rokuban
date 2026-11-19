@@ -185,8 +185,7 @@ COMMENT ON FUNCTION public.desired_media_store(asset_kind text, original_rules j
 CREATE FUNCTION public.encodable_profile(rec_id bigint, profile_name text, known_profiles text[], cut_profiles text[]) RETURNS boolean
     LANGUAGE sql STABLE
     AS $$
-    SELECT profile_name <> ''
-       AND profile_name = ANY(known_profiles)
+    SELECT profile_name = ANY(known_profiles)
        AND (
            NOT (profile_name = ANY(cut_profiles))
            OR EXISTS (
