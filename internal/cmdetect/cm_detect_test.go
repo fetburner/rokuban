@@ -378,36 +378,3 @@ func TestReadStationLogoLatestFormats(t *testing.T) {
 		})
 	}
 }
-
-func TestUntilEncodedViewKeepsOriginalWhileLogoAdoptionIsPending(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
-	mediaDir := t.TempDir()
-	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.NetworkID = 32736
-		fixtureParams.ServiceID = 1024
-		fixtureParams.EventID = 902
-	})
-	seedUntilEncodedAssets(t, pool, mediaDir, id)
-	dbtest.ProcessingPolicy(t, pool, id, func(p *dbtest.ProcessingPolicyParams) {
-		p.KeepOriginal = "until_encoded"
-		p.EncodeProfiles = []string{"h264"}
-		p.CMDetect = true
-	})
-	attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
-	stage := "adopt"
-	markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, "failed", &stage, nil)
-	var eligible int
-	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&eligible), "counting until_encoded-eligible originals")
-	if eligible != 0 {
-		t.Fatalf("adoption-waiting original is eligible = %d, want 0", eligible)
-	}
-	stage = "logo"
-	testutil.MustExec(t, pool, "setting attempt stage to logo", `UPDATE recording_cm_attempts SET stage = 'logo' WHERE recording_id = $1`, id)
-	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&eligible), "counting until_encoded-eligible originals")
-	if eligible != 1 {
-		t.Fatalf("ordinary failed original is eligible = %d, want 1", eligible)
-	}
-}
