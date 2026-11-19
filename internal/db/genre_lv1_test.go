@@ -42,6 +42,16 @@ func TestGenreLv1_EdgeCasesDoNotFailInsert(t *testing.T) {
 		{"lv1 out of smallint range", []byte(`[{"lv1":40000}]`), nil},
 		{"lv1 out of int4 range too", []byte(`[{"lv1":99999999999999999999}]`), nil},
 		{
+			"repeated single value collapses (order-independent)",
+			[]byte(`[{"lv1":7},{"lv1":7}]`),
+			[]int16{7},
+		},
+		{
+			"unsorted input comes out ascending",
+			[]byte(`[{"lv1":7},{"lv1":3}]`),
+			[]int16{3, 7},
+		},
+		{
 			"valid values dedup, out-of-range entries dropped",
 			[]byte(`[{"lv1":7},{"lv1":2},{"lv1":7},{"lv1":99999},{"lv1":-1}]`),
 			[]int16{2, 7},
