@@ -24,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/jobq"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediaexec"
@@ -761,8 +762,9 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 	}
 }
 
-// encode.failed を発火するかの判定（両方向）。Work 越しの ctx キャンセル
-// テストは notify 内の DB 読みも同時に失敗するため、この分岐だけを分離して見る。
+// 失敗を試行に数えて encode.failed を発火するか、数えずに復元するかの判定（両方向）。
+// Work 越しの ctx キャンセルテストは notify 内の DB 読みも同時に失敗するため、
+// この分岐だけを分離して見る。
 func TestShouldCountEncodeFailure(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("ffmpeg failed")
@@ -777,6 +779,7 @@ func TestShouldCountEncodeFailure(t *testing.T) {
 		{"failure while ctx deadline exceeded", boom, context.DeadlineExceeded, true},
 		{"success", nil, nil, false},
 		{"success while ctx canceled", nil, context.Canceled, false},
+		{"snooze is not a failure", fmt.Errorf("wrapped: %w", jobq.Snooze(time.Second)), nil, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

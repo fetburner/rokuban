@@ -316,9 +316,9 @@ API は River の内部表を読まない。encode のプロセス死回収は R
 <details><summary>根拠</summary>
 
 - 残すと決めたプロファイル: `recording_processing_policy.encode_profiles`
-- 試行の書き手: `EncodeWorker`（`internal/worker/encode.go`）。再要求時の削除は API
+- 試行の書き手: `EncodeWorker`（`internal/encode/encode.go`）。再要求時の削除は API
 - 成功と停止時の復元: `TestEncodeWorker_AttemptRow_ClearedOnSuccess` / `TestEncodeWorker_AttemptRow_CtxCanceledRollsBack`
-- snooze を試行に数えない判定: `TestShouldCountEncodeFailure_SnoozeIsNotAFailure`
+- snooze を試行に数えない判定: `TestShouldCountEncodeFailure/snooze_is_not_a_failure`
 - 再要求による失敗行の削除: `AppendProfiles` / `RequestCutRebuild`（`internal/store/pgstore/encodepolicy.go`）
 - 再要求で running 行を消さないこと: `TestAddRecordingEncodeProfiles_ResetsFailedAttemptsOnly`
 - 試行の列: `error` / `attempted_at` / `attempt_count`
