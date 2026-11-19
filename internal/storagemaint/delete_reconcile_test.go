@@ -367,80 +367,57 @@ func TestDeleteReconcileWorker_OldGenerationWaitsForOverlapAndRetries(t *testing
 	}
 }
 
-// サイドカー（.vtt）の削除が失敗しても encoded 本体は削除される。
+// 字幕 sidecar（.vtt）を消せなくても、拡張子が無くても、encoded 本体は削除される。
 //
-// 壊し方: deleteMediaAsset のサイドカー削除 3 分岐を return 付きに戻すと、
-// os.Remove の失敗（サイドカーの実体が空でないディレクトリ）で本体削除に
-// 到達せず落ちる（本 PR で実際に確認したレビュー指摘そのもの）。
-//
-// **サイドカーの実体を空でないディレクトリにする（親ディレクトリの権限は
-// 変えない）。** SubtitleRelPath は encoded と同じディレクトリのパスを返すため、
-// 親ディレクトリを読み取り専用にすると同じディレクトリにある原本・encoded 本体の
-// unlink まで一緒に失敗してしまい、「サイドカーだけが失敗する」状況を再現でき
-// ない。os.Remove はディレクトリに対しては ENOTEMPTY で失敗するので、この形なら
-// サイドカーの削除だけを狙って失敗させられる。
-func TestDeleteReconcileWorker_TrashPastRetention_SidecarDeleteFailure_StillDeletesEncoded(t *testing.T) {
+// 壊し方: SidecarDeleteFailure は deleteObjectKey の sidecar の Delete 失敗の分岐を
+// return err に戻すと落ちる。ExtensionlessEncodedRelPath は canHaveSubtitleSidecar が
+// 先に弾くので、単独では SubtitleSibling のエラー分岐に届かない。canHaveSubtitleSidecar を
+// 常に true にしたうえで、その分岐の return nil を return err に戻すと落ちる。
+// sidecar は空でないディレクトリにする（親を読み取り専用にすると本体の unlink も失敗する）。
+func TestDeleteReconcileWorker_TrashPastRetention_EncodedDeletedDespiteSidecarTrouble(t *testing.T) {
 	t.Parallel()
-	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
-
-	seedOriginalAsset(t, pool, mediaDir, recordingID, "sidecarfail/retention.m2ts", []byte("data"))
-	profile := "h264"
-	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile,
-		"sidecarfail/retention_h264.mp4", []byte("encoded"))
-	subtitlePath := filepath.Join(mediaDir, "sidecarfail", "retention_h264.vtt")
-	testutil.RequireNoError(t, os.MkdirAll(subtitlePath, 0o755), "creating subtitle sidecar path as a directory")
-	testutil.RequireNoError(t, os.WriteFile(filepath.Join(subtitlePath, "keep.txt"), []byte("x"), 0o644), "populating subtitle sidecar directory")
-
-	past := time.Now().Add(-40 * 24 * time.Hour)
-	testutil.MustExec(t, pool, "marking recording deleted", "UPDATE recordings SET deleted_at = $1 WHERE id = $2", past, recordingID)
-
-	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
-		w.TrashRetention = 30 * 24 * time.Hour
-	})
-	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
-
-	if got := singleCopyState(t, pool, encodedID); got != "deleted" {
-		t.Errorf("encoded asset copy state = %q, want deleted (sidecar failure must not block it)", got)
+	tests := []struct {
+		name, originalRelPath, encodedRelPath, sidecarRelPath string
+	}{
+		{"SidecarDeleteFailure_StillDeletesEncoded", "sidecarfail/retention.m2ts", "sidecarfail/retention_h264.mp4", "sidecarfail/retention_h264.vtt"},
+		{"ExtensionlessEncodedRelPath_StillDeletes", "noext/retention.m2ts", "noext/retention_h264", ""},
 	}
-	if fileExists(filepath.Join(mediaDir, "sidecarfail", "retention_h264.mp4")) {
-		t.Error("encoded file still exists on disk, want removed despite sidecar delete failure")
-	}
-	if _, err := os.Stat(subtitlePath); err != nil {
-		t.Errorf("sidecar directory was removed despite being non-empty (test setup did not reproduce the failure): %v", err)
-	}
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pool := testutil.SetupDB(t)
+			mediaDir := t.TempDir()
+			recordingID := dbtest.Recording(t, pool)
 
-// encoded の rel_path が拡張子を持たない（SubtitleRelPath がエラーを返す）場合も
-// 本体削除は進む。
-func TestDeleteReconcileWorker_TrashPastRetention_ExtensionlessEncodedRelPath_StillDeletes(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
+			seedOriginalAsset(t, pool, mediaDir, recordingID, tc.originalRelPath, []byte("data"))
+			profile := "h264"
+			encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile,
+				tc.encodedRelPath, []byte("encoded"))
+			encodedPath := filepath.Join(mediaDir, filepath.FromSlash(tc.encodedRelPath))
+			sidecarPath := filepath.Join(mediaDir, filepath.FromSlash(tc.sidecarRelPath))
+			if tc.sidecarRelPath != "" {
+				testutil.RequireNoError(t, os.MkdirAll(sidecarPath, 0o755), "creating subtitle sidecar path as a directory")
+				testutil.RequireNoError(t, os.WriteFile(filepath.Join(sidecarPath, "keep.txt"), []byte("x"), 0o644), "populating subtitle sidecar directory")
+			}
 
-	seedOriginalAsset(t, pool, mediaDir, recordingID, "noext/retention.m2ts", []byte("data"))
-	profile := "h264"
-	// 拡張子の無い rel_path。SubtitleRelPath は "encoded rel_path has no extension" で
-	// エラーを返す --- かつては deleteMediaAsset がここで return し、本体を
-	// 削除できなかった。
-	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile,
-		"noext/retention_h264", []byte("encoded"))
+			past := time.Now().Add(-40 * 24 * time.Hour)
+			testutil.MustExec(t, pool, "marking recording deleted", "UPDATE recordings SET deleted_at = $1 WHERE id = $2", past, recordingID)
 
-	past := time.Now().Add(-40 * 24 * time.Hour)
-	testutil.MustExec(t, pool, "marking recording deleted", "UPDATE recordings SET deleted_at = $1 WHERE id = $2", past, recordingID)
+			w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
+				w.TrashRetention = 30 * 24 * time.Hour
+			})
+			testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
 
-	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
-		w.TrashRetention = 30 * 24 * time.Hour
-	})
-	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
-
-	if got := singleCopyState(t, pool, encodedID); got != "deleted" {
-		t.Errorf("encoded asset copy state = %q, want deleted (extensionless rel_path must not block it)", got)
-	}
-	if fileExists(filepath.Join(mediaDir, "noext", "retention_h264")) {
-		t.Error("encoded file still exists on disk, want removed despite extensionless rel_path")
+			if got := singleCopyState(t, pool, encodedID); got != "deleted" {
+				t.Errorf("encoded asset copy state = %q, want deleted (sidecar trouble must not block the encoded body)", got)
+			}
+			if fileExists(encodedPath) {
+				t.Error("encoded file still exists on disk, want removed")
+			}
+			if tc.sidecarRelPath != "" && !fileExists(sidecarPath) {
+				t.Error("sidecar directory was removed despite being non-empty (test setup did not reproduce the failure)")
+			}
+		})
 	}
 }
 
