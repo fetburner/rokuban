@@ -83,10 +83,10 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
         working-directory: web
-      # ffmpeg は Playwright の --with-deps より先に入れる（キャッシュの集合を揃えるため。action.yml 参照）。
-      - uses: ./.github/actions/install-ffmpeg
-      - run: pnpm exec playwright install --with-deps chromium
-        working-directory: web
+      # Playwright のブラウザとその依存も入れる（キャッシュのキーは install-apt-cached/action.yml）。
+      - uses: ./.github/actions/install-apt-cached
+        with:
+          playwright-browser: chromium
       - run: pnpm build
         working-directory: web
       # Build after web/dist exists: this is the actual static bundle embedded in the Go binary.
@@ -189,10 +189,9 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
         working-directory: web
-      # ffmpeg は Playwright の --with-deps より先に入れる（キャッシュの集合を揃えるため。action.yml 参照）。
-      - uses: ./.github/actions/install-ffmpeg
-      - run: pnpm exec playwright install --with-deps chrome
-        working-directory: web
+      - uses: ./.github/actions/install-apt-cached
+        with:
+          playwright-browser: chrome
       - name: Wait for RustFS
         env:
           RUSTFS_CONTAINER_ID: ${{ job.services.rustfs.id }}
@@ -281,7 +280,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: ./.github/actions/install-ffmpeg
+      - uses: ./.github/actions/install-apt-cached
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: web/package.json
