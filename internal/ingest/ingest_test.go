@@ -3610,7 +3610,7 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 // source='rule'（DeriveRecordingSource が「作成時点で予約があり、intent
 // action='record' の行は無かった」ことを保証する）の録画で放送イベントキーの
 // JOIN が失敗する異常系を再現し、slog.Warn に識別子が残ることを確認する
-// （レビュー指摘: internal/ingest/ingest.go:539-547 の「引けなかった」を黙って
+// （レビュー指摘: resolveEncodePolicy の「引けなかった」を黙って
 // return nil にしない、の rule 側）。
 func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T) {
 	pool := testutil.SetupDB(t)
