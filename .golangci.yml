@@ -165,7 +165,6 @@ linters:
             - "!${config-path}/internal/catalog/*"
             - "!${config-path}/internal/metrics/*"
             - "!${config-path}/internal/notifier/*"
-            - "!${config-path}/internal/reconciler/*"
             - "!${config-path}/internal/ruler/*"
             - "!${config-path}/internal/tsscan/*"
             - "!${config-path}/internal/watcher/*"

@@ -21,7 +21,6 @@ import (
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
@@ -68,23 +67,18 @@ func ptrInt64(v int64) *int64 { return &v }
 
 func ptrString(v string) *string { return &v }
 
-// execScheduleSyncBatchForTest は生成された :batchexec query の結果を読み切る
-// テスト用ヘルパー。実装側と同じく、行番号付きのエラーを失わない。
-func execScheduleSyncBatchForTest(t *testing.T, ctx context.Context, q *sqlcgen.Queries, params ...sqlcgen.UpsertScheduleSyncParams) {
+func findCircuitBreaker(t *testing.T, ctx context.Context, pool *pgxpool.Pool, scope, name string) (store.CircuitBreaker, bool) {
 	t.Helper()
-	batch := q.UpsertScheduleSync(ctx, params)
-	var batchErr error
-	batch.Exec(func(i int, err error) {
-		if err != nil && batchErr == nil {
-			batchErr = fmt.Errorf("batch item %d: %w", i, err)
+	rows, err := pgstoretest.Breakers(pool).List(ctx)
+	if err != nil {
+		t.Fatalf("listing circuit breakers: %v", err)
+	}
+	for _, row := range rows {
+		if row.Scope == scope && row.Name == name {
+			return row, true
 		}
-	})
-	if closeErr := batch.Close(); closeErr != nil && batchErr == nil {
-		batchErr = closeErr
 	}
-	if batchErr != nil {
-		t.Fatalf("executing schedule_sync batch: %v", batchErr)
-	}
+	return store.CircuitBreaker{}, false
 }
 
 type scheduleSyncBatchTracer struct {
@@ -136,54 +130,36 @@ func (t *scheduleSyncBatchTracer) sizes() []int {
 // 呼び出しごとに一意な event_id を用意する便宜（同じテスト内で複数の
 // createReservation を呼んでも recordings_unique_active_event が衝突しない
 // ようにするため）。
-func createReservation(t *testing.T, ctx context.Context, q *sqlcgen.Queries, programID int64, title string, startAt time.Time) sqlcgen.Reservation {
+type testReservation struct {
+	Site      string
+	ProgramID int64
+	StartAt   time.Time
+	EventID   int32
+}
+
+func createReservation(t *testing.T, pool *pgxpool.Pool, programID int64, title string, startAt time.Time) testReservation {
 	t.Helper()
-	networkID, serviceID := int32(10000), int32(5000)
-	channelType, channel := "GR", "27"
-	eventID := int32(programID % 100000)
-	serviceName := "テスト局"
-	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site:        "default",
-		ProgramID:   programID,
-		Title:       title,
-		StartAt:     startAt,
-		DurationMs:  1800000,
-		NetworkID:   networkID,
-		ServiceID:   serviceID,
-		ChannelType: channelType,
-		Channel:     channel,
-		EventID:     eventID,
-		ServiceName: serviceName,
-	}); err != nil {
-		t.Fatalf("upserting program snapshot: %v", err)
-	}
-	res, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site:      "default",
-		ProgramID: programID,
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Title = title
+		p.StartAt = startAt
+		p.NetworkID = 10000
+		p.ServiceID = 5000
 	})
-	if err != nil {
-		t.Fatalf("creating reservation: %v", err)
-	}
-	return res
+	dbtest.ManualReservation(t, pool, programID)
+	return testReservation{Site: "default", ProgramID: programID, StartAt: startAt, EventID: int32(programID % 100000)}
 }
 
 // setPriorityOverride は program_overrides.overrides に priority を書き込み、
 // 予約の effective priority を base とは別の値に上書きする
 // （reservation.EffectiveOptions が base と overrides をマージする経路をそのまま使う。
 // overrides は M2-4 で program_intents から program_overrides に分離済み）。
-func setPriorityOverride(t *testing.T, ctx context.Context, q *sqlcgen.Queries, res sqlcgen.Reservation, priority int) {
+func setPriorityOverride(t *testing.T, pool *pgxpool.Pool, res testReservation, priority int) {
 	t.Helper()
 	overrides, err := json.Marshal(map[string]int{"priority": priority})
 	if err != nil {
 		t.Fatalf("marshalling overrides: %v", err)
 	}
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site:      "default",
-		ProgramID: res.ProgramID,
-		Overrides: overrides,
-	}); err != nil {
-		t.Fatalf("setting priority override: %v", err)
-	}
+	dbtest.ProgramOverrides(t, pool, res.ProgramID, func(p *dbtest.ProgramOverridesParams) { p.Overrides = overrides })
 }
 
 func TestReconciler_CreatesSchedule(t *testing.T) {
@@ -192,14 +168,13 @@ func TestReconciler_CreatesSchedule(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
 	// programID=100000500011234 -> networkID=10000, serviceID=5000（contentpath_test.go と同じ値）。
 	// reconciler は program_snapshots のスナップショットのみを見るので、テストの
 	// フィクスチャもスナップショットさせておく必要がある（もう programId からの
 	// 算術には頼らない）。
-	res := createReservation(t, ctx, q, 100000500011234, "テスト番組", startAt)
+	res := createReservation(t, pool, 100000500011234, "テスト番組", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 
@@ -244,13 +219,8 @@ func TestReconciler_CommitsScheduleSnapshotMarkerWithStaleSweep(t *testing.T) {
 		Program: mirakc.Program{ID: 6800009, Duration: ptrInt64(300000)},
 		Tags:    []string{mirakc.ProgramTag(6800009)},
 	})
-	q := sqlcgen.New(pool)
-	execScheduleSyncBatchForTest(t, ctx, q, sqlcgen.UpsertScheduleSyncParams{
-		Site:      "default",
-		ProgramID: 6800003,
-		State:     mirakc.ScheduleStateScheduled,
-		Options:   json.RawMessage(`{"priority":10}`),
-		Tags:      []string{mirakc.ProgramTag(6800003)},
+	dbtest.ObservedSchedule(t, pool, 6800003, func(p *dbtest.ObservedScheduleParams) {
+		p.Tags = []string{mirakc.ProgramTag(6800003)}
 	})
 	if _, err := pool.Exec(ctx, `UPDATE schedule_sync SET observed_at = now() - interval '1 minute'`); err != nil {
 		t.Fatalf("aging schedule_sync row: %v", err)
@@ -261,8 +231,8 @@ func TestReconciler_CommitsScheduleSnapshotMarkerWithStaleSweep(t *testing.T) {
 		t.Fatalf("RunPass: %v", err)
 	}
 
-	if _, err := q.GetScheduleSyncSnapshot(ctx, "default"); err != nil {
-		t.Fatalf("schedule snapshot marker was not committed: %v", err)
+	if _, found, err := pgstoretest.ScheduleSync(pool).SnapshotAt(ctx, "default"); err != nil || !found {
+		t.Fatalf("schedule snapshot marker was not committed: found=%t err=%v", found, err)
 	}
 	var rows int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schedule_sync WHERE site = 'default'`).Scan(&rows); err != nil {
@@ -394,24 +364,14 @@ func TestReconciler_SplitsScheduleSnapshotBatchAtLimit(t *testing.T) {
 func TestReconciler_EmptyScheduleSnapshotSweepsAndMarks(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
-
-	execScheduleSyncBatchForTest(t, ctx, q,
-		sqlcgen.UpsertScheduleSyncParams{
-			Site:      "default",
-			ProgramID: 7330201,
-			State:     mirakc.ScheduleStateScheduled,
-			Options:   json.RawMessage(`{"priority":10}`),
-			Tags:      []string{mirakc.ProgramTag(7330201)},
-		},
-		sqlcgen.UpsertScheduleSyncParams{
-			Site:      "default",
-			ProgramID: 7330202,
-			State:     mirakc.ScheduleStateFailed,
-			Options:   json.RawMessage(`{"priority":20}`),
-			Tags:      []string{mirakc.ProgramTag(7330202)},
-		},
-	)
+	dbtest.ObservedSchedule(t, pool, 7330201, func(p *dbtest.ObservedScheduleParams) {
+		p.Tags = []string{mirakc.ProgramTag(7330201)}
+	})
+	dbtest.ObservedSchedule(t, pool, 7330202, func(p *dbtest.ObservedScheduleParams) {
+		p.State = mirakc.ScheduleStateFailed
+		p.Options = json.RawMessage(`{"priority":20}`)
+		p.Tags = []string{mirakc.ProgramTag(7330202)}
+	})
 	if _, err := pool.Exec(ctx, `UPDATE schedule_sync SET observed_at = now() - interval '1 minute'`); err != nil {
 		t.Fatalf("aging schedule_sync rows: %v", err)
 	}
@@ -429,8 +389,8 @@ func TestReconciler_EmptyScheduleSnapshotSweepsAndMarks(t *testing.T) {
 	if rows != 0 {
 		t.Errorf("schedule_sync rows after empty snapshot = %d, want 0", rows)
 	}
-	if _, err := q.GetScheduleSyncSnapshot(ctx, "default"); err != nil {
-		t.Fatalf("empty snapshot marker was not committed: %v", err)
+	if _, found, err := pgstoretest.ScheduleSync(pool).SnapshotAt(ctx, "default"); err != nil || !found {
+		t.Fatalf("empty snapshot marker was not committed: found=%t err=%v", found, err)
 	}
 }
 
@@ -439,16 +399,11 @@ func TestReconciler_EmptyScheduleSnapshotSweepsAndMarks(t *testing.T) {
 func TestReconciler_ScheduleSnapshotBatchFailureRollsBack(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 	programID := int64(7330301)
 	rejectedProgramID := int64(7330302)
 
-	execScheduleSyncBatchForTest(t, ctx, q, sqlcgen.UpsertScheduleSyncParams{
-		Site:      "default",
-		ProgramID: programID,
-		State:     "previous",
-		Options:   json.RawMessage(`{"priority":1}`),
-		Tags:      []string{mirakc.ProgramTag(programID)},
+	dbtest.ObservedSchedule(t, pool, programID, func(p *dbtest.ObservedScheduleParams) {
+		p.State = "previous"
 	})
 	if _, err := pool.Exec(ctx, `
 		ALTER TABLE schedule_sync
@@ -496,8 +451,8 @@ func TestReconciler_ScheduleSnapshotBatchFailureRollsBack(t *testing.T) {
 	if state != "previous" {
 		t.Errorf("schedule_sync state after batch failure = %q, want previous", state)
 	}
-	if _, err := q.GetScheduleSyncSnapshot(ctx, "default"); err == nil {
-		t.Error("schedule snapshot marker was committed despite batch failure")
+	if _, found, err := pgstoretest.ScheduleSync(pool).SnapshotAt(ctx, "default"); err != nil || found {
+		t.Errorf("schedule snapshot marker after batch failure = (found %t, err %v), want absent", found, err)
 	}
 }
 
@@ -534,8 +489,8 @@ func TestReconciler_PassMarkerAdvancesOnlyOnCompletedPass(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "listing desired reservations") {
 		t.Fatalf("RunPass with failing listDesired = %v, want listing desired error", err)
 	}
-	if _, err := sqlcgen.New(pool).GetScheduleSyncSnapshot(ctx, "default"); err != nil {
-		t.Fatalf("snapshot was not committed before listDesired failed (the premise of this test): %v", err)
+	if _, found, err := pgstoretest.ScheduleSync(pool).SnapshotAt(ctx, "default"); err != nil || !found {
+		t.Fatalf("snapshot was not committed before listDesired failed (the premise of this test): found=%t err=%v", found, err)
 	}
 	if _, ok := reconcilerMarkerAt(t, markers); ok {
 		t.Fatal("reconciler marker advanced although the pass failed in listDesired")
@@ -564,10 +519,9 @@ func TestReconciler_DeletesOrphanedSchedule(t *testing.T) {
 		Tags:    []string{mirakc.ProgramTag(999)},
 	})
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019700, "生存中の予約", startAt)
+	res := createReservation(t, pool, 100000500019700, "生存中の予約", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 
@@ -590,14 +544,13 @@ func TestReconciler_DeletesOrphanedSchedule(t *testing.T) {
 func TestReconciler_DefersScheduleForReservationWithInvalidOptions(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	const (
 		desiredProgramID int64 = 100000500019710
 		invalidProgramID int64 = 100000500019711
 	)
-	createReservation(t, ctx, q, desiredProgramID, "正常な予約", time.Now().Add(time.Hour))
-	createReservation(t, ctx, q, invalidProgramID, "壊れた予約", time.Now().Add(2*time.Hour))
+	createReservation(t, pool, desiredProgramID, "正常な予約", time.Now().Add(time.Hour))
+	createReservation(t, pool, invalidProgramID, "壊れた予約", time.Now().Add(2*time.Hour))
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO program_overrides (site, program_id, overrides)
 		VALUES ($1, $2, '{"priority":"high"}'::jsonb)`, "default", invalidProgramID); err != nil {
@@ -638,7 +591,6 @@ func TestReconciler_DefersScheduleForReservationWithInvalidOptions(t *testing.T)
 func TestReconciler_DefersDeletingSchedulesInRecordingOrUnknownStates(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	mock := mirakctest.New(t)
 	staleStates := map[int64]string{
@@ -658,7 +610,7 @@ func TestReconciler_DefersDeletingSchedulesInRecordingOrUnknownStates(t *testing
 
 	// 別の desired reservation を残し、total-loss breaker が保護対象の DELETE を
 	// 隠さない状態で削除ガードを検証する。
-	res := createReservation(t, ctx, q, 100000500019701, "desired", time.Now().Add(time.Hour))
+	res := createReservation(t, pool, 100000500019701, "desired", time.Now().Add(time.Hour))
 
 	var logs bytes.Buffer
 	prevLogger := slog.Default()
@@ -695,9 +647,11 @@ func TestReconciler_DefersDeletingSchedulesInRecordingOrUnknownStates(t *testing
 	if !strings.Contains(logs.String(), `level=INFO msg="reconciler: delete candidates deferred to next pass (schedule state guard)"`) || !strings.Contains(logs.String(), "count=4") {
 		t.Errorf("deferred delete count missing from logs: %s", logs.String())
 	}
-	if _, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
-		Scope: "default", Name: breaker.ReconcileTotalLoss,
-	}); err == nil {
+	tripped, err := pgstoretest.Breakers(pool).IsTripped(ctx, "default", string(breaker.ReconcileTotalLoss))
+	if err != nil {
+		t.Fatalf("IsTripped(total-loss): %v", err)
+	}
+	if tripped {
 		t.Error("protected schedules alone should not trip the total-loss breaker")
 	}
 }
@@ -705,7 +659,6 @@ func TestReconciler_DefersDeletingSchedulesInRecordingOrUnknownStates(t *testing
 func TestReconciler_TotalLossBreakerCountsOnlyAllowedDeleteStates(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	mock := mirakctest.New(t)
 	states := map[int64]string{
@@ -737,11 +690,9 @@ func TestReconciler_TotalLossBreakerCountsOnlyAllowedDeleteStates(t *testing.T) 
 	if schedules := mock.Schedules(); len(schedules) != len(states) {
 		t.Errorf("schedules after breaker = %d, want %d", len(schedules), len(states))
 	}
-	cb, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
-		Scope: "default", Name: breaker.ReconcileTotalLoss,
-	})
-	if err != nil {
-		t.Fatalf("expected the breaker for one allowed candidate, GetCircuitBreaker: %v", err)
+	cb, found := findCircuitBreaker(t, ctx, pool, "default", string(breaker.ReconcileTotalLoss))
+	if !found {
+		t.Fatal("expected the breaker for one allowed candidate")
 	}
 	if cb.Pending != 1 {
 		t.Errorf("breaker pending = %d, want only the finished schedule", cb.Pending)
@@ -770,7 +721,6 @@ func TestReconciler_TotalLossBreakerCountsOnlyAllowedDeleteStates(t *testing.T) 
 func TestReconciler_DeletesStaleSchedulesInAllowedDeleteStates(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	mock := mirakctest.New(t)
 	staleStates := map[int64]string{
@@ -788,7 +738,7 @@ func TestReconciler_DeletesStaleSchedulesInAllowedDeleteStates(t *testing.T) {
 	mc := mirakc.NewClient(mock.URL(), nil)
 
 	// desired を残すことで、意図した通常の orphan cleanup として削除経路を通す。
-	createReservation(t, ctx, q, 100000500019702, "desired", time.Now().Add(time.Hour))
+	createReservation(t, pool, 100000500019702, "desired", time.Now().Add(time.Hour))
 
 	deletesBefore := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted"))
 	rec := newReconciler(mc, pool, nil)
@@ -818,7 +768,6 @@ func TestReconciler_DeletesStaleSchedulesInAllowedDeleteStates(t *testing.T) {
 func TestReconciler_DeletesDeferredScheduleAfterItFinishes(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	const orphanedProgramID int64 = 998
 	mock := mirakctest.New(t)
@@ -831,7 +780,7 @@ func TestReconciler_DeletesDeferredScheduleAfterItFinishes(t *testing.T) {
 
 	// 別の desired reservation を残し、total-loss breaker に削除を隠されずに
 	// orphan schedule の state が進んだ後の次パスを検証する。
-	createReservation(t, ctx, q, 100000500019703, "desired", time.Now().Add(time.Hour))
+	createReservation(t, pool, 100000500019703, "desired", time.Now().Add(time.Hour))
 
 	deletesBefore := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted"))
 	rec := newReconciler(mc, pool, nil)
@@ -883,7 +832,6 @@ func TestReconciler_IgnoresNonRokubanSchedules(t *testing.T) {
 		Tags:    []string{"epgstation:rule=42"},
 	})
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	rec := newReconciler(mc, pool, nil)
 
@@ -899,9 +847,11 @@ func TestReconciler_IgnoresNonRokubanSchedules(t *testing.T) {
 	// 外部産の schedule は「自分が作ったもの」ではないので、reservations が
 	// 0 件であっても全損シグネチャには当たらない（tag が無いので toDelete
 	// にすら入らない）。
-	if _, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
-		Scope: "default", Name: breaker.ReconcileTotalLoss,
-	}); err == nil {
+	tripped, err := pgstoretest.Breakers(pool).IsTripped(ctx, "default", string(breaker.ReconcileTotalLoss))
+	if err != nil {
+		t.Fatalf("IsTripped(total-loss): %v", err)
+	}
+	if tripped {
 		t.Error("an external (non-tagged) schedule alone should not trip the total-loss breaker")
 	}
 }
@@ -912,40 +862,13 @@ func TestReconciler_SkippedReservationNotScheduled(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
-	startAt := time.Now().Add(1 * time.Hour)
 	// 予約行があっても intent{skip} があれば schedule を作らない。
 	// （通常の取消は行ごと落とすが、ruler が作り直した直後などに両方が
 	// 共存しうるので、reconciler 側でも意図を尊重することを確かめる）
-	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site:        "default",
-		ProgramID:   200000500011234,
-		Title:       "スキップ番組",
-		StartAt:     startAt,
-		DurationMs:  1800000,
-		NetworkID:   32736,
-		ServiceID:   1024,
-		ChannelType: "GR",
-		Channel:     "27",
-		EventID:     1,
-		ServiceName: "テスト局",
-	}); err != nil {
-		t.Fatalf("upserting program snapshot: %v", err)
-	}
-	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site:      "default",
-		ProgramID: 200000500011234,
-	}); err != nil {
-		t.Fatalf("creating reservation: %v", err)
-	}
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site:      "default",
-		ProgramID: 200000500011234,
-		Action:    "skip",
-	}); err != nil {
-		t.Fatalf("recording skip intent: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, 200000500011234)
+	dbtest.ManualReservation(t, pool, 200000500011234)
+	dbtest.ProgramIntent(t, pool, 200000500011234, func(p *dbtest.ProgramIntentParams) { p.Action = "skip" })
 
 	rec := newReconciler(mc, pool, nil)
 
@@ -982,10 +905,9 @@ func TestReconciler_RecreatesOnPriorityChange(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019001, "優先度変更", startAt)
+	res := createReservation(t, pool, 100000500019001, "優先度変更", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -1000,7 +922,7 @@ func TestReconciler_RecreatesOnPriorityChange(t *testing.T) {
 		t.Fatalf("initial priority = %d, want 10 (DefaultPriority)", s.Options.Priority)
 	}
 
-	setPriorityOverride(t, ctx, q, res, 77)
+	setPriorityOverride(t, pool, res, 77)
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (2nd): %v", err)
@@ -1038,11 +960,10 @@ func TestReconciler_RecreatesScheduledSchedule20SecondsBeforeStart(t *testing.T)
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(20 * time.Second)
-	res := createReservation(t, ctx, q, 100000500019011, "開始直前の優先度変更", startAt)
-	setPriorityOverride(t, ctx, q, res, 77)
+	res := createReservation(t, pool, 100000500019011, "開始直前の優先度変更", startAt)
+	setPriorityOverride(t, pool, res, 77)
 
 	observedStartAt := mirakc.Milliseconds(startAt)
 	mock.SetSchedule(mirakc.Schedule{
@@ -1080,11 +1001,10 @@ func TestReconciler_RecordingStateNotRecreated(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019002, "録画中", startAt)
-	setPriorityOverride(t, ctx, q, res, 99)
+	res := createReservation(t, pool, 100000500019002, "録画中", startAt)
+	setPriorityOverride(t, pool, res, 99)
 
 	mock.SetSchedule(mirakc.Schedule{
 		State:   mirakc.ScheduleStateRecording,
@@ -1140,12 +1060,11 @@ func TestReconciler_TrackingAndReschedulingStatesNotRecreated(t *testing.T) {
 
 			mock := mirakctest.New(t)
 			mc := mirakc.NewClient(mock.URL(), nil)
-			q := sqlcgen.New(pool)
 
 			startAt := time.Now().Add(1 * time.Hour)
 			programID := int64(100000500019100 + i)
-			res := createReservation(t, ctx, q, programID, "state-guard", startAt)
-			setPriorityOverride(t, ctx, q, res, 55)
+			res := createReservation(t, pool, programID, "state-guard", startAt)
+			setPriorityOverride(t, pool, res, 55)
 
 			mock.SetSchedule(mirakc.Schedule{
 				State:   state,
@@ -1176,10 +1095,9 @@ func TestReconciler_NoRecreateWhenPriorityMatches(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019004, "churnなし", startAt)
+	res := createReservation(t, pool, 100000500019004, "churnなし", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -1205,10 +1123,9 @@ func TestReconciler_RecreateKeepsObservedContentPath(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019005, "パス引き継ぎ", startAt)
+	res := createReservation(t, pool, 100000500019005, "パス引き継ぎ", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -1223,7 +1140,7 @@ func TestReconciler_RecreateKeepsObservedContentPath(t *testing.T) {
 	s.Options.ContentPath = &sentinel
 	mock.SetSchedule(s)
 
-	setPriorityOverride(t, ctx, q, res, 42) // 再作成の契機は priority 変更
+	setPriorityOverride(t, pool, res, 42) // 再作成の契機は priority 変更
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (2nd): %v", err)
@@ -1239,19 +1156,13 @@ func TestReconciler_RecreateKeepsObservedContentPath(t *testing.T) {
 
 // setContentPathOverride は program_overrides.overrides に contentPath を書き込む
 // （setPriorityOverride と同じ形）。
-func setContentPathOverride(t *testing.T, ctx context.Context, q *sqlcgen.Queries, res sqlcgen.Reservation, contentPath string) {
+func setContentPathOverride(t *testing.T, pool *pgxpool.Pool, res testReservation, contentPath string) {
 	t.Helper()
 	overrides, err := json.Marshal(map[string]string{"contentPath": contentPath})
 	if err != nil {
 		t.Fatalf("marshalling overrides: %v", err)
 	}
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site:      "default",
-		ProgramID: res.ProgramID,
-		Overrides: overrides,
-	}); err != nil {
-		t.Fatalf("setting contentPath override: %v", err)
-	}
+	dbtest.ProgramOverrides(t, pool, res.ProgramID, func(p *dbtest.ProgramOverridesParams) { p.Overrides = overrides })
 }
 
 // --- 明示指定した overrides.contentPath の既存 schedule への反映（issue #312）---
@@ -1265,17 +1176,16 @@ func TestReconciler_RecreatesOnExplicitContentPathOverride(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019300, "明示パス反映", startAt)
+	res := createReservation(t, pool, 100000500019300, "明示パス反映", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
 
-	setContentPathOverride(t, ctx, q, res, "custom/explicit")
+	setContentPathOverride(t, pool, res, "custom/explicit")
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (2nd): %v", err)
@@ -1310,10 +1220,9 @@ func TestReconciler_ExplicitContentPathConvergesInOnePass(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019301, "サニタイズで収束", startAt)
+	res := createReservation(t, pool, 100000500019301, "サニタイズで収束", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -1321,7 +1230,7 @@ func TestReconciler_ExplicitContentPathConvergesInOnePass(t *testing.T) {
 	}
 
 	// SanitizeContentPath を通すと変わる値（".." を含む）にする。
-	setContentPathOverride(t, ctx, q, res, "/custom/../explicit")
+	setContentPathOverride(t, pool, res, "/custom/../explicit")
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (2nd): %v", err)
@@ -1350,12 +1259,11 @@ func TestReconciler_TemplateContentPathDoesNotChurnOnTitleChange(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
 	oldTitle := "旧番組名"
 	newTitle := "新番組名"
-	res := createReservation(t, ctx, q, 100000500019302, oldTitle, startAt)
+	res := createReservation(t, pool, 100000500019302, oldTitle, startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -1373,21 +1281,12 @@ func TestReconciler_TemplateContentPathDoesNotChurnOnTitleChange(t *testing.T) {
 
 	// programId / startAt は据え置きで title だけを EPG 更新のシミュレーションとして
 	// 差し替える（UpsertProgramSnapshot は ON CONFLICT (site, program_id) で更新する）。
-	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site:        "default",
-		ProgramID:   res.ProgramID,
-		Title:       newTitle,
-		StartAt:     startAt,
-		DurationMs:  1800000,
-		NetworkID:   10000,
-		ServiceID:   5000,
-		ChannelType: "GR",
-		Channel:     "27",
-		EventID:     int32(res.ProgramID % 100000),
-		ServiceName: "テスト局",
-	}); err != nil {
-		t.Fatalf("updating program snapshot title: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, res.ProgramID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Title = newTitle
+		p.StartAt = startAt
+		p.NetworkID = 10000
+		p.ServiceID = 5000
+	})
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (2nd): %v", err)
@@ -1419,10 +1318,9 @@ func TestReconciler_ExplicitContentPathDeferredWhileRecording(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019303, "録画中に明示パス", startAt)
+	res := createReservation(t, pool, 100000500019303, "録画中に明示パス", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -1433,7 +1331,7 @@ func TestReconciler_ExplicitContentPathDeferredWhileRecording(t *testing.T) {
 	s.State = mirakc.ScheduleStateRecording
 	mock.SetSchedule(s)
 
-	setContentPathOverride(t, ctx, q, res, "custom/deferred")
+	setContentPathOverride(t, pool, res, "custom/deferred")
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (2nd): %v", err)
@@ -1460,17 +1358,16 @@ func TestReconciler_ResetContentPathOverrideKeepsRegisteredPath(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019304, "reset非反映", startAt)
+	res := createReservation(t, pool, 100000500019304, "reset非反映", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
 
-	setContentPathOverride(t, ctx, q, res, "custom/before-reset")
+	setContentPathOverride(t, pool, res, "custom/before-reset")
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (2nd, apply explicit contentPath): %v", err)
 	}
@@ -1488,13 +1385,7 @@ func TestReconciler_ResetContentPathOverrideKeepsRegisteredPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshalling overrides: %v", err)
 	}
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site:      "default",
-		ProgramID: res.ProgramID,
-		Overrides: overrides,
-	}); err != nil {
-		t.Fatalf("resetting contentPath override: %v", err)
-	}
+	dbtest.ProgramOverrides(t, pool, res.ProgramID, func(p *dbtest.ProgramOverridesParams) { p.Overrides = overrides })
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (3rd, after reset): %v", err)
@@ -1527,17 +1418,16 @@ func TestReconciler_ContentPathRecreateDoesNotTripBreaker(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019305, "breaker非計上", startAt)
+	res := createReservation(t, pool, 100000500019305, "breaker非計上", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (create): %v", err)
 	}
 
-	setContentPathOverride(t, ctx, q, res, "custom/breaker-check")
+	setContentPathOverride(t, pool, res, "custom/breaker-check")
 
 	tripsBefore := promtestutil.ToFloat64(metrics.ReconcileCircuitBreakerTrips)
 
@@ -1574,10 +1464,9 @@ func TestReconciler_RecreateOnTagMismatch(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019006, "tag不一致", startAt)
+	res := createReservation(t, pool, 100000500019006, "tag不一致", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -1612,11 +1501,10 @@ func TestReconciler_ExternalScheduleNotRecreated(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019007, "外部産", startAt)
-	setPriorityOverride(t, ctx, q, res, 99)
+	res := createReservation(t, pool, 100000500019007, "外部産", startAt)
+	setPriorityOverride(t, pool, res, 99)
 
 	mock.SetSchedule(mirakc.Schedule{
 		State:   "scheduled",
@@ -1648,19 +1536,18 @@ func TestReconciler_MaxRecreatesPerPassCarriesOver(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res1 := createReservation(t, ctx, q, 100000500019008, "1件目", startAt)
-	res2 := createReservation(t, ctx, q, 100000500019108, "2件目", startAt)
+	res1 := createReservation(t, pool, 100000500019008, "1件目", startAt)
+	res2 := createReservation(t, pool, 100000500019108, "2件目", startAt)
 
 	rec := newReconciler(mc, pool, &reconciler.Config{MaxRecreatesPerPass: 1})
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (create): %v", err)
 	}
 
-	setPriorityOverride(t, ctx, q, res1, 31)
-	setPriorityOverride(t, ctx, q, res2, 32)
+	setPriorityOverride(t, pool, res1, 31)
+	setPriorityOverride(t, pool, res2, 32)
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (recreate pass 1): %v", err)
@@ -1693,19 +1580,18 @@ func TestReconciler_RecreateDeleteNotCountedByCircuitBreaker(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res1 := createReservation(t, ctx, q, 100000500019009, "breaker1", startAt)
-	res2 := createReservation(t, ctx, q, 100000500019209, "breaker2", startAt)
+	res1 := createReservation(t, pool, 100000500019009, "breaker1", startAt)
+	res2 := createReservation(t, pool, 100000500019209, "breaker2", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (create): %v", err)
 	}
 
-	setPriorityOverride(t, ctx, q, res1, 61)
-	setPriorityOverride(t, ctx, q, res2, 62)
+	setPriorityOverride(t, pool, res1, 61)
+	setPriorityOverride(t, pool, res2, 62)
 
 	tripsBefore := promtestutil.ToFloat64(metrics.ReconcileCircuitBreakerTrips)
 
@@ -1735,17 +1621,16 @@ func TestReconciler_ScheduleLostOnRecreatePostFailure(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019010, "post失敗", startAt)
+	res := createReservation(t, pool, 100000500019010, "post失敗", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (create): %v", err)
 	}
 
-	setPriorityOverride(t, ctx, q, res, 88)
+	setPriorityOverride(t, pool, res, 88)
 	mock.FailNext(http.MethodPost, "/api/recording/schedules", 1, http.StatusInternalServerError)
 
 	var logBuf bytes.Buffer
@@ -1809,19 +1694,22 @@ func setReservationDetached(t *testing.T, ctx context.Context, pool *pgxpool.Poo
 // ListReservationsForSyncEvaluation の欠測除外だけを単体で固定したいテストで
 // 使う。createReservation と同じ規約（networkID=10000/serviceID=5000、event_id =
 // programID % 100000）で program_snapshot の放送イベントキーと一致させる。
-func seedNeverScheduledEvent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, res sqlcgen.Reservation) {
+func seedNeverScheduledEvent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, res testReservation) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, `
-INSERT INTO never_scheduled_events (site, network_id, service_id, event_id, program_start_at)
-SELECT site, network_id, service_id, event_id, start_at
-FROM program_snapshots WHERE site = $1 AND program_id = $2`, res.Site, res.ProgramID); err != nil {
+	created, err := pgstoretest.NeverScheduledEvents(pool).RecordNeverScheduled(ctx, res.Site, store.BroadcastEventKey{
+		NetworkID: 10000, ServiceID: 5000, EventID: res.EventID,
+	}, res.StartAt)
+	if err != nil {
 		t.Fatalf("seeding never-scheduled event: %v", err)
+	}
+	if !created {
+		t.Fatal("seeding never-scheduled event = false, want true")
 	}
 }
 
 // hasNeverScheduledEvent は指定の reservation に対応する放送イベントに欠測行が
 // あるかを返す。createReservation と同じ規約で放送イベントキーを組み立てる。
-func hasNeverScheduledEvent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, res sqlcgen.Reservation) bool {
+func hasNeverScheduledEvent(t *testing.T, ctx context.Context, pool *pgxpool.Pool, res testReservation) bool {
 	t.Helper()
 	var exists bool
 	if err := pool.QueryRow(ctx, `
@@ -1839,7 +1727,7 @@ SELECT EXISTS (
 // 作らないこと。CLAUDE.md 不変条件 5）の確認に使う。hasNeverScheduledEvent
 // と同じ理由で放送イベントキー経由に引く（recordings.reservation_id は
 // issue #158 で列自体を落とした）。
-func countRecordingsForReservation(t *testing.T, ctx context.Context, pool *pgxpool.Pool, res sqlcgen.Reservation) int {
+func countRecordingsForReservation(t *testing.T, ctx context.Context, pool *pgxpool.Pool, res testReservation) int {
 	t.Helper()
 	var n int
 	if err := pool.QueryRow(ctx,
@@ -1864,10 +1752,9 @@ func TestReconciler_DetachedReservationGetsScheduled(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019200, "detached予約", startAt)
+	res := createReservation(t, pool, 100000500019200, "detached予約", startAt)
 	setReservationDetached(t, ctx, pool, res.ProgramID)
 
 	rec := newReconciler(mc, pool, nil)
@@ -1890,10 +1777,9 @@ func TestReconciler_ReservationWithNeverScheduledRecordingNotRescheduled(t *test
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019201, "never-scheduled予約", startAt)
+	res := createReservation(t, pool, 100000500019201, "never-scheduled予約", startAt)
 	seedNeverScheduledEvent(t, ctx, pool, res)
 
 	rec := newReconciler(mc, pool, nil)
@@ -1914,18 +1800,11 @@ func TestReconciler_DetachedSkipReservationNotScheduled(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019202, "detachedスキップ", startAt)
+	res := createReservation(t, pool, 100000500019202, "detachedスキップ", startAt)
 	setReservationDetached(t, ctx, pool, res.ProgramID)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site:      "default",
-		ProgramID: res.ProgramID,
-		Action:    "skip",
-	}); err != nil {
-		t.Fatalf("recording skip intent: %v", err)
-	}
+	dbtest.ProgramIntent(t, pool, res.ProgramID, func(p *dbtest.ProgramIntentParams) { p.Action = "skip" })
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -1951,17 +1830,16 @@ func TestReconciler_RecordsNeverScheduledForBothActiveAndDetachedReservations(t 
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	// 番組は既に終了しており（開始 -2h、30分番組）、mirakc に対応する schedule
 	// も無い（mockMirakc は空で始まる）状態を作る。
 	endedStartAt := time.Now().Add(-2 * time.Hour)
 
-	activeRes := createReservation(t, ctx, q, 100000500019210, "終了済みactive予約", endedStartAt)
+	activeRes := createReservation(t, pool, 100000500019210, "終了済みactive予約", endedStartAt)
 	// createReservation は rule_id/base とも NULL の「active」相当で作る想定
 	// なのでそのまま使う。
 
-	detachedRes := createReservation(t, ctx, q, 100000500019211, "終了済みdetached予約", endedStartAt)
+	detachedRes := createReservation(t, pool, 100000500019211, "終了済みdetached予約", endedStartAt)
 	setReservationDetached(t, ctx, pool, detachedRes.ProgramID)
 
 	rec := newReconciler(mc, pool, nil)
@@ -1999,13 +1877,12 @@ func TestReconciler_EndedProgramNotScheduled(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	// 開始 -2h、30分番組 → 終了は 90 分前。mirakc に対応する schedule も無い
 	// （mockMirakc は空で始まる）ので、ガードが無ければ create ループが
 	// createSchedule を呼ぶはずの状況を作る。
 	endedStartAt := time.Now().Add(-2 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019220, "終了済み番組", endedStartAt)
+	res := createReservation(t, pool, 100000500019220, "終了済み番組", endedStartAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2039,11 +1916,10 @@ func TestReconciler_BroadcastingProgramStillScheduled(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	// 開始 6 分前、30 分番組 → まだ 24 分残っている「放送中」の状態。
 	broadcastingStartAt := time.Now().Add(-6 * time.Minute)
-	res := createReservation(t, ctx, q, 100000500019221, "放送中番組", broadcastingStartAt)
+	res := createReservation(t, pool, 100000500019221, "放送中番組", broadcastingStartAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2070,10 +1946,9 @@ func TestReconciler_FutureProgramStillScheduled(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	futureStartAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019222, "未来の番組", futureStartAt)
+	res := createReservation(t, pool, 100000500019222, "未来の番組", futureStartAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2099,10 +1974,9 @@ func TestReconciler_NeverScheduledEventIsIdempotentAcrossPasses(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	endedStartAt := time.Now().Add(-2 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019230, "終了済み番組（冪等性）", endedStartAt)
+	res := createReservation(t, pool, 100000500019230, "終了済み番組（冪等性）", endedStartAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2126,37 +2000,6 @@ func TestReconciler_NeverScheduledEventIsIdempotentAcrossPasses(t *testing.T) {
 	}
 }
 
-// SQL レベルの冪等性: CreateNeverScheduledEvent を同じ入力で 2 回呼んでも
-// 2 行目を作らない（ON CONFLICT DO NOTHING の直接確認）。reconciler 経由では
-// 1 回目の欠測行が 2 回目の listDesired から予約を除くため、クエリを直接叩く。
-func TestCreateNeverScheduledEvent_IdempotentOnDirectRetry(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
-
-	params := sqlcgen.CreateNeverScheduledEventParams{
-		Site:           "default",
-		NetworkID:      10000,
-		ServiceID:      5000,
-		EventID:        19240,
-		ProgramStartAt: time.Date(2026, time.November, 15, 12, 0, 0, 0, time.UTC),
-	}
-	rows, err := q.CreateNeverScheduledEvent(ctx, params)
-	if err != nil {
-		t.Fatalf("1st CreateNeverScheduledEvent: %v", err)
-	}
-	if rows != 1 {
-		t.Fatalf("1st rows = %d, want 1", rows)
-	}
-	rows, err = q.CreateNeverScheduledEvent(ctx, params)
-	if err != nil {
-		t.Fatalf("2nd CreateNeverScheduledEvent: %v", err)
-	}
-	if rows != 0 {
-		t.Errorf("2nd rows = %d, want 0", rows)
-	}
-}
-
 // 受け入れ基準（#59 本体の解消）: 既に成功した録画（recordings.status が
 // 'recording'/'finished' 等）がある放送イベントについては、schedule が
 // 同期対象の一覧から見えなくても never-scheduled 行を作らない。
@@ -2172,10 +2015,9 @@ func TestReconciler_SuccessfulRecordingPreventsNeverScheduled(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	endedStartAt := time.Now().Add(-2 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019231, "成功済み録画の予約", endedStartAt)
+	res := createReservation(t, pool, 100000500019231, "成功済み録画の予約", endedStartAt)
 
 	// watcher が既に成功録画を記録済みの状態を模す。createReservation の規約
 	// （networkID=10000/serviceID=5000/event_id=programID%100000）と同じ
@@ -2229,10 +2071,9 @@ func TestReconciler_NeverScheduledEventSurvivesReservationDeletion(t *testing.T)
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	endedStartAt := time.Now().Add(-2 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019232, "ルール削除で消える予約", endedStartAt)
+	res := createReservation(t, pool, 100000500019232, "ルール削除で消える予約", endedStartAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2269,10 +2110,9 @@ func TestReconciler_NeverScheduledEventSurvivesProgramSnapshotGC(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	endedStartAt := time.Now().Add(-2 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019233, "GC で消える予約", endedStartAt)
+	res := createReservation(t, pool, 100000500019233, "GC で消える予約", endedStartAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2284,7 +2124,7 @@ func TestReconciler_NeverScheduledEventSurvivesProgramSnapshotGC(t *testing.T) {
 
 	// ruler.runGC と同じ 1 本の DELETE（DeleteEndedProgramSnapshots）を直接
 	// 呼ぶ。FK の ON DELETE CASCADE で reservations も一緒に落ちる。
-	if _, err := q.DeleteEndedProgramSnapshots(ctx, time.Now()); err != nil {
+	if _, err := pgstoretest.Reservations(pool).PruneEndedSnapshots(ctx, time.Now()); err != nil {
 		t.Fatalf("running program_snapshots GC: %v", err)
 	}
 
@@ -2314,10 +2154,9 @@ func TestReconciler_EndedReservationNotReAddedToDesiredOnNextPass(t *testing.T) 
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	endedStartAt := time.Now().Add(-2 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019234, "2 パス目でも desired に戻らない番組", endedStartAt)
+	res := createReservation(t, pool, 100000500019234, "2 パス目でも desired に戻らない番組", endedStartAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2343,10 +2182,9 @@ func TestReconciler_LogsEndedProgramSkipCount(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	endedStartAt := time.Now().Add(-2 * time.Hour)
-	createReservation(t, ctx, q, 100000500019223, "終了済み番組（ログ確認）", endedStartAt)
+	createReservation(t, pool, 100000500019223, "終了済み番組（ログ確認）", endedStartAt)
 
 	rec := newReconciler(mc, pool, nil)
 
@@ -2383,7 +2221,6 @@ func TestReconciler_LogsEndedProgramSkipCount(t *testing.T) {
 func TestReconciler_TotalLossSignatureTripsAndWithholdsDeletes(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	mock := mirakctest.New(t)
 	mock.SetSchedule(mirakc.Schedule{
@@ -2402,11 +2239,9 @@ func TestReconciler_TotalLossSignatureTripsAndWithholdsDeletes(t *testing.T) {
 		t.Errorf("total-loss signature should withhold the delete, got %d schedules: %v", len(schedules), schedules)
 	}
 
-	cb, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
-		Scope: "default", Name: breaker.ReconcileTotalLoss,
-	})
-	if err != nil {
-		t.Fatalf("expected the total-loss breaker to be tripped, GetCircuitBreaker: %v", err)
+	cb, found := findCircuitBreaker(t, ctx, pool, "default", string(breaker.ReconcileTotalLoss))
+	if !found {
+		t.Fatal("expected the total-loss breaker to be tripped")
 	}
 	if cb.Pending != 1 {
 		t.Errorf("pending = %d, want 1", cb.Pending)
@@ -2434,13 +2269,12 @@ func TestReconciler_TotalLossSignatureTripsAndWithholdsDeletes(t *testing.T) {
 func TestReconciler_BulkDeleteWithRemainingReservationDoesNotTripBreaker(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	mock := mirakctest.New(t)
 
 	// 生き残る予約とその schedule。
 	startAt := time.Now().Add(1 * time.Hour)
-	res := createReservation(t, ctx, q, 100000500019800, "生存", startAt)
+	res := createReservation(t, pool, 100000500019800, "生存", startAt)
 	mock.SetSchedule(mirakc.Schedule{
 		State:   "scheduled",
 		Program: mirakc.Program{ID: res.ProgramID},
@@ -2478,9 +2312,11 @@ func TestReconciler_BulkDeleteWithRemainingReservationDoesNotTripBreaker(t *test
 		t.Errorf("expected only the surviving schedule to remain, got %d: %v", len(schedules), schedules)
 	}
 
-	if _, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
-		Scope: "default", Name: breaker.ReconcileTotalLoss,
-	}); err == nil {
+	tripped, err := pgstoretest.Breakers(pool).IsTripped(ctx, "default", string(breaker.ReconcileTotalLoss))
+	if err != nil {
+		t.Fatalf("IsTripped(total-loss): %v", err)
+	}
+	if tripped {
 		t.Error("the total-loss breaker should not trip when a desired reservation remains")
 	}
 }
@@ -2492,7 +2328,6 @@ func TestReconciler_BulkDeleteWithRemainingReservationDoesNotTripBreaker(t *test
 func TestReconciler_TotalLossBreakerLatchesAcrossPasses(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	mock := mirakctest.New(t)
 	mock.SetSchedule(mirakc.Schedule{
@@ -2512,7 +2347,7 @@ func TestReconciler_TotalLossBreakerLatchesAcrossPasses(t *testing.T) {
 
 	// シグネチャが消えても（予約が復活しても）ラッチは自動で解除されない。
 	startAt := time.Now().Add(1 * time.Hour)
-	newRes := createReservation(t, ctx, q, 100000500020000, "復活後の予約", startAt)
+	newRes := createReservation(t, pool, 100000500020000, "復活後の予約", startAt)
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (2nd, signature cleared but latch should hold): %v", err)
@@ -2533,7 +2368,6 @@ func TestReconciler_TotalLossBreakerLatchesAcrossPasses(t *testing.T) {
 func TestReconciler_ResumeCircuitBreakerConverges(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	mock := mirakctest.New(t)
 	mock.SetSchedule(mirakc.Schedule{
@@ -2554,13 +2388,17 @@ func TestReconciler_ResumeCircuitBreakerConverges(t *testing.T) {
 	// 人間が確認し、desired 側も正常な状態（予約が 1 件以上ある）に復旧した上で
 	// 手動再開する、という筋書き。
 	startAt := time.Now().Add(1 * time.Hour)
-	newRes := createReservation(t, ctx, q, 100000500020100, "復旧後の予約", startAt)
+	newRes := createReservation(t, pool, 100000500020100, "復旧後の予約", startAt)
 
-	rows, err := q.ResumeCircuitBreaker(ctx, sqlcgen.ResumeCircuitBreakerParams{
-		Scope: "default", Name: breaker.ReconcileTotalLoss,
-	})
-	if err != nil || rows != 1 {
-		t.Fatalf("ResumeCircuitBreaker: rows=%d err=%v", rows, err)
+	tripped, err := pgstoretest.Breakers(pool).IsTripped(ctx, "default", string(breaker.ReconcileTotalLoss))
+	if err != nil {
+		t.Fatalf("IsTripped(before resume): %v, want nil", err)
+	}
+	if !tripped {
+		t.Fatalf("IsTripped(before resume) = %t, want true", tripped)
+	}
+	if err := pgstoretest.Breakers(pool).Resume(ctx, "default", string(breaker.ReconcileTotalLoss)); err != nil {
+		t.Fatalf("Resume: %v, want nil", err)
 	}
 
 	if err := rec.RunPass(ctx); err != nil {
@@ -2604,11 +2442,10 @@ func TestReconciler_DetectsStartDelay(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	// 開始 10 分前（既定猶予 3 分を過ぎている）、30 分番組なのでまだ終了前。
 	startAt := time.Now().Add(-10 * time.Minute)
-	res := createReservation(t, ctx, q, 100000500030001, "開始遅延番組", startAt)
+	res := createReservation(t, pool, 100000500030001, "開始遅延番組", startAt)
 
 	var logBuf bytes.Buffer
 	prevLogger := slog.Default()
@@ -2647,10 +2484,9 @@ func TestReconciler_NoStartDelayWhenStarted(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(-10 * time.Minute)
-	createReservation(t, ctx, q, 100000500030002, "正常開始番組", startAt)
+	createReservation(t, pool, 100000500030002, "正常開始番組", startAt)
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.NetworkID = 10000
 		p.ServiceID = 5000
@@ -2680,11 +2516,10 @@ func TestReconciler_DetectsStartDelayWhenOnlyHistoricalRecordingHasStarted(t *te
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(-10 * time.Minute)
 	programID := int64(100000500030012)
-	res := createReservation(t, ctx, q, programID, "event_id再利用後の開始遅延", startAt)
+	res := createReservation(t, pool, programID, "event_id再利用後の開始遅延", startAt)
 
 	oldStartAt := time.Now().Add(-365 * 24 * time.Hour)
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -2714,10 +2549,9 @@ func TestReconciler_NoStartDelayWhenRecordingProgramStartDiffers(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(-10 * time.Minute)
-	res := createReservation(t, ctx, q, 100000500030013, "繰り下げ中の開始済み番組", startAt)
+	res := createReservation(t, pool, 100000500030013, "繰り下げ中の開始済み番組", startAt)
 	recordingProgramStartAt := startAt.Add(5 * time.Minute)
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.NetworkID = 10000
@@ -2747,11 +2581,10 @@ func TestReconciler_NoStartDelayForStartedLongProgram(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(-25 * time.Hour)
 	programID := int64(100000500030014)
-	res := createReservation(t, ctx, q, programID, "長時間の開始済み番組", startAt)
+	res := createReservation(t, pool, programID, "長時間の開始済み番組", startAt)
 	if _, err := pool.Exec(ctx, `
 UPDATE program_snapshots
 SET duration_ms = $1
@@ -2788,12 +2621,11 @@ func TestReconciler_NoStartDelayWithinGrace(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	// 既定猶予は 3 分。開始 1 分後はまだ猶予の内側で、SSE 到達・watcher 処理の
 	// 遅れによる誤検知を防ぐ窓に入っている。
 	startAt := time.Now().Add(-1 * time.Minute)
-	createReservation(t, ctx, q, 100000500030003, "開始直後番組", startAt)
+	createReservation(t, pool, 100000500030003, "開始直後番組", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2814,11 +2646,10 @@ func TestReconciler_NoStartDelayAfterProgramEnded(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	// 開始 40 分前・30 分番組なので、終了時刻（開始 30 分後）はとっくに過ぎている。
 	startAt := time.Now().Add(-40 * time.Minute)
-	createReservation(t, ctx, q, 100000500030004, "終了済み番組", startAt)
+	createReservation(t, pool, 100000500030004, "終了済み番組", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2839,11 +2670,10 @@ func TestReconciler_NoStartDelayForNeverScheduledReservation(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	// 開始時刻 + 猶予を過ぎているが終了前という、本来なら検出される窓。
 	startAt := time.Now().Add(-10 * time.Minute)
-	res := createReservation(t, ctx, q, 100000500030005, "never-scheduled開始遅延", startAt)
+	res := createReservation(t, pool, 100000500030005, "never-scheduled開始遅延", startAt)
 	seedNeverScheduledEvent(t, ctx, pool, res)
 
 	rec := newReconciler(mc, pool, nil)
@@ -2864,17 +2694,10 @@ func TestReconciler_NoStartDelayForSkippedReservation(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(-10 * time.Minute)
-	createReservation(t, ctx, q, 100000500030006, "skip開始遅延", startAt)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site:      "default",
-		ProgramID: 100000500030006,
-		Action:    "skip",
-	}); err != nil {
-		t.Fatalf("recording skip intent: %v", err)
-	}
+	createReservation(t, pool, 100000500030006, "skip開始遅延", startAt)
+	dbtest.ProgramIntent(t, pool, 100000500030006, func(p *dbtest.ProgramIntentParams) { p.Action = "skip" })
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2894,10 +2717,9 @@ func TestReconciler_StartDelayGaugeConverges(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(-10 * time.Minute)
-	createReservation(t, ctx, q, 100000500030007, "収束確認番組", startAt)
+	createReservation(t, pool, 100000500030007, "収束確認番組", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2940,9 +2762,8 @@ func TestReconciler_StartDelayDetectionErrorKeepsGaugeAndCounts(t *testing.T) {
 		return http.DefaultTransport.RoundTrip(req)
 	})}
 	mc := mirakc.NewClient(mock.URL(), client)
-	q := sqlcgen.New(pool)
 	startAt := time.Now().Add(-10 * time.Minute)
-	createReservation(t, ctx, q, 100000500030008, "検出失敗確認番組", startAt)
+	createReservation(t, pool, 100000500030008, "検出失敗確認番組", startAt)
 	rec := newReconciler(mc, pool, nil)
 	errorsBefore := startDelayErrorCounter(t)
 
@@ -2955,7 +2776,7 @@ func TestReconciler_StartDelayDetectionErrorKeepsGaugeAndCounts(t *testing.T) {
 
 	// 2 回目のパスで新しい schedule を作る POST に到達した後なら、RunPass は
 	// 開始遅延の検出クエリまで進み、前半の DB 読み取りは成功したままにできる。
-	createReservation(t, ctx, q, 100000500030009, "追加予約", time.Now().Add(time.Hour))
+	createReservation(t, pool, 100000500030009, "追加予約", time.Now().Add(time.Hour))
 	closePoolOnPost.Store(true)
 	// 開始遅延の検出失敗はパスを止めない。ただしパスの末尾で完走の印を書くときにはプールが
 	// 閉じているので、RunPass はその書き込みの error を返す。その error まで進んだこと自体が、
@@ -2986,13 +2807,12 @@ func TestReconciler_NoStartDelayFalsePositiveAfterReservationRematerialization(t
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	// 開始時刻 + 猶予を過ぎているが終了前という、開始遅延検出器の対象窓。
 	startAt := time.Now().Add(-10 * time.Minute)
 	programID := int64(100000500030008)
 	eventID := int32(30008)
-	res := createReservation(t, ctx, q, programID, "再実体化後も開始済み番組", startAt)
+	res := createReservation(t, pool, programID, "再実体化後も開始済み番組", startAt)
 
 	// watcher が録画開始を観測した想定（放送イベントキーで結びつく。
 	// recordings.reservation_id という結合キー自体を issue #158 で削除済み）。
@@ -3009,11 +2829,7 @@ func TestReconciler_NoStartDelayFalsePositiveAfterReservationRematerialization(t
 	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, res.Site, res.ProgramID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
-	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site: "default", ProgramID: programID,
-	}); err != nil {
-		t.Fatalf("re-materializing reservation: %v", err)
-	}
+	dbtest.ManualReservation(t, pool, programID)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -3034,21 +2850,16 @@ func TestReconciler_StartDelayStillDetectedAfterReservationRematerializationWith
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(-10 * time.Minute)
 	programID := int64(100000500030009)
-	res := createReservation(t, ctx, q, programID, "再実体化後も未開始番組", startAt)
+	res := createReservation(t, pool, programID, "再実体化後も未開始番組", startAt)
 
 	// 録画開始は一度も観測されていない状態で再実体化する。
 	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, res.Site, res.ProgramID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
-	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site: "default", ProgramID: programID,
-	}); err != nil {
-		t.Fatalf("re-materializing reservation: %v", err)
-	}
+	dbtest.ManualReservation(t, pool, programID)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -3075,14 +2886,13 @@ func TestReconciler_StartDelaySuppressionMatchesBroadcastEventKeyPerReservation(
 
 	mock := mirakctest.New(t)
 	mc := mirakc.NewClient(mock.URL(), nil)
-	q := sqlcgen.New(pool)
 
 	startAt := time.Now().Add(-10 * time.Minute)
 
 	// 予約 A: 開始が観測済み（recordings 行あり）。抑止されるべき。
 	programIDStarted := int64(100000500030010)
 	eventIDStarted := int32(30010)
-	resStarted := createReservation(t, ctx, q, programIDStarted, "開始観測済み番組", startAt)
+	resStarted := createReservation(t, pool, programIDStarted, "開始観測済み番組", startAt)
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.NetworkID = 10000
 		p.ServiceID = 5000
@@ -3095,7 +2905,7 @@ func TestReconciler_StartDelaySuppressionMatchesBroadcastEventKeyPerReservation(
 	// 予約 B: 同一サイト・同一サービスの別イベントで、recordings 行なし。
 	// 検出されるべき。
 	programIDUnstarted := int64(100000500030011)
-	resUnstarted := createReservation(t, ctx, q, programIDUnstarted, "未観測番組", startAt)
+	resUnstarted := createReservation(t, pool, programIDUnstarted, "未観測番組", startAt)
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
