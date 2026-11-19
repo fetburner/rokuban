@@ -34,6 +34,8 @@ import (
 // TestS3DerivedObjectPublicationAndRecovery は、実際の S3 API の実装（CI では RustFS）に対して、
 // 派生物の公開・回収を測る。DB の振る舞いは object_store_test.go が fsstore で測るので、
 // ここは S3 の応答（条件付き書き込み・multipart・HEAD の SHA-256・List）に依存する部分に絞る。
+//
+//nolint:funlen // S3 の公開と回収の順序を 1 本の時系列で検査する。分けると前後関係が追えなくなる。
 func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 	ctx := t.Context()
 	endpoint := os.Getenv("ROKUBAN_S3_CONFORMANCE_ENDPOINT")

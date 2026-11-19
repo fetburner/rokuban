@@ -30,6 +30,7 @@ import (
 	"github.com/fetburner/rokuban/internal/programid"
 )
 
+//nolint:funlen // 複数プロセスを跨ぐ停止・再開の順序を 1 本の時系列で検査する。分けると順序の検査が追えなくなる。
 func TestIngestResumesAcrossProcessesDuringRecording(t *testing.T) {
 	dbURL := os.Getenv("ROKUBAN_CONFORMANCE_TEST_DATABASE_URL")
 	if dbURL == "" {
