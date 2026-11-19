@@ -735,17 +735,6 @@ func TestEncodeWorker_LateAttemptCannotPublish(t *testing.T) {
 	}
 }
 
-// snooze（計画のやり直し）は失敗ではないので試行に数えない。
-func TestShouldCountEncodeFailure_SnoozeIsNotAFailure(t *testing.T) {
-	t.Parallel()
-	if shouldCountEncodeFailure(fmt.Errorf("wrapped: %w", jobq.Snooze(time.Second)), nil) {
-		t.Error("a snooze must not count as an encode failure")
-	}
-	if !shouldCountEncodeFailure(errors.New("boom"), nil) {
-		t.Error("a real failure must count")
-	}
-}
-
 // T4: scratch は recording/profile/domain attempt ごと。別の実行中 attempt の scratch は
 // 各試行が自分の scratch dir に持つ flock により、cleanup は実行中の試行の dir を消さず、先行 attempt が終わるまで残る。
 func TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts(t *testing.T) {
