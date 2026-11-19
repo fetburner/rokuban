@@ -30,7 +30,8 @@ import (
 
 const (
 	tag    = "s3conformance"
-	ciFile = "../../.github/workflows/ci.yml"
+	ciOpen = "../../.github/workflows/ci.yml" // テストのカレントディレクトリからの相対パス
+	ciName = ".github/workflows/ci.yml"       // メッセージに出すリポジトリ相対のパス
 	ciJob  = "s3-conformance"
 )
 
@@ -43,13 +44,13 @@ type step struct{ pkg, run string }
 
 func TestEveryS3ConformanceTestHasStep(t *testing.T) {
 	t.Parallel()
-	src, err := os.ReadFile(ciFile)
+	src, err := os.ReadFile(ciOpen)
 	if err != nil {
-		t.Fatalf("%s を読めない: %v", ciFile, err)
+		t.Fatalf("%s を読めない: %v", ciName, err)
 	}
 	steps, err := parseSteps(src)
 	if err != nil {
-		t.Fatalf("%s: %v", ciFile, err)
+		t.Fatalf("%s: %v", ciName, err)
 	}
 	tests, err := collectTests("../..")
 	if err != nil {
@@ -114,6 +115,18 @@ func TestParseStepsReadsOnlyTheConformanceJob(t *testing.T) {
 	got := strings.Join(stepStrings(steps), " ")
 	if got != want {
 		t.Errorf("parseSteps = %q, want %q", got, want)
+	}
+}
+
+func TestParseStepsRejectsSubtestPattern(t *testing.T) {
+	t.Parallel()
+	src := []byte(`jobs:
+  s3-conformance:
+    steps:
+      - run: go test -tags s3conformance ./internal/a -run '^TestA/sub$' -count=1
+`)
+	if _, err := parseSteps(src); err == nil {
+		t.Error("parseSteps accepted a -run pattern containing /; want an error")
 	}
 }
 
@@ -188,6 +201,11 @@ func parseSteps(src []byte) ([]step, error) {
 				if _, err := regexp.Compile(st.run); err != nil {
 					return nil, fmt.Errorf("-run の正規表現 %q が不正: %w", st.run, err)
 				}
+				// go test は -run を / で分けてサブテストに当てる。トップレベルの Test 名だけに当てる
+				// この照合では読めないので、/ を含む形は受け付けない（足すなら照合を直す）。
+				if strings.Contains(st.run, "/") {
+					return nil, fmt.Errorf("-run %q に / がある。サブテストの形は読めないので、トップレベルの Test 名で書く", st.run)
+				}
 			}
 			steps = append(steps, found...)
 		}
@@ -199,7 +217,11 @@ func parseSteps(src []byte) ([]step, error) {
 // パッケージは "./" で始まる語で、-run は値を次の語（または =）で受ける。-timeout 5m のような
 // 他のフラグは読み飛ばす。
 func parseGoTest(line string) ([]step, bool) {
-	args := shellFields(line)
+	// run 行の引用符の中に空白は無いので、空白で分けて両端の引用符を外せば足りる。
+	args := strings.Fields(line)
+	for k, a := range args {
+		args[k] = strings.Trim(a, `'"`)
+	}
 	i := 0
 	for i+1 < len(args) && (args[i] != "go" || args[i+1] != "test") {
 		i++
@@ -249,41 +271,6 @@ func hasTag(list string) bool {
 		}
 	}
 	return false
-}
-
-// shellFields は空白で語を分ける。'...' と "..." の中の空白は語の一部で、引用符は外す。
-// ci.yml の run 行はエスケープを使わないので、それ以上は扱わない。
-func shellFields(line string) []string {
-	var out []string
-	var cur strings.Builder
-	inWord := false
-	var quote rune
-	for _, r := range line {
-		switch {
-		case quote != 0:
-			if r == quote {
-				quote = 0
-			} else {
-				cur.WriteRune(r)
-			}
-		case r == '\'' || r == '"':
-			quote = r
-			inWord = true
-		case r == ' ' || r == '\t':
-			if inWord {
-				out = append(out, cur.String())
-				cur.Reset()
-				inWord = false
-			}
-		default:
-			cur.WriteRune(r)
-			inWord = true
-		}
-	}
-	if inWord {
-		out = append(out, cur.String())
-	}
-	return out
 }
 
 // collectTests は root 以下の s3conformance の _test.go から Test 関数を集め、
@@ -385,7 +372,7 @@ func uncovered(tests map[string][]testFunc, steps []step) []string {
 			msgs = append(msgs, fmt.Sprintf(
 				"%s の %s は s3-conformance ジョブのどの step にも当たらず、CI で実行されない。"+
 					"%s の %s ジョブに「go test -tags %s %s -run '^%s$' -count=1 -timeout 5m -v」の step を足す",
-				tf.file, tf.name, ciFile, ciJob, tag, dir, tf.name))
+				tf.file, tf.name, ciName, ciJob, tag, dir, tf.name))
 		}
 	}
 	return msgs
