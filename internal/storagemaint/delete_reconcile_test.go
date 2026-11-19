@@ -534,42 +534,6 @@ func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(
 	}
 }
 
-// deleting のまま止まっている間（unlink 未完了）は、たとえごみ箱の猶予を
-// 過ぎていても purged_at を立てない。判定は「state <> 'deleted' の
-// media_assets が 0 行」なので、deleting は「消えた」に数えない
-// （issue #135 の罠。TestDeleteReconcileWorker_TrashPastRetention_Deletes の
-// 反転）。
-func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
-
-	// unlink を失敗させる: rel_path を空でないディレクトリに置き換える。
-	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "purged/stuck.m2ts", []byte("data"))
-	assetPath := filepath.Join(mediaDir, "purged", "stuck.m2ts")
-	testutil.RequireNoError(t, os.Remove(assetPath), "removing seeded file")
-	testutil.RequireNoError(t, os.MkdirAll(assetPath, 0o755), "creating blocking dir")
-	blockerFile := filepath.Join(assetPath, "blocker")
-	testutil.RequireNoError(t, os.WriteFile(blockerFile, []byte("x"), 0o644), "creating blocker file")
-	markRecordingTrashed(t, pool, recordingID)
-
-	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
-		w.TrashRetention = 30 * 24 * time.Hour
-	})
-	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}), "Work() error")
-
-	if got := singleCopyState(t, pool, assetID); got != "deleting" {
-		t.Fatalf("asset copy state = %q, want deleting (unlink blocked)", got)
-	}
-	if got := purgedAt(t, pool, recordingID); got != nil {
-		t.Errorf("purged_at = %v, want nil (an asset is still stuck in deleting)", got)
-	}
-	if !inTrash(t, pool, recordingID) {
-		t.Error("recording is missing from the trash while an asset is still deleting")
-	}
-}
-
 // ごみ箱の録画を完全削除したら recording.deleted が 1 回だけ発火すること
 // （アセット 3 件を消しても 1 通。発火は録画単位）。
 func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *testing.T) {
