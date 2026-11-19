@@ -917,8 +917,8 @@ func runMediaThumbnailCandidates(t *testing.T, newFixture NewMediaFixture) {
 		t.Fatalf("candidates = %+v, want only recording %d", rows, id)
 	}
 	row := rows[0]
-	if !row.Detected || !row.Owned || row.OriginalMediaAssetID != originalID || row.OriginalRelPath != originalPath {
-		t.Fatalf("candidate = %+v, want detected and owned with original %d at %q", row, originalID, originalPath)
+	if !row.Owned || row.OriginalMediaAssetID != originalID || row.OriginalRelPath != originalPath {
+		t.Fatalf("candidate = %+v, want owned with original %d at %q", row, originalID, originalPath)
 	}
 	if !chapters.SameRanges(row.CMRanges, cm) {
 		t.Fatalf("CMRanges = %v, want %v", row.CMRanges, cm)

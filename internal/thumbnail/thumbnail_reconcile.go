@@ -140,10 +140,7 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 		}
 	}
 	for _, row := range reselectRows {
-		timeline, hasTimeline := thumbnailTimeline(row)
-		if !hasTimeline {
-			continue
-		}
+		timeline := thumbnailTimeline(row)
 		inputs := thumbnailInputsOf(row)
 		if !thumbnailNeedsReselect(row.SeekMs, inputs, timeline) {
 			continue

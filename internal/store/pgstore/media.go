@@ -626,7 +626,6 @@ func (s *Media) ListThumbnailReselectCandidates(ctx context.Context, page store.
 			RecordingID:           row.RecordingID,
 			Trashed:               row.Trashed,
 			ProgramDurationMs:     row.ProgramDurationMs,
-			Detected:              row.Detected,
 			Owned:                 row.Owned,
 			OriginalMediaAssetID:  row.OriginalMediaAssetID,
 			OriginalStore:         row.OriginalStore,

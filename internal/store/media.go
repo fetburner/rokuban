@@ -163,7 +163,6 @@ type ThumbnailReselectCandidate struct {
 	RecordingID           int64
 	Trashed               bool
 	ProgramDurationMs     int64
-	Detected              bool
 	Owned                 bool
 	CMRanges              []chapters.Range
 	UserSpans             []chapters.Span
