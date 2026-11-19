@@ -204,6 +204,8 @@ func probeDurations(t *testing.T, ffprobe, path string) (video, audio, format fl
 	return video, audio, format
 }
 
+// TestPlanEncodePublishUsesPersistedGeneration は世代の選択と、その世代の rel_path を
+// 行ごとに固定する。
 func TestPlanEncodePublishUsesPersistedGeneration(t *testing.T) {
 	t.Parallel()
 	keep := []chapters.Range{{StartMs: 0, EndMs: 60_000}}
@@ -282,29 +284,6 @@ func TestPlanEncodePublishUsesPersistedGeneration(t *testing.T) {
 				t.Errorf("EncodedRelPath = %q, want %q", got, tc.wantRelPath)
 			}
 		})
-	}
-}
-
-// TestEncodedRelPath_Generation は cut 版のパスが世代ごとに変わることを固定する。
-// **同じパスへ上書きすると、(store, rel_path) の一意索引と衝突し、
-// ストレージ契約の「置くのは一回」も破る。**
-func TestEncodedRelPath_Generation(t *testing.T) {
-	t.Parallel()
-	got, err := EncodedRelPath("20240101/a.m2ts", "cut", "mp4", 1, true)
-	testutil.RequireNoError(t, err, "EncodedRelPath")
-	if want := "20240101/a_cut.g1.mp4"; got != want {
-		t.Errorf("EncodedRelPath = %q, want %q", got, want)
-	}
-	got2, err := EncodedRelPath("20240101/a.m2ts", "cut", "mp4", 2, true)
-	testutil.RequireNoError(t, err, "EncodedRelPath")
-	if got2 == got {
-		t.Errorf("generation 2 produced the same path as generation 1 (%q)", got2)
-	}
-	// generation 0 は従来のパス（cut でないプロファイル）。
-	plain, err := EncodedRelPath("20240101/a.m2ts", "h264", "mp4", 0, false)
-	testutil.RequireNoError(t, err, "EncodedRelPath")
-	if want := "20240101/a_h264.mp4"; plain != want {
-		t.Errorf("EncodedRelPath(generation 0) = %q, want %q", plain, want)
 	}
 }
 
