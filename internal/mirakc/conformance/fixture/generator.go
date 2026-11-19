@@ -195,6 +195,8 @@ func (d *due) fire(t time.Time) bool {
 // TOT と PCR は送信のたびに現在時刻から作り直す。固定値にすると、mirakc-arib の
 // sync-clocks（TOT と PCR を突き合わせる）や filter-program（同じ突き合わせを録画中も
 // 続ける）が壁時計とのずれを検知して失敗しうる。
+//
+//nolint:gocognit // 送出する表（PAT/PMT/SDT/NIT/TOT/EIT と PCR）の周期を 1 つの select で回す。分けると周期の対応が 2 箇所に散る。
 func Run(ctx context.Context, w io.Writer, cfg Config) error {
 	var ccPAT, ccPMT, ccSDT, ccNIT, ccTOT, ccEIT uint8
 

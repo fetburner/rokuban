@@ -1,5 +1,15 @@
 version: "2"
 
+# build tag の付いたファイルも型検査と lint に入れる。タグ無しの build・vet・test・lint は
+# これらを見ないので、s3conformance / conformance のテストの参照切れや、タグ付きだけが
+# 使う関数を unused と誤報する指摘は、CI の専用ジョブでしか出ない。
+# 案 A（lint に入れる）を選んだ理由: unused の誤報に従って使われている関数を消すと、
+# 消した後にタグ付きの識別子が参照切れになる。それを消す前に止めるには lint が見る必要がある。
+run:
+  build-tags:
+    - s3conformance
+    - conformance
+
 linters:
   enable:
     - errcheck
@@ -75,6 +85,9 @@ linters:
             - "!$test"
             - "!${config-path}/internal/store/pgstore/**"
             - "!${config-path}/cmd/rokuban/**"
+            # s3conformance タグの単独バイナリ（CI の browser-s3-302 job が go build する）。cmd/rokuban と同じ組み立ての根。
+            # テストではないので !$test では除外されない。
+            - "!${config-path}/internal/streamer/conformance/**"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/store/pgstore
               desc: PostgreSQL store implementations are constructed only in cmd/rokuban
@@ -114,6 +127,8 @@ linters:
             - "!${config-path}/internal/role/leader.go"
             - "!${config-path}/internal/testutil/**"
             - "!${config-path}/cmd/rokuban/**"
+            # s3conformance タグの単独バイナリ。PostgreSQL 実装と DB 基盤を組み立てる根（cmd/rokuban と同じ役目）。
+            - "!${config-path}/internal/streamer/conformance/**"
           deny:
             - pkg: github.com/jackc/pgx
               desc: pgx imports are limited to pgstore, the database foundation and composition roots
@@ -358,8 +373,8 @@ linters:
       # 既存の最大値を下回ると無関係な PR が落ちる。既存の関数を全部直す義務は
       # 作らず、lint が見る既定ビルド（テスト・生成物を除く）の現在の最大値を
       # 閾値にして「今より悪くしない」天井だけを守る。gocognit は閾値を超えた
-      # 関数だけを報告する。build tag conformance のファイルは lint 対象外なので
-      # 基準に含めない。
+      # 関数だけを報告する。build tag のファイルも lint に入る（上の run.build-tags）ので、
+      # その中で閾値を超える関数は `//nolint:gocognit` と理由で個別に外す。閾値は上げない。
       min-complexity: 54
 
   exclusions:

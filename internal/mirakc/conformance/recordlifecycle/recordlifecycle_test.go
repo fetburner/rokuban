@@ -28,6 +28,8 @@ import (
 // TestRecordLifecycle は 1 つの mirakc コンテナと 1 本の録画のライフサイクルを、項目 1〜5 の
 // 全サブテストで使い回す。録画の状態遷移（scheduled → recording → finished）に沿った
 // 順序依存があるため、意図的に 1 本の関数にまとめている。
+//
+//nolint:funlen // 録画の状態遷移を 1 本の時系列で検査する（上の理由どおり、分けない）。
 func TestRecordLifecycle(t *testing.T) {
 	dir := harness.TestDir(t)
 	tunerBin := harness.BuildFixtureTuner(t, dir)

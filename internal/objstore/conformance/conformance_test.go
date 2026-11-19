@@ -473,7 +473,7 @@ func probeMultipartResume(t *testing.T, ctx context.Context, tg target) (feature
 	got, readErr := io.ReadAll(output.Body)
 	closeErr := output.Body.Close()
 	if readErr != nil || closeErr != nil {
-		return featureResult{}, fmt.Errorf("read resumed multipart object: read %v, close %v", readErr, closeErr)
+		return featureResult{}, fmt.Errorf("read resumed multipart object: %w", errors.Join(readErr, closeErr))
 	}
 	if !bytes.Equal(got, append(firstPart, secondPart...)) {
 		return featureResult{}, errors.New("resumed multipart object differs from the bytes uploaded across the stop")
