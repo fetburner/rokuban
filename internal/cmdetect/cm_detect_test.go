@@ -164,46 +164,6 @@ func TestCMWorkerTimeoutsUseDurationFromJobArgs(t *testing.T) {
 	}
 }
 
-func TestCMRecordingDurationQueriesUseStartedAndEndedAt(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(1101)))
-	startedAt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	endedAt := startedAt.Add(45 * time.Minute)
-	testutil.MustExec(t, pool, "setting recording times and duration", `UPDATE recordings SET started_at = $2, ended_at = $3, program_duration_ms = 1 WHERE id = $1`, id, startedAt, endedAt)
-	q := sqlcgen.New(pool)
-	duration, err := q.GetCMRecordingDuration(ctx, id)
-	if err != nil || duration != 45*60*1000 {
-		t.Fatalf("GetCMRecordingDuration = %d, %v; want 2700000", duration, err)
-	}
-	detections, err := q.ListMissingCMDetections(ctx, 100)
-	testutil.RequireNoError(t, err, "q.ListMissingCMDetections")
-	if len(detections) != 1 || detections[0].RecordingID != id || detections[0].RecordingDurationMs != duration {
-		t.Errorf("ListMissingCMDetections = %#v, want recording %d at %dms", detections, id, duration)
-	}
-	seedTaughtArea(t, pool, 1180)
-	candidates, err := q.ListMissingCMLogoCandidates(ctx, 100)
-	testutil.RequireNoError(t, err, "q.ListMissingCMLogoCandidates")
-	if len(candidates) != 1 || candidates[0].RecordingID != id || candidates[0].RecordingDurationMs != duration {
-		t.Errorf("ListMissingCMLogoCandidates = %#v, want recording %d at %dms", candidates, id, duration)
-	}
-	testutil.MustExec(t, pool, "clearing recording times", `UPDATE recordings SET started_at = NULL, ended_at = NULL, program_duration_ms = 2400000 WHERE id = $1`, id)
-	if duration, err := q.GetCMRecordingDuration(ctx, id); err != nil || duration != 2400000 {
-		t.Errorf("duration with unconfirmed recording times = %d, %v; want program_duration_ms 2400000", duration, err)
-	}
-	detections, err = q.ListMissingCMDetections(ctx, 100)
-	testutil.RequireNoError(t, err, "q.ListMissingCMDetections")
-	if len(detections) != 1 || detections[0].RecordingID != id || detections[0].RecordingDurationMs != 2400000 {
-		t.Errorf("ListMissingCMDetections with unconfirmed times = %#v, want recording %d at 2400000ms (program_duration_ms fallback)", detections, id)
-	}
-	candidates, err = q.ListMissingCMLogoCandidates(ctx, 100)
-	testutil.RequireNoError(t, err, "q.ListMissingCMLogoCandidates")
-	if len(candidates) != 1 || candidates[0].RecordingID != id || candidates[0].RecordingDurationMs != 2400000 {
-		t.Errorf("ListMissingCMLogoCandidates with unconfirmed times = %#v, want recording %d at 2400000ms (program_duration_ms fallback)", candidates, id)
-	}
-}
-
 func TestCMFailureStagePreservesWorkerObservation(t *testing.T) {
 	t.Parallel()
 	for _, stage := range []string{"setup", "probe", "area", "logo", "chapter", "join", "parse", "save", "stopped", "resolution", "match"} {

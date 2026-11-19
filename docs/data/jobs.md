@@ -419,7 +419,7 @@ CM 検出とロゴ候補解析は、録画の実尺から締切を決める。�
 - 実尺が取れないときの代用: `program_duration_ms`
 - scratch の識別: CM 検出は `(recording_id, attempt_count)`、ロゴ候補解析は `(recording_id, attempted_at)`
 - rescue までの待ち時間: `max(1h, Timeout())`
-- CM の実尺が `started_at` / `ended_at` から引かれること: `TestCMRecordingDurationQueriesUseStartedAndEndedAt`
+- CM の実尺が `started_at` / `ended_at` から引かれること: `TestCMRecordingDuration`
 - 2 倍の実尺と 30 分の下限（CM 検出の締切式）: `TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum`
 - CM reconcile のキュー: `TestJobArgsSpecAndPhysicalQueue`
 
