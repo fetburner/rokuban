@@ -16,6 +16,7 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | `rokuban_ruler_last_success_timestamp_seconds{site}` / `rokuban_sweep_last_success_timestamp_seconds{site}` | DB に保存された site 単位の成功時刻。`time() - この値` が周期を大きく超えたら、ScaledJob でも止まっている |
 | `rokuban_encode_reconcile_last_success_timestamp_seconds` / `rokuban_thumbnail_reconcile_last_success_timestamp_seconds` / `rokuban_ts_scan_reconcile_last_success_timestamp_seconds` | DB に保存された全件パスの完走時刻。ScaledJob でも止まっているかを検出できる |
 | `rokuban_delete_reconcile_last_success_timestamp_seconds{store}` | DB に保存された置き場ごとの削除 reconcile の完走時刻 |
+| `rokuban_epg_sync_last_success_timestamp_seconds` / `rokuban_tuner_sync_last_success_timestamp_seconds{site}` / `rokuban_storage_transfer_last_success_timestamp_seconds` | DB に保存された EPG 同期・チューナー同期・物理転送の確定時刻。読み方は下の「EPG・チューナー同期と物理転送の確定時刻」 |
 | `rokuban_storage_root_observed_timestamp_seconds{store,root}` | DB の `storage_sync` に保存された root ごとの最後の観測時刻 |
 | `river_job` の `state='available'` が滞留 | 投入はされているが誰も引いていない（worker が 0 か、キューを引いていない） |
 | `river_job` の ingest キューで `state='running'` が上限に張り付き、`available` が滞留している | ingest の枠不足。`ingest.concurrency` が録画数に対して小さく、UI では取り込み待ちが続く |
@@ -48,6 +49,16 @@ ruler・record_sweep・予約同期（reconciler）・全件パスの reconcile�
 - ブレーカーで止めている間は `rokuban_circuit_breaker_tripped{breaker="delete_reconcile"}` が知らせる。この系列の `site` ラベルには置き場名が入る。
 - 候補ごとの投入の失敗では、記録を止めない。
 
+#### EPG・チューナー同期と物理転送の確定時刻
+
+EPG 同期・チューナー同期・物理転送の確定時刻は、書き手が DB に保存し、どの Pod の collector も同じ値を読む。
+
+書き手は、EPG 同期とチューナー同期では同期が確定した site ごとの時刻を、物理転送では公開が確定したときの置き場を問わない 1 行を、loop_success_markers に保存する。collector は、設定された全 site について、その行を読む。
+
+- EPG のラベルなし系列は、設定された site の時刻の最大値である。どれか 1 つの site が同期できていれば進むので、全 site の成功は保証しない。site ごとの判定は `rokuban_sweep_last_success_timestamp_seconds{site}` などで行う。
+- 取得に失敗した同期、同期の途中で失敗した同期、必須の DB 書き込みに失敗した同期では、時刻を進めない。ruler へのヒントの投入（EPG）とチューナー容量の計算（チューナー）の失敗は、警告のログに落ち、同期の失敗にも時刻の書き込みの停止にもならない。
+- EPG とチューナーで時刻の書き込みそのものが失敗した同期は、ジョブを失敗させて再試行させる。再試行は全量同期なので、同じ結果に収束する。物理転送では、書き込みの失敗は公開と一緒に取り消されるので、次の試行が公開と時刻を両方作り直す。
+
 #### アラート式の集約と初回パス
 
 全件パスの完走時刻と置き場ごとの系列は、どの Pod でも同じ値を出す。式は集約して、Pod の数だけ同じ系列が重ならないようにする。
@@ -56,6 +67,8 @@ ruler・record_sweep・予約同期（reconciler）・全件パスの reconcile�
 time() - max(rokuban_encode_reconcile_last_success_timestamp_seconds) > 閾値
 time() - max by (site) (rokuban_reconcile_last_success_timestamp_seconds) > 閾値
 time() - max by (store) (rokuban_delete_reconcile_last_success_timestamp_seconds) > 閾値
+time() - max(rokuban_epg_sync_last_success_timestamp_seconds) > 閾値
+time() - max by (site) (rokuban_tuner_sync_last_success_timestamp_seconds) > 閾値
 time() - min by (store) (rokuban_storage_root_observed_timestamp_seconds) > 閾値
 ```
 
@@ -64,6 +77,8 @@ storage は root ごとに系列を持つので、`min by (store)` で置き場�
 新しい表は導入直後は空なので、初回のパスが完走するまで系列は 0 を出す。0 は「一度も完走していない」であって、止まった時刻ではない。アラートは、導入して 1 周期待ってから有効にする。
 
 それ以降も 0 が続くなら、未投入として扱う。0 のまま続くことは「CronJob を最初から忘れた」状態そのものなので、式から 0 の系列を外さない。投入元（CronJob）を確認する。
+
+読み取りに失敗した scrape では、系列を出さず、`rokuban_sync_marker_scrape_errors_total{source}` を進める。系列が欠けている scrape は、観測できなかったという意味であり、0 とは読まない。欠けたまま続くときは、そのエラーカウンタの増加を見て、DB 接続を調べる。
 
 継続を持つパス（encode / thumbnail / ts_scan）は、候補が多いとページごとに完走時刻を書く。値の意味は「定期パスが回っている」であり、「全候補を見終えた」ではない。候補の残りは、継続ジョブのログで確認する。
 

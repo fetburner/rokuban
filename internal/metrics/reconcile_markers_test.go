@@ -34,6 +34,10 @@ func (f *fakeReconcileMarkers) MarkDeleteReconcile(context.Context, string) erro
 
 func (f *fakeReconcileMarkers) MarkReconciler(context.Context, string) error { return nil }
 
+func (f *fakeReconcileMarkers) MarkEPGSync(context.Context, string) error { return nil }
+
+func (f *fakeReconcileMarkers) MarkTunerSync(context.Context, string) error { return nil }
+
 func (f *fakeReconcileMarkers) ReadLoopMarkers(_ context.Context, loop string) (map[string]time.Time, error) {
 	return f.loops[loop], f.err[loop]
 }

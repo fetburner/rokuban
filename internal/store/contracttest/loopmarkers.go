@@ -35,62 +35,60 @@ func RunLoopMarkers(t *testing.T, newStore NewLoopMarkerStore) {
 		deleteStore = "contract-loop-markers-store"
 		pass        = store.ReconcilePassEncode
 	)
-	allLoops := []string{store.LoopRuler, store.LoopRecordSweep, store.LoopReconcilePass, store.LoopDeleteReconcile, store.LoopReconciler}
-
-	// assertScopes は loop に記録された scope の集合が want と一致することを見る。
-	assertScopes := func(t *testing.T, f LoopMarkerFixture, loop string, want ...string) {
-		t.Helper()
-		got, err := f.Store.ReadLoopMarkers(ctx, loop)
-		if err != nil {
-			t.Fatalf("ReadLoopMarkers(%s): %v", loop, err)
-		}
-		gotScopes := slices.Sorted(maps.Keys(got))
-		slices.Sort(want)
-		if !slices.Equal(gotScopes, want) {
-			t.Fatalf("ReadLoopMarkers(%s) scopes = %v, want %v", loop, gotScopes, want)
-		}
-	}
+	allLoops := []string{store.LoopRuler, store.LoopRecordSweep, store.LoopReconcilePass, store.LoopDeleteReconcile, store.LoopReconciler, store.LoopEPGSync, store.LoopTunerSync}
 
 	for _, loop := range allLoops {
-		assertScopes(t, f, loop)
+		assertLoopScopes(t, f, loop)
 	}
 	before := time.Now().Add(-time.Minute)
 
 	if err := f.Store.MarkRulerPasses(ctx, []string{site, otherSite}); err != nil {
 		t.Fatalf("MarkRulerPasses: %v", err)
 	}
-	assertScopes(t, f, store.LoopRuler, site, otherSite)
-	assertScopes(t, f, store.LoopRecordSweep)
-	assertScopes(t, f, store.LoopReconcilePass)
-	assertScopes(t, f, store.LoopDeleteReconcile)
+	assertLoopScopes(t, f, store.LoopRuler, site, otherSite)
+	assertLoopScopes(t, f, store.LoopRecordSweep)
+	assertLoopScopes(t, f, store.LoopReconcilePass)
+	assertLoopScopes(t, f, store.LoopDeleteReconcile)
 
 	if err := f.Store.MarkRecordSweep(ctx, site); err != nil {
 		t.Fatalf("MarkRecordSweep: %v", err)
 	}
-	assertScopes(t, f, store.LoopRecordSweep, site)
-	assertScopes(t, f, store.LoopRuler, site, otherSite)
+	assertLoopScopes(t, f, store.LoopRecordSweep, site)
+	assertLoopScopes(t, f, store.LoopRuler, site, otherSite)
 
 	if err := f.Store.MarkReconcilePass(ctx, pass); err != nil {
 		t.Fatalf("MarkReconcilePass(%s): %v", pass, err)
 	}
-	assertScopes(t, f, store.LoopReconcilePass, pass)
-	assertScopes(t, f, store.LoopRuler, site, otherSite)
-	assertScopes(t, f, store.LoopRecordSweep, site)
+	assertLoopScopes(t, f, store.LoopReconcilePass, pass)
+	assertLoopScopes(t, f, store.LoopRuler, site, otherSite)
+	assertLoopScopes(t, f, store.LoopRecordSweep, site)
 
 	if err := f.Store.MarkDeleteReconcile(ctx, deleteStore); err != nil {
 		t.Fatalf("MarkDeleteReconcile(%q): %v", deleteStore, err)
 	}
-	assertScopes(t, f, store.LoopDeleteReconcile, deleteStore)
-	assertScopes(t, f, store.LoopReconcilePass, pass)
+	assertLoopScopes(t, f, store.LoopDeleteReconcile, deleteStore)
+	assertLoopScopes(t, f, store.LoopReconcilePass, pass)
 
 	if err := f.Store.MarkReconciler(ctx, site); err != nil {
 		t.Fatalf("MarkReconciler(%q): %v", site, err)
 	}
-	assertScopes(t, f, store.LoopReconciler, site)
-	assertScopes(t, f, store.LoopRuler, site, otherSite)
-	assertScopes(t, f, store.LoopRecordSweep, site)
-	assertScopes(t, f, store.LoopReconcilePass, pass)
-	assertScopes(t, f, store.LoopDeleteReconcile, deleteStore)
+	assertLoopScopes(t, f, store.LoopReconciler, site)
+
+	if err := f.Store.MarkEPGSync(ctx, site); err != nil {
+		t.Fatalf("MarkEPGSync(%q): %v", site, err)
+	}
+	assertLoopScopes(t, f, store.LoopEPGSync, site)
+	assertLoopScopes(t, f, store.LoopTunerSync)
+
+	if err := f.Store.MarkTunerSync(ctx, site); err != nil {
+		t.Fatalf("MarkTunerSync(%q): %v", site, err)
+	}
+	assertLoopScopes(t, f, store.LoopTunerSync, site)
+	assertLoopScopes(t, f, store.LoopEPGSync, site)
+	assertLoopScopes(t, f, store.LoopRuler, site, otherSite)
+	assertLoopScopes(t, f, store.LoopRecordSweep, site)
+	assertLoopScopes(t, f, store.LoopReconcilePass, pass)
+	assertLoopScopes(t, f, store.LoopDeleteReconcile, deleteStore)
 
 	for _, m := range []struct{ loop, scope string }{
 		{store.LoopRuler, site},
@@ -98,6 +96,8 @@ func RunLoopMarkers(t *testing.T, newStore NewLoopMarkerStore) {
 		{store.LoopReconcilePass, pass},
 		{store.LoopDeleteReconcile, deleteStore},
 		{store.LoopReconciler, site},
+		{store.LoopEPGSync, site},
+		{store.LoopTunerSync, site},
 	} {
 		got, err := f.Store.ReadLoopMarkers(ctx, m.loop)
 		if err != nil {
@@ -121,6 +121,8 @@ func RunLoopMarkers(t *testing.T, newStore NewLoopMarkerStore) {
 		{store.LoopRecordSweep, site, func() error { return f.Store.MarkRecordSweep(ctx, site) }},
 		{store.LoopReconcilePass, pass, func() error { return f.Store.MarkReconcilePass(ctx, pass) }},
 		{store.LoopReconciler, site, func() error { return f.Store.MarkReconciler(ctx, site) }},
+		{store.LoopEPGSync, site, func() error { return f.Store.MarkEPGSync(ctx, site) }},
+		{store.LoopTunerSync, site, func() error { return f.Store.MarkTunerSync(ctx, site) }},
 	} {
 		first, err := f.Store.ReadLoopMarkers(ctx, m.loop)
 		if err != nil {
@@ -138,13 +140,34 @@ func RunLoopMarkers(t *testing.T, newStore NewLoopMarkerStore) {
 		}
 	}
 
+	runLoopMarkerFailureCases(t, newStore, site, otherSite, deleteStore)
+}
+
+// assertLoopScopes は loop に記録された scope の集合が want と一致することを見る。
+func assertLoopScopes(t *testing.T, f LoopMarkerFixture, loop string, want ...string) {
+	t.Helper()
+	got, err := f.Store.ReadLoopMarkers(context.Background(), loop)
+	if err != nil {
+		t.Fatalf("ReadLoopMarkers(%s): %v", loop, err)
+	}
+	gotScopes := slices.Sorted(maps.Keys(got))
+	slices.Sort(want)
+	if !slices.Equal(gotScopes, want) {
+		t.Fatalf("ReadLoopMarkers(%s) scopes = %v, want %v", loop, gotScopes, want)
+	}
+}
+
+// runLoopMarkerFailureCases は書き込みが失敗した印が残らないことを見る。失敗の形は書き込みの側に作る。
+func runLoopMarkerFailureCases(t *testing.T, newStore NewLoopMarkerStore, site, otherSite, deleteStore string) {
+	t.Helper()
+	ctx := context.Background()
 	t.Run("multi-site ruler failure rolls back every site", func(t *testing.T) {
 		f := newStore(t)
 		f.FailMarkFor(t, store.LoopRuler, otherSite)
 		if err := f.Store.MarkRulerPasses(ctx, []string{site, otherSite}); err == nil {
 			t.Fatal("MarkRulerPasses(failing second site) = nil, want error")
 		}
-		assertScopes(t, f, store.LoopRuler)
+		assertLoopScopes(t, f, store.LoopRuler)
 	})
 
 	t.Run("failed pass marker is not recorded", func(t *testing.T) {
@@ -153,7 +176,7 @@ func RunLoopMarkers(t *testing.T, newStore NewLoopMarkerStore) {
 		if err := f.Store.MarkReconcilePass(ctx, store.ReconcilePassTSScan); err == nil {
 			t.Fatal("MarkReconcilePass(failing pass) = nil, want error")
 		}
-		assertScopes(t, f, store.LoopReconcilePass)
+		assertLoopScopes(t, f, store.LoopReconcilePass)
 	})
 
 	t.Run("failed delete marker is not recorded", func(t *testing.T) {
@@ -162,6 +185,24 @@ func RunLoopMarkers(t *testing.T, newStore NewLoopMarkerStore) {
 		if err := f.Store.MarkDeleteReconcile(ctx, deleteStore); err == nil {
 			t.Fatal("MarkDeleteReconcile(failing store) = nil, want error")
 		}
-		assertScopes(t, f, store.LoopDeleteReconcile)
+		assertLoopScopes(t, f, store.LoopDeleteReconcile)
+	})
+
+	t.Run("failed epg sync marker is not recorded", func(t *testing.T) {
+		f := newStore(t)
+		f.FailMarkFor(t, store.LoopEPGSync, site)
+		if err := f.Store.MarkEPGSync(ctx, site); err == nil {
+			t.Fatal("MarkEPGSync(failing site) = nil, want error")
+		}
+		assertLoopScopes(t, f, store.LoopEPGSync)
+	})
+
+	t.Run("failed tuner sync marker is not recorded", func(t *testing.T) {
+		f := newStore(t)
+		f.FailMarkFor(t, store.LoopTunerSync, site)
+		if err := f.Store.MarkTunerSync(ctx, site); err == nil {
+			t.Fatal("MarkTunerSync(failing site) = nil, want error")
+		}
+		assertLoopScopes(t, f, store.LoopTunerSync)
 	})
 }

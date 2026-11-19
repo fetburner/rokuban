@@ -851,7 +851,6 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 		}
 		return nil
 	}
-	metrics.StorageTransferLastSuccess.Set(float64(time.Now().Unix()))
 	log.Info("storage transfer: derived copy active", "bytes", size)
 	return nil
 }
@@ -1463,7 +1462,6 @@ func (w *StorageTransferWorker) completeTransfer(ctx context.Context, att *trans
 			log.Warn("storage transfer: removing committed temp failed", "path", tempPath, "err", err)
 		}
 	}
-	metrics.StorageTransferLastSuccess.Set(float64(time.Now().Unix()))
 	log.Info("storage transfer: copy active", "bytes", transfer.SizeBytes)
 	return nil
 }

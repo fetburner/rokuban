@@ -42,6 +42,14 @@ func (m *tsScanMarkerRecorder) MarkReconciler(context.Context, string) error {
 	return errors.New("not used by the worker")
 }
 
+func (m *tsScanMarkerRecorder) MarkEPGSync(context.Context, string) error {
+	return errors.New("not used by the worker")
+}
+
+func (m *tsScanMarkerRecorder) MarkTunerSync(context.Context, string) error {
+	return errors.New("not used by the worker")
+}
+
 func (m *tsScanMarkerRecorder) ReadLoopMarkers(context.Context, string) (map[string]time.Time, error) {
 	return nil, errors.New("not used by the worker")
 }

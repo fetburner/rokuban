@@ -63,6 +63,22 @@ func (s *Reservations) MarkReconciler(ctx context.Context, site string) error {
 	return nil
 }
 
+// MarkEPGSync は site の EPG 全量同期の確定時刻を保存する。
+func (s *Reservations) MarkEPGSync(ctx context.Context, site string) error {
+	if err := sqlcgen.New(s.pool).UpsertLoopSuccessMarker(ctx, sqlcgen.UpsertLoopSuccessMarkerParams{Loop: store.LoopEPGSync, Scope: site}); err != nil {
+		return fmt.Errorf("upserting epg sync marker for site %q: %w", site, mapDatabaseError(err))
+	}
+	return nil
+}
+
+// MarkTunerSync は site のチューナー全量同期の確定時刻を保存する。
+func (s *Reservations) MarkTunerSync(ctx context.Context, site string) error {
+	if err := sqlcgen.New(s.pool).UpsertLoopSuccessMarker(ctx, sqlcgen.UpsertLoopSuccessMarkerParams{Loop: store.LoopTunerSync, Scope: site}); err != nil {
+		return fmt.Errorf("upserting tuner sync marker for site %q: %w", site, mapDatabaseError(err))
+	}
+	return nil
+}
+
 // ReadLoopMarkers は loop の完走時刻を scope ごとに返す。
 func (s *Reservations) ReadLoopMarkers(ctx context.Context, loop string) (map[string]time.Time, error) {
 	rows, err := sqlcgen.New(s.pool).ListLoopSuccessMarkers(ctx, loop)

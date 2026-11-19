@@ -41,6 +41,8 @@ type EpgSyncWorker struct {
 	Store         store.EPGSync
 	// RulerInput は同期完了時に ruler 入力の版を進める。
 	RulerInput store.RulerInputBumper
+	// Markers は同期の確定時刻を監視向けに残す（loop_success_markers の epg_sync）。nil なら残さない。
+	Markers store.LoopMarkers
 
 	// RetentionGrace は end_at がこの時間より前の番組を刈り取る猶予
 	// （config.epg.retention_grace。config.defaults() が既定値 24 時間を
@@ -153,7 +155,13 @@ func (w *EpgSyncWorker) Work(ctx context.Context, args jobs.EpgSyncArgs) error {
 		}
 	}
 
-	metrics.EpgSyncLastSuccess.SetToCurrentTime()
+	// 確定時刻は全段階の後に残す。ruler へのヒントの失敗は上で警告にしているので、ここには届かない。
+	// 印の書き込みが失敗したら同期を失敗にして再試行させる（再試行は全量同期なので冪等）。
+	if w.Markers != nil {
+		if err := w.Markers.MarkEPGSync(ctx, site); err != nil {
+			return fmt.Errorf("marking epg sync: %w", err)
+		}
+	}
 	metrics.EpgProgramsProjected.Set(float64(syncedPrograms))
 	metrics.EpgChannelsWithoutPrograms.Set(float64(countChannels(serviceChannels) - len(observedChannels)))
 

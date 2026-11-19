@@ -136,7 +136,7 @@ func (w *StorageSyncWorker) Work(ctx context.Context, args jobs.StorageSyncArgs)
 			// でもう片方の観測まで止める理由がない。前回の観測行・バイト数ゲージは
 			// そのまま残す（更新しない）。observed_at だけが「観測が止まっている」
 			// ことを伝える手がかりになる（M7-6 で UI がこの鮮度を出せるようになる
-			// 想定。metrics.TunerSyncLastSuccess と同じ「警告が出ないことは保証では
+			// 想定。tuner_sync の確定時刻と同じ「警告が出ないことは保証では
 			// ない」姿勢）。
 			slog.Warn("storage sync: statfs failed, keeping previous observation",
 				"store", storeName, "root", r.name, "path", r.path, "err", err)

@@ -143,10 +143,12 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 | `rokuban_epg_sync_duration_seconds` | Histogram | EPG 全量同期の所要時間 |
 | `rokuban_epg_programs_projected` | Gauge | 直近パスの投影件数 |
 | `rokuban_epg_channels_without_programs` | Gauge | 番組を返さなかったチャンネル数 |
-| `rokuban_epg_sync_last_success_timestamp_seconds` | Gauge | 最後に成功した同期の時刻 |
+| `rokuban_epg_sync_last_success_timestamp_seconds` | Gauge（DB） | 最後に成功した同期の時刻。設定された site の最新で、ラベルは無い。初回の同期が完了するまでは 0 |
 | `rokuban_tuners_projected{site}` | Gauge | 直近のチューナー同期で投影した本数 |
-| `rokuban_tuner_sync_last_success_timestamp_seconds{site}` | Gauge | 最後に成功したチューナー全量同期の時刻 |
+| `rokuban_tuner_sync_last_success_timestamp_seconds{site}` | Gauge（DB） | 最後に成功したチューナー全量同期の時刻。site ごと。初回の同期が完了するまでは 0 |
 | `rokuban_capacity_overages{site}` | Gauge | チューナー不足区間の数 |
+
+これらの時刻は、同期を走らせるジョブが DB に保存した値を読む。どの Pod から scrape しても同じ値が出る。読み取りに失敗した scrape では系列が出ず、`rokuban_sync_marker_scrape_errors_total{source}` が増える（[ジョブ化されたループの監視](monitoring-scaled-jobs.md)）。
 
 チューナーの投影本数は、射影が空になっていないかを見るために出す。チューナー不足区間は、非ゼロは信頼できるが、ゼロは保証ではない（「警告が出ないことは保証ではない」）。
 
