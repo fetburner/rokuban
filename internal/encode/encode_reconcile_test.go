@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1299,6 +1300,48 @@ func TestEncodeReconcile_RebuildRequestOnTrashedRecordingIsNotQueued(t *testing.
 	runEncodeReconcilePass(t, w)
 	if got := countEncodeJobs(t, enq, id, "cut"); got != 1 {
 		t.Fatalf("encode jobs after the recording is encodable again = %d, want 1", got)
+	}
+}
+
+// vanishingOriginal は、候補の列挙（本物）が録画を出した後、置き場の引き当てで原本のコピーを
+// 無くす。候補に出てから原本が消える割り込みを、本物の列挙と引き当ての経路で作る。
+type vanishingOriginal struct {
+	store.MediaReconcile
+	pool        *pgxpool.Pool
+	recordingID int64
+	vanished    bool
+}
+
+func (m *vanishingOriginal) OriginalStores(ctx context.Context, ids []int64) (map[int64]string, error) {
+	if !m.vanished && slices.Contains(ids, m.recordingID) {
+		m.vanished = true
+		if _, err := m.pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'original')`, m.recordingID); err != nil {
+			return nil, err
+		}
+	}
+	return m.MediaReconcile.OriginalStores(ctx, ids)
+}
+
+// 候補に出た録画の原本が、置き場を引く前に消えたら encode ジョブを積まず、失敗として数える。
+// 置き場が空のまま積むと、読み取りジョブの置き場が決まらないまま queue に入る。
+func TestEncodeReconcile_OriginalGoneAfterListingIsNotEnqueued(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	if pool == nil {
+		return
+	}
+	logs := captureSlog(t)
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "vanished/original.m2ts", []string{"h265"}, []byte("x"))
+	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: &vanishingOriginal{MediaReconcile: pgstoretest.Media(pool), pool: pool, recordingID: id}}
+	enqueuer := runEncodeReconcilePassArgs(t, w, jobs.EncodeReconcileArgs{RecordingID: id})
+
+	if got := countEncodeJobs(t, enqueuer, id, "h265"); got != 0 {
+		t.Errorf("encode jobs for a recording whose original vanished after listing = %d, want 0", got)
+	}
+	if !strings.Contains(logs.String(), "no active original copy to choose a store from") {
+		t.Errorf("log has no missing-original error for the failed candidate:\n%s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "candidates=1 rebuild_requests=0 failed=1") {
+		t.Errorf("pass did not count the candidate as failed:\n%s", logs.String())
 	}
 }
 

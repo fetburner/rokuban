@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
@@ -169,6 +171,64 @@ func countQueuedJobsForRecording(t *testing.T, enqueuer *jobqfaketest.RecordingE
 		}
 	}
 	return count
+}
+
+// vanishingOriginal は、候補の列挙（本物）が録画を出した後、置き場の引き当てで原本のコピーを
+// 無くす。候補に出てから原本が消える割り込みを、本物の列挙と引き当ての経路で作る。
+type vanishingOriginal struct {
+	store.MediaReconcile
+	pool        *pgxpool.Pool
+	recordingID int64
+	vanished    bool
+}
+
+func (m *vanishingOriginal) OriginalStores(ctx context.Context, ids []int64) (map[int64]string, error) {
+	if !m.vanished && slices.Contains(ids, m.recordingID) {
+		m.vanished = true
+		if _, err := m.pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'original')`, m.recordingID); err != nil {
+			return nil, err
+		}
+	}
+	return m.MediaReconcile.OriginalStores(ctx, ids)
+}
+
+// missing thumbnail の候補に出た録画の原本が、置き場を引く前に消えたら thumbnail を積まない。
+func TestThumbnailReconcile_OriginalGoneAfterListingIsNotEnqueued(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	if pool == nil {
+		return
+	}
+	recordingID := dbtest.Recording(t, pool)
+	seedOriginalAsset(t, pool, t.TempDir(), recordingID, "vanished/thumb.m2ts", []byte("fake-ts"))
+	enqueuer := jobqfaketest.NewRecordingEnqueuer()
+	w := &ThumbnailReconcileWorker{Media: &vanishingOriginal{MediaReconcile: pgstoretest.Media(pool), pool: pool, recordingID: recordingID}, Enqueuer: enqueuer}
+
+	runThumbnailReconcilePass(t, w)
+
+	if got := countThumbnailJobs(t, enqueuer, recordingID); got != 0 {
+		t.Fatalf("thumbnail jobs for a recording whose original vanished after listing = %d, want 0", got)
+	}
+}
+
+// seek_tiles の候補に出た録画の原本が、置き場を引く前に消えたら seek_tiles を積まない。
+// サムネイルは既にあるので missing thumbnail の候補には出ず、seek_tiles の引き当てだけが消える。
+func TestThumbnailReconcile_SeekTilesOriginalGoneAfterListingIsNotEnqueued(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	if pool == nil {
+		return
+	}
+	recordingID := dbtest.Recording(t, pool)
+	mediaDir := t.TempDir()
+	seedOriginalAsset(t, pool, mediaDir, recordingID, "vanished/tiles.m2ts", []byte("fake-ts"))
+	seedMediaAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "vanished/tiles.jpg", []byte("jpg"))
+	enqueuer := jobqfaketest.NewRecordingEnqueuer()
+	w := &ThumbnailReconcileWorker{Media: &vanishingOriginal{MediaReconcile: pgstoretest.Media(pool), pool: pool, recordingID: recordingID}, Enqueuer: enqueuer}
+
+	runThumbnailReconcilePass(t, w)
+
+	if got := countSeekTilesJobs(t, enqueuer, recordingID); got != 0 {
+		t.Fatalf("seek_tiles jobs for a recording whose original vanished after listing = %d, want 0", got)
+	}
 }
 
 func countThumbnailJobs(t *testing.T, enqueuer *jobqfaketest.RecordingEnqueuer, recordingID int64) int {
