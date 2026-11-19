@@ -628,42 +628,30 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 	}
 }
 
-// TestTruncateEncodeAttemptError_MultibyteBoundary は、バイト単位で切り詰めた
-// 位置がマルチバイト文字の内側に落ちる入力でも、結果が常に有効な UTF-8 に
-// なることを固定する（issue #316 のレビューで判明: 生のバイトスライスは
-// Postgres が拒否する不正な UTF-8 を作り得た）。
-//
-// "日" は UTF-8 で 3 バイト。1000 回繰り返すと 3000 バイトで、
-// encodeAttemptErrorMaxLen(2000) バイト目はちょうど文字の内側に落ちる
-// （2000 = 3*666 + 2）。
-func TestTruncateEncodeAttemptError_MultibyteBoundary(t *testing.T) {
+// TestTruncateEncodeAttemptError は truncateEncodeAttemptError の行ごとの期待値を固定する。
+//   - MultibyteBoundary: バイト単位で切り詰めた位置がマルチバイト文字の内側に落ちる入力でも、
+//     結果が有効な UTF-8 になることを固定する（issue #316 のレビューで判明: 生のバイトスライスは
+//     Postgres が拒否する不正な UTF-8 を作り得た）。"日" は 3 バイトで、2000 バイト目は
+//     667 文字目の内側に落ちる（2000 = 3*666 + 2）。末尾の不完全な 2 バイトを捨てて、
+//     666 文字（1998 バイト）になる。
+//   - ShortMessageUnchanged: 上限未満の入力をそのまま返す。短い入力まで削ってしまわないこと。
+func TestTruncateEncodeAttemptError(t *testing.T) {
 	t.Parallel()
-	msg := strings.Repeat("日", 1000)
-	if len(msg) <= encodeAttemptErrorMaxLen {
-		t.Fatalf("test fixture too short: %d bytes, want > %d", len(msg), encodeAttemptErrorMaxLen)
-	}
-
-	got := truncateEncodeAttemptError(msg)
-
-	if !utf8.ValidString(got) {
-		t.Fatalf("truncateEncodeAttemptError(...) = %q, not valid UTF-8", got)
-	}
-	if len(got) == 0 {
-		t.Error("truncateEncodeAttemptError(...) = \"\", want a non-empty truncated message")
-	}
-	if len(got) > encodeAttemptErrorMaxLen {
-		t.Errorf("len(got) = %d, want <= %d", len(got), encodeAttemptErrorMaxLen)
-	}
-}
-
-// TestTruncateEncodeAttemptError_ShortMessageUnchanged は上限未満の入力が
-// そのまま返ることを固定する（truncateEncodeAttemptError_MultibyteBoundary の
-// 逆方向 --- 短い入力まで削ってしまわないこと）。
-func TestTruncateEncodeAttemptError_ShortMessageUnchanged(t *testing.T) {
-	t.Parallel()
-	msg := "short ascii error"
-	if got := truncateEncodeAttemptError(msg); got != msg {
-		t.Errorf("truncateEncodeAttemptError(%q) = %q, want unchanged", msg, got)
+	for _, tc := range []struct {
+		name string
+		msg  string
+		want string
+	}{
+		{name: "MultibyteBoundary", msg: strings.Repeat("日", 1000), want: strings.Repeat("日", 666)},
+		{name: "ShortMessageUnchanged", msg: "short ascii error", want: "short ascii error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := truncateEncodeAttemptError(tc.msg); got != tc.want {
+				// 2000 バイト近い文字列を丸ごと出さず、長さと末尾だけを出す。
+				t.Errorf("truncateEncodeAttemptError(%d-byte input) = %d bytes ending %q (valid UTF-8: %v), want %d bytes ending %q",
+					len(tc.msg), len(got), got[max(0, len(got)-9):], utf8.ValidString(got), len(tc.want), tc.want[max(0, len(tc.want)-9):])
+			}
+		})
 	}
 }
 
