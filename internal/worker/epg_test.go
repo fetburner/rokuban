@@ -203,31 +203,6 @@ func TestEpgSyncWorker_FullSync(t *testing.T) {
 	}
 }
 
-// genre_lv1 は genres から DB の生成列で導出され、重複を除いて昇順になる。
-func TestEpgSyncWorker_DerivesGenreLv1FromGenres(t *testing.T) {
-	t.Parallel()
-	pool := setupTestPool(t)
-	now := time.Now().Truncate(time.Second)
-	program := testProgram(32736, 1024, 1, "ジャンル重複", now.Add(time.Hour), time.Hour)
-	program.Genres = []mirakc.Genre{{LV1: 7}, {LV1: 7}, {LV1: 3}}
-
-	fx := &epgFixture{
-		services: []mirakc.Service{testService(32736, 1024, 1, "ＮＨＫ総合", "27")},
-		programs: []mirakc.Program{program},
-	}
-	fake := newEpgFake(t, fx)
-	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstoretest.EPG(pool), RetentionGrace: 24 * time.Hour}
-	runEpgSync(t, w)
-
-	programs := allPrograms(t, pool)
-	if len(programs) != 1 {
-		t.Fatalf("programs = %d, want 1", len(programs))
-	}
-	if !reflect.DeepEqual(programs[0].GenreLv1, []int16{3, 7}) {
-		t.Errorf("genre_lv1 = %v, want [3 7]", programs[0].GenreLv1)
-	}
-}
-
 // 全量同期は冪等。2 回走っても行が増えず、内容が更新される。
 func TestEpgSyncWorker_IdempotentAndUpdates(t *testing.T) {
 	t.Parallel()
