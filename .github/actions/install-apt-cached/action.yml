@@ -1,0 +1,58 @@
+name: Install ffmpeg (and a Playwright browser) with apt cache
+description: ffmpeg を apt で入れ、任意で Playwright のブラウザとその依存を入れる。.deb は actions/cache に置く。呼び出し側は先に actions/checkout と pnpm install を済ませておく。
+inputs:
+  playwright-browser:
+    description: 入れる Playwright のブラウザ（chromium / chrome）。空なら ffmpeg だけ。
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    # apt の .deb を ~/.apt/cache に置いてキャッシュする。Ubuntu ミラーからの取得は落ちたり遅くなったりする
+    # （ffmpeg は 2026-09〜10 の 251 回中 5 回が 10 分超）。既定の /var/cache/apt/archives は保存されないので、
+    # /etc/apt/apt.conf.d/ の設定で向け先を変える（apt.conf(5) が読む）。`playwright install --with-deps` は
+    # 内部で sudo apt-get を呼ぶが、設定ファイルなら sudo の環境変数リセットに影響されない。
+    # actions/cache は一般ユーザーで保存するので、apt（root）が書いた後に所有者を戻す。
+    #
+    # キーは集合ごとに分ける。actions/cache は同じキーを上書きしないので、違う集合を同じキーで保存すると
+    # 先に保存した方で固まる。
+    # - ffmpeg だけ（apt-ffmpeg-）: test-shard。既存のキーのまま。
+    # - chromium / chrome: 別キー。chrome は Chrome 本体の .deb も apt で入れるので、集合が chromium と同じとは限らない。
+    # キーに Playwright の版を入れるのは、版を上げると依存が増えうるため。入れないと増えた分を毎回ミラーから取る。
+    # restore-keys は版を外すので、版を上げた直後は前の版の .deb から差分だけ取る（古い版は autoclean で落ちる）。
+    - id: apt-cache-key
+      shell: bash
+      env:
+        PW_BROWSER: ${{ inputs.playwright-browser }}
+      run: |
+        prefix="apt-ffmpeg-${ImageOS}-"
+        key="apt-ffmpeg-${ImageOS}-${ImageVersion}"
+        if [ -n "$PW_BROWSER" ]; then
+          pw=$(pnpm -C web exec playwright --version | awk '{print $2}')
+          prefix="apt-ffmpeg-${PW_BROWSER}-${ImageOS}-"
+          key="${prefix}${ImageVersion}-pw${pw}"
+        fi
+        echo "prefix=${prefix}" >> "$GITHUB_OUTPUT"
+        echo "key=${key}" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@v6
+      with:
+        path: ~/.apt/cache
+        key: ${{ steps.apt-cache-key.outputs.key }}
+        restore-keys: ${{ steps.apt-cache-key.outputs.prefix }}
+    - shell: bash
+      run: |
+        mkdir -p ~/.apt/cache/partial
+        printf 'Dir::Cache::Archives "%s";\n' "$HOME/.apt/cache" | sudo tee /etc/apt/apt.conf.d/90rokuban-archives > /dev/null
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends ffmpeg
+    - if: inputs.playwright-browser != ''
+      shell: bash
+      working-directory: web
+      env:
+        PW_BROWSER: ${{ inputs.playwright-browser }}
+      run: pnpm exec playwright install --with-deps "$PW_BROWSER"
+    # ブラウザ本体の取得にも apt を使うもの（chrome）があるので、chown と autoclean は最後に呼ぶ。
+    - shell: bash
+      run: |
+        sudo apt-get autoclean
+        sudo chown -R "$USER" ~/.apt/cache
