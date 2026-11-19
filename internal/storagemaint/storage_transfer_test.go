@@ -1783,7 +1783,9 @@ SELECT EXISTS (
 	}
 }
 
-func TestStorageTransferDeletionRequiresDesiredPresentCopyAndOverlap(t *testing.T) {
+// 判定の条件（希望先の現在コピーの存在・overlap の境界・実体無し）は SQL 関数のテスト TestMediaAssetCopyPrunable が固定する。
+// ここは Go が渡す overlap の cutoff と、候補の列挙・削除印・削除印の後の再列挙という配線だけを見る。
+func TestStorageTransferDeletionWiresOverlapCutoff(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	recordingID := dbtest.Recording(t, pool)
@@ -1793,21 +1795,12 @@ func TestStorageTransferDeletionRequiresDesiredPresentCopyAndOverlap(t *testing.
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	rules := mustOriginalRules(t, cfg)
 	media := pgstore.NewMedia(pool, "test-store", "")
-	if candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", time.Now(), 10); err != nil || len(candidates) != 0 {
-		t.Fatalf("deletion candidates without a desired copy = %+v, %v; want none", candidates, err)
-	}
 
 	transferTestAddCopy(t, pool, assetID, "archive", "sites/default/delete/source.ts")
 	if candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", time.Now().Add(-time.Hour), 10); err != nil || len(candidates) != 0 {
 		t.Fatalf("deletion candidates before overlap = %+v, %v; want none", candidates, err)
 	}
 	testutil.MustExec(t, pool, "aging the archive copy past the overlap", `UPDATE media_asset_copies SET created_at = now() - interval '2 hours' WHERE media_asset_id = $1 AND store = 'archive'`, assetID)
-	archiveCopyID := transferTestCopyID(t, pool, assetID, "archive")
-	testutil.MustExec(t, pool, "marking the archive copy missing", `INSERT INTO missing_media_assets (media_asset_copy_id) VALUES ($1)`, archiveCopyID)
-	if candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", time.Now(), 10); err != nil || len(candidates) != 0 {
-		t.Fatalf("deletion candidates with desired copy marked missing = %+v, %v; want none", candidates, err)
-	}
-	testutil.MustExec(t, pool, "clearing the archive copy missing marker", `DELETE FROM missing_media_assets WHERE media_asset_copy_id = $1`, archiveCopyID)
 	candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), rules, "archive", time.Now(), 10)
 	testutil.RequireNoError(t, err, "media.ListMediaAssetCopiesToDelete")
 	if len(candidates) != 1 || candidates[0].Store != "test-store" {

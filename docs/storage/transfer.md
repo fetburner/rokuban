@@ -193,7 +193,7 @@ desired の置き場から外れた配置は、削除 reconcile の腕の 1 つ�
 - deleting の配置コピーを拾い直して終わらせる: `TestDeleteReconcilePendingPathFinishesPlacementDeleting`
 - desired が実体無しになった deleting の配置コピーを active に戻す: `TestDeleteReconcileRevertsPlacementDeletingWhenDesiredMissing`
 - 規則を A → B → A と切り替えても有効なコピーが 0 にならない: `TestStorageTransferPolicyRoundTripConverges`
-- desired のコピーが無いとき、最後のコピーを消さない: `TestStorageTransferDeletionRequiresDesiredPresentCopyAndOverlap`
+- desired のコピーが無いとき、最後のコピーを消さない: `TestMediaAssetCopyPrunable/no_desired_copy_is_not_prunable`
 - 削除時の論理行の lock と規則の再判定: `TestStorageTransferDeletionSerializesPolicySwitches`
 - 不要になった試行記録の削除: `TestStorageTransferReconcileReportsExhaustionAndClearsObsoleteAttempts`
 - pending のコピーの退役後の録画の完全削除（purge）: `TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge`
