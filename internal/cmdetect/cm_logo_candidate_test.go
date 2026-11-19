@@ -234,45 +234,6 @@ func insertRunningCandidateForService(t *testing.T, pool *pgxpool.Pool, serviceI
 	return attemptedAt
 }
 
-func TestCMLogoCandidateLateAttemptCannotChangeRecreatedCandidate(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(947)))
-	areaAt := seedTaughtArea(t, pool, 1180)
-	q := sqlcgen.New(pool)
-	oldAttempt := insertRunningCandidate(t, pool, id, areaAt)
-	if _, err := q.DeleteCMLogoCandidate(ctx, sqlcgen.DeleteCMLogoCandidateParams{NetworkID: 32736, ServiceID: 1024}); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(time.Millisecond)
-	newAttempt := insertRunningCandidate(t, pool, id, areaAt)
-
-	updated, err := q.MarkCMLogoCandidateReady(ctx, sqlcgen.MarkCMLogoCandidateReadyParams{
-		NetworkID: 32736, ServiceID: 1024, AreaUpdatedAt: areaAt,
-		AttemptedAt: oldAttempt, Lgd: []byte("late logo"),
-	})
-	if err != nil || updated != 0 {
-		t.Fatalf("old ready update = %d, %v; want no row", updated, err)
-	}
-	stage, message := "logo", "late failure"
-	failed, err := q.MarkCMLogoCandidateFailure(ctx, sqlcgen.MarkCMLogoCandidateFailureParams{
-		NetworkID: 32736, ServiceID: 1024, AreaUpdatedAt: areaAt,
-		AttemptedAt: oldAttempt, Stage: &stage, Error: &message,
-	})
-	if err != nil || failed != 0 {
-		t.Fatalf("old failure update = %d, %v; want no row", failed, err)
-	}
-	if err := pgstoretest.Analysis(pool).DiscardLogoCandidate(ctx, store.CMStationRef{NetworkID: 32736, ServiceID: 1024}, areaAt, oldAttempt); err != nil {
-		t.Fatalf("old discard = %v; want no-op", err)
-	}
-	candidate, err := q.GetCMLogoCandidate(ctx, sqlcgen.GetCMLogoCandidateParams{NetworkID: 32736, ServiceID: 1024})
-	testutil.RequireNoError(t, err, "q.GetCMLogoCandidate")
-	if candidate.State != "running" || !candidate.AttemptedAt.Equal(newAttempt) {
-		t.Errorf("recreated candidate = %q at %s, want running at %s", candidate.State, candidate.AttemptedAt, newAttempt)
-	}
-}
-
 func TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)

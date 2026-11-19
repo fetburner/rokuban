@@ -62,6 +62,10 @@ func RunCMStation(t *testing.T, newStore NewCMStationStore) {
 		}
 	})
 
+	t.Run("discarding an old attempt leaves a recreated candidate", func(t *testing.T) {
+		runCMStationDiscardOldAttempt(t, newStore, station)
+	})
+
 	t.Run("area and candidate deletion roll back together", func(t *testing.T) {
 		f := newStore(t)
 		ctx := context.Background()
@@ -193,6 +197,43 @@ func runCMStationSerialization(t *testing.T, newStore NewCMStationStore, station
 				t.Logf("%s completed after station-write release: %v", tc.name, err)
 			}
 		})
+	}
+}
+
+// runCMStationDiscardOldAttempt は、削除して作り直された候補に古い試行の discard が効かないことを検査する。
+// 古い試行の discard は no-op で、作り直された running 行は新しい attempted_at のまま残る。
+// discard の一致条件を外すと、古い試行の discard が行を消して失敗する。
+// 先に一致する試行の discard が行を消すことを確かめ、discard が何も消さない誤りで空虚に通らないようにする。
+func runCMStationDiscardOldAttempt(t *testing.T, newStore NewCMStationStore, station store.CMStationRef) {
+	t.Helper()
+	f := newStore(t)
+	ctx := context.Background()
+	recordingID := f.NewRecording(t)
+	area, err := f.Store.SaveLogoArea(ctx, station, testAreaInput(recordingID, 10))
+	if err != nil {
+		t.Fatalf("saving area: %v", err)
+	}
+	// 削除前の試行と作り直した後の試行。固定値で 1 秒ずらす。
+	oldAttempt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	newAttempt := oldAttempt.Add(time.Second)
+	f.SeedCandidate(t, station, recordingID, area.AreaUpdatedAt, oldAttempt, "running")
+	if err := f.Store.DiscardLogoCandidate(ctx, station, area.AreaUpdatedAt, oldAttempt); err != nil {
+		t.Fatalf("discarding the current attempt: %v", err)
+	}
+	if _, err := f.Store.GetLogoCandidate(ctx, station); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("candidate after discarding the current attempt: err = %v, want not found", err)
+	}
+	f.SeedCandidate(t, station, recordingID, area.AreaUpdatedAt, newAttempt, "running")
+
+	if err := f.Store.DiscardLogoCandidate(ctx, station, area.AreaUpdatedAt, oldAttempt); err != nil {
+		t.Fatalf("discarding the old attempt = %v; want no-op", err)
+	}
+	candidate, err := f.Store.GetLogoCandidate(ctx, station)
+	if err != nil {
+		t.Fatalf("reading recreated candidate: %v", err)
+	}
+	if candidate.State != "running" || !candidate.AttemptedAt.Equal(newAttempt) {
+		t.Fatalf("recreated candidate = %q at %s, want running at %s", candidate.State, candidate.AttemptedAt, newAttempt)
 	}
 }
 
