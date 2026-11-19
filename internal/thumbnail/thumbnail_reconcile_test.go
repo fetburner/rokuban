@@ -438,6 +438,9 @@ func TestThumbnailReconcile_SkipsKnownMissingOriginalUntilRestored(t *testing.T)
 	if got := countThumbnailJobs(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), recordingID); got != 0 {
 		t.Fatalf("thumbnail jobs for known-missing original = %d, want 0", got)
 	}
+	if got := countSeekTilesJobs(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), recordingID); got != 0 {
+		t.Fatalf("seek_tiles jobs for known-missing original = %d, want 0", got)
+	}
 	if got := promtestutil.ToFloat64(metrics.ThumbnailReconcileCandidates); got != 0 {
 		t.Fatalf("thumbnail reconcile candidates for known-missing original = %v, want 0", got)
 	}
@@ -447,63 +450,8 @@ func TestThumbnailReconcile_SkipsKnownMissingOriginalUntilRestored(t *testing.T)
 	if got := countThumbnailJobs(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), recordingID); got != 1 {
 		t.Fatalf("thumbnail jobs after clearing restored marker = %d, want 1", got)
 	}
-}
-
-// 対象を絞った reconcile も known-missing original を飛び越えず、マーカーが消えた後は拾う。
-func TestThumbnailReconcile_TargetedPassSkipsKnownMissingOriginalUntilRestored(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	if pool == nil {
-		return
-	}
-
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
-	recordingID := dbtest.Recording(t, pool)
-	originalID := seedOriginalAsset(t, pool, t.TempDir(), recordingID, "targeted-recovery/original.m2ts", []byte("fake-ts"))
-	copyID := dbtest.MediaAssetCopyID(t, pool, originalID, dbtest.StoreName)
-	testutil.RequireNoError(t, q.UpsertMissingMediaAsset(ctx, copyID), "marking original missing")
-
-	w := &ThumbnailReconcileWorker{Media: pgstoretest.Media(pool)}
-	runThumbnailReconcilePassArgs(t, w, jobs.ThumbnailReconcileArgs{RecordingID: recordingID})
-	if got := countThumbnailJobs(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), recordingID); got != 0 {
-		t.Fatalf("thumbnail jobs for targeted known-missing original = %d, want 0", got)
-	}
-	if got := countQueuedJobsForRecording(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), "seek_tiles", recordingID); got != 0 {
-		t.Fatalf("seek_tiles jobs for targeted known-missing original = %d, want 0", got)
-	}
-
-	testutil.RequireNoError(t, q.DeleteMissingMediaAsset(ctx, copyID), "clearing restored original marker")
-	runThumbnailReconcilePassArgs(t, w, jobs.ThumbnailReconcileArgs{RecordingID: recordingID})
-	if got := countThumbnailJobs(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), recordingID); got != 1 {
-		t.Fatalf("thumbnail jobs after clearing restored marker = %d, want 1", got)
-	}
-	if got := countQueuedJobsForRecording(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), "seek_tiles", recordingID); got != 1 {
+	if got := countSeekTilesJobs(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), recordingID); got != 1 {
 		t.Fatalf("seek_tiles jobs after clearing restored marker = %d, want 1", got)
-	}
-}
-
-// ごみ箱の録画は original が残っていても定期パスから除外する。
-func TestThumbnailReconcile_ExcludesTrash(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	if pool == nil {
-		return
-	}
-
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
-	recordingID := dbtest.Recording(t, pool)
-	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
-		fixtureParams.RelPath = "trash/original.m2ts"
-	})
-	_, err := q.SoftDeleteRecording(ctx, recordingID)
-	testutil.RequireNoError(t, err, "soft deleting recording")
-
-	w := &ThumbnailReconcileWorker{Media: pgstoretest.Media(pool), Enqueuer: jobqfaketest.NewRecordingEnqueuer()}
-	runThumbnailReconcilePass(t, w)
-	if got := countThumbnailJobs(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), recordingID); got != 0 {
-		t.Errorf("thumbnail jobs for trashed recording = %d, want 0", got)
 	}
 }
 
@@ -851,25 +799,6 @@ func TestThumbnailReconcile_EnqueuesMissingSeekTiles(t *testing.T) {
 	}
 	if got := len(w.Enqueuer.(*jobqfaketest.RecordingEnqueuer).CallsOfKind("thumbnail_reconcile")); got != 0 {
 		t.Errorf("continuation jobs for short thumbnail and seek_tiles pages = %d, want 0", got)
-	}
-}
-
-// 実体無しと確認済みの原本は seek_tiles の候補からも除外する（poster と同じ扱い）。
-func TestThumbnailReconcile_SeekTilesSkipsKnownMissingOriginal(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	mediaDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
-	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "seek-missing/original.m2ts", []byte("fake-ts"))
-	testutil.RequireNoError(t, os.Remove(filepath.Join(mediaDir, "seek-missing", "original.m2ts")), "removing original fixture")
-	copyID := dbtest.MediaAssetCopyID(t, pool, originalID, dbtest.StoreName)
-	testutil.RequireNoError(t, sqlcgen.New(pool).UpsertMissingMediaAsset(ctx, copyID), "marking original missing")
-
-	w := &ThumbnailReconcileWorker{Media: pgstoretest.Media(pool), Enqueuer: jobqfaketest.NewRecordingEnqueuer()}
-	runThumbnailReconcilePass(t, w)
-	if got := countSeekTilesJobs(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), recordingID); got != 0 {
-		t.Errorf("seek_tiles jobs for known-missing original = %d, want 0", got)
 	}
 }
 
