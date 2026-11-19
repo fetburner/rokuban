@@ -695,24 +695,6 @@ func TestCMDetectDeadlineCountsAndCancellationDoesNotCount(t *testing.T) {
 	}
 }
 
-func TestUntilEncodedViewDoesNotWaitForCMDetectionWhenDisabledPerRecording(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	mediaDir := t.TempDir()
-	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 913 })
-	seedUntilEncodedAssets(t, pool, mediaDir, id)
-	dbtest.ProcessingPolicy(t, pool, id, func(p *dbtest.ProcessingPolicyParams) {
-		p.KeepOriginal = "until_encoded"
-		p.EncodeProfiles = []string{"h264"}
-	})
-	var n int
-	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals('test-store') WHERE recording_id = $1`, id).Scan(&n), "counting until_encoded-eligible originals")
-	if n != 1 {
-		t.Fatalf("cm_detect=false original without a CM result: eligible rows = %d, want 1", n)
-	}
-}
-
 func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

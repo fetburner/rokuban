@@ -22,7 +22,8 @@ type untilEncodedFixture struct {
 
 // seedUntilEncodedComplete は、原本の削除条件をすべて満たす録画を 1 件作る。
 // 内訳は until_encoded・プロファイル h264 の encoded、サムネイル、シークタイル、
-// 現在サイズの TS scan。ケースはこの状態から条件を 1 つ崩す。
+// 現在サイズの TS scan、CM 検出なし（cm_detect=false、CM 結果なし）。
+// ケースはこの状態から条件を 1 つ崩す。
 func seedUntilEncodedComplete(t *testing.T, pool *pgxpool.Pool) untilEncodedFixture {
 	t.Helper()
 	profile := "h264"
@@ -38,8 +39,8 @@ func seedUntilEncodedComplete(t *testing.T, pool *pgxpool.Pool) untilEncodedFixt
 		INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
 		SELECT id, size_bytes FROM media_assets WHERE id = $1`, f.originalID)
 	testutil.MustExec(t, pool, "setting processing policy", `
-		INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles)
-		VALUES ($1, 'until_encoded', $2)`, f.recordingID, []string{profile})
+		INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
+		VALUES ($1, 'until_encoded', $2, false)`, f.recordingID, []string{profile})
 	return f
 }
 
@@ -76,7 +77,7 @@ func TestUntilEncodedDeletableOriginals(t *testing.T) {
 		nullStore bool
 		want      bool
 	}{
-		{name: "complete derivatives qualify", want: true},
+		{name: "complete derivatives without cm detection qualify", want: true},
 		{name: "deleted thumbnail does not qualify", mutate: func(t *testing.T, pool *pgxpool.Pool, f untilEncodedFixture) {
 			dbtest.SetMediaAssetState(t, pool, f.thumbID, "deleted")
 		}},
