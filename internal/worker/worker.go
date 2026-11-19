@@ -36,7 +36,7 @@ type Deps struct {
 	ProgramSearch store.ProgramSearch
 	// RulerPass は ruler が予約の導出と適用に使う永続化契約。
 	RulerPass store.RulerPass
-	// LoopMarkers はループの成功時刻（ruler / record_sweep / 全件パス / 削除 reconcile）を記録し、監視が読む契約。
+	// LoopMarkers はループの成功時刻（ruler / record_sweep / 全件パス / 削除 reconcile / EPG 同期 / チューナー同期 / 物理転送）を記録し、監視が読む契約。
 	LoopMarkers store.LoopMarkers
 	// Breakers は worker がサーキットブレーカーを発動・観測する契約。
 	Breakers store.Breakers
@@ -218,12 +218,14 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		MirakcClients:  deps.MirakcClients,
 		Store:          deps.EPGSync,
 		RulerInput:     deps.RulerInputBumper,
+		Markers:        deps.LoopMarkers,
 		RetentionGrace: deps.EpgRetentionGrace,
 	})
 	riveradapter.Register(workers, &TunerSyncWorker{
 		MirakcClients: deps.MirakcClients,
 		TunerStore:    deps.TunerStore,
 		CapacityStore: deps.CapacityStore,
+		Markers:       deps.LoopMarkers,
 	})
 	riveradapter.Register(workers, &ruler.PassWorker{
 		Enqueuer:          deps.Enqueuer,

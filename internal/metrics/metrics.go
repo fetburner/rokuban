@@ -372,17 +372,6 @@ var (
 		Name: "rokuban_epg_channels_without_programs",
 		Help: "Channels that returned no programs in the most recent EPG sync pass.",
 	})
-
-	// EpgSyncLastSuccess は最後に成功した全量同期の時刻（UNIX 秒）。
-	//
-	// 定期ジョブが投入されなくなっても他のゲージは最後の値のまま残るため、
-	// これがないと「同期が止まっている」ことを検知できない。
-	// 実際に UniqueOpts の設定ミスで定期ジョブがワンショット化していた事故があり、
-	// このメトリクスがあれば気づけた。
-	EpgSyncLastSuccess = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "rokuban_epg_sync_last_success_timestamp_seconds",
-		Help: "Unix time of the last successful full EPG sync. Use with time() to detect a stalled sync job.",
-	})
 )
 
 // チューナー射影と容量超過（M2-10、issue #21 / docs/data.md §6.5）のメトリクス。
@@ -392,14 +381,6 @@ var (
 	TunersProjected = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_tuners_projected",
 		Help: "Tuners projected by the most recent tuner sync pass.",
-	}, []string{"site"})
-
-	// TunerSyncLastSuccess は最後に成功したチューナー全量同期の時刻（UNIX 秒）。
-	// EpgSyncLastSuccess と同じ理由（他のゲージは値が凍結するので、これがないと
-	// 「同期が止まっている」を検知できない）で持つ。
-	TunerSyncLastSuccess = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "rokuban_tuner_sync_last_success_timestamp_seconds",
-		Help: "Unix time of the last successful full tuner sync. Use with time() to detect a stalled sync job.",
 	}, []string{"site"})
 
 	// CapacityOverages はチューナーが不足している区間の数（結合済み、地平線全体）。
@@ -580,10 +561,6 @@ var (
 		Name: "rokuban_storage_derived_copies_outside_derived_s3",
 		Help: "Number of active current-generation derived media copies in configured S3 stores other than storage.derived.",
 	})
-	StorageTransferLastSuccess = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: "rokuban_storage_transfer_last_success_timestamp_seconds",
-		Help: "Unix time of the last successful media asset transfer.",
-	})
 	StorageTransferPolicyMismatches = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "rokuban_storage_transfer_policy_mismatch_total",
 		Help: "Total storage transfer jobs discarded because their policy fingerprint differs from the worker configuration.",
@@ -706,7 +683,7 @@ var (
 
 	// LiveIdleGCLastPass は最後に完走した idle GC パスの時刻（UNIX 秒）。
 	//
-	// EpgSyncLastSuccess と同じ理由（ゲージの凍結対策。
+	// EPG 同期の確定時刻と同じ理由（ゲージの凍結対策。
 	// docs/operations.md の「ゲージには最後に成功した時刻を対で持つ」規律）。
 	// LiveActiveSessions は idle GC ループが止まっても直近の値のまま凍結するため、
 	// それだけでは「セッションが本当にゼロになった」のか「GC ループが死んでいて
@@ -804,10 +781,8 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		EpgSyncDuration,
 		EpgProgramsProjected,
 		EpgChannelsWithoutPrograms,
-		EpgSyncLastSuccess,
 
 		TunersProjected,
-		TunerSyncLastSuccess,
 		CapacityOverages,
 
 		DeleteReconcileDeleted,
@@ -829,7 +804,6 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		StorageTransferWaitingBytes,
 		StorageTransferExhaustedAssets,
 		StorageDerivedCopiesOutsideDerivedS3,
-		StorageTransferLastSuccess,
 		StorageTransferPolicyMismatches,
 		StorageTransferCorruptSourcesRetired,
 		StorageTransferMountMismatches,

@@ -165,7 +165,7 @@ N 日にすると、`epg_programs` に全サービスの放送済み番組が N 
 | 滞留の型 | 見るメトリクス |
 |---|---|
 | 観測済みの ingest 詰まり | `rokuban_uningested_records{site}` / `rokuban_uningested_record_bytes{site}` の増加 |
-| 回線断中の録画 | `rokuban_sweep_last_success_timestamp_seconds{site}` / `rokuban_epg_sync_last_success_timestamp_seconds` の停滞 |
+| 回線断中の録画 | site ごとの `rokuban_sweep_last_success_timestamp_seconds{site}` の停滞。EPG のラベルなし系列は全 site の最新なので、単独では使わない |
 
 観測済みの ingest 詰まりは、worker 停止・ストレージ障害・キュー詰まりで起きる。断の直前に `finished` として観測済みの record もこちらである。回線断の型は、断の最中に始まった録画と、断が始まった時点でまだ録画中だった録画である。
 

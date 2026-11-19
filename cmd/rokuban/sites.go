@@ -211,6 +211,17 @@ func newTransferBacklogCollector(pool *pgxpool.Pool, storage config.StorageConfi
 	return metrics.NewTransferBacklogCollector(pgstore.NewMediaWithStores(pool, "", "", ""), limits)
 }
 
+// newSyncMarkerCollector は EPG 同期・チューナー同期・物理転送の確定時刻を出す collector を作る。
+// 設定された全 site を登録する（書き手は site 束縛の ScaledJob でも、読み手は常駐の全 site を見る）。
+// 読むのは DB の表だけなので、api を含むどのロールでも scrape できる。
+func newSyncMarkerCollector(pool *pgxpool.Pool, registry []config.MirakcSite) prometheus.Collector {
+	sites := make([]string, 0, len(registry))
+	for _, s := range registry {
+		sites = append(sites, s.Site)
+	}
+	return metrics.NewSyncMarkerCollector(pgstore.NewReservations(pool), sites)
+}
+
 // newReconcileMarkerCollector は全件パスの完走時刻と FS の置き場の観測時刻を出す collector を作る。
 // 削除パスを書く worker がある置き場は全 FS と所有者が走らせる派生物用 S3 なので、削除の集合は TransferDestinationStoreNames と一致する。
 // 読むのは DB の表だけなので、api を含むどのロールでも scrape できる。

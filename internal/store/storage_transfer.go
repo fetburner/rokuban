@@ -202,6 +202,7 @@ type StorageTransfer interface {
 	PrepareMediaAssetTransfer(ctx context.Context, mediaAssetID int64, targetStore string, originalRules []byte, fsStores, sourceStores, mountedStores []string, derivedStore string, attemptLimit int32) (MediaAssetTransfer, bool, error)
 	// CompleteMediaAssetTransfer は SHA-256 を観測し、destination copy が active になったかを返す。
 	// 同じ copy を別 worker が先に active にした場合も active=true を返す。
+	// active=true のときは、同じトランザクションで LoopStorageTransfer の印を進める（失敗すれば active 化も取り消す）。
 	CompleteMediaAssetTransfer(ctx context.Context, transfer MediaAssetTransfer, targetStore, derivedStore string, originalRules, sha256 []byte) (active bool, rejection string, err error)
 	// RecordMediaAssetTransferFailure は転送失敗を記録する。
 	RecordMediaAssetTransferFailure(ctx context.Context, copyID int64, message string) error

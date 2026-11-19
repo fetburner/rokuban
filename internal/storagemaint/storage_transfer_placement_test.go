@@ -241,6 +241,9 @@ func TestCompleteMediaAssetTransferRejectsChangedSHA(t *testing.T) {
 	if got := copyStateIn(t, pool, assetID, "archive"); got != "pending" {
 		t.Errorf("destination copy state = %q, want pending", got)
 	}
+	if _, ok := transferMarkerAt(t, pool); ok {
+		t.Error("storage transfer marker written for a rejected completion, want no write")
+	}
 }
 
 // TestStorageTransferCorruptRetirementSerializesWithUntilEncoded は、破損した派生コピーの退役と

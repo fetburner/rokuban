@@ -187,7 +187,7 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
   "DELETE FROM river_job WHERE kind='epg_sync' AND state='completed'"
 ```
 
-`rokuban_epg_sync_last_success_timestamp_seconds` が更新され続けているかで監視できる。
+`rokuban_epg_sync_last_success_timestamp_seconds` が更新され続けているかで監視できる。この系列はラベルを持たず、設定された site の最新の同期時刻を出す。0 のときは、まだ一度も同期が完了していない。系列が出ないときは、DB の読み取りに失敗しているので、`rokuban_sync_marker_scrape_errors_total{source="epg_sync"}` の増加を見る。
 
 <details>
 <summary>根拠</summary>
@@ -291,10 +291,11 @@ curl -s http://localhost:9090/api/v1/query --data-urlencode \
 
 ```sh
 curl -s http://localhost:40773/metrics |
-  grep -E 'rokuban_tuners_projected|rokuban_tuner_sync_last_success|rokuban_capacity_overages'
+  grep -E 'rokuban_tuners_projected|rokuban_tuner_sync_last_success|rokuban_capacity_overages|rokuban_sync_marker_scrape_errors_total'
 # rokuban_tuners_projected{site="default"} 4
 # rokuban_tuner_sync_last_success_timestamp_seconds{site="default"} 1.7695e+09
 # rokuban_capacity_overages{site="default"} 0
+# rokuban_sync_marker_scrape_errors_total{source="tuner_sync"} 0
 ```
 
 ```sh

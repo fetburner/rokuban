@@ -22,7 +22,9 @@ EPGStation ドロップログの scramble 列と同じ役割である。復号�
 
 ingest が詰まって未 ingest の record が溜まり続けるシナリオへの備えである（[ストレージ](../storage.md) のサイジング指針と対）。
 
-回線断は `rokuban_sweep_last_success_timestamp_seconds{site}` と `rokuban_epg_sync_last_success_timestamp_seconds` の停滞で見張る。断が `epg.retention_grace` を超えると encode 意図が落ちる（[ストレージ運用](storage.md)「N 日は容量だけでは決まらない」）。
+回線断は、site ごとの `rokuban_sweep_last_success_timestamp_seconds{site}` の停滞で見張る。`rokuban_epg_sync_last_success_timestamp_seconds` はラベルを持たず、設定された site の最新の同期時刻を出すので、どれか 1 つの site が同期できていることしか示さない。断が `epg.retention_grace` を超えると encode 意図が落ちる（[ストレージ運用](storage.md)「N 日は容量だけでは決まらない」）。
+
+どちらの系列も、初回の成功が完了するまでは 0 を出す。0 は、初回の成功がまだ完了していないことだけを意味する。その間は、同期が止まっていなくても経過時間の式が発火する。導入して 1 周期待ってから、経過時間の式を有効にする。
 
 #### 回線断を検知できない理由
 

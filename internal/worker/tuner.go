@@ -31,6 +31,8 @@ type TunerSyncWorker struct {
 	TunerStore store.TunerSync
 	// CapacityStore は投影後の容量判定に必要な読み取りを行う。
 	CapacityStore store.Capacity
+	// Markers は同期の確定時刻を監視向けに残す（loop_success_markers の tuner_sync）。nil なら残さない。
+	Markers store.LoopMarkers
 }
 
 // Work はチューナーの全量同期を 1 パス実行する。
@@ -101,8 +103,13 @@ func (w *TunerSyncWorker) Work(ctx context.Context, args jobs.TunerSyncArgs) err
 		return fmt.Errorf("deleting stale tuners: %w", err)
 	}
 
+	// 確定時刻は射影の確定の後、容量計算より前に残す。容量計算の失敗は同期の失敗ではない（下で警告にする）。
+	if w.Markers != nil {
+		if err := w.Markers.MarkTunerSync(ctx, site); err != nil {
+			return fmt.Errorf("marking tuner sync: %w", err)
+		}
+	}
 	metrics.TunersProjected.WithLabelValues(site).Set(float64(len(params)))
-	metrics.TunerSyncLastSuccess.WithLabelValues(site).SetToCurrentTime()
 
 	// 容量超過区間のゲージは射影が変わったこのパスで入れ直す。予約側の変更でも
 	// 値は変わりうるが、このゲージは「構成の余裕を眺める」ためのもの（アラートの

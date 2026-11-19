@@ -61,9 +61,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	EpgSyncDuration.Observe(1)
 	EpgProgramsProjected.Set(1)
 	EpgChannelsWithoutPrograms.Set(0)
-	EpgSyncLastSuccess.SetToCurrentTime()
 	TunersProjected.WithLabelValues(testSite).Set(2)
-	TunerSyncLastSuccess.WithLabelValues(testSite).SetToCurrentTime()
 	CapacityOverages.WithLabelValues(testSite).Set(0)
 	LiveSessionStartFailures.WithLabelValues("session_limit").Inc()
 	LiveSessionStartFailures.WithLabelValues("record_not_ready_timeout").Inc()
@@ -114,12 +112,10 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_epg_sync_duration_seconds",
 		"rokuban_epg_programs_projected",
 		"rokuban_epg_channels_without_programs",
-		"rokuban_epg_sync_last_success_timestamp_seconds",
 		// program_id 再利用検出（ruler）
 		"rokuban_ruler_program_id_reuse_total",
 		// M2-10: チューナー射影と容量超過
 		"rokuban_tuners_projected",
-		"rokuban_tuner_sync_last_success_timestamp_seconds",
 		"rokuban_capacity_overages",
 		// issue #91: ライブ視聴
 		"rokuban_live_active_sessions",

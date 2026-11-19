@@ -34,7 +34,7 @@
 4. 置き場の目印を作って採用する（[setup.md](setup.md) §置き場の目印）。
 5. 次の 3 つを確かめる。
    - `rokuban_storage_transfer_waiting_assets` が減る。
-   - `rokuban_storage_transfer_last_success_timestamp_seconds` が進む。
+   - `rokuban_storage_transfer_last_success_timestamp_seconds` が進む。公開が 1 件確定するとその時刻に進み、キューが空のときは進まない。転送待ちがあるのに進まないときは、転送の worker とマウントを調べる。
    - 転送の実測レートが `bandwidth` の上限の下に収まる。アプリは実測レートを出さないので、網の計測で見る。
 
    この例の規則は `older_than: 30d` で、30 日を過ぎたエッジの原本だけを中央へ送る。新しく置く環境では、30 日を過ぎた原本が出るまで原本の転送は起きない。

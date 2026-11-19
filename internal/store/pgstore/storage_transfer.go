@@ -199,6 +199,10 @@ func (s *Media) CompleteMediaAssetTransfer(ctx context.Context, transfer store.M
 		if err := sqlcgen.New(tx).DeleteMediaAssetTransferProgress(ctx, transfer.CopyID); err != nil {
 			return false, "", fmt.Errorf("clearing transfer progress for copy %d: %w", transfer.CopyID, mapDatabaseError(err))
 		}
+		// 印は公開の確定と同じトランザクションに置く（別の文だと、active 化の後・印の前に落ちた再試行が no-op になり時刻を失う）。
+		if err := sqlcgen.New(tx).UpsertLoopSuccessMarker(ctx, sqlcgen.UpsertLoopSuccessMarkerParams{Loop: store.LoopStorageTransfer, Scope: store.StorageTransferScope}); err != nil {
+			return false, "", fmt.Errorf("upserting storage transfer marker for copy %d: %w", transfer.CopyID, mapDatabaseError(err))
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, "", fmt.Errorf("committing media asset transfer: %w", mapDatabaseError(err))
