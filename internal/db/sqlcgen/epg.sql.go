@@ -184,69 +184,6 @@ func (q *Queries) GetProgramSnapshotSource(ctx context.Context, arg GetProgramSn
 	return i, err
 }
 
-const listEpgPrograms = `-- name: ListEpgPrograms :many
-SELECT site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free, name, description, extended, genres, video, audios, observed_at, genre_lv1, series_key FROM epg_programs
-WHERE site = $1
-  AND start_at < $2::timestamptz
-  AND end_at   > $3::timestamptz
-  AND ($4::integer IS NULL OR network_id = $4::integer)
-  AND ($5::integer IS NULL OR service_id = $5::integer)
-ORDER BY start_at, network_id, service_id
-`
-
-type ListEpgProgramsParams struct {
-	Site        string
-	WindowEnd   time.Time
-	WindowStart time.Time
-	NetworkID   *int32
-	ServiceID   *int32
-}
-
-func (q *Queries) ListEpgPrograms(ctx context.Context, arg ListEpgProgramsParams) ([]EpgProgram, error) {
-	rows, err := q.db.Query(ctx, listEpgPrograms,
-		arg.Site,
-		arg.WindowEnd,
-		arg.WindowStart,
-		arg.NetworkID,
-		arg.ServiceID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []EpgProgram
-	for rows.Next() {
-		var i EpgProgram
-		if err := rows.Scan(
-			&i.Site,
-			&i.ProgramID,
-			&i.NetworkID,
-			&i.ServiceID,
-			&i.EventID,
-			&i.StartAt,
-			&i.DurationMs,
-			&i.EndAt,
-			&i.IsFree,
-			&i.Name,
-			&i.Description,
-			&i.Extended,
-			&i.Genres,
-			&i.Video,
-			&i.Audios,
-			&i.ObservedAt,
-			&i.GenreLv1,
-			&i.SeriesKey,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listEpgProgramsForList = `-- name: ListEpgProgramsForList :many
 SELECT p.site, p.program_id, p.network_id, p.service_id, p.event_id,
        p.start_at, p.duration_ms, p.end_at, p.is_free, p.name, p.description,

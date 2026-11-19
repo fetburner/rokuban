@@ -86,15 +86,6 @@ WHERE site = $1 AND end_at < $2;
 -- name: CountEpgPrograms :one
 SELECT count(*) FROM epg_programs WHERE site = $1;
 
--- name: ListEpgPrograms :many
-SELECT * FROM epg_programs
-WHERE site = $1
-  AND start_at < sqlc.arg(window_end)::timestamptz
-  AND end_at   > sqlc.arg(window_start)::timestamptz
-  AND (sqlc.narg(network_id)::integer IS NULL OR network_id = sqlc.narg(network_id)::integer)
-  AND (sqlc.narg(service_id)::integer IS NULL OR service_id = sqlc.narg(service_id)::integer)
-ORDER BY start_at, network_id, service_id;
-
 -- 一覧向けの軽い形。extended / video / audios は返さない（1 行あたり数 KB になり
 -- 時間窓を広げたときの転送量が跳ねるため。詳細は GetEpgProgram で取る）。
 --
