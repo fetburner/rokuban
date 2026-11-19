@@ -4068,32 +4068,11 @@ func TestIngestWorker_SameContentFilenameGetsUniquePaths(t *testing.T) {
 // 再開時に保存済み canonical path が別アセットに使われている場合、
 // ingest が先行の実ファイルを壊さずに失敗することを確認する。
 //
-// checkRelPathConflict の述語は `state <> 'deleted'`（一意索引の述語と同じ）
-// であり、'active' と 'deleting' の両方を「衝突」として塞ぐ。これを
-// `state = 'active'` に狭める変異（'deleting' を見逃す）は worker パッケージ
-// 全緑のまま通ってしまう穴だった（PR #267 のレビューで指摘・実測）。
-// 'deleting' 行のファイルは delete_reconcile の 3 段階
-// （active → deleting → unlink → deleted、delete_execute.go の
-// deleteMediaAsset）のうち unlink 前・unlink 失敗中はまだ実在し、かつ
-// resolveUnqualifiedDeletingAsset がファイルの現存を確認した上でその行を
-// active に戻しうる（issue #105）。したがって 'deleting' 行のファイルを
-// ingest が上書きすると、それが後から active として復元され、issue #197
-// が問題にした「DB は active、実体は別番組」がここでも再生産される。
-// そのためテーブル駆動で 'active' / 'deleting' の両方を確認する
-// （CLAUDE.md テスト規律「分岐を直したら両方向で確認する」）。
-func TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile(t *testing.T) {
-	t.Parallel()
-	for _, existingState := range []string{"active", "deleting"} {
-		t.Run(existingState, func(t *testing.T) {
-			testRelPathConflictRefusesWithoutCorruptingExistingFile(t, existingState)
-		})
-	}
-}
-
-// testRelPathConflictRefusesWithoutCorruptingExistingFile は
-// TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile の
-// 本体。existingState は先行の media_asset に与える state（"active" /
-// "deleting"）。
+// 衝突の判定（`state <> 'deleted'`）は SQL（GetLiveMediaAssetByRelPath）にある。
+// 'active' と 'deleting' を衝突、tombstone を非衝突とする状態ごとの行は
+// internal/store/contracttest の runLiveMediaAssetRecordingID が持つ。ingest は
+// 状態を見ず、行の有無だけで拒むので、ここでは 'active' の 1 行で配線
+// （転送の前に拒む）だけを検査する。
 //
 // このテストが実際に守っているもの（一時ファイル方式では checkRelPathConflict
 // を無効化しても先行ファイルは壊れない --- commit は canonical path を temp から
@@ -4106,7 +4085,8 @@ func TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile(t *te
 // になり、streamRequests も 0 のままにはならない。事前チェックはこの無駄な
 // 転送とエラー文言の劣化を防ぐためのものであり、先行ファイルの保護そのものは
 // 一時ファイル方式が事前チェック無しでも既に満たしている。
-func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, existingState string) {
+func TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile(t *testing.T) {
+	t.Parallel()
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -4114,23 +4094,16 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 
-	// 先行: 既に existingState の media_asset として commit 済みの録画
+	// 先行: 既に active の media_asset として commit 済みの録画
 	// （別の recording_id）。実ファイルは既存の「正しい」中身を持つ。
 	existingRecordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 301
 	})
 	const conflictRelPath = "sites/default/shared/conflict.m2ts"
-	existingAssetID := dbtest.MediaAsset(t, pool, existingRecordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, existingRecordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = conflictRelPath
 		fixtureParams.SizeBytes = 21
 	})
-
-	if existingState != "active" {
-		// MediaDelete.MarkDeleting（delete_execute.go）は deleted_at を
-		// 立てない --- 'deleting' は unlink 前後の中間状態であり、不可逆な
-		// 削除確定（deleted_at）はまだ起きていない。ここでもその形を模す。
-		dbtest.SetMediaAssetState(t, pool, existingAssetID, existingState)
-	}
 
 	existingContent := []byte("existing-untouched-01") // 21 バイト
 	if len(existingContent) != 21 {
