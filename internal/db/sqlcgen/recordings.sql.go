@@ -704,21 +704,13 @@ SET cm_detect = true,
     cm_detect_generation = recording_processing_policy.cm_detect_generation
         + CASE WHEN recording_processing_policy.cm_detect THEN 0 ELSE 1 END,
     updated_at = now()
-WHERE EXISTS (
-    SELECT 1 FROM media_assets o
-    WHERE o.recording_id = recording_processing_policy.recording_id
-      AND o.kind = 'original'
-      AND EXISTS (SELECT 1 FROM active_present_media_asset_copies(o.id, NULL::text))
-)
-  AND EXISTS (
-    SELECT 1 FROM recordings r
-    WHERE r.id = recording_processing_policy.recording_id AND r.deleted_at IS NULL
-)
 `
 
 // cm_detect の切り替えは凍結済み policy の更新、または active な原本を持つ
-// 未凍結録画の初回凍結として適用する。原本の状態はこの INSERT/UPDATE の瞬間に
-// 再評価し、読み取りと書き込みの間に原本が消える窓を作らない。
+// 未凍結録画の初回凍結として適用する。条件はこの文の中で評価し、Go 側の先行読み取りには頼らない。
+// DO UPDATE に入るのは SELECT が返した行だけで、READ COMMITTED では文の残りも同じ snapshot を使う
+// （PostgreSQL 17 マニュアル §13.2.1、STABLE 関数は §36.7）。そのため DO UPDATE の WHERE で
+// 同じ条件を繰り返しても結果は変わらず、置いていない。
 // cm_detect_generation は実際に値が切り替わるときだけ 1 進める（同じ値の再送では進めない）。
 // 試行行はこの世代と一致する間だけ現在の試行になり、時刻の精度や tx の時刻の意味に依存しない。
 func (q *Queries) SetRecordingCMDetection(ctx context.Context, recordingID int64) (int64, error) {
