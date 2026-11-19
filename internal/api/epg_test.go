@@ -229,6 +229,12 @@ func TestListPrograms_Window(t *testing.T) {
 			t.Error("A-1 should not overlap [01:00, 02:00)")
 		}
 	}
+
+	// 窓の終了にちょうど接するだけの番組も入らない（A-1 は start == window_end）
+	got = GetJSON[[]ProgramListItem](t, programsURL(srv.URL, base.Add(-time.Hour), base))
+	if len(got) != 0 {
+		t.Errorf("programs = %d, want 0 (A-1 starts at window_end)", len(got))
+	}
 }
 
 func TestListPrograms_ServiceFilter(t *testing.T) {
