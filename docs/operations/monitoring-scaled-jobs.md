@@ -10,14 +10,14 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 
 止まり方ごとに、見るものが違う。
 
+名前・型・意味は `internal/metrics` と `internal/metrics/dbcollector` の定義（`Name` と `Help`）を引く。
+
 | 見るもの | 意味 |
 |---|---|
-| `rokuban_reconcile_last_success_timestamp_seconds{site}` | DB に保存された site 単位の予約同期の完走時刻。`time() - この値` が周期を大きく超えたら、ScaledJob でも止まっている |
-| `rokuban_ruler_last_success_timestamp_seconds{site}` / `rokuban_sweep_last_success_timestamp_seconds{site}` | DB に保存された site 単位の成功時刻。`time() - この値` が周期を大きく超えたら、ScaledJob でも止まっている |
-| `rokuban_encode_reconcile_last_success_timestamp_seconds` / `rokuban_thumbnail_reconcile_last_success_timestamp_seconds` / `rokuban_ts_scan_reconcile_last_success_timestamp_seconds` | DB に保存された全件パスの完走時刻。ScaledJob でも止まっているかを検出できる |
-| `rokuban_delete_reconcile_last_success_timestamp_seconds{store}` | DB に保存された置き場ごとの削除 reconcile の完走時刻 |
-| `rokuban_epg_sync_last_success_timestamp_seconds` / `rokuban_tuner_sync_last_success_timestamp_seconds{site}` / `rokuban_storage_transfer_last_success_timestamp_seconds` | DB に保存された EPG 同期・チューナー同期・物理転送の確定時刻。読み方は下の「EPG・チューナー同期と物理転送の確定時刻」 |
-| `rokuban_storage_root_observed_timestamp_seconds{store,root}` | DB の `storage_sync` に保存された root ごとの最後の観測時刻 |
+| `rokuban_ruler_last_success_timestamp_seconds{site}` / `rokuban_sweep_last_success_timestamp_seconds{site}` / `rokuban_reconcile_last_success_timestamp_seconds{site}` | `time() - この値` が周期を大きく超えたら、ScaledJob でも止まっている |
+| `rokuban_delete_reconcile_last_success_timestamp_seconds{store}` / `rokuban_storage_root_observed_timestamp_seconds{store,root}` | `time() - この値` が周期を大きく超えたら、ScaledJob でも止まっている |
+| `rokuban_encode_reconcile_last_success_timestamp_seconds` / `rokuban_thumbnail_reconcile_last_success_timestamp_seconds` / `rokuban_ts_scan_reconcile_last_success_timestamp_seconds` | `time() - この値` が周期を大きく超えたら、ScaledJob でも止まっている |
+| `rokuban_epg_sync_last_success_timestamp_seconds` / `rokuban_tuner_sync_last_success_timestamp_seconds{site}` / `rokuban_storage_transfer_last_success_timestamp_seconds` | 読み方は下の「EPG・チューナー同期と物理転送の確定時刻」 |
 | `river_job` の `state='available'` が滞留 | 投入はされているが誰も引いていない（worker が 0 か、キューを引いていない） |
 | `river_job` の ingest キューで `state='running'` が上限に張り付き、`available` が滞留している | ingest の枠不足。`ingest.concurrency` が録画数に対して小さく、UI では取り込み待ちが続く |
 | `river_job` が増えない | **投入自体が止まっている。** `worker.periodic_jobs: false` なのに CronJob が動いていない、あるいはリーダーが不在 |

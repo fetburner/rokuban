@@ -48,17 +48,17 @@ func NewSyncMarkerCollector(markers store.LoopMarkers, sites []string) *SyncMark
 		sites:   slices.Clone(sites),
 		epg: prometheus.NewDesc(
 			"rokuban_epg_sync_last_success_timestamp_seconds",
-			"Unix time (database clock) of the last completed full EPG sync. The series has no labels and takes the latest over the configured sites. Zero means no site has completed one yet. A read failure omits the series instead.",
+			"Unix time (database clock) of the last completed full EPG sync. The series has no labels and takes the latest over the configured sites. Zero means no site has completed one yet. It is read from loop_success_markers on every scrape. A read failure omits the series instead.",
 			nil, nil,
 		),
 		tuner: prometheus.NewDesc(
 			"rokuban_tuner_sync_last_success_timestamp_seconds",
-			"Unix time (database clock) of the last completed full tuner sync for the site. Zero means this site has not completed one yet. A read failure omits the series instead.",
+			"Unix time (database clock) of the last completed full tuner sync for the site. Zero means this site has not completed one yet. It is read from loop_success_markers on every scrape. A read failure omits the series instead.",
 			[]string{"site"}, nil,
 		),
 		transfer: prometheus.NewDesc(
 			"rokuban_storage_transfer_last_success_timestamp_seconds",
-			"Unix time (database clock) of the last physical copy that became active in any store. Zero means none has completed. It does not advance while the transfer queue is empty. A read failure omits the series instead.",
+			"Unix time (database clock) of the last physical copy that became active in any store. Zero means none has completed. It does not advance while the transfer queue is empty. It is read from loop_success_markers on every scrape. A read failure omits the series instead.",
 			nil, nil,
 		),
 		errors: readErrors,
