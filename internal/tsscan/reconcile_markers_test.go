@@ -57,7 +57,7 @@ func (m *tsScanMarkerRecorder) ReadLoopMarkers(context.Context, string) (map[str
 func TestReconcileWorkerMarker_FullPassMarksAfterSuccess(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	markers := &tsScanMarkerRecorder{}
-	w := &ReconcileWorker{Enqueuer: &recordingEnqueuer{}, Media: pgstoretest.Media(pool), Locator: pgstoretest.Media(pool), Markers: markers}
+	w := &ReconcileWorker{Enqueuer: &recordingEnqueuer{}, ReconcileStores: ReconcileStores{Media: pgstoretest.Media(pool)}, Locator: pgstoretest.Media(pool), Markers: markers}
 	if err := runWorkerViaJobQFake(context.Background(), w, ReconcileArgs{}); err != nil {
 		t.Fatalf("ReconcileWorker.Work: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestReconcileWorkerMarker_FullPassMarksAfterSuccess(t *testing.T) {
 func TestReconcileWorkerMarker_FailedListingDoesNotMark(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	markers := &tsScanMarkerRecorder{}
-	w := &ReconcileWorker{Enqueuer: &recordingEnqueuer{}, Media: failingTSScanListing{pgstoretest.Media(pool)}, Locator: pgstoretest.Media(pool), Markers: markers}
+	w := &ReconcileWorker{Enqueuer: &recordingEnqueuer{}, ReconcileStores: ReconcileStores{Media: failingTSScanListing{pgstoretest.Media(pool)}}, Locator: pgstoretest.Media(pool), Markers: markers}
 	if err := runWorkerViaJobQFake(context.Background(), w, ReconcileArgs{}); err == nil {
 		t.Fatal("ReconcileWorker.Work = nil, want the listing error")
 	}
@@ -81,7 +81,7 @@ func TestReconcileWorkerMarker_FailedListingDoesNotMark(t *testing.T) {
 func TestReconcileWorkerMarker_WriteFailureFailsThePass(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	markers := &tsScanMarkerRecorder{err: errors.New("marker write rejected")}
-	w := &ReconcileWorker{Enqueuer: &recordingEnqueuer{}, Media: pgstoretest.Media(pool), Locator: pgstoretest.Media(pool), Markers: markers}
+	w := &ReconcileWorker{Enqueuer: &recordingEnqueuer{}, ReconcileStores: ReconcileStores{Media: pgstoretest.Media(pool)}, Locator: pgstoretest.Media(pool), Markers: markers}
 	if err := runWorkerViaJobQFake(context.Background(), w, ReconcileArgs{}); err == nil {
 		t.Fatal("ReconcileWorker.Work = nil, want the marker write error")
 	}

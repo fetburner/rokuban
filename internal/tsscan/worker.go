@@ -22,9 +22,14 @@ const (
 	reconcileRowLimit = 1000
 )
 
+// ScanStores は、置き場に束ねたスキャンが使う永続化契約である。
+type ScanStores struct {
+	Media store.TSScan
+}
+
 // ScanWorker reads an active original and replaces its TS statistics atomically.
 type ScanWorker struct {
-	Media    store.TSScan
+	ScanStores
 	MediaDir string
 }
 
@@ -66,10 +71,15 @@ func (w *ScanWorker) Work(ctx context.Context, args ScanArgs) error {
 	return nil
 }
 
+// ReconcileStores は、置き場に束ねない reconcile が使う永続化契約である。
+type ReconcileStores struct {
+	Media store.TSScan
+}
+
 // ReconcileWorker enqueues missing or stale scans from the current database state.
 type ReconcileWorker struct {
+	ReconcileStores
 	Enqueuer jobq.Enqueuer
-	Media    store.TSScan
 	// Locator は原本のコピーがある置き場を返し、スキャンを積む物理キューの置き場を決める。
 	Locator  store.OriginalLocator
 	RowLimit int32
