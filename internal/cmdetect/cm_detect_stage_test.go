@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -107,11 +107,11 @@ func TestBeginCMDetectionAttemptClearsStage(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(1100)))
-	q := sqlcgen.New(pool)
-	firstAttempt := startCMDetectionTestAttempt(t, ctx, q, id)
+	det := pgstoretest.Analysis(pool)
+	firstAttempt := startCMDetectionTestAttempt(t, ctx, det, id)
 	stage := "logo"
-	markCMDetectionTestFailure(t, ctx, pool, q, id, firstAttempt, "retrying", &stage, nil)
-	if got := startCMDetectionTestAttempt(t, ctx, q, id); got != 2 {
+	markCMDetectionTestFailure(t, ctx, pool, det, id, firstAttempt, "retrying", &stage, nil)
+	if got := startCMDetectionTestAttempt(t, ctx, det, id); got != 2 {
 		t.Fatalf("second attempt count = %d, want 2", got)
 	}
 	var got *string

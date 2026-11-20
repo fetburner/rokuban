@@ -8,12 +8,10 @@ import (
 	"testing"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
@@ -35,12 +33,12 @@ func seedTaughtArea(t *testing.T, pool *pgxpool.Pool, x int) time.Time {
 
 func seedTaughtAreaForService(t *testing.T, pool *pgxpool.Pool, serviceID int32, x int) time.Time {
 	t.Helper()
-	q := sqlcgen.New(pool)
-	testutil.RequireNoError(t, q.UpsertCMLogoArea(context.Background(), sqlcgen.UpsertCMLogoAreaParams{
-		NetworkID: 32736, ServiceID: serviceID, X: int32(x), Y: 24, W: 240, H: 96, CodedWidth: 1440, CodedHeight: 1080,
-	}), "q.UpsertCMLogoArea")
-	area, err := q.GetCMLogoArea(context.Background(), sqlcgen.GetCMLogoAreaParams{NetworkID: 32736, ServiceID: serviceID})
-	testutil.RequireNoError(t, err, "q.GetCMLogoArea")
+	dbtest.CMLogoArea(t, pool, func(p *dbtest.CMLogoAreaParams) {
+		p.ServiceID = serviceID
+		p.X = int32(x)
+	})
+	area, err := pgstoretest.Analysis(pool).GetLogoArea(context.Background(), store.CMStationRef{NetworkID: 32736, ServiceID: serviceID})
+	testutil.RequireNoError(t, err, "GetLogoArea")
 	return area.UpdatedAt
 }
 
@@ -50,11 +48,11 @@ func candidateRow(t *testing.T, pool *pgxpool.Pool) (state, stage string, ok boo
 
 func candidateRowForService(t *testing.T, pool *pgxpool.Pool, serviceID int32) (state, stage string, ok bool) {
 	t.Helper()
-	c, err := sqlcgen.New(pool).GetCMLogoCandidate(context.Background(), sqlcgen.GetCMLogoCandidateParams{NetworkID: 32736, ServiceID: serviceID})
-	if errors.Is(err, pgx5.ErrNoRows) {
+	c, err := pgstoretest.Analysis(pool).GetLogoCandidate(context.Background(), store.CMStationRef{NetworkID: 32736, ServiceID: serviceID})
+	if errors.Is(err, store.ErrNotFound) {
 		return "", "", false
 	}
-	testutil.RequireNoError(t, err, "GetCMLogoCandidate")
+	testutil.RequireNoError(t, err, "GetLogoCandidate")
 	if c.Stage != nil {
 		stage = *c.Stage
 	}
@@ -164,20 +162,18 @@ func TestCMLogoCandidateWorkerFailuresBecomeFailedRows(t *testing.T) {
 }
 
 // 保存の失敗（stage = save）も failed の行として書ける。CHECK に save が無いと
-// MarkCMLogoCandidateFailure 自体が 23514 で落ち、running のまま固まる。
+// MarkLogoCandidateFailed 自体が 23514 で落ち、running のまま固まる。
 func TestMarkCMLogoCandidateFailureAcceptsSaveStage(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(944)))
 	areaAt := seedTaughtArea(t, pool, 1180)
-	attemptedAt := insertRunningCandidate(t, pool, id, areaAt)
+	attemptedAt := insertRunningCandidate(t, pool, 1024, id, areaAt)
 	stage, message := "save", "saving failed"
-	if _, err := sqlcgen.New(pool).MarkCMLogoCandidateFailure(ctx, sqlcgen.MarkCMLogoCandidateFailureParams{
-		NetworkID: 32736, ServiceID: 1024, AreaUpdatedAt: areaAt,
-		AttemptedAt: attemptedAt, Stage: &stage, Error: &message,
-	}); err != nil {
-		t.Fatalf("MarkCMLogoCandidateFailure(save): %v", err)
+	ok, err := pgstoretest.Analysis(pool).MarkLogoCandidateFailed(ctx, store.CMStationRef{NetworkID: 32736, ServiceID: 1024}, areaAt, attemptedAt, &stage, message)
+	if err != nil || !ok {
+		t.Fatalf("MarkLogoCandidateFailed(save) = %v, %v; want the running row marked", ok, err)
 	}
 	if state, got, _ := candidateRow(t, pool); state != "failed" || got != "save" {
 		t.Errorf("candidate = %q/%q, want failed/save", state, got)
@@ -221,16 +217,25 @@ func TestCMLogoCandidateWorkerCancellationClearsRunningRow(t *testing.T) {
 	}
 }
 
-func insertRunningCandidate(t *testing.T, pool *pgxpool.Pool, recordingID int64, areaAt time.Time) time.Time {
-	return insertRunningCandidateForService(t, pool, 1024, recordingID, areaAt)
+// seedCandidateRecording は局 32736/serviceID に原本付きの録画を作る。その局の候補の解析元になれる（desired の条件）。
+func seedCandidateRecording(t *testing.T, pool *pgxpool.Pool, serviceID int32) int64 {
+	t.Helper()
+	return seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.NetworkID = 32736
+		p.ServiceID = serviceID
+		p.EventID = serviceID
+	}))
 }
 
-func insertRunningCandidateForService(t *testing.T, pool *pgxpool.Pool, serviceID int32, recordingID int64, areaAt time.Time) time.Time {
+// insertRunningCandidate は局 32736/serviceID の running 候補を契約の BeginLogoCandidate で作り、試行時刻を返す。
+// areaAt はその局の現在の枠の版、recordingID はその局の原本付きの録画を渡す。
+func insertRunningCandidate(t *testing.T, pool *pgxpool.Pool, serviceID int32, recordingID int64, areaAt time.Time) time.Time {
 	t.Helper()
-	attemptedAt, err := sqlcgen.New(pool).InsertCMLogoCandidateRunning(context.Background(), sqlcgen.InsertCMLogoCandidateRunningParams{
-		NetworkID: 32736, ServiceID: serviceID, RecordingID: recordingID, AreaUpdatedAt: areaAt,
-	})
-	testutil.RequireNoError(t, err, "InsertCMLogoCandidateRunning")
+	attemptedAt, started, err := pgstoretest.Analysis(pool).BeginLogoCandidate(context.Background(), store.CMStationRef{NetworkID: 32736, ServiceID: serviceID}, recordingID, areaAt)
+	testutil.RequireNoError(t, err, "BeginLogoCandidate")
+	if !started {
+		t.Fatalf("BeginLogoCandidate(service %d, recording %d) did not start a running candidate", serviceID, recordingID)
+	}
 	return attemptedAt
 }
 
@@ -238,11 +243,6 @@ func TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(948)))
-	testutil.MustExec(t, pool, "updating recordings", `
-		UPDATE recordings
-		SET started_at = '2025-01-01T00:00:00Z', ended_at = '2025-01-01T00:45:00Z'
-		WHERE id = $1`, id)
 	var dbNow time.Time
 	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&dbNow), "reading DB clock")
 	grace := 2 * time.Minute
@@ -256,8 +256,13 @@ func TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace(t *testing.T) {
 		1026: deadline - 15*time.Minute,
 	}
 	for serviceID, age := range ages {
+		id := seedCandidateRecording(t, pool, serviceID)
+		testutil.MustExec(t, pool, "updating recordings", `
+			UPDATE recordings
+			SET started_at = '2025-01-01T00:00:00Z', ended_at = '2025-01-01T00:45:00Z'
+			WHERE id = $1`, id)
 		areaAt := seedTaughtAreaForService(t, pool, serviceID, 1180)
-		_ = insertRunningCandidateForService(t, pool, serviceID, id, areaAt)
+		insertRunningCandidate(t, pool, serviceID, id, areaAt)
 		testutil.MustExec(t, pool, "updating cm_logo_candidates", `
 			UPDATE cm_logo_candidates SET attempted_at = $3
 			WHERE network_id = 32736 AND service_id = $1 AND recording_id = $2`,
@@ -279,7 +284,6 @@ func TestFailOrphanCMLogoCandidatesWithoutRecordingUsesMinimumDeadline(t *testin
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(949)))
 	var dbNow time.Time
 	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&dbNow), "reading DB clock")
 	grace := 2 * time.Minute
@@ -289,8 +293,9 @@ func TestFailOrphanCMLogoCandidatesWithoutRecordingUsesMinimumDeadline(t *testin
 		1025: deadline + grace/2,
 	}
 	for serviceID, age := range ages {
+		id := seedCandidateRecording(t, pool, serviceID)
 		areaAt := seedTaughtAreaForService(t, pool, serviceID, 1180)
-		_ = insertRunningCandidateForService(t, pool, serviceID, id, areaAt)
+		insertRunningCandidate(t, pool, serviceID, id, areaAt)
 		testutil.MustExec(t, pool, "updating cm_logo_candidates", `
 			UPDATE cm_logo_candidates SET recording_id = NULL, attempted_at = $2
 			WHERE network_id = 32736 AND service_id = $1`, serviceID, dbNow.Add(-age))
@@ -341,15 +346,15 @@ func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
+	det := pgstoretest.Analysis(pool)
 	enqueuer := jobqfaketest.NewRecordingEnqueuer()
 
 	newFailedRecording := func(eventID int32) int64 {
 		t.Helper()
 		id := dbtest.Recording(t, pool, cmRecordingOptions(eventID))
 		seedCMDetectionState(t, pool, t.TempDir(), id)
-		attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
-		markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, "failed", nil, nil)
+		attemptCount := startCMDetectionTestAttempt(t, ctx, det, id)
+		markCMDetectionTestFailure(t, ctx, pool, det, id, attemptCount, "failed", nil, nil)
 		return id
 	}
 	attemptRows := func(recordingID int64) int {
@@ -360,30 +365,24 @@ func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
 	}
 
 	disabled := newFailedRecording(953)
-	testutil.RequireNoError(t, q.ClearRecordingCMDetection(ctx, disabled), "q.ClearRecordingCMDetection")
+	setCMDetectPolicy(t, ctx, pool, disabled, false)
 
 	quicklyReenabled := newFailedRecording(954)
-	testutil.RequireNoError(t, q.ClearRecordingCMDetection(ctx, quicklyReenabled), "q.ClearRecordingCMDetection")
-	if rows, err := q.SetRecordingCMDetection(ctx, quicklyReenabled); err != nil || rows != 1 {
-		t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", quicklyReenabled, rows, err)
-	}
-	if desired, err := q.IsCMDetectionDesired(ctx, quicklyReenabled); err != nil || !desired {
+	setCMDetectPolicy(t, ctx, pool, quicklyReenabled, false)
+	setCMDetectPolicy(t, ctx, pool, quicklyReenabled, true)
+	if desired, err := det.IsDetectionDesired(ctx, quicklyReenabled); err != nil || !desired {
 		t.Fatalf("desired before reconcile for quick toggle = %v, %v; want true (the old failed row is not a current attempt)", desired, err)
 	}
 
 	// 再有効化の後に始めた試行は現在の世代で、同値の再送では消えない。
 	newAttemptAfterReenable := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(955)))
-	testutil.RequireNoError(t, q.ClearRecordingCMDetection(ctx, newAttemptAfterReenable), "q.ClearRecordingCMDetection")
-	if rows, err := q.SetRecordingCMDetection(ctx, newAttemptAfterReenable); err != nil || rows != 1 {
-		t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", newAttemptAfterReenable, rows, err)
-	}
-	attemptCount := startCMDetectionTestAttempt(t, ctx, q, newAttemptAfterReenable)
-	markCMDetectionTestFailure(t, ctx, pool, q, newAttemptAfterReenable, attemptCount, "failed", nil, nil)
-	if rows, err := q.SetRecordingCMDetection(ctx, newAttemptAfterReenable); err != nil || rows != 1 {
-		t.Fatalf("idempotent SetRecordingCMDetection(%d) = %d, %v; want 1 row", newAttemptAfterReenable, rows, err)
-	}
+	setCMDetectPolicy(t, ctx, pool, newAttemptAfterReenable, false)
+	setCMDetectPolicy(t, ctx, pool, newAttemptAfterReenable, true)
+	attemptCount := startCMDetectionTestAttempt(t, ctx, det, newAttemptAfterReenable)
+	markCMDetectionTestFailure(t, ctx, pool, det, newAttemptAfterReenable, attemptCount, "failed", nil, nil)
+	setCMDetectPolicy(t, ctx, pool, newAttemptAfterReenable, true) // idempotent
 
-	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: pgstoretest.Media(pool), DetectionStore: pgstoretest.Analysis(pool)}
+	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: pgstoretest.Media(pool), DetectionStore: det}
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.CMDetectReconcileArgs{}), "jobqfaketest.RunWorkerOnce")
 	if got := attemptRows(disabled); got != 0 {
 		t.Errorf("disabled policy attempt rows = %d, want 0", got)
@@ -394,7 +393,7 @@ func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
 	if got := attemptRows(newAttemptAfterReenable); got != 1 {
 		t.Errorf("post-disable attempt rows = %d, want 1", got)
 	}
-	if desired, err := q.IsCMDetectionDesired(ctx, quicklyReenabled); err != nil || !desired {
+	if desired, err := det.IsDetectionDesired(ctx, quicklyReenabled); err != nil || !desired {
 		t.Errorf("desired after stale attempt cleanup = %v, %v; want true", desired, err)
 	}
 	enqueuedJobs := recordedArgs[jobs.CMDetectJobArgs](t, enqueuer.CallsOfKind(jobs.CMDetectJobArgs{}.Kind()))
@@ -431,13 +430,10 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 		t.Errorf("candidate args = %#v, want station 32736, recording %d, and 2700000ms", candidateArgs, id)
 	}
 
-	attemptedAt := insertRunningCandidate(t, pool, id, areaAt)
+	attemptedAt := insertRunningCandidate(t, pool, 1024, id, areaAt)
 	stage, message := "logo", "failed"
-	if _, err := sqlcgen.New(pool).MarkCMLogoCandidateFailure(context.Background(), sqlcgen.MarkCMLogoCandidateFailureParams{
-		NetworkID: 32736, ServiceID: 1024, AreaUpdatedAt: areaAt,
-		AttemptedAt: attemptedAt, Stage: &stage, Error: &message,
-	}); err != nil {
-		t.Fatal(err)
+	if ok, err := pgstoretest.Analysis(pool).MarkLogoCandidateFailed(context.Background(), store.CMStationRef{NetworkID: 32736, ServiceID: 1024}, areaAt, attemptedAt, &stage, message); err != nil || !ok {
+		t.Fatalf("MarkLogoCandidateFailed = %v, %v", ok, err)
 	}
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, jobs.CMDetectReconcileArgs{}), "jobqfaketest.RunWorkerOnce")
 	if got := count(); got != 1 {
@@ -454,12 +450,7 @@ func TestCMDetectWorkDiscardsResultWhenLogoAdoptedDuringJob(t *testing.T) {
 	id := seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(950)))
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000")
 	upsert := func() {
-		if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
-			NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080), LearnedFrom: &id,
-			CodedWidth: 1440, CodedHeight: 1080,
-		}); err != nil {
-			t.Error(err)
-		}
+		dbtest.CMLogo(t, pool, func(p *dbtest.CMLogoParams) { p.LearnedFrom = &id })
 	}
 	upsert()
 
@@ -486,9 +477,9 @@ func TestCMDetectWorkWritesAdoptAttemptWhileCandidateExists(t *testing.T) {
 			network_id, service_id, state, x, y, w, h, coded_width, coded_height,
 			recording_id, observed_area_updated_at, lgd
 		) VALUES (32736, 1024, 'ready', 1180, 24, 240, 96, 1440, 1080, $1, $2, 'lgd')`, id, areaAt)
-	q := sqlcgen.New(pool)
-	if desired, err := q.IsCMDetectionDesired(ctx, id); err != nil || !desired {
-		t.Fatalf("IsCMDetectionDesired = %v, %v; want true so the adopt attempt can be written", desired, err)
+	det := pgstoretest.Analysis(pool)
+	if desired, err := det.IsDetectionDesired(ctx, id); err != nil || !desired {
+		t.Fatalf("IsDetectionDesired = %v, %v; want true so the adopt attempt can be written", desired, err)
 	}
 
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)), "Work")
@@ -500,7 +491,7 @@ func TestCMDetectWorkWritesAdoptAttemptWhileCandidateExists(t *testing.T) {
 	if _, err := os.Stat(tools.logoframeArgs); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("logoframe ran (stat %v) for a station without an adopted logo", err)
 	}
-	if desired, err := q.IsCMDetectionDesired(ctx, id); err != nil || desired {
-		t.Errorf("IsCMDetectionDesired after the adopt attempt = %v, %v; want false", desired, err)
+	if desired, err := det.IsDetectionDesired(ctx, id); err != nil || desired {
+		t.Errorf("IsDetectionDesired after the adopt attempt = %v, %v; want false", desired, err)
 	}
 }

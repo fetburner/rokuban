@@ -185,13 +185,6 @@ linters:
             - "!${config-path}/internal/metrics/*"
             - "!${config-path}/internal/metrics/dbcollector/*"
             - "!${config-path}/internal/ruler/*"
-            # worker から移した既存の CM テスト。
-            - "!${config-path}/internal/cmdetect/cm_detect_budget_test.go"
-            - "!${config-path}/internal/cmdetect/cm_detect_reconcile_test.go"
-            - "!${config-path}/internal/cmdetect/cm_detect_stage_test.go"
-            - "!${config-path}/internal/cmdetect/cm_detect_test.go"
-            - "!${config-path}/internal/cmdetect/cm_detect_work_test.go"
-            - "!${config-path}/internal/cmdetect/cm_logo_candidate_test.go"
             # worker から移した既存の派生物公開・thumbnail のテスト。
             - "!${config-path}/internal/thumbnail/s3_conformance_test.go"
             - "!${config-path}/internal/thumbnail/seek_tiles_test.go"

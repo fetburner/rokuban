@@ -13,18 +13,17 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-func startCMDetectionTestAttempt(t *testing.T, ctx context.Context, q *sqlcgen.Queries, recordingID int64) int32 {
+func startCMDetectionTestAttempt(t *testing.T, ctx context.Context, det store.CMDetection, recordingID int64) int32 {
 	t.Helper()
-	attempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
-		RecordingID: recordingID, MaxAttempts: cmDetectMaxTries,
-	})
-	if err != nil || !attempt.ShouldRun {
-		t.Fatalf("BeginCMDetectionAttempt(%d) = %#v, %v", recordingID, attempt, err)
+	attempt, shouldRun, err := det.BeginAttempt(ctx, recordingID, cmDetectMaxTries)
+	if err != nil || !shouldRun {
+		t.Fatalf("BeginAttempt(%d) = %#v, %v", recordingID, attempt, err)
 	}
 	return attempt.AttemptCount
 }
@@ -38,13 +37,11 @@ func cmAttemptGeneration(t *testing.T, ctx context.Context, pool *pgxpool.Pool, 
 	return generation
 }
 
-func startCMDetectionTestAttemptRow(t *testing.T, ctx context.Context, q *sqlcgen.Queries, recordingID int64) sqlcgen.BeginCMDetectionAttemptRow {
+func startCMDetectionTestAttemptRow(t *testing.T, ctx context.Context, det store.CMDetection, recordingID int64) store.CMDetectionAttempt {
 	t.Helper()
-	attempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
-		RecordingID: recordingID, MaxAttempts: cmDetectMaxTries,
-	})
-	if err != nil || !attempt.ShouldRun {
-		t.Fatalf("BeginCMDetectionAttempt(%d) = %#v, %v", recordingID, attempt, err)
+	attempt, shouldRun, err := det.BeginAttempt(ctx, recordingID, cmDetectMaxTries)
+	if err != nil || !shouldRun {
+		t.Fatalf("BeginAttempt(%d) = %#v, %v", recordingID, attempt, err)
 	}
 	return attempt
 }
@@ -53,7 +50,7 @@ func markCMDetectionTestFailure(
 	t *testing.T,
 	ctx context.Context,
 	pool *pgxpool.Pool,
-	q *sqlcgen.Queries,
+	det store.CMDetection,
 	recordingID int64,
 	attemptCount int32,
 	state string,
@@ -65,14 +62,19 @@ func markCMDetectionTestFailure(
 		defaultMessage := "test failure"
 		message = &defaultMessage
 	}
-	n, err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{
+	ok, err := det.FailAttempt(ctx, store.CMDetectionAttempt{
 		RecordingID: recordingID, AttemptCount: attemptCount,
-		State: state, Stage: stage, Error: message,
 		PolicyGeneration: cmAttemptGeneration(t, ctx, pool, recordingID),
-	})
-	if err != nil || n != 1 {
-		t.Fatalf("MarkCMDetectionFailure(%d, %d) = %d, %v", recordingID, attemptCount, n, err)
+	}, state, stage, *message)
+	if err != nil || !ok {
+		t.Fatalf("FailAttempt(%d, %d) = %v, %v", recordingID, attemptCount, ok, err)
 	}
+}
+
+// setCMDetectPolicy は録画の CM 検出の方針を有効または無効にする。
+func setCMDetectPolicy(t *testing.T, ctx context.Context, pool *pgxpool.Pool, recordingID int64, enabled bool) {
+	t.Helper()
+	testutil.RequireNoError(t, pgstoretest.Media(pool).SetPolicy(ctx, recordingID, store.EncodePolicyUpdate{CMDetect: &enabled}), "setting CM detection policy")
 }
 
 func TestCMFrameTimeConversionsUse30000Over1001(t *testing.T) {
@@ -232,7 +234,7 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
+	det := pgstoretest.Analysis(pool)
 	mediaDir := t.TempDir()
 	seed := func(eventID int32) int64 {
 		id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
@@ -248,40 +250,37 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 	fail := func(t *testing.T, id int64, stage *string) {
 		t.Helper()
 		message := "failed"
-		attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
-		markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, "failed", stage, &message)
+		attemptCount := startCMDetectionTestAttempt(t, ctx, det, id)
+		markCMDetectionTestFailure(t, ctx, pool, det, id, attemptCount, "failed", stage, &message)
 	}
 	wantDesired := func(t *testing.T, id int64, want bool) {
 		t.Helper()
-		desired, err := q.IsCMDetectionDesired(ctx, id)
-		testutil.RequireNoError(t, err, "q.IsCMDetectionDesired")
+		desired, err := det.IsDetectionDesired(ctx, id)
+		testutil.RequireNoError(t, err, "IsDetectionDesired")
 		if desired != want {
-			t.Fatalf("IsCMDetectionDesired(%d) = %v, want %v", id, desired, want)
+			t.Fatalf("IsDetectionDesired(%d) = %v, want %v", id, desired, want)
 		}
-		ids, err := q.ListMissingCMDetections(ctx, 100)
-		testutil.RequireNoError(t, err, "q.ListMissingCMDetections")
+		missing, err := det.ListMissingDetections(ctx, 100)
+		testutil.RequireNoError(t, err, "ListMissingDetections")
 		listed := false
-		for _, got := range ids {
+		for _, got := range missing {
 			listed = listed || got.RecordingID == id
 		}
 		if listed != want {
-			t.Fatalf("ListMissingCMDetections = %v, want recording %d listed = %v", ids, id, want)
+			t.Fatalf("ListMissingDetections = %v, want recording %d listed = %v", missing, id, want)
 		}
 	}
 	fail(t, id, nil)
 	wantDesired(t, id, false)
 
-	testutil.RequireNoError(t, q.UpsertCMLogoArea(ctx, sqlcgen.UpsertCMLogoAreaParams{
-		NetworkID: 32736, ServiceID: 1024, X: 1180, Y: 24, W: 240, H: 96,
-		CodedWidth: 1440, CodedHeight: 1080,
-	}), "q.UpsertCMLogoArea")
+	dbtest.CMLogoArea(t, pool)
 	wantDesired(t, id, false) // 枠だけでは再投入しない
 
 	// 候補が存在しても、枠あり・ロゴなしの局の新しい録画は desired のまま（ingest ヒントも
 	// Work 冒頭の再評価も IsCMDetectionDesired を通る）。外すと adopt の attempt が書かれず、
 	// pending にも failed にも出ない見えない停止になる。
-	area, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{NetworkID: 32736, ServiceID: 1024})
-	testutil.RequireNoError(t, err, "q.GetCMLogoArea")
+	area, err := det.GetLogoArea(ctx, store.CMStationRef{NetworkID: 32736, ServiceID: 1024})
+	testutil.RequireNoError(t, err, "GetLogoArea")
 	testutil.MustExec(t, pool, "inserting a ready logo candidate", `
 		INSERT INTO cm_logo_candidates (
 			network_id, service_id, state, x, y, w, h, coded_width, coded_height,
@@ -298,9 +297,7 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 	wantDesired(t, fresh, false)
 
 	// 採用でロゴができると、失敗していた録画（adopt 待ちを含む）が desired に戻る。
-	testutil.RequireNoError(t, q.UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
-		NetworkID: 32736, ServiceID: 1024, Lgd: []byte("lgd"), LearnedFrom: &id, CodedWidth: 1440, CodedHeight: 1080,
-	}), "q.UpsertCMLogo")
+	dbtest.CMLogo(t, pool, func(p *dbtest.CMLogoParams) { p.LearnedFrom = &id })
 	wantDesired(t, id, true)
 	wantDesired(t, fresh, true)
 }
@@ -309,7 +306,7 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
+	det := pgstoretest.Analysis(pool)
 	mediaDir := t.TempDir()
 	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.NetworkID = 32736
@@ -331,8 +328,8 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	if got := count(); got != 0 {
 		t.Fatalf("eligible originals before CM completion = %d, want 0", got)
 	}
-	attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
-	markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, "retrying", nil, nil)
+	attemptCount := startCMDetectionTestAttempt(t, ctx, det, id)
+	markCMDetectionTestFailure(t, ctx, pool, det, id, attemptCount, "retrying", nil, nil)
 	if got := count(); got != 0 {
 		t.Fatalf("eligible originals while retrying = %d, want 0", got)
 	}
@@ -340,15 +337,18 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	if got := count(); got != 1 {
 		t.Fatalf("eligible originals after final failure = %d, want 1", got)
 	}
-	testutil.RequireNoError(t, q.ClearRecordingCMDetection(ctx, id), "q.ClearRecordingCMDetection")
-	if rows, err := q.SetRecordingCMDetection(ctx, id); err != nil || rows != 1 {
-		t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", id, rows, err)
-	}
+	setCMDetectPolicy(t, ctx, pool, id, false)
+	setCMDetectPolicy(t, ctx, pool, id, true)
 	if got := count(); got != 0 {
 		t.Fatalf("eligible originals after quick re-enable with an old failure = %d, want 0", got)
 	}
-	testutil.RequireNoError(t, q.DeleteCMDetectionAttempt(ctx, id), "q.DeleteCMDetectionAttempt")
-	testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: id, CmRanges: "{}"}), "q.SaveCMDetection")
+	// 結果を 0 区間で保存すると、試行は消え、原本は消せる対象になる。
+	attempt := startCMDetectionTestAttemptRow(t, ctx, det, id)
+	saved, err := det.SaveDetection(ctx, attempt, nil)
+	testutil.RequireNoError(t, err, "SaveDetection")
+	if !saved {
+		t.Fatal("SaveDetection of a zero-CM result was not saved")
+	}
 	if got := count(); got != 1 {
 		t.Fatalf("eligible originals after zero-CM successful result = %d, want 1", got)
 	}
