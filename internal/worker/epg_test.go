@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -103,40 +102,26 @@ func runEpgSync(t *testing.T, w *EpgSyncWorker) {
 	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
 }
 
-// testEpgProgram は allPrograms が読む番組射影の検査対象の列である。
-// 生 SQL で読むのは、番組の詳細 jsonb（extended / genres / video / audios）を
-// 契約の一覧読み取りが返さないため。
-type testEpgProgram struct {
-	ProgramID   int64           `db:"program_id"`
-	NetworkID   int32           `db:"network_id"`
-	ServiceID   int32           `db:"service_id"`
-	EventID     int32           `db:"event_id"`
-	StartAt     time.Time       `db:"start_at"`
-	DurationMs  int64           `db:"duration_ms"`
-	EndAt       time.Time       `db:"end_at"`
-	IsFree      bool            `db:"is_free"`
-	Name        string          `db:"name"`
-	Description string          `db:"description"`
-	GenreLv1    []int16         `db:"genre_lv1"`
-	Extended    json.RawMessage `db:"extended"`
-	Genres      json.RawMessage `db:"genres"`
-	Video       json.RawMessage `db:"video"`
-	Audios      json.RawMessage `db:"audios"`
-}
-
 // allPrograms は site の全番組を program_id 昇順で返す。
 // 窓は現在時刻の前後 100 日（窓の外の番組は数えない）。
-func allPrograms(t *testing.T, pool *pgxpool.Pool) []testEpgProgram {
+// 一覧で番組を集め、詳細の契約（GetProgram）で各番組の全列を読む。
+func allPrograms(t *testing.T, pool *pgxpool.Pool) []store.EPGProgram {
 	t.Helper()
-	rows, err := pool.Query(context.Background(),
-		`SELECT program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free,
-		        name, description, genre_lv1, extended, genres, video, audios
-		 FROM epg_programs WHERE site = $1 AND start_at < $2 AND end_at > $3`,
-		testSite, time.Now().Add(100*24*time.Hour), time.Now().Add(-100*24*time.Hour))
-	testutil.RequireNoError(t, err, "querying epg_programs")
-	programs, err := pgx.CollectRows(rows, pgx.RowToStructByName[testEpgProgram])
-	testutil.RequireNoError(t, err, "collecting epg_programs")
-	slices.SortFunc(programs, func(a, b testEpgProgram) int { return int(a.ProgramID - b.ProgramID) })
+	ctx := context.Background()
+	epg := pgstoretest.EPG(pool)
+	listed, err := epg.ListPrograms(ctx, store.EPGProgramListQuery{
+		Site:        testSite,
+		WindowStart: time.Now().Add(-100 * 24 * time.Hour),
+		WindowEnd:   time.Now().Add(100 * 24 * time.Hour),
+	})
+	testutil.RequireNoError(t, err, "listing EPG programs")
+	programs := make([]store.EPGProgram, 0, len(listed))
+	for _, item := range listed {
+		detail, err := epg.GetProgram(ctx, testSite, item.ProgramID)
+		testutil.RequireNoError(t, err, "getting EPG program")
+		programs = append(programs, detail.Program)
+	}
+	slices.SortFunc(programs, func(a, b store.EPGProgram) int { return int(a.ProgramID - b.ProgramID) })
 	return programs
 }
 
