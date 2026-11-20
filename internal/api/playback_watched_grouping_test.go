@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -22,7 +22,7 @@ func TestWatchedGroupingSurvivesMarkedRowLeavingLiveSet(t *testing.T) {
 			pool := testutil.SetupDB(t)
 			srv := NewTestServer(t, pool)
 			ctx := context.Background()
-			q := sqlcgen.New(pool)
+			playback := pgstoretest.Playback(pool)
 			start := time.Date(2026, 8, 2, 1, 0, 0, 0, time.UTC)
 			marked := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 				p.EventID = 400
@@ -36,10 +36,10 @@ func TestWatchedGroupingSurvivesMarkedRowLeavingLiveSet(t *testing.T) {
 				p.ProgramStartAt = start
 				p.ProgramDurationMs = time.Hour.Milliseconds()
 			})
-			if _, err := q.UpsertRecordingPlaybackPosition(ctx, sqlcgen.UpsertRecordingPlaybackPositionParams{RecordingID: other, PositionMs: 9_000}); err != nil {
+			if err := playback.SavePosition(ctx, other, 9_000); err != nil {
 				t.Fatalf("seed position: %v", err)
 			}
-			if _, err := q.UpsertRecordingWatched(ctx, marked); err != nil {
+			if err := playback.MarkWatched(ctx, marked); err != nil {
 				t.Fatalf("mark watched: %v", err)
 			}
 			if _, err := pool.Exec(ctx, `UPDATE recordings SET `+tc.set+` WHERE id = $1`, marked); err != nil {
