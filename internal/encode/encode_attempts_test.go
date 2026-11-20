@@ -94,8 +94,7 @@ func TestEncodeWorker_AttemptRow_ClearedOnSuccess(t *testing.T) {
 
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Stores:    Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -136,8 +135,7 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure(t *testing.T) {
 
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Stores:    Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -287,8 +285,7 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Stores:    Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -384,8 +381,7 @@ func TestEncodeWorker_AttemptLimitDoesNotReadRiverAttempt(t *testing.T) {
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/domain-attempt-limit.m2ts", nil, []byte("data"))
 	w := &EncodeWorker{
 		Publisher:       pgstoretest.Media(pool),
-		Progress:        pgstoretest.Media(pool),
-		Attempts:        pgstoretest.Media(pool),
+		Stores:          Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
 		Objects:         testFSObjectStore(mediaDir),
@@ -421,7 +417,7 @@ func TestEncodeWorker_AttemptLimitCountsRunningRowAsDead(t *testing.T) {
 	}
 	mediaDir := t.TempDir()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/dead-domain-attempts.m2ts", nil, []byte("data"))
-	w := &EncodeWorker{Publisher: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool), Attempts: pgstoretest.Media(pool), Media: pgstoretest.Media(pool)}
+	w := &EncodeWorker{Stores: Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)}, Publisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool)}
 	for attempt := int32(1); attempt <= 25; attempt++ {
 		start, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
 		testutil.RequireNoError(t, err, "w.beginEncodeAttempt")
@@ -520,8 +516,7 @@ func TestEncodeWorker_ResetAfterLimitRestartsFromOne(t *testing.T) {
 		 VALUES ($1, 'missing', 'failed', 'x', now(), 25)`, recordingID)
 	w := &EncodeWorker{
 		Publisher:       pgstoretest.Media(pool),
-		Progress:        pgstoretest.Media(pool),
-		Attempts:        pgstoretest.Media(pool),
+		Stores:          Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
 		Objects:         testFSObjectStore(mediaDir),
@@ -557,8 +552,7 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 	testexec.WriteExecutable(t, ffmpegPath, []byte(script))
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Stores:    Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -666,7 +660,7 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure_MultibyteTruncation(t *testing.
 	mediaDir := t.TempDir()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/attempt-fail-multibyte.m2ts", nil, []byte("data"))
 
-	w := &EncodeWorker{Publisher: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool), Attempts: pgstoretest.Media(pool), Media: pgstoretest.Media(pool)}
+	w := &EncodeWorker{Stores: Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)}, Publisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool)}
 	longMsg := strings.Repeat("日", 1000)
 	start, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
 	testutil.RequireNoError(t, err, "w.beginEncodeAttempt")
@@ -719,7 +713,7 @@ func TestEncodeWorker_ClearAttempt_SurvivesCanceledCtx(t *testing.T) {
 	mediaDir := t.TempDir()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/attempt-clear-canceled.m2ts", nil, []byte("data"))
 
-	w := &EncodeWorker{Publisher: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool), Attempts: pgstoretest.Media(pool), Media: pgstoretest.Media(pool)}
+	w := &EncodeWorker{Stores: Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)}, Publisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool)}
 	start, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
 	testutil.RequireNoError(t, err, "w.beginEncodeAttempt")
 	if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); !ok || state != "running" {
@@ -838,8 +832,7 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Stores:    Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,

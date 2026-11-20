@@ -161,12 +161,11 @@ type StoreDeps struct {
 	// MediaReconcile は、この置き場に束ねた reconcile の永続化契約。
 	MediaReconcile store.MediaReconcile
 	MediaPublish   store.MediaPublish
-	// EncodeProgress は encode の進捗を報告する永続化契約。
-	EncodeProgress store.EncodeProgressReporter
+	// Encode は encode の永続化契約（試行の記録と進捗の報告）。
+	Encode encode.Stores
 	// DeleteReconcile は、この置き場の削除 reconcile の永続化契約（派生物の独立削除パスを含む）。
 	DeleteReconcile    store.DeleteReconcileStores
 	TSScan             tsscan.ScanStores
-	EncodeAttempts     store.EncodeAttempts
 	StorageObservation store.StorageObservation
 	// CMStationStore は局単位のロゴ状態と候補解析の永続化契約。
 	CMStationStore store.CMStation
@@ -295,12 +294,11 @@ func newIngestWorker(d *Deps, s *StoreDeps) *ingest.IngestWorker {
 func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 	riveradapter.Register[jobs.EncodeJobArgs](workers, newStoreRoute("encode", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.EncodeJobArgs] {
 		return &encode.EncodeWorker{
+			Stores:          s.Encode,
 			Media:           s.MediaReconcile,
-			Attempts:        s.EncodeAttempts,
 			Publisher:       s.MediaPublish,
 			ObjectPublisher: s.DerivedMediaPublish,
 			Objects:         d.DerivedObjects,
-			Progress:        s.EncodeProgress,
 			MediaDir:        s.MediaDir,
 			MediaStoreName:  s.MediaStoreName,
 			ScratchDir:      d.ScratchDir,
