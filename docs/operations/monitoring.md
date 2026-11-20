@@ -85,12 +85,7 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 
 予約同期の収束は差分ゲージで、同期の停止は最終成功時刻で見る。
 
-| メトリクス | 型 | 意味 |
-|---|---|---|
-| `rokuban_presync_pending{site,reason}` | Gauge（DB） | 開始前から録画中の、未収束の予約数 |
-| `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` | Gauge（DB） | pending のうち最も開始が近い番組の開始時刻 |
-| `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` | Gauge（DB） | 予約状況の全量取り込みが最後に成功した時刻 |
-| `rokuban_presync_scrape_errors_total{site}` | Counter（DB） | presync の収集に失敗した回数 |
+名前・型・意味は `internal/metrics` と `internal/metrics/dbcollector` の定義（`Name` と `Help`）を引く。
 
 `rokuban_reconcile_pending_diff` の `create` / `delete` / `update` は、収束すればゼロに戻り、アラートはこの 3 つで取る。`delete_deferred` と `update_deferred` は録画中などでは非ゼロが正常なので、アラートしない。値ごとの読み方は差分ゲージの action の節にある。
 
@@ -100,13 +95,17 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 
 `rokuban_reconcile_circuit_breaker_trips_total` が数えるのは、全損シグネチャでの発動である。件数の閾値ではない。意味が変わってもメトリクス名を据え置いたのは、既存のダッシュボードとアラートを壊さないためである。`rokuban_circuit_breaker_tripped` はラッチなので、アラートはこちらで取る。互換性のためラベル名は `site` のままだが、`breaker="delete_reconcile"` では値に置き場名が入る。
 
-`rokuban_presync_pending_earliest_start_timestamp_seconds` は、件数だけでは判別できない「開始が近い未同期」と「十分先の未同期」を区別する。pending が 0 の reason には系列が出ない。スナップショットの時刻は、予約状況（観測した schedule）の全量 upsert と stale 削除と marker 更新を同一トランザクションでコミットした最後の時刻である。未確立は 0 で、`presync_pending` と対で観測不能を判定する。
+`rokuban_presync_pending_earliest_start_timestamp_seconds` は、件数だけでは判別できない「開始が近い未同期」と「十分先の未同期」を区別する。
 
-`rokuban_presync_scrape_errors_total` は、presync collector の DB 読み取りか observed options の解釈に失敗した回数である。失敗時は pending とスナップショットを 0 として報告しない。
+`rokuban_schedule_snapshot_last_success_timestamp_seconds` の 0 は未確立であり、`rokuban_presync_pending` と対で読んで観測不能を判定する。
+
+`rokuban_presync_scrape_errors_total` が増えた scrape で欠けた presync の系列を、0 として読んではならない。
 
 <details><summary>根拠</summary>
 
-- スナップショットの全量取り込み: `schedule_sync`
+- 開始時刻で未同期の緊急度を分けて読む（件数だけでは区別できない）: `rokuban_presync_pending_earliest_start_timestamp_seconds`
+- 未確立の 0 は観測不能として先に読む: `rokuban_schedule_snapshot_last_success_timestamp_seconds`
+- 失敗した scrape の系列を 0 として読まない: `rokuban_presync_scrape_errors_total`
 - create / delete / update は収束でゼロに戻り、deferred 系は非ゼロが正常でありうる: `rokuban_reconcile_pending_diff`
 - 全損シグネチャの発動は件数の閾値ではなく、名前は互換のため据え置き: `rokuban_reconcile_circuit_breaker_trips_total`
 - ラッチは解除まで発動中を示し、`delete_reconcile` では site に置き場名が入る: `rokuban_circuit_breaker_tripped`

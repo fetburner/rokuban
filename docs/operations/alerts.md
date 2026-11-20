@@ -132,21 +132,32 @@ aging を超えて未登録の canonical file が残っているときは、候�
 
 #### 見る系列
 
-未同期の種類ごとの予約数、最も近い開始時刻、snapshot の最終成功時刻の 3 種類を、サイトごとに使う。次の表に並べる。
+未同期の種類ごとの予約数、最も近い開始時刻、snapshot の最終成功時刻の 3 種類を、サイトごとに使う。
 
-| 系列 | 意味 |
-|---|---|
-| `rokuban_presync_pending{site,reason="missing"}` | 番組が終わっていない予約のうち schedule が観測されないものの数（skip は除き、options を解決できない予約は含む） |
-| `rokuban_presync_pending{site,reason="options"}` | schedule が `scheduled` 状態で、設定が desired と食い違う予約の数 |
-| `rokuban_presync_pending{site,reason="options_deferred"}` | 設定が食い違うが、再作成を見送っている予約の数 |
-| `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` | 同じ reason の pending のうち最も近い開始時刻 |
-| `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` | schedule 全量 snapshot が DB に整合した形で最後に確定した時刻（0 は未確立） |
+名前・型・意味は `internal/metrics/dbcollector` の定義（`Name` と `Help`）を引く。
 
-`options` は、priority・`program:{programId}` tag・明示 `contentPath` のどれかが desired と一致しない場合に数える。この差分は reconciler が再作成できる。`options_deferred` は、state が `scheduled` ではないため再作成を見送っている。放送終了を待つか、必要なら手動介入する。
+`rokuban_presync_pending{reason="missing"}` は、開始前に直す未同期として読む。
 
-pending が 0 の reason には、開始時刻の系列が出ない。0 を出すと `earliest - time() < lead` が常に真になり、健全な状態で鳴るからである。
+`rokuban_presync_pending{reason="options"}` は、reconciler が再作成して直せる差分として読む。
+
+`rokuban_presync_pending{reason="options_deferred"}` は、今は再作成できない差分として読む。放送終了を待つか、必要なら手動介入する。
+
+開始時刻の系列を pending が 0 の reason で出さないのは、0 を出すと `earliest - time() < lead` が常に真になり、健全な状態で鳴るからである。
+
+`rokuban_schedule_snapshot_last_success_timestamp_seconds` は、pending の値を信じてよいかを決める系列として読む。
 
 件数の gauge だけでは、8 日先の予約 1 件と 2 分後開始の予約 1 件が同値になり区別できない。開始が近いかどうかは `rokuban_presync_pending_earliest_start_timestamp_seconds` で判定する。
+
+<details><summary>根拠</summary>
+
+- 開始前に直す未同期として読む: `rokuban_presync_pending`（`reason="missing"`）
+- reconciler が再作成して直せる差分として読む: `rokuban_presync_pending`（`reason="options"`）
+- 今は再作成できない差分として読む: `rokuban_presync_pending`（`reason="options_deferred"`）
+- pending が 0 の reason で開始時刻の系列を出さない理由: `rokuban_presync_pending_earliest_start_timestamp_seconds`
+- 件数だけでは未同期の緊急度が区別できないので、開始時刻で判定する: `rokuban_presync_pending_earliest_start_timestamp_seconds`
+- pending の値を信じてよいかを決める: `rokuban_schedule_snapshot_last_success_timestamp_seconds`
+
+</details>
 
 #### 判定の順序
 
