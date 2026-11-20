@@ -63,12 +63,12 @@ func (e objectEnv) deleter(t *testing.T, maxPerPass int) *DeleteReconcileWorker 
 	derivedDeleteStores, err := store.NewDerivedObjectDeleteStores(e.media, e.media, e.media)
 	testutil.RequireNoError(t, err, "creating derived object delete stores")
 	return &DeleteReconcileWorker{
-		Breakers:                  pgstore.NewBreakers(e.pool),
-		MediaStoreName:            dbtest.StoreName,
-		DerivedObjects:            e.objects,
-		DerivedObjectStoreName:    objectStoreName,
-		DerivedObjectDeleteStores: derivedDeleteStores,
-		MaxDeletesPerPass:         maxPerPass,
+		DeleteReconcileStores:  store.DeleteReconcileStores{DerivedObjectDeleteStores: derivedDeleteStores},
+		Breakers:               pgstore.NewBreakers(e.pool),
+		MediaStoreName:         dbtest.StoreName,
+		DerivedObjects:         e.objects,
+		DerivedObjectStoreName: objectStoreName,
+		MaxDeletesPerPass:      maxPerPass,
 	}
 }
 
@@ -337,9 +337,9 @@ func TestFilesystemDerivedPendingReclaimAfterPutFailure(t *testing.T) {
 		originalAssetID, dbtest.StoreName)
 
 	worker := &DeleteReconcileWorker{
-		MediaDelete: media, MediaPendingReclaim: media,
-		Storage: media, RecordingPurge: pgstore.NewRecordings(pool, dbtest.StoreName),
-		Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), MediaStoreName: dbtest.StoreName,
+		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: media, MediaPendingReclaim: media, RecordingPurge: pgstore.NewRecordings(pool, dbtest.StoreName)},
+		Storage:               media,
+		Breakers:              pgstore.NewBreakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), MediaStoreName: dbtest.StoreName,
 		DerivedObjects: objects, DerivedObjectStoreName: dbtest.StoreName,
 		TrashRetention: 24 * time.Hour, OrphanMTimeGrace: 24 * time.Hour, OrphanAge: 24 * time.Hour,
 		MissingAssetAge: 24 * time.Hour, MaxDeletesPerPass: 1,
@@ -422,9 +422,10 @@ func TestFilesystemDerivedPendingReclaimKeepsMainUntilSubtitleRemovalSucceeds(t 
 	copyID := transferTestCopyID(t, pool, assetID, dbtest.StoreName)
 	testutil.MustExec(t, pool, "aging pending encoded copy", `UPDATE media_asset_copies SET state = 'pending', created_at = now() - interval '48 hours' WHERE id = $1`, copyID)
 	worker := &DeleteReconcileWorker{
-		MediaDelete: media, MediaPendingReclaim: media, Storage: media,
-		RecordingPurge: pgstore.NewRecordings(pool, dbtest.StoreName), Breakers: pgstore.NewBreakers(pool),
-		MediaDir: mediaDir, StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), MediaStoreName: dbtest.StoreName,
+		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: media, MediaPendingReclaim: media, RecordingPurge: pgstore.NewRecordings(pool, dbtest.StoreName)},
+		Storage:               media,
+		Breakers:              pgstore.NewBreakers(pool),
+		MediaDir:              mediaDir, StorageObjects: testStorageObjects(t, dbtest.StoreName, mediaDir), MediaStoreName: dbtest.StoreName,
 		DerivedObjects: objects, DerivedObjectStoreName: dbtest.StoreName, OrphanAge: time.Hour,
 	}
 	testutil.RequireNoError(t, worker.Work(ctx, jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work with blocked subtitle")

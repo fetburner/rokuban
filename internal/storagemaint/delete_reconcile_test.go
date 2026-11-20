@@ -218,9 +218,10 @@ SELECT EXISTS (
 func buildDeleteReconcileWorker(t *testing.T, pool *pgxpool.Pool, mediaDir string, opts ...func(*DeleteReconcileWorker)) *DeleteReconcileWorker {
 	t.Helper()
 	w := &DeleteReconcileWorker{
-		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
-		RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool),
-		MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
+		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool)},
+		Storage:               pgstoretest.Media(pool),
+		Breakers:              pgstoretest.Breakers(pool),
+		MediaDir:              mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir),
 	}
 	for _, opt := range opts {

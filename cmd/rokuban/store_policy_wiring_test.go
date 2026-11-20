@@ -81,12 +81,12 @@ func TestStoreScopedDerivedMediaBindsStoragePolicy(t *testing.T) {
 
 	// 名前順で最初の FS 置き場（nagoya）が S3 の削除パスを持つ。
 	scoped := mustNewStoreScopedDeps(t, pool, cfg, policy, "nagoya", t.TempDir(), derivedObjects)
-	if scoped.DerivedObjectDeleteStores == nil {
+	if scoped.DeleteReconcile.DerivedObjectDeleteStores == nil {
 		t.Fatal("nagoya has no derived object delete stores")
 	}
-	derivedDelete, ok := scoped.DerivedObjectDeleteStores.MediaDelete().(store.IngestStoreChooser)
+	derivedDelete, ok := scoped.DeleteReconcile.DerivedObjectDeleteStores.MediaDelete().(store.IngestStoreChooser)
 	if !ok {
-		t.Fatalf("derived MediaDelete (%T) does not evaluate original rules", scoped.DerivedObjectDeleteStores.MediaDelete())
+		t.Fatalf("derived MediaDelete (%T) does not evaluate original rules", scoped.DeleteReconcile.DerivedObjectDeleteStores.MediaDelete())
 	}
 	requireBoundOriginalRules(t, "DerivedObjectDeleteStores.MediaDelete", derivedDelete)
 }

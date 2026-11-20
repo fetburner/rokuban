@@ -948,23 +948,25 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy st
 	analysisStore := pgstore.NewAnalysis(pool, name)
 	recordingStore := pgstore.NewRecordings(pool, name)
 	scoped := &worker.StoreDeps{
-		MediaDir:            root,
-		MediaStoreName:      name,
-		MediaReconcile:      mediaStore,
-		MediaPublish:        mediaStore,
-		IngestPrecheck:      mediaStore,
-		EncodeProgress:      mediaStore,
-		MediaDelete:         mediaStore,
-		MediaPendingReclaim: mediaStore,
-		StorageTransfer:     mediaStore,
-		TSScan:              tsscan.ScanStores{Media: mediaStore},
-		EncodeAttempts:      mediaStore,
-		StorageObservation:  mediaStore,
-		CMStationStore:      analysisStore,
-		CMDetectionStore:    analysisStore,
-		IngestTarget:        recordingStore,
-		RecordingPurge:      recordingStore,
-		Catalog:             pgstore.NewCatalog(pool, registryNames(cfg.Registry()), name),
+		MediaDir:       root,
+		MediaStoreName: name,
+		MediaReconcile: mediaStore,
+		MediaPublish:   mediaStore,
+		IngestPrecheck: mediaStore,
+		EncodeProgress: mediaStore,
+		DeleteReconcile: store.DeleteReconcileStores{
+			MediaDelete:         mediaStore,
+			MediaPendingReclaim: mediaStore,
+			StorageTransfer:     mediaStore,
+			RecordingPurge:      recordingStore,
+		},
+		TSScan:             tsscan.ScanStores{Media: mediaStore},
+		EncodeAttempts:     mediaStore,
+		StorageObservation: mediaStore,
+		CMStationStore:     analysisStore,
+		CMDetectionStore:   analysisStore,
+		IngestTarget:       recordingStore,
+		Catalog:            pgstore.NewCatalog(pool, registryNames(cfg.Registry()), name),
 	}
 	if derivedObjects != nil {
 		derivedMedia := pgstore.NewMediaWithStoresAndPolicy(pool, cfg.Storage.Derived, name, storagePolicy)
@@ -981,7 +983,7 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy st
 			if err != nil {
 				return nil, fmt.Errorf("configuring derived object delete stores for %q: %w", name, err)
 			}
-			scoped.DerivedObjectDeleteStores = derivedDeleteStores
+			scoped.DeleteReconcile.DerivedObjectDeleteStores = derivedDeleteStores
 		}
 	}
 	return scoped, nil

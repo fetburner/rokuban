@@ -82,7 +82,7 @@ type Deps struct {
 	DerivedObjectStoreName string
 	StorageObjects         map[string]objstore.Store
 	// UnscopedStorageTransfer は置き場に束ねない transfer reconcile の永続化契約。
-	// StoreDeps.StorageTransfer と build 内で取り違えないよう、置き場に束ねないことを名前で示す。
+	// StoreDeps.DeleteReconcile.StorageTransfer と build 内で取り違えないよう、置き場に束ねないことを名前で示す。
 	UnscopedStorageTransfer store.StorageTransfer
 	StorageTransferPolicy   config.StorageConfig
 	StorageRoots            map[string]string
@@ -168,29 +168,22 @@ type StoreDeps struct {
 	IngestPrecheck store.IngestPrecheck
 	// EncodeProgress は encode の進捗を報告する永続化契約。
 	EncodeProgress store.EncodeProgressReporter
-	MediaDelete    store.MediaDelete
-	// MediaPendingReclaim は共有 FS にある派生物 pending copy の aged reclaim 用。
-	MediaPendingReclaim store.PendingCopyReclaim
-	StorageTransfer     store.StorageTransfer
-	TSScan              tsscan.ScanStores
-	EncodeAttempts      store.EncodeAttempts
-	StorageObservation  store.StorageObservation
+	// DeleteReconcile は、この置き場の削除 reconcile の永続化契約（派生物の独立削除パスを含む）。
+	DeleteReconcile    store.DeleteReconcileStores
+	TSScan             tsscan.ScanStores
+	EncodeAttempts     store.EncodeAttempts
+	StorageObservation store.StorageObservation
 	// CMStationStore は局単位のロゴ状態と候補解析の永続化契約。
 	CMStationStore store.CMStation
 	// CMDetectionStore は CM 検出 worker の永続化契約。
 	CMDetectionStore store.CMDetection
 	// IngestTarget は ingest が record_sync から転送先を読む契約。
 	IngestTarget store.IngestTarget
-	// RecordingPurge は録画の物理削除の永続化契約。
-	RecordingPurge store.RecordingPurge
 	// Catalog は catalog の export と restore を行う契約。
 	Catalog store.Catalog
 
 	// DerivedMediaPublish は、この置き場で生成した派生物を DB に公開する契約。
 	DerivedMediaPublish store.DerivedMediaPublisher
-	// DerivedObjectDeleteStores は、派生物の置き場を掃く独立した削除パスの store 契約である。
-	// nil なら、この置き場の worker は S3 の独立パスを持たない。
-	DerivedObjectDeleteStores *store.DerivedObjectDeleteStores
 }
 
 // perStore は置き場ごとの StoreDeps を返す。空なら置き場で修飾したワーカーを 1 つも登録しない。
@@ -394,25 +387,21 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 // newDeleteReconcileWorker は削除 reconcile worker を Deps と StoreDeps から組み立てる。
 func newDeleteReconcileWorker(deps *Deps, scoped *StoreDeps) *storagemaint.DeleteReconcileWorker {
 	return &storagemaint.DeleteReconcileWorker{
-		MediaDelete:               scoped.MediaDelete,
-		MediaPendingReclaim:       scoped.MediaPendingReclaim,
-		StorageTransfer:           scoped.StorageTransfer,
-		RecordingPurge:            scoped.RecordingPurge,
-		Breakers:                  deps.Breakers,
-		Storage:                   scoped.StorageObservation,
-		MediaDir:                  scoped.MediaDir,
-		MediaStoreName:            scoped.MediaStoreName,
-		DerivedObjects:            deps.DerivedObjects,
-		DerivedObjectStoreName:    deps.DerivedObjectStoreName,
-		DerivedObjectDeleteStores: scoped.DerivedObjectDeleteStores,
-		StorageObjects:            deps.StorageObjects,
-		TransferOverlap:           deps.TransferOverlap,
-		TrashRetention:            deps.Cleanup.TrashRetention,
-		OrphanMTimeGrace:          deps.Cleanup.OrphanMTimeGrace,
-		OrphanAge:                 deps.Cleanup.OrphanAge,
-		MaxDeletesPerPass:         deps.Cleanup.MaxDeletesPerPass,
-		MissingAssetAge:           deps.Cleanup.MissingAssetAge,
-		Webhook:                   deps.Webhook,
-		Markers:                   deps.LoopMarkers,
+		DeleteReconcileStores:  scoped.DeleteReconcile,
+		Breakers:               deps.Breakers,
+		Storage:                scoped.StorageObservation,
+		MediaDir:               scoped.MediaDir,
+		MediaStoreName:         scoped.MediaStoreName,
+		DerivedObjects:         deps.DerivedObjects,
+		DerivedObjectStoreName: deps.DerivedObjectStoreName,
+		StorageObjects:         deps.StorageObjects,
+		TransferOverlap:        deps.TransferOverlap,
+		TrashRetention:         deps.Cleanup.TrashRetention,
+		OrphanMTimeGrace:       deps.Cleanup.OrphanMTimeGrace,
+		OrphanAge:              deps.Cleanup.OrphanAge,
+		MaxDeletesPerPass:      deps.Cleanup.MaxDeletesPerPass,
+		MissingAssetAge:        deps.Cleanup.MissingAssetAge,
+		Webhook:                deps.Webhook,
+		Markers:                deps.LoopMarkers,
 	}
 }

@@ -353,7 +353,7 @@ func TestStoreScopedDerivedDeletePassOnlyForS3Derived(t *testing.T) {
 				t.Fatal(err)
 			}
 			scoped := mustNewStoreScopedDeps(t, nil, cfg, policy, "takamatsu", t.TempDir(), derivedObjects)
-			if got := scoped.DerivedObjectDeleteStores != nil; got != tc.wantPass {
+			if got := scoped.DeleteReconcile.DerivedObjectDeleteStores != nil; got != tc.wantPass {
 				t.Errorf("separate derived delete pass configured = %v, want %v", got, tc.wantPass)
 			}
 		})
@@ -383,7 +383,7 @@ func TestStoreScopedS3DeletePassHasSingleOwner(t *testing.T) {
 	var owners []string
 	for _, name := range []string{"tokyo", "takamatsu"} {
 		scoped := mustNewStoreScopedDeps(t, nil, cfg, policy, name, t.TempDir(), derivedObjects)
-		if scoped.DerivedObjectDeleteStores != nil {
+		if scoped.DeleteReconcile.DerivedObjectDeleteStores != nil {
 			owners = append(owners, name)
 		}
 	}
@@ -477,7 +477,7 @@ func TestStoreScopedS3DeleteMarkersOnlyOwner(t *testing.T) {
 			t.Fatal(err)
 		}
 		deps := mustNewStoreScopedDeps(t, pool, cfg, policy, name, dir, objects)
-		w := &storagemaint.DeleteReconcileWorker{MediaDir: deps.MediaDir, MediaStoreName: deps.MediaStoreName, MediaDelete: deps.MediaDelete, Storage: deps.StorageObservation, RecordingPurge: deps.RecordingPurge, Breakers: pgstore.NewBreakers(pool), DerivedObjects: objects, DerivedObjectStoreName: cfg.Storage.Derived, DerivedObjectDeleteStores: deps.DerivedObjectDeleteStores, Markers: markers}
+		w := &storagemaint.DeleteReconcileWorker{DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: deps.DeleteReconcile.MediaDelete, RecordingPurge: deps.DeleteReconcile.RecordingPurge, DerivedObjectDeleteStores: deps.DeleteReconcile.DerivedObjectDeleteStores}, MediaDir: deps.MediaDir, MediaStoreName: deps.MediaStoreName, Storage: deps.StorageObservation, Breakers: pgstore.NewBreakers(pool), DerivedObjects: objects, DerivedObjectStoreName: cfg.Storage.Derived, Markers: markers}
 		before, err := markers.ReadLoopMarkers(ctx, store.LoopDeleteReconcile)
 		if err != nil {
 			t.Fatal(err)

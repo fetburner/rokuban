@@ -311,9 +311,10 @@ func TestStorageTransferS3CopyLetsDeleteReconcileRetireFSCopy(t *testing.T) {
 	testutil.MustExec(t, f.pool, "aging the cloud copy past the overlap", `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'cloud'`, f.assetID)
 	media := pgstore.NewMediaWithPolicy(f.pool, "test-store", mustStoragePolicy(t, f.cfg))
 	deleter := DeleteReconcileWorker{
-		MediaDelete: media, Storage: media, StorageTransfer: media,
-		RecordingPurge: pgstore.NewRecordings(f.pool, "test-store"), Breakers: pgstore.NewBreakers(f.pool),
-		MediaDir: f.root, StorageObjects: testStorageObjects(t, "test-store", f.root), MediaStoreName: "test-store", TransferOverlap: time.Hour,
+		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: media, StorageTransfer: media, RecordingPurge: pgstore.NewRecordings(f.pool, "test-store")},
+		Storage:               media,
+		Breakers:              pgstore.NewBreakers(f.pool),
+		MediaDir:              f.root, StorageObjects: testStorageObjects(t, "test-store", f.root), MediaStoreName: "test-store", TransferOverlap: time.Hour,
 		DerivedObjects: f.worker.ObjectStores["cloud"],
 	}
 	testutil.RequireNoError(t, deleter.Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")

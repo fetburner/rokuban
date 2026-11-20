@@ -88,8 +88,9 @@ func derivedS3SwitchedWorker(t *testing.T, mediaDir string, fsObjects objstore.S
 	t.Helper()
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 	return &DeleteReconcileWorker{
-		MediaDelete: pool, Storage: storage,
-		MediaDir: mediaDir, MediaStoreName: dbtest.StoreName,
+		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: pool},
+		Storage:               storage,
+		MediaDir:              mediaDir, MediaStoreName: dbtest.StoreName,
 		StorageObjects:         map[string]objstore.Store{dbtest.StoreName: fsObjects},
 		DerivedObjects:         untouchableStore{Store: testFilesystemObjectStore(t, t.TempDir()), t: t},
 		DerivedObjectStoreName: objectStoreName,

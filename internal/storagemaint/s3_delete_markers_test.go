@@ -116,7 +116,8 @@ func TestS3DeleteMarkers(t *testing.T) {
 			testutil.RequireNoError(t, mediapath.WriteStoreMarker(dir, "fs-a"), "mediapath.WriteStoreMarker")
 			empty := &emptyDeleteStores{stopped: tc.stopped}
 			markers := &selectiveMarkers{reject: tc.reject}
-			w := &DeleteReconcileWorker{MediaDir: dir, MediaStoreName: "fs-a", MediaDelete: empty, Storage: empty, RecordingPurge: empty, Breakers: empty, Markers: markers}
+			w := &DeleteReconcileWorker{
+				DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: empty, RecordingPurge: empty}, MediaDir: dir, MediaStoreName: "fs-a", Storage: empty, Breakers: empty, Markers: markers}
 			var countedObjects *listCountingObjectStore
 			if !tc.absent {
 				w.DerivedObjectStoreName = "s3-a"
