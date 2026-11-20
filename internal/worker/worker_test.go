@@ -6,10 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -27,20 +24,6 @@ func runWorkerViaJobQFake[T jobq.Args](ctx context.Context, worker jobq.Worker[T
 // TestNewWorkersInjectsIngestPrecheck runs the registered ingest worker through the registry.
 // The original row exists only in the DB: Work must find it through the injected precheck,
 // skip transfer, and clear stale progress for that recording.
-// insertRecordSyncForTest は録画に対応する record_sync 行を 1 件作る。番組は持たせず、
-// 番組スナップショットの無い録画と対応させる（ingest の検査は insertTestRecordSync を参照）。
-func insertRecordSyncForTest(t *testing.T, pool *pgxpool.Pool, recordingID int64, recordID string) {
-	t.Helper()
-	testutil.RequireNoError(t, sqlcgen.New(pool).UpsertRecordSync(context.Background(), sqlcgen.UpsertRecordSyncParams{
-		Site:        "default",
-		RecordID:    recordID,
-		RecordingID: &recordingID,
-		ProgramID:   327361024000001,
-		Status:      "finished",
-		Tags:        []string{},
-	}), "inserting test record_sync")
-}
-
 func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
@@ -50,7 +33,7 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 
 	const recordID = "rec-new-workers-precheck"
 	recordingID := dbtest.Recording(t, pool)
-	insertRecordSyncForTest(t, pool, recordingID, recordID)
+	dbtest.RecordSync(t, pool, recordingID, recordID)
 	media := pgstoretest.Media(pool)
 	seedOriginalAsset(t, pool, t.TempDir(), recordingID, "sites/default/new-workers-precheck.m2ts", []byte("x"))
 	testutil.RequireNoError(t, media.UpsertIngestProgress(context.Background(), store.IngestProgress{

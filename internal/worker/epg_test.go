@@ -12,10 +12,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/programid"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -103,17 +103,40 @@ func runEpgSync(t *testing.T, w *EpgSyncWorker) {
 	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
 }
 
+// testEpgProgram は allPrograms が読む番組射影の検査対象の列である。
+// 生 SQL で読むのは、番組の詳細 jsonb（extended / genres / video / audios）を
+// 契約の一覧読み取りが返さないため。
+type testEpgProgram struct {
+	ProgramID   int64           `db:"program_id"`
+	NetworkID   int32           `db:"network_id"`
+	ServiceID   int32           `db:"service_id"`
+	EventID     int32           `db:"event_id"`
+	StartAt     time.Time       `db:"start_at"`
+	DurationMs  int64           `db:"duration_ms"`
+	EndAt       time.Time       `db:"end_at"`
+	IsFree      bool            `db:"is_free"`
+	Name        string          `db:"name"`
+	Description string          `db:"description"`
+	GenreLv1    []int16         `db:"genre_lv1"`
+	Extended    json.RawMessage `db:"extended"`
+	Genres      json.RawMessage `db:"genres"`
+	Video       json.RawMessage `db:"video"`
+	Audios      json.RawMessage `db:"audios"`
+}
+
 // allPrograms は site の全番組を program_id 昇順で返す。
 // 窓は現在時刻の前後 100 日（窓の外の番組は数えない）。
-func allPrograms(t *testing.T, pool *pgxpool.Pool) []sqlcgen.EpgProgram {
+func allPrograms(t *testing.T, pool *pgxpool.Pool) []testEpgProgram {
 	t.Helper()
 	rows, err := pool.Query(context.Background(),
-		`SELECT * FROM epg_programs WHERE site = $1 AND start_at < $2 AND end_at > $3`,
+		`SELECT program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, is_free,
+		        name, description, genre_lv1, extended, genres, video, audios
+		 FROM epg_programs WHERE site = $1 AND start_at < $2 AND end_at > $3`,
 		testSite, time.Now().Add(100*24*time.Hour), time.Now().Add(-100*24*time.Hour))
 	testutil.RequireNoError(t, err, "querying epg_programs")
-	programs, err := pgx.CollectRows(rows, pgx.RowToStructByName[sqlcgen.EpgProgram])
+	programs, err := pgx.CollectRows(rows, pgx.RowToStructByName[testEpgProgram])
 	testutil.RequireNoError(t, err, "collecting epg_programs")
-	slices.SortFunc(programs, func(a, b sqlcgen.EpgProgram) int { return int(a.ProgramID - b.ProgramID) })
+	slices.SortFunc(programs, func(a, b testEpgProgram) int { return int(a.ProgramID - b.ProgramID) })
 	return programs
 }
 
@@ -138,11 +161,10 @@ func TestEpgSyncWorker_FullSync(t *testing.T) {
 	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstoretest.EPG(pool), RetentionGrace: 24 * time.Hour}
 	runEpgSync(t, w)
 
-	q := sqlcgen.New(pool)
 	ctx := context.Background()
 
-	services, err := q.ListEpgServices(ctx, testSite)
-	testutil.RequireNoError(t, err, "ListEpgServices")
+	services, err := pgstoretest.EPG(pool).ListServices(ctx, testSite)
+	testutil.RequireNoError(t, err, "listing EPG services")
 	if len(services) != 2 {
 		t.Fatalf("services = %d, want 2", len(services))
 	}
@@ -243,8 +265,8 @@ func TestEpgSyncWorker_IdempotentAndUpdates(t *testing.T) {
 		t.Errorf("start_at = %v, want %v", programs[0].StartAt, now.Add(90*time.Minute))
 	}
 
-	services, err := sqlcgen.New(pool).ListEpgServices(context.Background(), testSite)
-	testutil.RequireNoError(t, err, "ListEpgServices")
+	services, err := pgstoretest.EPG(pool).ListServices(context.Background(), testSite)
+	testutil.RequireNoError(t, err, "listing EPG services")
 	if len(services) != 1 || services[0].Name != "ＮＨＫ総合・改" {
 		t.Errorf("services = %+v", services)
 	}
@@ -288,8 +310,8 @@ func TestEpgSyncWorker_RemovesVanishedRows(t *testing.T) {
 		t.Errorf("remaining program = %d, want %d", programs[0].ProgramID, keep.ID)
 	}
 
-	services, err := sqlcgen.New(pool).ListEpgServices(context.Background(), testSite)
-	testutil.RequireNoError(t, err, "ListEpgServices")
+	services, err := pgstoretest.EPG(pool).ListServices(context.Background(), testSite)
+	testutil.RequireNoError(t, err, "listing EPG services")
 	if len(services) != 1 || services[0].Name != "残るサービス" {
 		t.Errorf("services = %+v", services)
 	}
@@ -324,8 +346,8 @@ func TestEpgSyncWorker_EmptyResponseKeepsProjection(t *testing.T) {
 	if got := len(allPrograms(t, pool)); got != 2 {
 		t.Errorf("programs = %d, want 2 — 空レスポンスでプロジェクションが消えた", got)
 	}
-	services, err := sqlcgen.New(pool).ListEpgServices(context.Background(), testSite)
-	testutil.RequireNoError(t, err, "ListEpgServices")
+	services, err := pgstoretest.EPG(pool).ListServices(context.Background(), testSite)
+	testutil.RequireNoError(t, err, "listing EPG services")
 	if len(services) != 1 {
 		t.Errorf("services = %d, want 1 — 空レスポンスでサービスが消えた", len(services))
 	}
@@ -522,8 +544,8 @@ func TestEpgSyncWorker_SkipsUnprojectableRows(t *testing.T) {
 
 	runEpgSync(t, w)
 
-	services, err := sqlcgen.New(pool).ListEpgServices(context.Background(), testSite)
-	testutil.RequireNoError(t, err, "ListEpgServices")
+	services, err := pgstoretest.EPG(pool).ListServices(context.Background(), testSite)
+	testutil.RequireNoError(t, err, "listing EPG services")
 	if len(services) != 1 || services[0].ServiceID != 1024 {
 		t.Errorf("services = %+v, want only the GR service", services)
 	}
@@ -609,8 +631,8 @@ func TestEpgSyncWorker_SkipsShadowSubServicePrograms(t *testing.T) {
 	}
 
 	// サービスは全件投影する（空列を隠すのは UI の関心事 = S3）
-	services, err := sqlcgen.New(pool).ListEpgServices(context.Background(), testSite)
-	testutil.RequireNoError(t, err, "ListEpgServices")
+	services, err := pgstoretest.EPG(pool).ListServices(context.Background(), testSite)
+	testutil.RequireNoError(t, err, "listing EPG services")
 	if len(services) != 3 {
 		t.Errorf("services = %d, want 3 — サービスは影のサブサービスも投影する", len(services))
 	}
@@ -640,9 +662,14 @@ func TestEpgSyncWorker_BatchesLargeSync(t *testing.T) {
 
 	runEpgSync(t, w)
 
-	count, err := sqlcgen.New(pool).CountEpgPrograms(context.Background(), testSite)
-	testutil.RequireNoError(t, err, "CountEpgPrograms")
-	if count != total {
+	// 窓は番組の時刻を全部含む範囲にして、site の全番組を数える。
+	listed, err := pgstoretest.EPG(pool).ListPrograms(context.Background(), store.EPGProgramListQuery{
+		Site:        testSite,
+		WindowStart: time.Unix(0, 0),
+		WindowEnd:   time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+	testutil.RequireNoError(t, err, "listing EPG programs")
+	if count := int64(len(listed)); count != total {
 		t.Errorf("count = %d, want %d", count, total)
 	}
 }
@@ -693,8 +720,8 @@ func TestEpgSyncWorker_SiteMatch(t *testing.T) {
 		t.Fatalf("Work() error = %v, want nil for matching site", err)
 	}
 
-	services, err := sqlcgen.New(pool).ListEpgServices(context.Background(), "site-a")
-	testutil.RequireNoError(t, err, "ListEpgServices")
+	services, err := pgstoretest.EPG(pool).ListServices(context.Background(), "site-a")
+	testutil.RequireNoError(t, err, "listing EPG services")
 	if len(services) != 1 {
 		t.Errorf("services projected for site-a = %d, want 1", len(services))
 	}

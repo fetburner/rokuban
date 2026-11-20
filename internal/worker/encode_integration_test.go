@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/storagemaint"
 	"github.com/fetburner/rokuban/internal/store"
@@ -44,14 +43,13 @@ func TestUnknownDesiredProfile_PredicateAsymmetry(t *testing.T) {
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"gone"})
 
 	// 方向 A: 候補クエリ（known_profiles で絞る）に現れない。
-	q := sqlcgen.New(pool)
-	candidates, err := q.ListMissingEncodeProfiles(context.Background(), sqlcgen.ListMissingEncodeProfilesParams{
+	candidates, err := pgstoretest.Media(pool).ListMissingEncodeProfiles(context.Background(), store.MissingEncodeProfilesParams{
 		KnownProfiles: []string{"h264"},
 		AttemptLimit:  jobs.EncodeAttemptLimit,
 		RowLimit:      1000,
 	})
 	testutil.RequireNoError(t, err, "ListMissingEncodeProfiles")
-	if slices.IndexFunc(candidates, func(row sqlcgen.ListMissingEncodeProfilesRow) bool {
+	if slices.IndexFunc(candidates, func(row store.MissingEncodeProfile) bool {
 		return row.RecordingID == recordingID
 	}) >= 0 {
 		t.Errorf("ListMissingEncodeProfiles candidates = %v, recording %d (desired profile %q not in current config) must not be a candidate",

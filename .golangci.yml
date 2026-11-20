@@ -188,7 +188,6 @@ linters:
             - "!${config-path}/internal/metrics/dbcollector/*"
             - "!${config-path}/internal/notifier/*"
             - "!${config-path}/internal/ruler/*"
-            - "!${config-path}/internal/worker/*"
             # worker から移した既存の CM テスト。
             - "!${config-path}/internal/cmdetect/cm_detect_budget_test.go"
             - "!${config-path}/internal/cmdetect/cm_detect_reconcile_test.go"
