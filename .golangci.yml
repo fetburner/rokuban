@@ -192,10 +192,6 @@ linters:
             - "!${config-path}/internal/ingest/fixtures_test.go"
             - "!${config-path}/internal/ingest/ingest_cut_policy_test.go"
             - "!${config-path}/internal/ingest/ingest_test.go"
-            # worker から移した既存の転送・削除のテスト。
-            - "!${config-path}/internal/storagemaint/delete_reconcile_test.go"
-            - "!${config-path}/internal/storagemaint/delete_reconcile_removed_encoded_test.go"
-            - "!${config-path}/internal/storagemaint/s3_object_conformance_test.go"
             # api のテストのうち、録画・CM・再生・エンコードのキューの状態をまだ sqlcgen で作るもの。
             - "!${config-path}/internal/api/cm_detect_test.go"
             - "!${config-path}/internal/api/cm_detect_counts_test.go"
