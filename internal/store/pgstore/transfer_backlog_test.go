@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -92,7 +93,6 @@ func TestCountMediaAssetTransferBacklogBySourceStoreMatchesCandidates(t *testing
 	pool := testutil.SetupDB(t)
 	media := NewMediaWithStores(pool, "test-store", "edge", "derived")
 	ctx := t.Context()
-	rules := []byte(`[{"match":{"site":"tiered"},"store":"archive"},{"match":{"site":"remote"},"store":"remote"}]`)
 	fsStores := []string{"edge", "backup", "archive"}
 	sourceStores := []string{"edge", "backup"}
 	const attemptLimit int32 = 10
@@ -169,11 +169,16 @@ VALUES ($1, $2, 'exhausted')`, exhaustedCopyID, attemptLimit); err != nil {
 		t.Fatalf("deleting recording for asset %d: %v", deletedAsset, err)
 	}
 
-	candidateCount, _, err := media.CountMediaAssetTransferCandidates(ctx, rules, fsStores, "derived", attemptLimit)
+	policy := store.StoragePolicy{
+		Originals: []store.OriginalRule{{Site: "tiered", Store: "archive"}, {Site: "remote", Store: "remote"}},
+		FSStores:  fsStores,
+		Derived:   "derived",
+	}
+	candidateCount, _, err := media.CountMediaAssetTransferCandidates(ctx, policy, attemptLimit)
 	if err != nil {
 		t.Fatalf("counting transfer candidates: %v", err)
 	}
-	byStore, err := media.CountMediaAssetTransferBacklogBySourceStore(ctx, rules, fsStores, sourceStores, "derived", attemptLimit)
+	byStore, err := media.CountMediaAssetTransferBacklogBySourceStore(ctx, policy, sourceStores, attemptLimit)
 	if err != nil {
 		t.Fatalf("counting backlog by source store: %v", err)
 	}

@@ -72,11 +72,7 @@ func newStoreRoute[T queueStoreArgs](kind string, deps *Deps, stores map[string]
 
 // chooseIngestStore は規則で ingest の置き場を選ぶ。規則の符号化と評価の失敗はそのまま返す。
 func chooseIngestStore(ctx context.Context, deps *Deps, site string) (string, error) {
-	rules, err := deps.StorageTransferPolicy.OriginalRulesJSON()
-	if err != nil {
-		return "", fmt.Errorf("encoding the original store rules: %w", err)
-	}
-	name, err := deps.IngestStores.DesiredOriginalStoreAtIngest(ctx, rules, deps.StorageTransferPolicy.Derived, site)
+	name, err := deps.IngestStores.DesiredOriginalStoreAtIngest(ctx, deps.StoragePolicy, site)
 	if err != nil {
 		return "", fmt.Errorf("evaluating the original store rules: %w", err)
 	}

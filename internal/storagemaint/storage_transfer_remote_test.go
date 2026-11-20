@@ -106,7 +106,7 @@ func newTransferTestRemoteFixture(t *testing.T, content []byte, knownSHA bool, s
 func (f transferTestRemoteFixture) worker(t *testing.T) StorageTransferWorker {
 	t.Helper()
 	return StorageTransferWorker{
-		Storage: f.storageMedia, Config: f.cfg, Roots: f.roots,
+		Storage: f.storageMedia, Config: f.cfg, Policy: policyOf(f.cfg), Roots: f.roots,
 		ObjectStores: transferTestObjectStores(t, f.roots), ScratchDir: t.TempDir(),
 	}
 }
@@ -187,8 +187,7 @@ func TestStorageTransferWorkerResumesRemoteOriginalWithRange(t *testing.T) {
 	t.Parallel()
 	content := []byte("resumed remote original: the checkpointed prefix is kept and only the suffix is requested")
 	f := newTransferTestRemoteFixture(t, content, true, nil)
-	transfer, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive",
-		mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.FSStoreNames(), f.cfg.Derived, store.MediaAssetTransferAttemptLimit)
+	transfer, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive", mustStoragePolicy(t, f.cfg), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.FSStoreNames(), f.cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing checkpointed remote transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
@@ -292,8 +291,7 @@ func TestStorageTransferWorkerRejectsUnusableRemoteRangeAnswers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			content := []byte("range answers must start exactly where the checkpointed prefix ends")
 			f := newTransferTestRemoteFixture(t, content, true, tc.serve)
-			transfer, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive",
-				mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.FSStoreNames(), f.cfg.Derived, store.MediaAssetTransferAttemptLimit)
+			transfer, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive", mustStoragePolicy(t, f.cfg), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.FSStoreNames(), f.cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 			if err != nil || !ok {
 				t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
 			}
@@ -381,8 +379,7 @@ func TestPrepareMediaAssetTransferReservesUnmountedSourceOnlyWithInternalURL(t *
 	content := []byte("reservation depends on internal_url, not on the mount")
 	f := newTransferTestRemoteFixture(t, content, true, nil)
 	reserve := func(cfg config.StorageConfig) (bool, error) {
-		_, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive",
-			mustOriginalRules(t, cfg), []string{"archive"}, transferSourceStores(cfg, []string{"archive"}), []string{"archive"}, cfg.Derived, store.MediaAssetTransferAttemptLimit)
+		_, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive", withFSStores(mustStoragePolicy(t, cfg), "archive"), transferSourceStores(cfg, []string{"archive"}), []string{"archive"}, []string{"archive"}, store.MediaAssetTransferAttemptLimit)
 		return ok, err
 	}
 
@@ -412,8 +409,7 @@ func TestPrepareMediaAssetTransferKeepsDerivedSourcesMounted(t *testing.T) {
 	media := pgstore.NewMedia(pool, "test-store", "")
 	reserve := func(fsStores, sourceStores []string) bool {
 		t.Helper()
-		_, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive",
-			mustOriginalRules(t, cfg), fsStores, sourceStores, fsStores, cfg.Derived, store.MediaAssetTransferAttemptLimit)
+		_, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", withFSStores(mustStoragePolicy(t, cfg), fsStores...), sourceStores, fsStores, fsStores, store.MediaAssetTransferAttemptLimit)
 		testutil.RequireNoError(t, err, "preparing derived transfer")
 		return ok
 	}
@@ -430,8 +426,7 @@ func TestStorageTransferWorkerDoesNotAdoptUnverifiableRemoteDestination(t *testi
 	t.Parallel()
 	content := []byte("unverified destination with an old row that has no SHA-256")
 	f := newTransferTestRemoteFixture(t, content, false, nil)
-	transfer, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive",
-		mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.FSStoreNames(), f.cfg.Derived, store.MediaAssetTransferAttemptLimit)
+	transfer, ok, err := f.storageMedia.PrepareMediaAssetTransfer(context.Background(), f.assetID, "archive", mustStoragePolicy(t, f.cfg), transferSourceStores(f.cfg, []string{"archive"}), f.cfg.FSStoreNames(), f.cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing unverified destination = (%+v, %t, %v)", transfer, ok, err)
 	}
@@ -481,7 +476,7 @@ func TestStorageTransferWorkerPrefersMountedCopyOverNewerRemoteCopy(t *testing.T
 	fingerprint, err := cfg.PolicyFingerprint()
 	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	worker := StorageTransferWorker{
-		Storage: pgstore.NewMedia(pool, "archive", ""), Config: cfg, Roots: roots,
+		Storage: pgstore.NewMedia(pool, "archive", ""), Config: cfg, Policy: policyOf(cfg), Roots: roots,
 		ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir(),
 	}
 	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}), "Work")

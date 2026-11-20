@@ -83,7 +83,9 @@ type Deps struct {
 	// StoreDeps.StorageTransfer と build 内で取り違えないよう、置き場に束ねないことを名前で示す。
 	UnscopedStorageTransfer store.StorageTransfer
 	StorageTransferPolicy   config.StorageConfig
-	StorageRoots            map[string]string
+	// StoragePolicy は起動時に StorageTransferPolicy から一度だけ作った置き場の方針である。
+	StoragePolicy store.StoragePolicy
+	StorageRoots  map[string]string
 	// UnscopedTSScan は置き場に束ねない TS scan reconcile の永続化契約。
 	// StoreDeps.TSScan と build 内で取り違えないよう、置き場に束ねないことを名前で示す。
 	UnscopedTSScan store.TSScan
@@ -222,6 +224,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		// 転送待ちが backlog_limit に達した置き場への encode 投入を止める（背圧）。
 		Transfers:     deps.UnscopedStorageTransfer,
 		StoragePolicy: deps.StorageTransferPolicy,
+		Policy:        deps.StoragePolicy,
 		// desired の絞り込みにプロファイル名だけを使う（EncodeWorker と同じ
 		// 設定を読む。EncodeReconcileArgs.Spec のコメント参照）。
 		Profiles: deps.Encode,
@@ -287,6 +290,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &storagemaint.StorageTransferWorker{
 		Storage:      deps.UnscopedStorageTransfer,
 		Config:       deps.StorageTransferPolicy,
+		Policy:       deps.StoragePolicy,
 		Roots:        deps.StorageRoots,
 		ObjectStores: deps.StorageObjects,
 		ScratchDir:   deps.ScratchDir,
@@ -408,6 +412,7 @@ func newDeleteReconcileWorker(deps *Deps, scoped *StoreDeps) *storagemaint.Delet
 		MediaPendingReclaim:       scoped.MediaPendingReclaim,
 		StorageTransfer:           scoped.StorageTransfer,
 		StorageTransferPolicy:     deps.StorageTransferPolicy,
+		Policy:                    deps.StoragePolicy,
 		RecordingPurge:            scoped.RecordingPurge,
 		Breakers:                  deps.Breakers,
 		Storage:                   scoped.StorageObservation,

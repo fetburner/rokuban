@@ -88,18 +88,18 @@ func TestDesiredOriginalStoreAtIngestEvaluatesRulesAtAgeZero(t *testing.T) {
 		},
 		Derived: "tokyo",
 	}
-	rules, err := storage.OriginalRulesJSON()
+	policy, err := storage.StoragePolicy()
 	if err != nil {
 		t.Fatal(err)
 	}
 	media := NewMedia(pool, "", "")
 	for site, want := range map[string]string{"takamatsu": "takamatsu", "home": "tokyo"} {
-		got, err := media.DesiredOriginalStoreAtIngest(ctx, rules, "tokyo", site)
+		got, err := media.DesiredOriginalStoreAtIngest(ctx, policy, site)
 		if err != nil || got != want {
 			t.Errorf("site %q: store = %q, %v; want literal %q", site, got, err, want)
 		}
 	}
-	if got, err := media.DesiredOriginalStoreAtIngest(ctx, []byte("[]"), "tokyo", "home"); err != nil || got != "" {
+	if got, err := media.DesiredOriginalStoreAtIngest(ctx, store.StoragePolicy{Derived: "tokyo"}, "home"); err != nil || got != "" {
 		t.Errorf("no rules: store = %q, %v; want empty", got, err)
 	}
 }

@@ -830,6 +830,11 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 	tunerStore := pgstore.NewTuners(pool)
 	analysisStore := pgstore.NewAnalysis(pool, "")
 	recordingStore := pgstore.NewRecordings(pool, "")
+	// 置き場の方針は起動時に一度だけ作る。設定が不正なら起動しない。
+	storagePolicy, err := cfg.Storage.StoragePolicy()
+	if err != nil {
+		return nil, fmt.Errorf("building the storage policy: %w", err)
+	}
 	base := &worker.Deps{
 		Enqueuer:                 deferred,
 		EPGSync:                  pgstore.NewEPG(pool),
@@ -852,6 +857,7 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		StorageObjects:           storageObjects,
 		UnscopedStorageTransfer:  mediaStore,
 		StorageTransferPolicy:    cfg.Storage,
+		StoragePolicy:            storagePolicy,
 		StorageRoots:             roots,
 		MountedStores:            mounted,
 		UnscopedTSScan:           mediaStore,
