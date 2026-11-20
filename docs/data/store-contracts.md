@@ -135,30 +135,13 @@ watcher は mirakc の record を観測するたびに、record の同期行・�
 
 契約は利用側ごとに 3 つに割る。観測を書く `RecordObservations`、ingest worker が転送先を読む `IngestTarget`、metrics が未取り込みの滞留を読む `RecordBacklog` である。実装は録画のドメインの `pgstore.Recordings` が全部持つ。
 
-同じ `(site, record_id)` の観測は直列化される。直列化しないと、並行した観測が同じ record に録画を作ろうとし、後発が一意違反で失敗する。録画の由来は、同じ tx で読んだ予約と意図から導出する。
-
-録画の title を書く操作は、分類ルールの当たりも保つ。これは録画ドメインの約束であり、PostgreSQL 実装ではトリガーが満たす。
-
-品質イベントの時刻は DB の時計で付ける。呼び出し側は時刻を渡さない。
-
 ingest をヒントにできるのは、取りこぼしを sweep が拾い直すからである。mirakc の record は ingest の DB commit 後にしか消えず、定期の record sweep は録画中・完了の record を再処理するたびに ingest を投入し直す。
 
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.RecordObservations` / `IngestTarget` / `RecordBacklog`
 - PostgreSQL 実装: `internal/store/pgstore.Recordings`
-- 同じ record の直列化（並行した観測が一意違反にならない）: `TestRecordObservationsContract/same record observations serialize`
-- 契約テストは既存の同期行を置いて競合させる。行が無いと INSERT の一意制約だけで直列化されてしまい、ロックの有無を検出できないからである。確保の直後に同期点を差し込み、後発が先発と同時に先へ進めるかを見る
-- 録画の由来（同じ tx の予約と意図から導出する）: `TestRecordObservationsContract/record source` の各ケース。ほかに `failed event source follows intent` と `failed schedule source follows intent`
-- 原子性（一意違反で同期行も残らない）: `TestRecordObservationsContract/record sync rolls back with recording conflict`
-- 失敗の観測の収束（生きた録画は 1 つ）: `TestRecordObservationsContract/failed schedule and failed event converge on one live recording`
-- 成功による置き換え（失敗した録画は superseded で残り、asset はその録画のまま）: `TestRecordObservationsContract/success supersedes failed recording`
-- 品質イベントの時刻（DB の時計で付く）: `TestRecordObservationsContract/quality events carry a readable time`
-- ingest の投入の判定（観測を重ねても同じ）: `TestRecordObservationsContract/ingest hint follows the recording status`
-- 転送先の site の絞り込み・NULL の保持・行が無いときの `ErrNotFound`: `TestRecordObservationsContract/ingest target preserves nullable fields`
-- 滞留の件数とバイト数に入る record: `TestRecordObservationsContract/ingest backlog filters records and bytes`
-- 古い同期行の削除は ID の集合で判定する: `TestRecordObservationsContract/stale record syncs are decided by the live id set`
-- title の分類: `recordings_label_rule_sync_update` trigger / `TestRecordingsLabelRuleTrigger_FollowsTitleUpdates`
+- title の分類（作成時と更新時）: `recordings_label_rule_sync_insert` と `recordings_label_rule_sync_update` の trigger。検査: `TestRecordingsLabelRuleTrigger_FollowsTitleUpdates`
 - commit 後のヒント（commit の後に投入し、投入の失敗で観測を失敗させない）: `TestProcessRecord_EnqueueFollowsCommit`
 - 上記以外の挙動: `TestRecordObservationsContract` の各ケース
 
@@ -176,7 +159,7 @@ SQL の組み立ては pgstore に置く。ジャンルの配列の重なり、�
 
 録画の検索は EPG に結合しない。理由は [検索](search.md) §5「録画検索は rulequery を共有しない」にある。共有するのはキーワードの正規化方言だけである。述語 `keywordClause` は pgstore の番組検索と録画検索が呼び、条件のコンパイラと列名の対応は共有しない。
 
-契約は、SQL の列を写した行を返す。API のレスポンス状態は `recordingFromListFields` で毎回導出する。導出済みの状態を SQL に焼くと、導出規則を API と DB の両方に持つことになる。
+API のレスポンス状態は `recordingFromListFields` で毎回導出する。導出済みの状態を SQL に焼くと、導出規則を API と DB の両方に持つことになる。
 
 一覧と棚は、汎用プランへの切り替えを避ける実行方式で毎回計画させる。これは pgstore の実装上の制約で、契約には現れない。理由と測定値は [REST の判断](../api/rest.md) の「プリペアド文キャッシュと再計画」にある。
 
