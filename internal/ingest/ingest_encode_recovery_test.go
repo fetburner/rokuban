@@ -64,9 +64,11 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		MediaDir:      t.TempDir(),
-		RecordTarget:  pgstoretest.Recordings(pool),
-		StallTimeout:  5 * time.Second,
-		Precheck:      pgstoretest.Media(pool),
+		Config:        Config{StallTimeout: 5 * time.Second},
+		Stores: Stores{
+			RecordTarget: pgstoretest.Recordings(pool),
+			Precheck:     pgstoretest.Media(pool),
+		},
 	}
 	iw.CMDetectionStore = pgstoretest.Analysis(pool)
 	job := jobs.IngestJobArgs{Site: "default", RecordID: "rec-163-lost-hint"}

@@ -60,18 +60,22 @@ func TestIngestWorker_ConcurrentSameFilenameUsesDistinctPaths(t *testing.T) {
 	wA := &IngestWorker{
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvA.URL, nil)),
-		RecordTarget:  pgstoretest.Recordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
-		Precheck:      pgstoretest.Media(pool),
+		Config:        Config{StallTimeout: 5 * time.Second},
+		Stores: Stores{
+			RecordTarget: pgstoretest.Recordings(pool),
+			Precheck:     pgstoretest.Media(pool),
+		},
+		MediaDir: mediaDir,
 	}
 	wB := &IngestWorker{
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvB.URL, nil)),
-		RecordTarget:  pgstoretest.Recordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
-		Precheck:      pgstoretest.Media(pool),
+		Config:        Config{StallTimeout: 5 * time.Second},
+		Stores: Stores{
+			RecordTarget: pgstoretest.Recordings(pool),
+			Precheck:     pgstoretest.Media(pool),
+		},
+		MediaDir: mediaDir,
 	}
 	wA.CMDetectionStore = pgstoretest.Analysis(pool)
 	wB.CMDetectionStore = pgstoretest.Analysis(pool)
@@ -245,7 +249,7 @@ func runCanonicalOrphanSurvives(
 	t.Cleanup(release)
 	install(t, pool, func() { close(publicationStarted) }, releasePublication)
 
-	w := &IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: pgstoretest.Media(pool)}
+	w := &IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Stores: Stores{Precheck: pgstoretest.Media(pool)}}
 	commitDone := make(chan error, 1)
 	go func() {
 		commitDone <- w.commit(ctx, recordingID, relPath, tempPath, fullPath,
@@ -395,10 +399,12 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			w := &IngestWorker{
 				MirakcClients: singleSiteClients("default", mirakc.NewClient(fake.URL(), nil)),
 				Publisher:     pgstoretest.Media(pool),
-				RecordTarget:  pgstoretest.Recordings(pool),
-				MediaDir:      mediaDir,
-				StallTimeout:  5 * time.Second,
-				Precheck:      pgstoretest.Media(pool),
+				Config:        Config{StallTimeout: 5 * time.Second},
+				Stores: Stores{
+					RecordTarget: pgstoretest.Recordings(pool),
+					Precheck:     pgstoretest.Media(pool),
+				},
+				MediaDir: mediaDir,
 			}
 			w.CMDetectionStore = pgstoretest.Analysis(pool)
 			job := jobs.IngestJobArgs{Site: "default", RecordID: recordID}

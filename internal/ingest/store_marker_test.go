@@ -114,8 +114,10 @@ func TestIngestWorkerProbesStorageAfterMarkerCheckAndRetriesFailure(t *testing.T
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, "tokyo"), "mediapath.WriteStoreMarker")
 	target := &failingIngestTarget{}
 	worker := &IngestWorker{
-		MirakcClients:  map[string]*mirakc.Client{"tokyo": nil},
-		RecordTarget:   target,
+		MirakcClients: map[string]*mirakc.Client{"tokyo": nil},
+		Stores: Stores{
+			RecordTarget: target,
+		},
 		MediaDir:       mediaDir,
 		MediaStoreName: "tokyo",
 	}
@@ -161,8 +163,10 @@ func TestIngestWorkerSkipsStorageProbeAlreadyDoneAtStartup(t *testing.T) {
 	testutil.RequireNoError(t, os.WriteFile(filepath.Join(mediaDir, "sites"), []byte("not a directory"), 0o600), "os.WriteFile")
 	target := &failingIngestTarget{}
 	worker := &IngestWorker{
-		MirakcClients:  map[string]*mirakc.Client{"tokyo": nil},
-		RecordTarget:   target,
+		MirakcClients: map[string]*mirakc.Client{"tokyo": nil},
+		Stores: Stores{
+			RecordTarget: target,
+		},
 		MediaDir:       mediaDir,
 		MediaStoreName: "tokyo",
 		StorageProbed:  true,

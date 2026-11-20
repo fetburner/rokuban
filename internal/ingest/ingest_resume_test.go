@@ -127,9 +127,14 @@ func TestIngestWorker_UncleanRestartUsesRangeZeroAndKeepsVisibleTemp(t *testing.
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-resume")
 	w := &IngestWorker{
-		Publisher: pgstoretest.Media(pool), MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		RecordTarget: pgstoretest.Recordings(pool), MediaDir: mediaDir, StallTimeout: 5 * time.Second,
-		Precheck: pgstoretest.Media(pool),
+		Publisher:     pgstoretest.Media(pool),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Config:        Config{StallTimeout: 5 * time.Second},
+		Stores: Stores{
+			RecordTarget: pgstoretest.Recordings(pool),
+			Precheck:     pgstoretest.Media(pool),
+		},
+		MediaDir: mediaDir,
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 	args := jobs.IngestJobArgs{Site: "default", RecordID: "rec-resume"}

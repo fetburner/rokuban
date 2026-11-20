@@ -88,7 +88,7 @@ func TestTSScan_StatisticsAreWrittenAfterIngestCommit(t *testing.T) {
 	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-test")
 	testutil.RequireNoError(t, os.WriteFile(tempPath, data, 0o600), "writing ingest temporary file")
 	seedIngestTempForCommit(t, pool, recordingID, mediaDir, tempPath)
-	testutil.RequireNoError(t, (&IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: pgstoretest.Media(pool)}).commit(
+	testutil.RequireNoError(t, (&IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Stores: Stores{Precheck: pgstoretest.Media(pool)}}).commit(
 		context.Background(), recordingID, relPath, tempPath, fullPath, int64(len(data)), nil, uuid.Nil, 0,
 	), "IngestWorker.commit")
 
@@ -159,7 +159,7 @@ func TestIngestFollowupEnqueuesTSScanAndCMDetectionHints(t *testing.T) {
 	fake.SetRecords([]mirakc.Record{{ID: "edge-1290"}})
 
 	enqueuer := jobqfaketest.NewRecordingEnqueuer()
-	w := &IngestWorker{Publisher: pgstoretest.Media(pool), Enqueuer: enqueuer, MediaDir: mediaDir, MediaStoreName: dbtest.StoreName, CMDetectionStore: pgstoretest.Analysis(pool), Precheck: pgstoretest.Media(pool)}
+	w := &IngestWorker{Publisher: pgstoretest.Media(pool), Enqueuer: enqueuer, MediaDir: mediaDir, MediaStoreName: dbtest.StoreName, CMDetectionStore: pgstoretest.Analysis(pool), Stores: Stores{Precheck: pgstoretest.Media(pool)}}
 	w.enqueueIngestFollowups(context.Background(), mirakc.NewClient(fake.URL(), nil), "edge-1290", recordingID,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	var deleteFound bool
