@@ -72,7 +72,8 @@ func TestThumbnailReselectionReadsEncodedInputFromS3(t *testing.T) {
 	})
 	testutil.MustExec(t, pool, "placing the thumbnail copy in the S3 store", `UPDATE media_asset_copies SET store = $2 WHERE media_asset_id = $1`, thumbnailID, objectStoreName)
 	setThumbnailSeek(t, pool, thumbnailID, 30000)
-	seedLostOriginalCMRanges(t, pool, t.TempDir(), recordingID, []chapters.Range{{StartMs: 0, EndMs: 60000}})
+	// 状態: active な原本が無い（検出の後で原本が削除された）。CM 検出は原本が実体を持つ時点で必要なので、先に作って検出してから削除する。
+	seedDeletedOriginalCMRanges(t, pool, t.TempDir(), recordingID, []chapters.Range{{StartMs: 0, EndMs: 60000}})
 	testutil.RequireNoError(t, objects.Put(ctx, oldThumbnailKey, strings.NewReader(string(oldThumbnail)), int64(len(oldThumbnail)), oldDigest, "image/jpeg"), "uploading current thumbnail")
 
 	mediaDir := t.TempDir()

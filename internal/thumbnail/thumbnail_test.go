@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -334,8 +335,14 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 		t.Errorf("new thumbnail file = %v, err = %v", data, err)
 	}
 	assertMediaAssetSHA256(t, pool, recordingID, store.AssetKindThumbnail, tinyJPEG)
-	if orig, err := pgstoretest.Media(pool).GetActiveOriginalMediaAsset(ctx, recordingID); err != nil || orig.ID != originalID {
-		t.Errorf("original input active after replacement = %v, err = %v", orig.ID == originalID, err)
+	// 入力の原本は、差し替えの後も「active・dbtest.StoreName の置き場・実体無しの印なし」であること（active_present の条件）。
+	orig, err := pgstoretest.Media(pool).GetActiveOriginalMediaAsset(ctx, recordingID)
+	missing, missingErr := pgstoretest.Media(pool).ListAllMissingMediaAssetIDs(ctx)
+	originalCopy := dbtest.MediaAssetCopyID(t, pool, originalID, dbtest.StoreName)
+	marked := slices.Contains(missing, originalCopy)
+	if err != nil || missingErr != nil || orig.ID != originalID || orig.Store != dbtest.StoreName || marked {
+		t.Errorf("original input present after replacement: asset %d in %q (active err %v), missing marker %v (err %v), want asset %d in %q without a marker",
+			orig.ID, orig.Store, err, marked, missingErr, originalID, dbtest.StoreName)
 	}
 }
 
@@ -359,7 +366,8 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 	thumbnailID := seedMediaAsset(t, pool, mediaDir, recordingID,
 		store.AssetKindThumbnail, nil, oldRelPath, tinyJPEG)
 	setThumbnailSeek(t, pool, thumbnailID, 30000)
-	seedLostOriginalCMRanges(t, pool, mediaDir, recordingID, []chapters.Range{{StartMs: 0, EndMs: 60000}})
+	// 状態: active な原本が無い（検出の後で原本が削除された）。CM 検出は原本が実体を持つ時点で必要なので、先に作って検出してから削除する。
+	seedDeletedOriginalCMRanges(t, pool, mediaDir, recordingID, []chapters.Range{{StartMs: 0, EndMs: 60000}})
 
 	var gotInputSeek string
 	w := &ThumbnailWorker{
@@ -410,6 +418,7 @@ func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T
 	thumbnailID := seedMediaAsset(t, pool, mediaDir, recordingID,
 		store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID, 0), tinyJPEG)
 	setThumbnailSeek(t, pool, thumbnailID, 30000)
+	// 状態: 原本の行はあるが実体無しの印が付いている（原本は使えない入力）。
 	seedLostOriginalCMRanges(t, pool, mediaDir, recordingID, []chapters.Range{{StartMs: 0, EndMs: 60000}})
 
 	var gotInputSeek string
@@ -539,45 +548,44 @@ func TestThumbnailWorker_SkipsWithoutOriginal(t *testing.T) {
 
 func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
 	t.Parallel()
-	// ON CONFLICT DO UPDATE の UpsertDerivedMediaAsset(thumbnail) は、既に active な行がある
-	// recording に対しても同じ行を更新する（行数は増えない）。
+	// 既に active な thumbnail 行がある録画を、その行を Expected にして公開し直す（差し替え）。
+	// 行は増えず、同じ行が新しい世代と位置に更新される。
 	pool := testutil.SetupDB(t)
 	if pool == nil {
 		return
 	}
-
+	ctx := context.Background()
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
+	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "shows/race.m2ts", []byte("ts"))
+	thumbnailID := seedMediaAsset(t, pool, mediaDir, recordingID,
+		store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID, 0), tinyJPEG)
 
-	origRel := "shows/race.m2ts"
-	origPath := filepath.Join(mediaDir, filepath.FromSlash(origRel))
-	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(origPath), 0o755), "os.MkdirAll")
-	testutil.RequireNoError(t, os.WriteFile(origPath, []byte("ts"), 0o644), "os.WriteFile")
-	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
-		fixtureParams.RelPath = origRel
-		fixtureParams.SizeBytes = 2
-	})
-
-	// 先に active な thumbnail 行を入れておく（別経路で先に着地したケースを模す）。
-	rel := thumbnailRelPath(recordingID, 0)
-	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
-		fixtureParams.Kind = store.AssetKindThumbnail
-		fixtureParams.RelPath = rel
-		fixtureParams.SizeBytes = int64(len(tinyJPEG))
-	})
-
-	// 同じ値で再度 upsert しても既存行の conflict にならず成功する。
-	dbtest.DerivedMediaAsset(t, pool, recordingID, "thumbnail", func(p *dbtest.DerivedMediaAssetParams) {
-		p.SizeBytes = int64(len(tinyJPEG))
-	})
+	current := requireThumbnailState(t, pool, recordingID, dbtest.StoreName)
+	published, err := pgstoretest.Media(pool).PublishThumbnail(ctx, store.ThumbnailPublishInput{
+		RecordingID: recordingID, RelPath: thumbnailRelPath(recordingID, 1), SizeBytes: int64(len(tinyJPEG)),
+		SeekMs: 20000, InputAssetID: originalID, DerivedGeneration: 1,
+		Expected: &store.ThumbnailObservation{
+			ID: current.ID, RelPath: current.RelPath, SeekMs: current.SeekMs, DerivedGeneration: current.DerivedGeneration,
+		},
+	}, func() error { return nil })
+	testutil.RequireNoError(t, err, "replacing the active thumbnail in place")
+	if !published {
+		t.Fatal("replacement over the active thumbnail was not published")
+	}
 
 	var n int
-	testutil.RequireNoError(t, pool.QueryRow(context.Background(),
+	testutil.RequireNoError(t, pool.QueryRow(ctx,
 		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'thumbnail'`,
 		recordingID,
 	).Scan(&n), "counting thumbnail media assets")
 	if n != 1 {
-		t.Errorf("thumbnail rows = %d, want 1 (upsert must not duplicate)", n)
+		t.Errorf("thumbnail rows = %d, want 1 (replacement must update the row in place)", n)
+	}
+	got := requireThumbnailState(t, pool, recordingID, dbtest.StoreName)
+	if got.ID != thumbnailID || got.RelPath != thumbnailRelPath(recordingID, 1) || got.DerivedGeneration != 1 {
+		t.Errorf("replaced thumbnail = asset %d %q generation %d, want asset %d %q generation 1",
+			got.ID, got.RelPath, got.DerivedGeneration, thumbnailID, thumbnailRelPath(recordingID, 1))
 	}
 }
 

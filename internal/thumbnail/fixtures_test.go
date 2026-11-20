@@ -86,8 +86,9 @@ func seedCMRanges(t *testing.T, pool *pgxpool.Pool, recordingID int64, ranges []
 	}
 }
 
-// seedLostOriginalCMRanges は原本を失った録画に CM 区間を保存する。CM 検出の契約は原本が実体を持つ録画だけ保存するので、
-// 原本を一度作って CM 区間を保存し、そのあとで原本を実体無しとして記録する（検出の後で原本が失われた状態）。
+// seedLostOriginalCMRanges は、原本の行はあるが実体無しの印が付いた録画に CM 区間を保存する（原本が active で実体無し候補の状態）。
+// CM 検出の契約は検出の時点で原本が実体を持つことを要求するので、原本を作って検出し、そのあとで実体無しの印を付ける。
+// 「active な原本が無い」状態は seedDeletedOriginalCMRanges を使う。
 func seedLostOriginalCMRanges(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64, ranges []chapters.Range) {
 	t.Helper()
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, fmt.Sprintf("lost/%d.ts", recordingID), []byte("fake-ts"))
@@ -103,6 +104,16 @@ func requireThumbnailState(t *testing.T, pool *pgxpool.Pool, recordingID int64, 
 		t.Fatalf("recording %d has no active thumbnail in store %q", recordingID, storeName)
 	}
 	return row
+}
+
+// seedDeletedOriginalCMRanges は、CM 区間を保存したあとで原本が削除された録画（カットだけを残して原本が消えた状態）を作る。
+// CM 検出の契約は検出の時点で原本が実体を持つことを要求するので、原本を作って検出し、そのあとで原本の複製を deleted にする。
+// これで GetActiveOriginalMediaAsset は見つからない（active な原本が無い分岐）。
+func seedDeletedOriginalCMRanges(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64, ranges []chapters.Range) {
+	t.Helper()
+	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, fmt.Sprintf("deleted/%d.ts", recordingID), []byte("fake-ts"))
+	seedCMRanges(t, pool, recordingID, ranges)
+	dbtest.SetMediaAssetState(t, pool, originalID, "deleted")
 }
 
 // setThumbnailSeek は、サムネイル asset の位置（seek_ms）を衛星表に書く。位置は公開と同じ commit で書かれるもので、テストは公開を経ずに直接作る。
