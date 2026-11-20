@@ -11,6 +11,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -45,12 +46,12 @@ func newStorageAdoptCmd() *cobra.Command {
 			if !mediapath.ValidStoreName(name) {
 				return fmt.Errorf("invalid store name %q: use lowercase ASCII letters, digits, and hyphens", name)
 			}
-			store, ok := cfg.Storage.Stores[name]
+			storeCfg, ok := cfg.Storage.Stores[name]
 			if !ok {
 				return fmt.Errorf("store name %q is not configured in storage.stores", name)
 			}
-			if store.Kind != "fs" {
-				return fmt.Errorf("storage adopt requires an fs store, but storage.stores.%s.kind is %q", name, store.Kind)
+			if storeCfg.Kind != "fs" {
+				return fmt.Errorf("storage adopt requires an fs store, but storage.stores.%s.kind is %q", name, storeCfg.Kind)
 			}
 			roots, err := cfg.Storage.StoreRoots([]string{name})
 			if err != nil {
@@ -79,7 +80,7 @@ func newStorageAdoptCmd() *cobra.Command {
 			if err := db.CheckMigrationsCurrent(cmd.Context(), cfg.DB.DSN()); err != nil {
 				return fmt.Errorf("storage adopt: %w", err)
 			}
-			media := pgstore.NewMedia(pool, name, "") // 照合だけで削除の判定はしない
+			media := pgstore.NewMediaWithPolicy(pool, name, store.NewStoragePolicy(nil, nil, "")) // 照合だけで削除の判定はしない
 			if !markerExists {
 				has, err := media.HasStoreCopies(cmd.Context())
 				if err != nil {

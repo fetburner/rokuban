@@ -89,7 +89,7 @@ SELECT media_asset_id, $2, rel_path, generation, 'active' FROM media_asset_copie
 					}
 
 					router := chi.NewRouter()
-					New(pgstore.NewMediaForStreamer(pool, preferredStore, []string{dbtest.StoreName, preferredStore}), Config{
+					New(pgstore.NewMediaForStreamerWithPolicy(pool, store.NewStoragePolicy(nil, nil, preferredStore), []string{dbtest.StoreName, preferredStore}), Config{
 						MediaRoots: map[string]string{dbtest.StoreName: oldRoot},
 						ObjectStores: map[string]objstore.Store{
 							dbtest.StoreName: oldObjects,
@@ -125,7 +125,7 @@ func TestDerivedServingReturnsNotFoundWhenNoReadableCopyExists(t *testing.T) {
 	})
 
 	router := chi.NewRouter()
-	New(pgstore.NewMediaForStreamer(pool, "zz-s3", []string{"zz-s3"}), Config{}).Mount(router)
+	New(pgstore.NewMediaForStreamerWithPolicy(pool, store.NewStoragePolicy(nil, nil, "zz-s3"), []string{"zz-s3"}), Config{}).Mount(router)
 	httpServer := httptest.NewServer(router)
 	t.Cleanup(httpServer.Close)
 

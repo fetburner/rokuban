@@ -17,7 +17,7 @@ import (
 
 func TestIngestCheckpointCleanHandoffResumesAndFencesZombie(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
 	firstOwner := uuid.New()
@@ -58,7 +58,7 @@ func TestIngestCheckpointCleanHandoffResumesAndFencesZombie(t *testing.T) {
 // 再利用すると残っている古い temp と衝突する。
 func TestIngestCheckpointDiscardNeverReusesWriterGeneration(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
 	owner := uuid.New()
@@ -91,7 +91,7 @@ func TestIngestCheckpointDiscardNeverReusesWriterGeneration(t *testing.T) {
 
 func TestIngestProgressKeepsVisibleWriterUntilNewWriterCatchesUp(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
 	oldOwner := uuid.New()

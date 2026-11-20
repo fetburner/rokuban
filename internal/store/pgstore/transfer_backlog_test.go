@@ -17,7 +17,7 @@ var backlogBase = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 // 保存と読み出し: 書いた置き場の前の状態が返り、counts に無い置き場の行は消える。
 func TestRecordTransferBacklog_ReturnsPreviousAndDropsOthers(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	m := NewMediaWithStores(pool, "", "", "")
+	m := testMediaWithStores(pool, "", "", "")
 	ctx := t.Context()
 
 	w, err := m.RecordTransferBacklog(ctx, map[string]int64{"edge": 3, "gone": 1}, backlogBase)
@@ -37,7 +37,7 @@ func TestRecordTransferBacklog_ReturnsPreviousAndDropsOthers(t *testing.T) {
 // 古い counted_at の保存は、新しい件数を上書きせず、書いていないと返し、DB に残っている新しい件数を返す。
 func TestRecordTransferBacklog_StaleCountDoesNotOverwrite(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	m := NewMediaWithStores(pool, "", "", "")
+	m := testMediaWithStores(pool, "", "", "")
 	ctx := t.Context()
 	if _, err := m.RecordTransferBacklog(ctx, map[string]int64{"edge": 9}, backlogBase.Add(time.Minute)); err != nil {
 		t.Fatalf("recording newer count: %v", err)
@@ -58,7 +58,7 @@ func TestRecordTransferBacklog_StaleCountDoesNotOverwrite(t *testing.T) {
 // 時刻は呼び出しごとに別にし、古い時刻の呼び出しが捨てられても、書いた呼び出しの中で前の行が無いのは 1 つだけになる。
 func TestRecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	m := NewMediaWithStores(pool, "", "", "")
+	m := testMediaWithStores(pool, "", "", "")
 	for round := 0; round < 10; round++ {
 		if _, err := m.RecordTransferBacklog(t.Context(), nil, backlogBase); err != nil {
 			t.Fatalf("clearing snapshots: %v", err)
@@ -91,10 +91,14 @@ func TestRecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce(t *testing.T) {
 
 func TestCountMediaAssetTransferBacklogBySourceStoreMatchesCandidates(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMediaWithStores(pool, "test-store", "edge", "derived")
 	ctx := t.Context()
 	fsStores := []string{"edge", "backup", "archive"}
 	sourceStores := []string{"edge", "backup"}
+	policy := store.NewStoragePolicy([]store.OriginalStoreRule{
+		{Site: "tiered", Store: "archive"},
+		{Site: "remote", Store: "remote"},
+	}, fsStores, "derived")
+	media := NewMediaWithStoresAndPolicy(pool, "test-store", "edge", policy)
 	const attemptLimit int32 = 10
 
 	assetOfKindWithSource := func(kind, site, sourceStore string) (int64, int64) {
@@ -169,16 +173,11 @@ VALUES ($1, $2, 'exhausted')`, exhaustedCopyID, attemptLimit); err != nil {
 		t.Fatalf("deleting recording for asset %d: %v", deletedAsset, err)
 	}
 
-	policy := store.StoragePolicy{
-		Originals: []store.OriginalRule{{Site: "tiered", Store: "archive"}, {Site: "remote", Store: "remote"}},
-		FSStores:  fsStores,
-		Derived:   "derived",
-	}
-	candidateCount, _, err := media.CountMediaAssetTransferCandidates(ctx, policy, attemptLimit)
+	candidateCount, _, err := media.CountMediaAssetTransferCandidates(ctx, attemptLimit)
 	if err != nil {
 		t.Fatalf("counting transfer candidates: %v", err)
 	}
-	byStore, err := media.CountMediaAssetTransferBacklogBySourceStore(ctx, policy, sourceStores, attemptLimit)
+	byStore, err := media.CountMediaAssetTransferBacklogBySourceStore(ctx, sourceStores, attemptLimit)
 	if err != nil {
 		t.Fatalf("counting backlog by source store: %v", err)
 	}

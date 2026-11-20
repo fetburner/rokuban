@@ -5,6 +5,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -41,7 +42,7 @@ func LabelRules(pool *pgxpool.Pool) *pgstore.LabelRules {
 
 // Media はテスト用の既定値で Media を作る。
 func Media(pool *pgxpool.Pool) *pgstore.Media {
-	return pgstore.NewMedia(pool, TestStore, TestStore)
+	return pgstore.NewMediaWithPolicy(pool, TestStore, store.NewStoragePolicy(nil, nil, TestStore))
 }
 
 // NeverScheduledEvents はテスト用の既定値で NeverScheduledEvents を作る。

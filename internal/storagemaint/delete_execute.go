@@ -65,13 +65,13 @@ func (w *DeleteReconcileWorker) observeDeleteReconcile(ctx context.Context, brea
 // active に戻すと「active なのにファイルが無い行」を作ってしまう。これは
 // 案 B [復元時に deleting を同期的に active へ戻す] を却下した理由と同じ
 // 罠で、revert 経路自身がこの窓を作らないようにする）。
-func (w *DeleteReconcileWorker) restoreUnqualifiedDeletingAssets(ctx context.Context, trashCutoff, overlapCutoff time.Time, placement store.StoragePolicy) error {
-	rows, err := w.MediaDelete.ListUnqualifiedDeletingAssets(ctx, trashCutoff, overlapCutoff, placement, deleteReconcileRowLimit)
+func (w *DeleteReconcileWorker) restoreUnqualifiedDeletingAssets(ctx context.Context, trashCutoff, overlapCutoff time.Time) error {
+	rows, err := w.MediaDelete.ListUnqualifiedDeletingAssets(ctx, trashCutoff, overlapCutoff, deleteReconcileRowLimit)
 	if err != nil {
 		return fmt.Errorf("listing unqualified deleting assets: %w", err)
 	}
 	for _, a := range rows {
-		w.resolveUnqualifiedDeletingAsset(ctx, a, trashCutoff, overlapCutoff, placement)
+		w.resolveUnqualifiedDeletingAsset(ctx, a, trashCutoff, overlapCutoff)
 	}
 	return nil
 }
@@ -187,7 +187,7 @@ func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candida
 			log.Error("delete_reconcile: derived placement object store is not configured", "err", err)
 			return
 		}
-		markedPath, marked, err := w.StorageTransfer.MarkMediaAssetCopyDeleting(ctx, candidate, arm.policy, arm.overlapCutoff)
+		markedPath, marked, err := w.StorageTransfer.MarkMediaAssetCopyDeleting(ctx, candidate, arm.overlapCutoff)
 		if err != nil {
 			log.Error("delete_reconcile: rechecking derived placement copy before delete", "err", err)
 			return
@@ -225,7 +225,7 @@ func (w *DeleteReconcileWorker) deletePlacementCopy(ctx context.Context, candida
 		log.Error("delete_reconcile: rejecting placement rel_path outside the media directory", "err", err)
 		return
 	}
-	markedPath, marked, err := w.StorageTransfer.MarkMediaAssetCopyDeleting(ctx, candidate, arm.policy, arm.overlapCutoff)
+	markedPath, marked, err := w.StorageTransfer.MarkMediaAssetCopyDeleting(ctx, candidate, arm.overlapCutoff)
 	if err != nil {
 		log.Error("delete_reconcile: rechecking placement copy before unlink", "err", err)
 		return
@@ -287,7 +287,6 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 		log.Error("delete_reconcile: rejecting pending transfer rel_path outside the media directory", "err", err)
 		return
 	}
-	policy := w.Policy
 	beforeMediaAssetUnlink(candidate.RelPath)
 	// temp は copy ID と世代で識別する。進捗の行が無ければ、この回収が消す temp は無い。
 	tempPath := ""
@@ -300,7 +299,7 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingTransferCopy(ctx context.C
 		tempPath = transferTempPath(path, candidate.MediaAssetID, candidate.CopyID, generation)
 	}
 	reclaimed, err := w.StorageTransfer.ReclaimObsoletePendingMediaAssetTransferCopy(
-		ctx, candidate, policy,
+		ctx, candidate,
 		func(ownedRelPaths []string) error {
 			if len(ownedRelPaths) != 0 {
 				return fmt.Errorf("original transfer copy %d has derived-object ownership records", candidate.CopyID)
@@ -353,9 +352,8 @@ func (w *DeleteReconcileWorker) reclaimObsoletePendingDerivedTransferCopy(ctx co
 		log.Error("delete_reconcile: derived transfer object store is not configured", "derived_store", w.DerivedObjectStoreName)
 		return
 	}
-	policy := w.Policy
 	reclaimed, err := w.StorageTransfer.ReclaimObsoletePendingMediaAssetTransferCopy(
-		ctx, candidate, policy,
+		ctx, candidate,
 		func(ownedRelPaths []string) error {
 			if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking obsolete pending derived transfer copy"); err != nil {
 				return err
@@ -524,7 +522,7 @@ var afterDeletingAssetStat = func(string) {}
 // 確定する。ここで無条件に active へ戻すと、案 B（復元時に deleting を
 // 同期的に active へ戻す）を却下した理由そのもの ——「active なのにファイルが
 // 無い行」を作ってしまう。
-func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Context, a store.MediaDeleteRevertCandidate, graceCutoff, overlapCutoff time.Time, placement store.StoragePolicy) {
+func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Context, a store.MediaDeleteRevertCandidate, graceCutoff, overlapCutoff time.Time) {
 	log := slog.With("media_asset_id", a.MediaAssetID, "media_asset_copy_id", a.ID, "recording_id", a.RecordingID, "rel_path", a.RelPath)
 
 	var statErr error
@@ -570,7 +568,7 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 		log.Warn("delete_reconcile: withholding deleting-state resolution because media store marker did not match", "err", err)
 		return
 	}
-	updated, err := w.MediaDelete.RevertToActive(ctx, a.ID, graceCutoff, overlapCutoff, placement)
+	updated, err := w.MediaDelete.RevertToActive(ctx, a.ID, graceCutoff, overlapCutoff)
 	if err != nil {
 		log.Error("delete_reconcile: reverting asset to active", "err", err)
 		return

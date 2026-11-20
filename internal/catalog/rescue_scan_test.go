@@ -16,6 +16,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -153,7 +154,7 @@ func TestRescueLatest_NoCatalogScansOnlySelectedStoreRoot(t *testing.T) {
 		}
 	}
 
-	result, err := RescueLatest(ctx, nil, pgstore.NewMedia(pool, storeA, ""), rootA, storeA, []string{"default"})
+	result, err := RescueLatest(ctx, nil, pgstore.NewMediaWithPolicy(pool, storeA, store.NewStoragePolicy(nil, nil, "")), rootA, storeA, []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest for %s: %v", storeA, err)
 	}
@@ -170,7 +171,7 @@ func TestRescueLatest_NoCatalogScansOnlySelectedStoreRoot(t *testing.T) {
 		t.Errorf("store-a copy count for the other root's file = %d, want 0", got)
 	}
 
-	_, err = RescueLatest(ctx, nil, pgstore.NewMedia(pool, storeA, ""), rootB, storeA, []string{"default"})
+	_, err = RescueLatest(ctx, nil, pgstore.NewMediaWithPolicy(pool, storeA, store.NewStoragePolicy(nil, nil, "")), rootB, storeA, []string{"default"})
 	if !errors.Is(err, mediapath.ErrStoreMarkerMismatch) {
 		t.Fatalf("RescueLatest with store-a and store-b root error = %v, want ErrStoreMarkerMismatch", err)
 	}
@@ -215,7 +216,7 @@ func TestRescueLatest_RechecksStoreMarkerBeforeRegisteringCandidate(t *testing.T
 	}
 	t.Cleanup(func() { statRescueCandidate = originalStat })
 
-	_, err = RescueLatest(ctx, nil, pgstore.NewMedia(pool, storeA, ""), root, storeA, []string{"default"})
+	_, err = RescueLatest(ctx, nil, pgstore.NewMediaWithPolicy(pool, storeA, store.NewStoragePolicy(nil, nil, "")), root, storeA, []string{"default"})
 	if !markerChanged {
 		t.Fatal("rescue candidate stat hook did not change the marker")
 	}

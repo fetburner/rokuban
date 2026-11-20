@@ -63,7 +63,7 @@ ORDER BY ordinal_position`)
 func TestAdoptUnassignedStoreRows(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	media := NewMedia(pool, "tokyo", "")
+	media := testMedia(pool, "tokyo", "")
 	recordingID := dbtest.Recording(t, pool)
 	copylessAssetID := dbtest.MediaAsset(t, pool, recordingID)
 	// コピー行を持たない論理資産。adopt はコピーを作らず、worker 起動時の検査が拒む。
@@ -154,7 +154,7 @@ func TestAdoptUnassignedStoreRows(t *testing.T) {
 func TestAdoptUnassignedStoreRowsKeepsDerivedGenerationCurrent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	media := NewMedia(pool, "tokyo", "")
+	media := testMedia(pool, "tokyo", "")
 	type fixture struct {
 		recordingID int64
 		assetID     int64
@@ -236,14 +236,14 @@ SELECT EXISTS (
 func TestListStorageSyncWithoutConfiguredStoreIncludesNamedObservations(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	workerMedia := NewMedia(pool, "tokyo", "")
+	workerMedia := testMedia(pool, "tokyo", "")
 	if err := workerMedia.UpsertStorageSync(ctx, store.StorageObservationInput{
 		Root: "media", Path: "/media", TotalBytes: 100, UsedBytes: 25, AvailableBytes: 75,
 	}); err != nil {
 		t.Fatalf("recording worker storage observation: %v", err)
 	}
 
-	apiMedia := NewMedia(pool, "tokyo", "")
+	apiMedia := testMedia(pool, "tokyo", "")
 	rows, err := apiMedia.ListStorageSync(ctx)
 	if err != nil {
 		t.Fatalf("listing storage observations without configured store: %v", err)
@@ -261,7 +261,7 @@ func TestMediaAssetCopyTracksDeleteLifecycle(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 'tokyo' WHERE media_asset_id = $1`, assetID); err != nil {
 		t.Fatalf("assigning fixture copy store: %v", err)
 	}
-	media := NewMedia(pool, "tokyo", "")
+	media := testMedia(pool, "tokyo", "")
 	copyID := dbtest.MediaAssetCopyID(t, pool, assetID, "tokyo")
 
 	if marked, err := media.MarkDeleting(ctx, copyID, "active"); err != nil || !marked {
@@ -289,7 +289,7 @@ func TestMediaAssetDeleteIgnoresAssetWithoutCopy(t *testing.T) {
 	if _, err := pool.Exec(ctx, `DELETE FROM media_asset_copies WHERE media_asset_id = $1`, assetID); err != nil {
 		t.Fatalf("removing fixture copy: %v", err)
 	}
-	media := NewMedia(pool, "tokyo", "")
+	media := testMedia(pool, "tokyo", "")
 	if err := media.RequireAdoptedStoreRows(ctx); err == nil {
 		t.Fatal("RequireAdoptedStoreRows succeeded while the physical copy was missing")
 	}
@@ -322,7 +322,7 @@ func TestRegisterInPlaceRejectsDeletingCopyPath(t *testing.T) {
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
 	assetID := dbtest.MediaAsset(t, pool, recordingID)
-	media := NewMedia(pool, dbtest.StoreName, "")
+	media := testMedia(pool, dbtest.StoreName, "")
 	copyID := dbtest.MediaAssetCopyID(t, pool, assetID, dbtest.StoreName)
 	if marked, err := media.MarkDeleting(ctx, copyID, "active"); err != nil || !marked {
 		t.Fatalf("MarkDeleting: %v", err)
@@ -345,7 +345,7 @@ func TestRegisterInPlaceRejectsDeletingCopyPath(t *testing.T) {
 func TestRegisterInPlaceRejectsTombstonedPathButAllowsRenamedPath(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	media := NewMedia(pool, dbtest.StoreName, "")
+	media := testMedia(pool, dbtest.StoreName, "")
 	originalPath := "sites/default/library/original.mp4"
 	input := inPlaceEncodedInput(originalPath, 100)
 	first, err := media.RegisterInPlace(ctx, input)
@@ -403,7 +403,7 @@ func inPlaceEncodedInput(relPath string, size int64) store.InPlaceInput {
 func TestRegisterInPlaceNewAssetTakesGenerationFromPath(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	media := NewMedia(pool, dbtest.StoreName, "")
+	media := testMedia(pool, dbtest.StoreName, "")
 	res, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g8.mp4", 100))
 	if err != nil {
 		t.Fatalf("registering generation 8: %v", err)
@@ -424,7 +424,7 @@ WHERE a.id = $1`, res.AssetIDs[0]).Scan(&derived, &copyGeneration); err != nil {
 func TestRegisterInPlaceSamePathActiveReregistrationChangesNothing(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	media := NewMedia(pool, dbtest.StoreName, "")
+	media := testMedia(pool, dbtest.StoreName, "")
 	first, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g8.mp4", 100))
 	if err != nil {
 		t.Fatalf("first registration: %v", err)
@@ -452,7 +452,7 @@ func TestRegisterInPlaceRejectsExistingAssetUnlessAllConditionsHold(t *testing.T
 	setup := func(t *testing.T) (*Media, *pgxpool.Pool, store.InPlaceResult) {
 		t.Helper()
 		pool := testutil.SetupDB(t)
-		media := NewMedia(pool, dbtest.StoreName, "")
+		media := testMedia(pool, dbtest.StoreName, "")
 		first, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g8.mp4", 100))
 		if err != nil {
 			t.Fatalf("registering generation 8: %v", err)
@@ -616,7 +616,7 @@ func TestPreparePendingMediaAssetCopyRejectsTombstonedPath(t *testing.T) {
 	}
 
 	profile := "h264"
-	media := NewMedia(pool, dbtest.StoreName, "")
+	media := testMedia(pool, dbtest.StoreName, "")
 	err := media.PreparePendingMediaAssetCopy(ctx, store.PendingMediaAssetCopy{
 		RecordingID: dbtest.Recording(t, pool), Kind: store.AssetKindEncoded, Profile: &profile,
 		RelPath: path, SizeBytes: 1, DerivedGeneration: 1,
@@ -640,7 +640,7 @@ func TestUpsertMediaAssetCopyConflictKeepsState(t *testing.T) {
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
 	assetID := dbtest.MediaAsset(t, pool, recordingID)
-	media := NewMedia(pool, dbtest.StoreName, "")
+	media := testMedia(pool, dbtest.StoreName, "")
 	copyID := dbtest.MediaAssetCopyID(t, pool, assetID, dbtest.StoreName)
 	if marked, err := media.MarkDeleting(ctx, copyID, "active"); err != nil || !marked {
 		t.Fatalf("MarkDeleting: %v", err)
@@ -841,7 +841,7 @@ func TestMediaServingRequiresAnActiveStoreCopy(t *testing.T) {
 		t.Fatalf("setting the physical copy path: %v", err)
 	}
 
-	media := NewMedia(pool, "tokyo", "")
+	media := testMedia(pool, "tokyo", "")
 	got, err := media.GetOriginalMediaAssetForServing(ctx, recordingID)
 	if err != nil {
 		t.Fatalf("serving active copy: %v", err)
@@ -875,7 +875,7 @@ func TestTrashDeleteCandidatesUseActiveCopyPath(t *testing.T) {
 		t.Fatalf("making physical copy deleted: %v", err)
 	}
 
-	media := NewMedia(pool, "tokyo", "")
+	media := testMedia(pool, "tokyo", "")
 	rows, err := media.ListTrashAssetsToDelete(ctx, time.Now(), 10)
 	if err != nil {
 		t.Fatalf("listing trash deletion candidates with a deleted copy: %v", err)
@@ -956,7 +956,7 @@ INSERT INTO media_assets (recording_id, kind, size_bytes, derived_generation)
 VALUES ($1, 'thumbnail', 1, 4)`, recordingID); err != nil {
 		t.Fatalf("seeding thumbnail: %v", err)
 	}
-	media := NewMedia(pool, "tokyo", "")
+	media := testMedia(pool, "tokyo", "")
 	if got, found, err := media.GetDerivedMediaAssetGeneration(ctx, recordingID, "encoded"); err != nil || found {
 		t.Fatalf("encoded generation = %d, found %v, err %v; want not found", got, found, err)
 	}
@@ -1075,7 +1075,7 @@ func TestEncodedPublishStateActiveRequiresCurrentGenerationCopy(t *testing.T) {
 VALUES ($1, 'always', ARRAY['h264'], false)`, recordingID); err != nil {
 		t.Fatalf("seeding encode policy: %v", err)
 	}
-	media := NewMedia(pool, dbtest.StoreName, "")
+	media := testMedia(pool, dbtest.StoreName, "")
 	observe := func() *store.EncodedAssetObservation {
 		t.Helper()
 		state, err := media.GetEncodedPublishState(ctx, recordingID, profile, false, false)
@@ -1132,7 +1132,7 @@ WHERE media_asset_id = $1`, assetID, time.Now().Add(-3*time.Hour), time.Now().Ad
 		t.Fatalf("deleting current-generation copy: %v", err)
 	}
 
-	media := NewMedia(pool, dbtest.StoreName, "")
+	media := testMedia(pool, dbtest.StoreName, "")
 	state, err := media.GetEncodedPublishState(ctx, recordingID, profile, false, false)
 	if err != nil {
 		t.Fatalf("loading encoded publish state: %v", err)

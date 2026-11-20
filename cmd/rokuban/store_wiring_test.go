@@ -41,9 +41,9 @@ func (r *enqueueRecorder) Enqueue(_ context.Context, args jobq.Args, _ ...jobq.E
 	return jobq.Result{}, nil
 }
 
-func mustNewStoreScopedDeps(t *testing.T, pool *pgxpool.Pool, cfg *config.Config, name, root string, derivedObjects objstore.Store) *worker.StoreDeps {
+func mustNewStoreScopedDeps(t *testing.T, pool *pgxpool.Pool, cfg *config.Config, policy store.StoragePolicy, name, root string, derivedObjects objstore.Store) *worker.StoreDeps {
 	t.Helper()
-	deps, err := newStoreScopedDeps(pool, cfg, name, root, derivedObjects)
+	deps, err := newStoreScopedDeps(pool, cfg, policy, name, root, derivedObjects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestPeriodicThumbnailReconcileEnqueuesWithUnboundMedia(t *testing.T) {
 		p.SizeBytes = 1
 	})
 
-	media := pgstore.NewMediaWithStores(pool, "", "", dbtest.StoreName)
+	media := pgstore.NewMediaWithPolicy(pool, "", store.NewStoragePolicy(nil, nil, dbtest.StoreName))
 	enq := &enqueueRecorder{}
 	registry := worker.NewWorkers(&worker.Deps{UnscopedMediaReconcile: media, Enqueuer: enq})
 	if err := registry.Work(context.Background(), jobs.ThumbnailReconcileArgs{}); err != nil {
@@ -112,6 +112,10 @@ func TestStoreScopedDeleteReconcileDeletesNonDesiredCopyAfterOverlap(t *testing.
 		Derived:   "archive",
 		Transfer:  config.StorageTransferConfig{Overlap: 2 * time.Hour},
 	}, Mirakcs: []config.MirakcSite{{Site: "default"}}}
+	policy, err := cfg.Storage.BuildStorePolicy()
+	if err != nil {
+		t.Fatalf("building storage policy: %v", err)
+	}
 
 	relPath := "sites/default/scoped/source.ts"
 	content := []byte("scoped bytes")
@@ -142,13 +146,12 @@ FROM media_assets a WHERE a.id = $1`, assetID, relPath); err != nil {
 		Breakers:                pgstore.NewBreakers(pool),
 		StorageObjects:          objects,
 		StorageRoots:            roots,
-		UnscopedStorageTransfer: pgstore.NewMediaWithStores(pool, "", "", cfg.Storage.Derived),
+		UnscopedStorageTransfer: pgstore.NewMediaWithPolicy(pool, "", policy),
 		StorageTransferPolicy:   cfg.Storage,
-		StoragePolicy:           policyOf(cfg.Storage),
 		TransferOverlap:         cfg.Storage.Transfer.Overlap,
 		Cleanup:                 config.CleanupConfig{MaxDeletesPerPass: 100},
 	}
-	scoped := mustNewStoreScopedDeps(t, pool, cfg, "test-store", roots["test-store"], nil)
+	scoped := mustNewStoreScopedDeps(t, pool, cfg, policy, "test-store", roots["test-store"], nil)
 	base.DerivedObjectStoreName = cfg.Storage.Derived
 	base.PerStore = map[string]*worker.StoreDeps{"test-store": scoped}
 	registry := worker.NewWorkers(base)
@@ -194,6 +197,10 @@ func TestStoreScopedDeleteReconcileKeepsOldS3CopyAfterDerivedStoreSwitch(t *test
 	if newFingerprint == oldFingerprint {
 		t.Fatal("PolicyFingerprint did not change when the derived S3 store changed")
 	}
+	newPolicy, err := cfg.Storage.BuildStorePolicy()
+	if err != nil {
+		t.Fatalf("building new storage policy: %v", err)
+	}
 
 	recordingID := dbtest.Recording(t, pool)
 	assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
@@ -221,12 +228,8 @@ FROM media_assets a WHERE a.id = $1`, assetID, copy.name, copy.relPath); err != 
 	}
 
 	// The store-scoped SQL can identify s3-a as prunable once s3-b is active and the overlap has elapsed.
-	policy, err := cfg.Storage.StoragePolicy()
-	if err != nil {
-		t.Fatalf("reading storage policy: %v", err)
-	}
-	oldStoreMedia := pgstore.NewMediaWithStores(pool, "s3-a", "test-store", "s3-b")
-	candidates, err := oldStoreMedia.ListMediaAssetCopiesToDelete(ctx, policy, time.Now().Add(-time.Hour), 10)
+	oldStoreMedia := pgstore.NewMediaWithStoresAndPolicy(pool, "s3-a", "test-store", newPolicy)
+	candidates, err := oldStoreMedia.ListMediaAssetCopiesToDelete(ctx, time.Now().Add(-time.Hour), 10)
 	if err != nil {
 		t.Fatalf("listing s3-a placement candidates: %v", err)
 	}
@@ -255,7 +258,7 @@ FROM media_assets a WHERE a.id = $1`, assetID, copy.name, copy.relPath); err != 
 		t.Fatalf("writing old S3 object: %v", err)
 	}
 
-	media := pgstore.NewMediaWithStores(pool, "", "", "s3-b")
+	media := pgstore.NewMediaWithPolicy(pool, "", newPolicy)
 	base := &worker.Deps{
 		Breakers:                pgstore.NewBreakers(pool),
 		DerivedObjects:          derivedObjects,
@@ -264,11 +267,10 @@ FROM media_assets a WHERE a.id = $1`, assetID, copy.name, copy.relPath); err != 
 		StorageRoots:            map[string]string{"test-store": fsRoot},
 		UnscopedStorageTransfer: media,
 		StorageTransferPolicy:   cfg.Storage,
-		StoragePolicy:           policyOf(cfg.Storage),
 		TransferOverlap:         cfg.Storage.Transfer.Overlap,
 		Cleanup:                 config.CleanupConfig{MaxDeletesPerPass: 100},
 	}
-	perStore, err := newPerStoreWorkerDeps(pool, cfg, base.StorageRoots, derivedObjects)
+	perStore, err := newPerStoreWorkerDeps(pool, cfg, newPolicy, base.StorageRoots, derivedObjects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +348,11 @@ func TestStoreScopedDerivedDeletePassOnlyForS3Derived(t *testing.T) {
 				Stores:  map[string]config.StoreConfig{"takamatsu": {Kind: "fs"}, "derived": tc.derived},
 				Derived: "derived",
 			}, Mirakcs: []config.MirakcSite{{Site: "default"}}}
-			scoped := mustNewStoreScopedDeps(t, nil, cfg, "takamatsu", t.TempDir(), derivedObjects)
+			policy, err := cfg.Storage.BuildStorePolicy()
+			if err != nil {
+				t.Fatal(err)
+			}
+			scoped := mustNewStoreScopedDeps(t, nil, cfg, policy, "takamatsu", t.TempDir(), derivedObjects)
 			if got := scoped.DerivedObjectDeleteStores != nil; got != tc.wantPass {
 				t.Errorf("separate derived delete pass configured = %v, want %v", got, tc.wantPass)
 			}
@@ -369,10 +375,14 @@ func TestStoreScopedS3DeletePassHasSingleOwner(t *testing.T) {
 		},
 		Derived: "s3main",
 	}, Mirakcs: []config.MirakcSite{{Site: "default"}}}
+	policy, err := cfg.Storage.BuildStorePolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var owners []string
 	for _, name := range []string{"tokyo", "takamatsu"} {
-		scoped := mustNewStoreScopedDeps(t, nil, cfg, name, t.TempDir(), derivedObjects)
+		scoped := mustNewStoreScopedDeps(t, nil, cfg, policy, name, t.TempDir(), derivedObjects)
 		if scoped.DerivedObjectDeleteStores != nil {
 			owners = append(owners, name)
 		}
@@ -397,7 +407,11 @@ func TestNewStoreScopedDepsInitializesEveryStoreDependency(t *testing.T) {
 		},
 		Derived: "derived",
 	}, Mirakcs: []config.MirakcSite{{Site: "default"}}}
-	scoped := mustNewStoreScopedDeps(t, nil, cfg, "takamatsu", root, derivedObjects)
+	policy, err := cfg.Storage.BuildStorePolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	scoped := mustNewStoreScopedDeps(t, nil, cfg, policy, "takamatsu", root, derivedObjects)
 	if scoped.MediaDir != root {
 		t.Errorf("StoreDeps.MediaDir = %q, want %q", scoped.MediaDir, root)
 	}
@@ -451,6 +465,10 @@ func TestStoreScopedS3DeleteMarkersOnlyOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Storage: config.StorageConfig{Stores: map[string]config.StoreConfig{"fs-a": {Kind: "fs"}, "fs-b": {Kind: "fs"}, "s3-a": {Kind: "s3"}}, Derived: "s3-a"}, Mirakcs: []config.MirakcSite{{Site: "default"}}}
+	policy, err := cfg.Storage.BuildStorePolicy()
+	if err != nil {
+		t.Fatal(err)
+	}
 	markers := pgstore.NewReservations(pool)
 	// 非所有者を先に実行し、所有者がまだ動いていない状態でも S3 を記録しないことを見る。
 	for _, name := range []string{"fs-b", "fs-a", "fs-b"} {
@@ -458,7 +476,7 @@ func TestStoreScopedS3DeleteMarkersOnlyOwner(t *testing.T) {
 		if err := mediapath.WriteStoreMarker(dir, name); err != nil {
 			t.Fatal(err)
 		}
-		deps := mustNewStoreScopedDeps(t, pool, cfg, name, dir, objects)
+		deps := mustNewStoreScopedDeps(t, pool, cfg, policy, name, dir, objects)
 		w := &storagemaint.DeleteReconcileWorker{MediaDir: deps.MediaDir, MediaStoreName: deps.MediaStoreName, MediaDelete: deps.MediaDelete, Storage: deps.StorageObservation, RecordingPurge: deps.RecordingPurge, Breakers: pgstore.NewBreakers(pool), DerivedObjects: objects, DerivedObjectStoreName: cfg.Storage.Derived, DerivedObjectDeleteStores: deps.DerivedObjectDeleteStores, Markers: markers}
 		before, err := markers.ReadLoopMarkers(ctx, store.LoopDeleteReconcile)
 		if err != nil {
@@ -479,13 +497,4 @@ func TestStoreScopedS3DeleteMarkersOnlyOwner(t *testing.T) {
 			t.Fatal("non-owner advanced S3 marker")
 		}
 	}
-}
-
-// policyOf は設定から置き場の方針を作る。設定が不正なテストの前提は作れないので、失敗は panic にする。
-func policyOf(cfg config.StorageConfig) store.StoragePolicy {
-	policy, err := cfg.StoragePolicy()
-	if err != nil {
-		panic(err)
-	}
-	return policy
 }

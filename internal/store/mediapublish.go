@@ -247,12 +247,14 @@ type InPlaceResult struct {
 
 // MediaPublish は原本・派生物の公開と in-place 登録を永続化する。
 //
-// publish 関数を取るメソッドは、すべて次の規則に従う。
+// publish 関数を取るメソッドは、すべて次の規則に従う。各メソッドは自身の tx を開く。
 // store は検査と行の書き込みを終えた後、commit の前に publish を 1 回だけ呼ぶ。
 // 検査で公開しないと決めたときは呼ばない。
 // publish がエラーを返したら、store は rollback してそのエラーを返す。
 // publish が成功した後に commit が失敗したら、store はエラーを返し、公開物は行を持たない孤児として残る。
 // 呼び出し側は公開物を消さず、孤児の監査に任せる。
+// 検査: TestMediaStoreContract の「original callback failure rolls back rows」（rollback）、
+// 「commit failure after publish returns an error and leaves no rows」（commit 失敗後の孤児）。
 type MediaPublish interface {
 	// AcquireIngestCheckpoint は録画の writer lease を取り、前の clean handoff を返す。
 	// live lease が別にある場合は acquired=false を返す。unclean handoff では新世代から始める。
@@ -274,25 +276,40 @@ type MediaPublish interface {
 	// NextIngestTempGeneration は新しい temp ファイルに割り当てる世代を採番する。
 	NextIngestTempGeneration(ctx context.Context) (int64, error)
 	// ClearIngestProgress は録画の ingest 進捗行を削除する。行が無くても成功する。
+	// 検査: TestMediaStoreContract の「clearing ingest progress is idempotent」。
 	ClearIngestProgress(ctx context.Context, recordingID int64) error
 	// CommitOriginal は原本の SHA-256・進捗の削除・凍結方針を一つの tx で確定する。
 	// 進捗行が必要である（原本の世代を進捗行から写す）。行が無ければ原本を作らずエラーを返す。
 	// 同じ rel_path の原本が既にあれば ErrConflict を返し、publish は呼ばない。
 	// resolvePolicy は同じ tx で読んだ予約・上書き・意図に対して 1 回だけ呼ぶ。
+	// 検査: TestMediaStoreContract の「original publication freezes policy and clears progress atomically」、
+	// 「original publication rejects an occupied rel_path without publishing」。
 	CommitOriginal(ctx context.Context, input CommitOriginalInput, resolvePolicy ResolveEncodePolicy, publish func() error) error
 	// PublishEncoded は試行・desired・作り直し要求・cut 区間を再確認し、ファイルの SHA-256 と encoded を公開する。
 	// 同じ録画の版の削除・事後追加と直列化する。cut の公開はさらに、チャプター編集・作り直し要求の書き込みとも直列化する。
 	// 計画が古くなっていたら ErrStalePublishPlan を返す。公開しないと決めたときは published=false を返す。
+	// 検査: TestMediaStoreContract の「encoded publication rechecks attempt and desired profiles」、
+	// 「cut publication serializes with chapter edits」、「cut publication waits for an open chapter edit and rechecks」、
+	// 「encoded publication waits for an open removal and rechecks」。
+	// ErrStalePublishPlan を返す経路と、作り直し要求の書き込みとの直列化は契約テストでは未検証。
 	PublishEncoded(ctx context.Context, input EncodedPublishInput, publish func() error) (published bool, err error)
 	// PublishThumbnail は録画とサムネイルの状態を再確認し、ファイルの SHA-256 とともに公開する。
 	// 同じ録画のごみ箱移動・完全削除と直列化し、ごみ箱か削除済みの録画は公開しない。
 	// 置き換えは、同じ録画への別のサムネイル公開とも直列化する。
+	// 初回の公開は、active な行が既にあれば公開しない。置き換えは、観測した行（id・rel_path・seek）が
+	// 変わっておらず、入力の原本が active なときだけ行う（契約テストでは未検証）。
+	// 検査: TestMediaStoreContract の「thumbnail and seek tiles skip trashed recordings and existing assets」。
+	// 直列化は契約テストでは未検証。
 	PublishThumbnail(ctx context.Context, input ThumbnailPublishInput, publish func() error) (published bool, err error)
 	// PublishSeekTiles は録画とシークタイルの状態を再確認し、ファイルの SHA-256 とともに公開する。
 	// 同じ録画のごみ箱移動・完全削除と直列化し、ごみ箱か削除済みの録画は公開しない。
+	// 検査: TestMediaStoreContract の「thumbnail and seek tiles skip trashed recordings and existing assets」。
+	// 直列化は契約テストでは未検証。
 	PublishSeekTiles(ctx context.Context, input SeekTilesPublishInput, publish func() error) (published bool, err error)
 	// RegisterInPlace は既存ファイルを指す録画とアセットの行を一つの tx で登録する。
-	// 同じ rel_path の行が既にあれば、その録画を再利用して冪等に登録する。
+	// 同じ rel_path の行が既にあれば、その録画を再利用して冪等に登録し、active な行があればその行の録画とアセットを返す。
+	// 同じパスに deleted の行が並んでいても、active な行を優先する（契約テストでは未検証）。tombstone しか無いパスは ErrInPlacePathTombstoned で拒否する（契約テストでは未検証）。
+	// 検査: TestMediaStoreContract の「in-place registration is idempotent and reuses its active path」。
 	RegisterInPlace(ctx context.Context, input InPlaceInput) (InPlaceResult, error)
 	// UpsertIngestProgress は転送中の進捗を記録する。tx を持たず、失敗は ingest を止めない。
 	UpsertIngestProgress(ctx context.Context, progress IngestProgress) error

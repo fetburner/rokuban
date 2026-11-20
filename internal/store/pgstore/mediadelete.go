@@ -13,14 +13,14 @@ import (
 )
 
 // ListPendingDeleteAssets は削除条件を満たす deleting コピーを返す。
-func (s *Media) ListPendingDeleteAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, policy store.StoragePolicy, limit int32) ([]store.MediaDeleteAsset, error) {
-	rules, err := originalRulesJSON(policy)
+func (s *Media) ListPendingDeleteAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, limit int32) ([]store.MediaDeleteAsset, error) {
+	policyArgs, err := encodeStoragePolicy(s.policy.PlacementPolicy())
 	if err != nil {
-		return nil, fmt.Errorf("encoding original rules: %w", err)
+		return nil, fmt.Errorf("encoding media placement policy: %w", err)
 	}
 	rows, err := sqlcgen.New(s.pool).ListMediaAssetsPendingDelete(ctx, sqlcgen.ListMediaAssetsPendingDeleteParams{
 		GraceCutoff: graceCutoff, OverlapCutoff: overlapCutoff, StoreName: s.storeName,
-		DesiredStore: mediaStoreNameArg(s.derivedStore), OriginalRules: rules, DerivedStore: policy.Derived, RowLimit: limit,
+		DesiredStore: mediaStoreNameArg(s.policy.DerivedStore()), OriginalRules: policyArgs.originalRules, DerivedStore: policyArgs.derivedStore, RowLimit: limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing pending media asset deletes: %w", err)
@@ -31,14 +31,14 @@ func (s *Media) ListPendingDeleteAssets(ctx context.Context, graceCutoff, overla
 }
 
 // ListUnqualifiedDeletingAssets は現在どの削除条件も満たさない deleting コピーを返す。
-func (s *Media) ListUnqualifiedDeletingAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, policy store.StoragePolicy, limit int32) ([]store.MediaDeleteRevertCandidate, error) {
-	rules, err := originalRulesJSON(policy)
+func (s *Media) ListUnqualifiedDeletingAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, limit int32) ([]store.MediaDeleteRevertCandidate, error) {
+	policyArgs, err := encodeStoragePolicy(s.policy.PlacementPolicy())
 	if err != nil {
-		return nil, fmt.Errorf("encoding original rules: %w", err)
+		return nil, fmt.Errorf("encoding media placement policy: %w", err)
 	}
 	rows, err := sqlcgen.New(s.pool).ListUnqualifiedDeletingAssets(ctx, sqlcgen.ListUnqualifiedDeletingAssetsParams{
 		GraceCutoff: graceCutoff, OverlapCutoff: overlapCutoff, StoreName: s.storeName,
-		DesiredStore: mediaStoreNameArg(s.derivedStore), OriginalRules: rules, DerivedStore: policy.Derived, RowLimit: limit,
+		DesiredStore: mediaStoreNameArg(s.policy.DerivedStore()), OriginalRules: policyArgs.originalRules, DerivedStore: policyArgs.derivedStore, RowLimit: limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing unqualified deleting media asset copies: %w", err)
@@ -81,7 +81,7 @@ func (s *Media) ListTrashAssetsToDelete(ctx context.Context, graceCutoff time.Ti
 // ListUntilEncodedOriginalsToDelete は派生物が揃った until_encoded 原本コピーを返す。
 func (s *Media) ListUntilEncodedOriginalsToDelete(ctx context.Context, limit int32) ([]store.MediaDeleteAsset, error) {
 	rows, err := sqlcgen.New(s.pool).ListUntilEncodedOriginalsToDelete(ctx, sqlcgen.ListUntilEncodedOriginalsToDeleteParams{
-		DesiredStore: mediaStoreNameArg(s.derivedStore), StoreName: s.storeName, RowLimit: limit,
+		DesiredStore: mediaStoreNameArg(s.policy.DerivedStore()), StoreName: s.storeName, RowLimit: limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing until_encoded original copies to delete: %w", err)
@@ -177,7 +177,7 @@ func (s *Media) MarkUntilEncodedDeleting(ctx context.Context, recordingID, media
 		return false, nil
 	}
 	marked, err := q.MarkUntilEncodedOriginalCopyDeleting(ctx, sqlcgen.MarkUntilEncodedOriginalCopyDeletingParams{
-		AssetID: mediaAssetID, CopyID: copyID, StoreName: s.storeName, DesiredStore: mediaStoreNameArg(s.derivedStore),
+		AssetID: mediaAssetID, CopyID: copyID, StoreName: s.storeName, DesiredStore: mediaStoreNameArg(s.policy.DerivedStore()),
 	})
 	if err != nil {
 		return false, fmt.Errorf("marking until_encoded original copy %d deleting: %w", copyID, mapDatabaseError(err))
@@ -243,10 +243,10 @@ func (s *Media) markCopyDeleted(ctx context.Context, copyID int64, storeName str
 }
 
 // RevertToActive は削除条件から外れた deleting コピーを active に戻す。
-func (s *Media) RevertToActive(ctx context.Context, copyID int64, graceCutoff, overlapCutoff time.Time, policy store.StoragePolicy) (bool, error) {
-	rules, err := originalRulesJSON(policy)
+func (s *Media) RevertToActive(ctx context.Context, copyID int64, graceCutoff, overlapCutoff time.Time) (bool, error) {
+	policyArgs, err := encodeStoragePolicy(s.policy.PlacementPolicy())
 	if err != nil {
-		return false, fmt.Errorf("encoding original rules: %w", err)
+		return false, fmt.Errorf("encoding media placement policy: %w", err)
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -266,8 +266,8 @@ func (s *Media) RevertToActive(ctx context.Context, copyID int64, graceCutoff, o
 	}
 	updated, err := q.RevertMediaAssetCopyToActive(ctx, sqlcgen.RevertMediaAssetCopyToActiveParams{
 		CopyID: copyID, GraceCutoff: graceCutoff, OverlapCutoff: overlapCutoff,
-		StoreName: s.storeName, DesiredStore: mediaStoreNameArg(s.derivedStore),
-		OriginalRules: rules, DerivedStore: policy.Derived,
+		StoreName: s.storeName, DesiredStore: mediaStoreNameArg(s.policy.DerivedStore()),
+		OriginalRules: policyArgs.originalRules, DerivedStore: policyArgs.derivedStore,
 	})
 	if err != nil {
 		return false, fmt.Errorf("reverting media asset copy %d to active: %w", copyID, mapDatabaseError(err))

@@ -13,6 +13,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/epgimport"
 	"github.com/fetburner/rokuban/internal/epgstation"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -122,7 +123,7 @@ ARE（Postgres 正規表現）非互換の正規表現、%CHNAME% 等の未対�
 				if err != nil {
 					return fmt.Errorf("reading --library-json: %w", err)
 				}
-				result, err := epgimport.ImportLibrary(ctx, pgstore.NewMedia(pool, storeName, "") /* import は削除の判定をしない */, root, storeName, site.Site, items)
+				result, err := epgimport.ImportLibrary(ctx, pgstore.NewMediaWithPolicy(pool, storeName, store.NewStoragePolicy(nil, nil, "")) /* import は削除の判定をしない */, root, storeName, site.Site, items)
 				if err != nil {
 					return fmt.Errorf("importing library: %w", err)
 				}
