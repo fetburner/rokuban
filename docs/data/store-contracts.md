@@ -577,7 +577,7 @@ ruler は `RulerPass` から評価に必要なルール・意図・投資・予�
 
 発動は行の存在で表し、再開は行の削除で表す。発動していない状態を表す行は作らない。
 
-reconciler と削除 reconcile は `Breakers`、API は `BreakerAdmin` を使う。両者はもともと tx の外で発動するので、`Breakers.Trip` を単独で呼ぶ。ruler は `RulerPass.ApplyPass` の中で発動する（理由は「ruler パス」節）。
+reconciler と削除 reconcile は `Breakers`、API は `BreakerAdmin` を使う。reconciler と削除 reconcile はもともと tx の外で発動するので、`Breakers.Trip` を単独で呼ぶ。ruler は `RulerPass.ApplyPass` の中で発動する（理由は「ruler パス」節）。
 
 ゲージとログは store の外で出す。`breaker.Trip` と、ruler が commit 後に呼ぶ `breaker.AnnounceTrip` が同じ `announceTrip` を共有しているので、出し方は 1 か所にある。パスの先頭の `breaker.ObserveState` は、プロセス再起動後も DB の発動状態をゲージへ戻す。
 
