@@ -260,20 +260,11 @@ reconcile 差分数はゲージにする。カウンタ（`rokuban_reconcile_sch
 
 録画失敗の理由別件数や、パケットのドロップ統計などを継続して計測する。mirakc の追従品質には、EDCB ほどの長期実績がないためである（[録画エンジン](../recording.md) 参照）。
 
-| メトリクス | ソース | 用途 |
-|---|---|---|
-| `recording.failed` 理由別カウンタ | watcher が mirakc SSE または `record_sweep` の schedules / records API から観測（理由は表の下） | 録画失敗の傾向分析、mirakc 品質の実測 |
-| `recording.record-broken` | watcher が mirakc SSE から受信（理由付き、複数回あり） | 録画中の異常検出 |
-| ドロップ統計（PID 別 continuity counter 不連続 / TEI） | `ts_scan` が原本を全量読む | EPGStation のドロップログ相当。PID 別サマリを格納し UI で表示 |
-| scrambled カウンタ | `ts_scan` が `scrambling_control` ビットを数える | B-CAS / 復号障害の検出（[アラート設計](alerts.md) の対象） |
+名前・型・意味は `internal/metrics` の定義（`Name` と `Help`）を引く。
 
-`recording.failed` の理由は構造化されている。値は `start-recording-failed` / `io-error` / `pipeline-error` / `need-rescheduling` / `schedule-expired` / `removed-from-epg` である。
+PID 別のドロップ内訳を見る場所は [録画と取り込みのメトリクス](#録画と取り込みのメトリクス) にある。scrambled > 0 の読み方は [アラート設計](alerts.md#scrambled--0b-cas--復号障害) にある。
 
-<details><summary>根拠</summary>
-
-- ドロップ統計の PID 別サマリの格納先: `drop_stats`
-
-</details>
+`rokuban_recordings_failed_total` と `rokuban_records_broken_total` が、mirakc のイベント配信が切れている間に取りこぼしうる範囲は、[失敗イベントの回収範囲](../recording/watcher.md#失敗イベントの回収範囲) にある。
 
 ### ジョブ化されたループの監視
 
