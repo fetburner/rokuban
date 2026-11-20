@@ -419,22 +419,40 @@ func TestNewStoreScopedDepsInitializesEveryStoreDependency(t *testing.T) {
 		t.Errorf("StoreDeps.MediaStoreName = %q, want takamatsu", scoped.MediaStoreName)
 	}
 
-	value := reflect.ValueOf(scoped).Elem()
+	requireStoreFieldsSet(t, "StoreDeps", reflect.ValueOf(scoped).Elem())
+}
+
+// requireStoreFieldsSet は、置き場に束ねた store がすべて非 nil であることを、束ねた型の中まで辿って確かめる。
+// 値の struct と、非 nil の struct へのポインタ（…Stores）の中まで辿る。…Stores のフィールドは
+// unexported なので、ここでは reflect で読むだけにし（IsNil・Elem）、Interface は呼ばない。
+func requireStoreFieldsSet(t *testing.T, path string, value reflect.Value) {
+	t.Helper()
 	typeOf := value.Type()
 	for i := 0; i < value.NumField(); i++ {
 		field := typeOf.Field(i)
 		got := value.Field(i)
+		name := path + "." + field.Name
 		switch got.Kind() {
 		case reflect.String:
-			if field.Name != "MediaDir" && field.Name != "MediaStoreName" {
-				t.Errorf("StoreDeps has unexpected non-store field %q", field.Name)
+			if name != "StoreDeps.MediaDir" && name != "StoreDeps.MediaStoreName" {
+				t.Errorf("%s is an unexpected non-store field", name)
 			}
-		case reflect.Interface, reflect.Pointer:
+		case reflect.Interface:
 			if got.IsNil() {
-				t.Errorf("StoreDeps.%s is nil", field.Name)
+				t.Errorf("%s is nil", name)
 			}
+		case reflect.Pointer:
+			if got.IsNil() {
+				t.Errorf("%s is nil", name)
+				break
+			}
+			if got.Elem().Kind() == reflect.Struct {
+				requireStoreFieldsSet(t, name, got.Elem())
+			}
+		case reflect.Struct:
+			requireStoreFieldsSet(t, name, got)
 		default:
-			t.Errorf("StoreDeps.%s has unexpected kind %s", field.Name, got.Kind())
+			t.Errorf("%s has unexpected kind %s", name, got.Kind())
 		}
 	}
 }

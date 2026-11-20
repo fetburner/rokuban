@@ -55,7 +55,7 @@ func pcrPacket(pid, cc int, base uint64) []byte {
 
 func runTSScan(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64) {
 	t.Helper()
-	worker := &tsscan.ScanWorker{Media: pgstoretest.Media(pool), MediaDir: mediaDir}
+	worker := &tsscan.ScanWorker{ScanStores: tsscan.ScanStores{Media: pgstoretest.Media(pool)}, MediaDir: mediaDir}
 	job := tsscan.ScanArgs{RecordingID: recordingID}
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), worker, job), "ScanWorker.Work")
 }

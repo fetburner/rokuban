@@ -37,6 +37,7 @@ import (
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/storemarker"
 	"github.com/fetburner/rokuban/internal/streamer"
+	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/watcher"
 	"github.com/fetburner/rokuban/internal/webhook"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -857,7 +858,7 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 		StorageTransferPolicy:    cfg.Storage,
 		StorageRoots:             roots,
 		MountedStores:            mounted,
-		UnscopedTSScan:           mediaStore,
+		UnscopedTSScan:           tsscan.ReconcileStores{Media: mediaStore},
 		OriginalLocator:          mediaStore,
 		IngestStores:             mediaStore,
 		TransferOverlap:          cfg.Storage.Transfer.Overlap,
@@ -951,7 +952,7 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy st
 		MediaDelete:         mediaStore,
 		MediaPendingReclaim: mediaStore,
 		StorageTransfer:     mediaStore,
-		TSScan:              mediaStore,
+		TSScan:              tsscan.ScanStores{Media: mediaStore},
 		EncodeAttempts:      mediaStore,
 		StorageObservation:  mediaStore,
 		CMStationStore:      analysisStore,

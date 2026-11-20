@@ -25,9 +25,9 @@ func TestNewWorkersTSScanUsesStoreScopedMedia(t *testing.T) {
 	unscopedErr := errors.New("unscoped TS scan store called")
 	scopedErr := errors.New("store-scoped TS scan store called")
 	registry := NewWorkers(&Deps{
-		UnscopedTSScan: tsScanRouteStore{err: unscopedErr},
+		UnscopedTSScan: tsscan.ReconcileStores{Media: tsScanRouteStore{err: unscopedErr}},
 		PerStore: map[string]*StoreDeps{
-			"tokyo": {MediaStoreName: "tokyo", TSScan: tsScanRouteStore{err: scopedErr}},
+			"tokyo": {MediaStoreName: "tokyo", TSScan: tsscan.ScanStores{Media: tsScanRouteStore{err: scopedErr}}},
 		},
 	})
 

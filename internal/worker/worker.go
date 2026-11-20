@@ -23,6 +23,13 @@ import (
 )
 
 // Deps は各ワーカーに注入する依存。
+//
+// 方針: 1 つのドメインだけが使う依存を足す・変えるときは、同じ種類（設定値か永続化の契約）が
+// 2 つ以上あるなら、そのドメインの型（Config・…Stores）に束ねて 1 フィールドで運ぶ。1 つ以下なら
+// 束ねても触る箇所が減らないので、ここに平たく置く。
+// 未解決: 既存の平たい依存（EPGSync と RulerInputBumper、RulerRetentionGrace・RulerMaxDeletesPerPass・
+// RulerRetractGrace など）はまだ束ねていない。
+// ts scan は契約が 1 つずつだが、置き場に束ねない契約と束ねた契約を型で区別するために束ねている。
 type Deps struct {
 	// Enqueuer は後続ジョブの投入に使う。worker と queue adapter の構築順の循環は
 	// jobq.Deferred を渡して切る。
@@ -85,8 +92,10 @@ type Deps struct {
 	StorageTransferPolicy   config.StorageConfig
 	StorageRoots            map[string]string
 	// UnscopedTSScan は置き場に束ねない TS scan reconcile の永続化契約。
-	// StoreDeps.TSScan と build 内で取り違えないよう、置き場に束ねないことを名前で示す。
-	UnscopedTSScan store.TSScan
+	// StoreDeps.TSScan（tsscan.ScanStores）を直接代入すると型が合わずコンパイルが落ちる。ただし両者の
+	// 基底型は同じなので、tsscan.ScanStores(...) のような型変換では通る。取り違えを実際に検出するのは
+	// TestNewWorkersTSScanUsesStoreScopedMedia である。
+	UnscopedTSScan tsscan.ReconcileStores
 	// PerStore は、マウントした FS 置き場ごとに束ねた StoreDeps（置き場の名前から）。
 	// root・名前と置き場に束ねた store（MediaReconcile など）を置き場ごとに持つ。
 	// 空なら置き場で修飾したワーカーは登録されず、その kind のジョブは置き場の不一致で失敗する。
@@ -179,7 +188,7 @@ type StoreDeps struct {
 	// MediaPendingReclaim は共有 FS にある派生物 pending copy の aged reclaim 用。
 	MediaPendingReclaim store.PendingCopyReclaim
 	StorageTransfer     store.StorageTransfer
-	TSScan              store.TSScan
+	TSScan              tsscan.ScanStores
 	EncodeAttempts      store.EncodeAttempts
 	StorageObservation  store.StorageObservation
 	// CMStationStore は局単位のロゴ状態と候補解析の永続化契約。
@@ -291,7 +300,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		ObjectStores: deps.StorageObjects,
 		ScratchDir:   deps.ScratchDir,
 	})
-	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Media: deps.UnscopedTSScan, Locator: deps.OriginalLocator, Markers: deps.LoopMarkers})
+	riveradapter.Register(workers, &tsscan.ReconcileWorker{ReconcileStores: deps.UnscopedTSScan, Enqueuer: deps.Enqueuer, Locator: deps.OriginalLocator, Markers: deps.LoopMarkers})
 	return workers
 }
 
@@ -397,7 +406,7 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 		}
 	}))
 	riveradapter.Register[tsscan.ScanArgs](workers, newStoreRoute("ts_scan", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[tsscan.ScanArgs] {
-		return &tsscan.ScanWorker{Media: s.TSScan, MediaDir: s.MediaDir}
+		return &tsscan.ScanWorker{ScanStores: s.TSScan, MediaDir: s.MediaDir}
 	}))
 }
 
