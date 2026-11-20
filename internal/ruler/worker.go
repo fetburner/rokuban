@@ -9,18 +9,6 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// PassWorker は ruler の 1 パス評価を実行する queue worker。
-//
-// 評価ロジックは Ruler（このパッケージ）に置き、永続化は store 契約を使う。ruler は
-// mirakc に触れない（不変条件 1）。ジョブの種類・キューの定義は internal/jobs にある。
-//
-// # site 照合ガード（issue #139）は不要と判断
-//
-// 他サイトの worker が args.Site の異なる ruler_pass ジョブを掴んでも、触るのは
-// この site の DB 行（reservations 等）だけで、mirakc にも FS にも触れない。
-// 「A の mirakc に B の id を投げる」形の壊れ方（issue #139 本文）が原理的に
-// 起きないので、jobs.VerifySite を呼ばない（「まだ書いていないだけ」ではなく
-// 不要と判断した結果）。
 // Stores は ruler が予約の導出と適用に使う永続化の契約。PassWorker に埋め込み、ruler だけが使う。
 type Stores struct {
 	RulerPass     store.RulerPass
@@ -44,6 +32,8 @@ type PassWorker struct {
 	// ruler.max_deletes_per_pass・ruler.retract_grace から注入される。
 	// RetentionGrace と MaxDeletesPerPass は 0 なら ruler 側の既定値、RetractGrace は 0 で
 	// 無効（解釈は New が持つ）。Now は本番では nil のままにする。
+	// 番組終了後の GC は docs/recording/ruler.md「番組終了後の GC」、直前 unmatch の猶予は同
+	// 「直前 unmatch の猶予」、大量削除の閾値は docs/recording/breaker.md「大量削除サーキットブレーカー」。
 	Config Config
 
 	Stores

@@ -119,10 +119,8 @@ type Deps struct {
 	// （config.epg.retention_grace。config.defaults() が既定値 24 時間を埋める）。
 	EpgRetentionGrace time.Duration
 
-	// Ruler は ruler の設定値（ruler.Config。epg.retention_grace・ruler.max_deletes_per_pass・
-	// ruler.retract_grace から注入される）。0 の意味は値ごとに違う（ruler.PassWorker.Config 参照）。
-	// ruler の大量削除の閾値は docs/recording.md §3.2「大量削除サーキットブレーカー」、
-	// 直前 unmatch の猶予は docs/recording/ruler.md §3.1 にある。
+	// Ruler は ruler の設定値（epg.retention_grace・ruler.max_deletes_per_pass・ruler.retract_grace）。
+	// 0 の意味は ruler.PassWorker.Config を参照。
 	Ruler ruler.Config
 	// RulerStores は ruler の永続化契約（予約の導出・適用と番組検索）。
 	RulerStores ruler.Stores
