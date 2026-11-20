@@ -409,6 +409,8 @@ func TestNewStoreScopedDepsInitializesEveryStoreDependency(t *testing.T) {
 }
 
 // requireStoreFieldsSet は、置き場に束ねた store がすべて非 nil であることを、束ねた型の中まで辿って確かめる。
+// 値の struct と、非 nil の struct へのポインタ（…Stores）の中まで辿る。…Stores のフィールドは
+// unexported なので、ここでは reflect で読むだけにし（IsNil・Elem）、Interface は呼ばない。
 func requireStoreFieldsSet(t *testing.T, path string, value reflect.Value) {
 	t.Helper()
 	typeOf := value.Type()
@@ -421,9 +423,17 @@ func requireStoreFieldsSet(t *testing.T, path string, value reflect.Value) {
 			if name != "StoreDeps.MediaDir" && name != "StoreDeps.MediaStoreName" {
 				t.Errorf("%s is an unexpected non-store field", name)
 			}
-		case reflect.Interface, reflect.Pointer:
+		case reflect.Interface:
 			if got.IsNil() {
 				t.Errorf("%s is nil", name)
+			}
+		case reflect.Pointer:
+			if got.IsNil() {
+				t.Errorf("%s is nil", name)
+				break
+			}
+			if got.Elem().Kind() == reflect.Struct {
+				requireStoreFieldsSet(t, name, got.Elem())
 			}
 		case reflect.Struct:
 			requireStoreFieldsSet(t, name, got)

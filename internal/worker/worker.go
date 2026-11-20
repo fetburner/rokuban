@@ -24,10 +24,12 @@ import (
 
 // Deps は各ワーカーに注入する依存。
 //
-// 1 つのドメインだけが使う依存は、同じ種類（設定値か永続化の契約）が 2 つ以上あるときに限り、
-// そのドメインの型（Config・…Stores）に束ねて 1 フィールドで運ぶ。1 つ以下なら束ねても
-// 依存を足すときに触る箇所が減らないので、ここに平たく置く。
-// ts scan は 1 つずつだが、置き場に束ねない契約と束ねた契約を型で区別するために束ねている。
+// 方針: 1 つのドメインだけが使う依存を足す・変えるときは、同じ種類（設定値か永続化の契約）が
+// 2 つ以上あるなら、そのドメインの型（Config・…Stores）に束ねて 1 フィールドで運ぶ。1 つ以下なら
+// 束ねても触る箇所が減らないので、ここに平たく置く。
+// 未解決: 既存の平たい依存（EPGSync と RulerInputBumper、RulerRetentionGrace・RulerMaxDeletesPerPass・
+// RulerRetractGrace など）はまだ束ねていない。
+// ts scan は契約が 1 つずつだが、置き場に束ねない契約と束ねた契約を型で区別するために束ねている。
 type Deps struct {
 	// Enqueuer は後続ジョブの投入に使う。worker と queue adapter の構築順の循環は
 	// jobq.Deferred を渡して切る。
@@ -92,7 +94,9 @@ type Deps struct {
 	StoragePolicy store.StoragePolicy
 	StorageRoots  map[string]string
 	// UnscopedTSScan は置き場に束ねない TS scan reconcile の永続化契約。
-	// 型が StoreDeps.TSScan（tsscan.ScanStores）と違うので、build 内で取り違えるとコンパイルが落ちる。
+	// StoreDeps.TSScan（tsscan.ScanStores）を直接代入すると型が合わずコンパイルが落ちる。ただし両者の
+	// 基底型は同じなので、tsscan.ScanStores(...) のような型変換では通る。取り違えを実際に検出するのは
+	// TestNewWorkersTSScanUsesStoreScopedMedia である。
 	UnscopedTSScan tsscan.ReconcileStores
 	// PerStore は、マウントした FS 置き場ごとに束ねた StoreDeps（置き場の名前から）。
 	// root・名前と置き場に束ねた store（MediaReconcile など）を置き場ごとに持つ。
