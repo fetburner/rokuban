@@ -68,19 +68,26 @@ PID 別のドロップ内訳はメトリクスにしない。PID × 録画数で
 
 ジョブの結果別件数の `replan` は、計画が古く snooze で再計画した件数であり、失敗ではない。
 
-最終完走時刻の 2 本は、DB に保存した時刻を scrape のたびに読む。パスが ScaledJob の `--once` で動いても、常駐 Pod の scrape から見える。
+最終完走時刻の 2 本は、DB に保存した時刻を scrape のたびに読み直して出す値である。パスが ScaledJob の `--once` で動いても、常駐 Pod の scrape から見える。
 
 thumbnail 側の最終完走時刻は、投入停止を `time() -` で検出するために使う。シークタイルは候補を別の窓で数えるが、同じパスが埋めるので、鮮度はこの 1 本で足りる。
 
-encode reconcile のパスは、ヒントを落とした録画を拾うバックストップである。止まっても症状が目立たないので、最終完走時刻を見る（[ingest](../recording/ingest-followup.md) §5.5）。
+thumbnail reconcile の候補数からは、窓が埋まって継続ジョブを積んだかを判定できない。active な thumbnail が無い録画の窓と、選び直しが要るかを確かめる録画の窓がそれぞれ行上限で切られ、その件数の和が出るためである。継続ジョブを積んだかはログで見る。
 
-thumbnail reconcile の候補数が数えるのは poster のぶんだけである。候補数が行上限に張り付くときは、バックログが上限以上ある。
+encode reconcile のパスは、ヒントを落とした録画を拾うバックストップである。止まっても症状が目立たないので、最終完走時刻を見る（[ingest](../recording/ingest-followup.md) §5.5）。
 
 録画単位の現在の desired が現在の `encode.profiles` に無い録画が非ゼロなら、プロファイルの改名や削除で、その名前の過去録画が永久にエンコードされない。投入しても `unknown encode profile` で弾かれるので、パスは投入せず数えるだけにしている。
 
 <details><summary>根拠</summary>
 
-- 観測前のラベル付き系列が出ないこと: 未観測の `EncodeJobs` を登録した registry の `Gather` に、`rokuban_encode_jobs_total` のファミリーごと現れない（client_golang で実測）
+- 未観測のラベル付き系列が出ないこと: CounterVec などのベクタは、すべてのラベル値を指定した系列を一度作るまで collect しない（client_golang の [`DescribeByCollect`](https://pkg.go.dev/github.com/prometheus/client_golang/prometheus#DescribeByCollect) の doc）
+- `replan` は失敗ではない: `rokuban_encode_jobs_total`
+- thumbnail の完走時刻は scrape ごとに DB から読み、投入停止とシークタイルの鮮度に使う: `rokuban_thumbnail_reconcile_last_success_timestamp_seconds`
+- encode の完走時刻は scrape ごとに DB から読み、reconcile の停止を監視する: `rokuban_encode_reconcile_last_success_timestamp_seconds`
+- thumbnail 候補数から窓の充足は分からず、継続はログで見る: `rokuban_thumbnail_reconcile_candidates`
+- 改名や削除で、現在の設定に無い desired を持つ録画の数が非ゼロになる: `rokuban_encode_reconcile_unsatisfiable`
+- thumbnail 候補の和と各窓の上限: `ThumbnailReconcileWorker.Work` (`internal/thumbnail/thumbnail_reconcile.go`)
+- 継続ジョブを積んだときのログ: `candidate windows are full; continuation enqueued` (`internal/thumbnail/thumbnail_reconcile.go`)
 
 </details>
 

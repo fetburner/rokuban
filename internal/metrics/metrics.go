@@ -516,15 +516,18 @@ var (
 	}, []string{"profile"})
 )
 
-// thumbnail の desired−observed 定期 reconcile（internal/worker/thumbnail_reconcile.go）
+// thumbnail の desired−observed 定期 reconcile（internal/thumbnail/thumbnail_reconcile.go）
 // のメトリクス。
 var (
-	// ThumbnailReconcileCandidates は直近のパスが見た候補件数（active な thumbnail が
-	// 無い録画と、選び直しを確かめる録画。シークタイルは数えない）。上限に張り付く
-	// ときは後続候補が窓の先に残っている可能性がある。
+	// ThumbnailReconcileCandidates は、対象録画を指定しない reconcile の直近ページにおける候補数の合計である。
+	// 候補は active thumbnail が無い録画と、選び直しが要るかを確かめる録画であり、seek tiles は含まない。
+	// 本番の worker は RowLimit を設定せず、各窓の上限には thumbnail.thumbnailReconcileRowLimit（既定）を使う。
+	// 値はその上限の 2 倍まで取る。前ページで尽きた窓は、このページでは 0 件を加える。
+	// 参照構成では --once のジョブ Pod を scrape しないので、このプロセス内ゲージは
+	// 常駐 Pod から読めない。
 	ThumbnailReconcileCandidates = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_thumbnail_reconcile_candidates",
-		Help: "Recordings seen by the last thumbnail-reconcile pass that still lack an active thumbnail or are checked for thumbnail reselection; seek tiles are not counted. Sitting at the pass row limit means the backlog is at least that large; the window resumes from where the previous pass stopped.",
+		Help: "Sum of recordings returned by the window of recordings without an active thumbnail and the window of recordings checked for thumbnail reselection on the last page of a full (non-targeted) thumbnail-reconcile pass; seek tiles are excluded. A window exhausted on an earlier page contributes zero. Both windows use the same row limit, so values range from zero to twice that limit. The reference setup does not scrape --once job Pods, so this process-local gauge is not visible from resident Pods.",
 	})
 )
 
