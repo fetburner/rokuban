@@ -193,9 +193,6 @@ linters:
             - "!${config-path}/internal/storagemaint/delete_reconcile_removed_encoded_test.go"
             - "!${config-path}/internal/storagemaint/s3_object_conformance_test.go"
             # api のテストのうち、録画・CM・再生・エンコードのキューの状態をまだ sqlcgen で作るもの。
-            - "!${config-path}/internal/api/cm_detect_test.go"
-            - "!${config-path}/internal/api/cm_detect_counts_test.go"
-            - "!${config-path}/internal/api/chapters_test.go"
             - "!${config-path}/internal/api/encode_queue_test.go"
             - "!${config-path}/internal/api/playback_state_test.go"
             - "!${config-path}/internal/api/playback_watched_grouping_test.go"

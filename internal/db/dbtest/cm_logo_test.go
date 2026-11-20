@@ -24,10 +24,12 @@ func TestCMLogo_DefaultsAndOptions(t *testing.T) {
 		p.LGD = []byte("other")
 		p.LearnedFrom = &id
 		p.CodedWidth = 1920
+		p.PreviewPNG = []byte{1, 2, 3}
 	})
 	var codedWidth int32
-	testutil.RequireNoError(t, pool.QueryRow(t.Context(), `SELECT learned_from, coded_width FROM cm_logos WHERE network_id = 32736 AND service_id = 1025`).Scan(&learnedFrom, &codedWidth), "reading overridden CM logo")
-	if learnedFrom == nil || *learnedFrom != id || codedWidth != 1920 {
-		t.Fatalf("overridden CM logo learned_from = %v, coded_width = %d, want %d and 1920", learnedFrom, codedWidth, id)
+	var preview []byte
+	testutil.RequireNoError(t, pool.QueryRow(t.Context(), `SELECT learned_from, coded_width, preview_png FROM cm_logos WHERE network_id = 32736 AND service_id = 1025`).Scan(&learnedFrom, &codedWidth, &preview), "reading overridden CM logo")
+	if learnedFrom == nil || *learnedFrom != id || codedWidth != 1920 || string(preview) != "\x01\x02\x03" {
+		t.Fatalf("overridden CM logo learned_from = %v, coded_width = %d, preview = %v, want %d, 1920 and [1 2 3]", learnedFrom, codedWidth, preview, id)
 	}
 }
