@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/ingest"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -48,14 +49,16 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 
 	// 置き場を 1 つ束ねた構成として組む。PerStore を持たない Deps からは置き場のワーカーは登録されない。
 	registry := NewWorkers(&Deps{
-		MirakcClients:      singleSiteClients(store.DefaultSite, mirakc.NewClient(fake.URL(), nil)),
-		Enqueuer:           newRecordingEnqueuer(),
-		MountedStores:      []string{""},
-		IngestStallTimeout: time.Second,
+		MirakcClients: singleSiteClients(store.DefaultSite, mirakc.NewClient(fake.URL(), nil)),
+		Enqueuer:      newRecordingEnqueuer(),
+		MountedStores: []string{""},
+		Ingest:        ingest.Config{StallTimeout: time.Second},
 		PerStore: map[string]*StoreDeps{"": {
-			MediaPublish:   media,
-			IngestTarget:   pgstoretest.Recordings(pool),
-			IngestPrecheck: media,
+			MediaPublish: media,
+			Ingest: ingest.Stores{
+				RecordTarget: pgstoretest.Recordings(pool),
+				Precheck:     media,
+			},
 		}},
 	})
 	testutil.RequireNoError(t, registry.Work(context.Background(), jobs.IngestJobArgs{Site: store.DefaultSite, RecordID: recordID}), "registered ingest worker Work()")

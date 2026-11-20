@@ -95,10 +95,14 @@ func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
 				worker := &IngestWorker{
 					Publisher:     media,
 					MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-					RecordTarget:  pgstoretest.Recordings(pool),
-					Precheck:      pgstoretest.Media(pool),
-					MediaDir:      mediaDir,
-					StallTimeout:  5 * time.Second,
+					Config: Config{
+						StallTimeout: 5 * time.Second,
+					},
+					Stores: Stores{
+						RecordTarget: pgstoretest.Recordings(pool),
+						Precheck:     pgstoretest.Media(pool),
+					},
+					MediaDir: mediaDir,
 				}
 				worker.CMDetectionStore = pgstoretest.Analysis(pool)
 				return worker
@@ -165,10 +169,14 @@ func TestIngestWorker_TempCreatedBeforeProgressKeepsOldGeneration(t *testing.T) 
 	worker := &IngestWorker{
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
-		RecordTarget:  pgstoretest.Recordings(pool),
-		Precheck:      pgstoretest.Media(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
+		Config: Config{
+			StallTimeout: 5 * time.Second,
+		},
+		Stores: Stores{
+			RecordTarget: pgstoretest.Recordings(pool),
+			Precheck:     pgstoretest.Media(pool),
+		},
+		MediaDir: mediaDir,
 	}
 	worker.CMDetectionStore = pgstoretest.Analysis(pool)
 

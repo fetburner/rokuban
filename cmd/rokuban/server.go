@@ -22,6 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/encode"
+	"github.com/fetburner/rokuban/internal/ingest"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -863,8 +864,11 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 		ScratchDir:               cfg.Storage.ScratchDir,
 		Encode:                   cfg.Encode,
 		CMDetect:                 cfg.CMDetect,
-		RecordingHLSEnabled:      cfg.RecordingHLS.Enabled,
-		EpgRetentionGrace:        cfg.Epg.RetentionGrace,
+		Ingest: ingest.Config{
+			RecordingHLSEnabled: cfg.RecordingHLS.Enabled,
+			StallTimeout:        cfg.Ingest.StallTimeout,
+		},
+		EpgRetentionGrace: cfg.Epg.RetentionGrace,
 		Ruler: ruler.Config{
 			RetentionGrace:    cfg.Epg.RetentionGrace,
 			MaxDeletesPerPass: cfg.Ruler.MaxDeletesPerPass,
@@ -875,7 +879,6 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 			ProgramSearch: pgstore.NewEPG(pool),
 		},
 		ReconcileStartDelayGrace: cfg.Reconciler.StartDelayGrace,
-		IngestStallTimeout:       cfg.Ingest.StallTimeout,
 		RecoveryGrace:            clientCfg.RecoveryGrace(),
 		Webhook:                  webhookClient,
 		Cleanup:                  cfg.Cleanup,
@@ -950,7 +953,6 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy st
 		MediaStoreName: name,
 		MediaReconcile: mediaStore,
 		MediaPublish:   mediaStore,
-		IngestPrecheck: mediaStore,
 		EncodeProgress: mediaStore,
 		DeleteReconcile: store.DeleteReconcileStores{
 			MediaDelete:         mediaStore,
@@ -963,8 +965,11 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy st
 		StorageObservation: mediaStore,
 		CMStationStore:     analysisStore,
 		CMDetectionStore:   analysisStore,
-		IngestTarget:       recordingStore,
-		Catalog:            pgstore.NewCatalog(pool, registryNames(cfg.Registry()), name),
+		Ingest: ingest.Stores{
+			Precheck:     mediaStore,
+			RecordTarget: recordingStore,
+		},
+		Catalog: pgstore.NewCatalog(pool, registryNames(cfg.Registry()), name),
 	}
 	if derivedObjects != nil {
 		derivedMedia := pgstore.NewMediaForDerivedStore(pool, cfg.Storage.Derived, name, storagePolicy)

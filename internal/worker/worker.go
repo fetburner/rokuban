@@ -111,9 +111,12 @@ type Deps struct {
 
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
 	// worker ロール起動時に ValidateTools 済み（不変条件 4）。
-	Encode              config.EncodeConfig
-	CMDetect            config.CMDetectConfig
-	RecordingHLSEnabled bool
+	Encode   config.EncodeConfig
+	CMDetect config.CMDetectConfig
+
+	// Ingest は ingest の設定値（recording_hls.enabled・ingest.stall_timeout）。
+	// 既定値の解釈は ingest.Config のコメント参照。
+	Ingest ingest.Config
 
 	// EpgRetentionGrace は放送済み番組を刈り取るまでの猶予
 	// （config.epg.retention_grace。config.defaults() が既定値 24 時間を埋める）。
@@ -129,12 +132,6 @@ type Deps struct {
 	// （reconciler.start_delay_grace）。0 なら reconciler 側の既定値を使う
 	// （docs/recording.md §3.3「開始遅延検出器」）。
 	ReconcileStartDelayGrace time.Duration
-
-	// IngestStallTimeout は ingest の無進捗検知タイムアウト
-	// （ingest.stall_timeout。config.defaults() が既定値 30 秒を埋める）。
-	// bounded slice / snooze の区切りとは別に、接続断を判定する
-	// （docs/recording/ingest-retry.md §5.3「層 1」）。
-	IngestStallTimeout time.Duration
 
 	// RecoveryGrace はジョブエンジン adapter が申告する回復猶予（jobq.Spec.Timeout の契約）。
 	// CM ロゴ候補の孤児判定が締切に足す。構成の根が adapter の申告値を渡す。
@@ -164,8 +161,6 @@ type StoreDeps struct {
 	// MediaReconcile は、この置き場に束ねた reconcile の永続化契約。
 	MediaReconcile store.MediaReconcile
 	MediaPublish   store.MediaPublish
-	// IngestPrecheck は ingest が既存メディアを確認する永続化契約。
-	IngestPrecheck store.IngestPrecheck
 	// EncodeProgress は encode の進捗を報告する永続化契約。
 	EncodeProgress store.EncodeProgressReporter
 	// DeleteReconcile は、この置き場の削除 reconcile の永続化契約（派生物の独立削除パスを含む）。
@@ -177,8 +172,8 @@ type StoreDeps struct {
 	CMStationStore store.CMStation
 	// CMDetectionStore は CM 検出 worker の永続化契約。
 	CMDetectionStore store.CMDetection
-	// IngestTarget は ingest が record_sync から転送先を読む契約。
-	IngestTarget store.IngestTarget
+	// Ingest は ingest の永続化契約（既存メディアの確認と record_sync からの転送先の読み取り）。
+	Ingest ingest.Stores
 	// Catalog は catalog の export と restore を行う契約。
 	Catalog store.Catalog
 
@@ -281,19 +276,17 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 // newIngestWorker はプロセス共通の Deps と置き場の StoreDeps から ingest worker を組み立てる。
 func newIngestWorker(d *Deps, s *StoreDeps) *ingest.IngestWorker {
 	return &ingest.IngestWorker{
-		StorageProbed:       d.IngestStorageProbed,
-		Enqueuer:            d.Enqueuer,
-		MirakcClients:       d.MirakcClients,
-		Publisher:           s.MediaPublish,
-		Precheck:            s.IngestPrecheck,
-		RecordTarget:        s.IngestTarget,
-		CMDetectionStore:    s.CMDetectionStore,
-		MediaDir:            s.MediaDir,
-		MediaStoreName:      s.MediaStoreName,
-		StallTimeout:        d.IngestStallTimeout,
-		CMDetect:            d.CMDetect,
-		CutProfiles:         d.Encode.CutProfileSet(),
-		RecordingHLSEnabled: d.RecordingHLSEnabled,
+		StorageProbed:    d.IngestStorageProbed,
+		Enqueuer:         d.Enqueuer,
+		MirakcClients:    d.MirakcClients,
+		Publisher:        s.MediaPublish,
+		CMDetectionStore: s.CMDetectionStore,
+		MediaDir:         s.MediaDir,
+		MediaStoreName:   s.MediaStoreName,
+		CMDetect:         d.CMDetect,
+		CutProfiles:      d.Encode.CutProfileSet(),
+		Config:           d.Ingest,
+		Stores:           s.Ingest,
 	}
 }
 

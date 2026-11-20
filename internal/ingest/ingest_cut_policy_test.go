@@ -61,11 +61,15 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-		RecordTarget:  pgstoretest.Recordings(pool),
-		StallTimeout:  5 * time.Second,
+		Config: Config{
+			StallTimeout: 5 * time.Second,
+		},
+		Stores: Stores{
+			RecordTarget: pgstoretest.Recordings(pool),
+			Precheck:     pgstoretest.Media(pool),
+		},
 		// cut: true のプロファイル名（本番では config から注入される）。
 		CutProfiles: map[string]struct{}{"cut": {}},
-		Precheck:    pgstoretest.Media(pool),
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 
@@ -122,14 +126,18 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 	fake := newFullTransferFake(t, "rec-policy-cut-only-live", makeTSData(20), "test/policy-cut-only-live.m2ts")
 	mc := mirakc.NewClient(fake.URL(), nil)
 	w := &IngestWorker{
-		Publisher:           pgstoretest.Media(pool),
-		MirakcClients:       singleSiteClients("", mc),
-		MediaDir:            t.TempDir(),
-		RecordTarget:        pgstoretest.Recordings(pool),
-		StallTimeout:        5 * time.Second,
-		CutProfiles:         map[string]struct{}{"cut": {}},
-		RecordingHLSEnabled: true,
-		Precheck:            pgstoretest.Media(pool),
+		Publisher:     pgstoretest.Media(pool),
+		MirakcClients: singleSiteClients("", mc),
+		MediaDir:      t.TempDir(),
+		Config: Config{
+			StallTimeout:        5 * time.Second,
+			RecordingHLSEnabled: true,
+		},
+		Stores: Stores{
+			RecordTarget: pgstoretest.Recordings(pool),
+			Precheck:     pgstoretest.Media(pool),
+		},
+		CutProfiles: map[string]struct{}{"cut": {}},
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 

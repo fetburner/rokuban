@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/ingest"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 	"github.com/fetburner/rokuban/internal/ruler"
@@ -119,5 +120,36 @@ func TestWorkerDepsFillRulerConfigAndStores(t *testing.T) {
 	}
 	if deps.RulerStores.ProgramSearch == nil {
 		t.Error("Deps.RulerStores.ProgramSearch is nil")
+	}
+}
+
+// TestWorkerDepsFillIngestConfigAndStores は、ingest の設定値と永続化の契約が起動経路で詰まることを確かめる。
+// 設定値は newWorkerDeps が Deps.Ingest に、契約は置き場ごとの newStoreScopedDeps が StoreDeps.Ingest に詰める。
+// どれか 1 つを詰め忘れるとこのテストが落ちる。値はすべて 0 でない相異なるリテラルにする。
+func TestWorkerDepsFillIngestConfigAndStores(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	cfg := &config.Config{
+		Mirakcs:      []config.MirakcSite{{Site: "home", URL: "http://127.0.0.1:1"}},
+		Storage:      policyWiringStorage(t, "tokyo", nil),
+		RecordingHLS: config.RecordingHLSConfig{Enabled: true},
+		Ingest:       config.IngestConfig{StallTimeout: 45 * time.Second},
+	}
+	policy, err := cfg.Storage.BuildStorePolicy()
+	testutil.RequireNoError(t, err, "building the storage policy")
+	roots := map[string]string{"tokyo": cfg.Storage.Stores["tokyo"].Root, "nagoya": cfg.Storage.Stores["nagoya"].Root}
+
+	deps, _, err := newWorkerDeps(context.Background(), cfg, policy, nil, []string{"nagoya", "tokyo"}, roots, riveradapter.Config{Queues: []string{"ingest"}}, pool, nil, false)
+	testutil.RequireNoError(t, err, "building worker deps")
+	want := ingest.Config{RecordingHLSEnabled: true, StallTimeout: 45 * time.Second}
+	if !reflect.DeepEqual(deps.Ingest, want) {
+		t.Errorf("Deps.Ingest = %+v, want %+v", deps.Ingest, want)
+	}
+
+	scoped := mustNewStoreScopedDeps(t, pool, cfg, policy, "tokyo", roots["tokyo"], nil)
+	if scoped.Ingest.Precheck == nil {
+		t.Error("StoreDeps.Ingest.Precheck is nil")
+	}
+	if scoped.Ingest.RecordTarget == nil {
+		t.Error("StoreDeps.Ingest.RecordTarget is nil")
 	}
 }

@@ -293,6 +293,27 @@ var afterIngestFilePublication = func() error { return nil }
 // afterIngestTempCreate は temp の作成直後（進捗行を書く前）に止まった状態をテストで再現する。
 var afterIngestTempCreate = func() error { return nil }
 
+// Config は ingest worker の設定値（config.yml の recording_hls.enabled・ingest.stall_timeout から注入）。
+type Config struct {
+	// RecordingHLSEnabled は config.recording_hls.enabled。録画 HLS が使えない場合だけ、
+	// 凍結時に cut-only の選択を安全側へクランプする。
+	RecordingHLSEnabled bool
+
+	// StallTimeout は転送中の無進捗検知タイムアウト（config.ingest.stall_timeout。
+	// config.defaults() が既定値 30 秒を埋めるので、ここでは常に config が
+	// 渡した値をそのまま使う）。bounded slice / snooze の区切りとは別に、接続断を判定する
+	// （docs/recording/ingest-retry.md §5.3「層 1」）。
+	StallTimeout time.Duration
+}
+
+// Stores は ingest worker が使う永続化の契約。IngestWorker に埋め込み、ingest だけが使う。
+type Stores struct {
+	// Precheck は ingest が既存メディアを確認する永続化契約。
+	Precheck store.IngestPrecheck
+	// RecordTarget は ingest が record_sync から転送先を読む契約。
+	RecordTarget store.IngestTarget
+}
+
 // IngestWorker は mirakc からの TS ファイル転送を行う queue worker。
 type IngestWorker struct {
 	Enqueuer jobq.Enqueuer
@@ -303,12 +324,15 @@ type IngestWorker struct {
 	// クライアントを取り出してから使う。
 	MirakcClients    map[string]*mirakc.Client
 	Publisher        store.MediaPublish
-	Precheck         store.IngestPrecheck
-	RecordTarget     store.IngestTarget
 	CMDetectionStore store.CMDetection
 	MediaDir         string
 	MediaStoreName   string
 	CMDetect         config.CMDetectConfig
+
+	// Config は ingest の設定値、Stores は ingest の永続化の契約。どちらも埋め込みで、
+	// w.StallTimeout や w.Precheck のように昇格したフィールドとして参照する。
+	Config
+	Stores
 
 	// probeMu は StorageProbed を守り、ProbeIngestStorage の同時実行を 1 本にする。
 	// StorageProbed は ProbeIngestStorage が成功済みかを示す。起動時に目印を確認できず
@@ -320,14 +344,6 @@ type IngestWorker struct {
 	// CutProfiles は cut: true のプロファイル名（config から注入）。凍結時の
 	// クランプ（resolveAndSnapshotEncodePolicy）に使う。
 	CutProfiles map[string]struct{}
-	// RecordingHLSEnabled は config.recording_hls.enabled。録画 HLS が使えない場合だけ、
-	// 凍結時に cut-only の選択を安全側へクランプする。
-	RecordingHLSEnabled bool
-
-	// StallTimeout は転送中の無進捗検知タイムアウト（config.ingest.stall_timeout。
-	// config.defaults() が既定値 30 秒を埋めるので、ここでは常に config が
-	// 渡した値をそのまま使う）。
-	StallTimeout time.Duration
 
 	// ProgressInterval は recording_ingest_progress を書き直す最短間隔
 	// （issue #212）。0 は「未設定」で ingestProgressInterval に解決する
