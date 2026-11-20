@@ -64,9 +64,7 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),

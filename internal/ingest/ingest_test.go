@@ -138,9 +138,7 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      mediaDir,
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 	}
 
 	pool := testutil.SetupDB(t)
@@ -265,9 +263,7 @@ func TestIngestWorker_SiteMismatch(t *testing.T) {
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("site-a", mc),
 		MediaDir:      mediaDir,
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 	}
 
 	pool := testutil.SetupDB(t)
@@ -310,9 +306,7 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("site-a", mc),
 		MediaDir:      mediaDir,
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 	}
 
 	pool := testutil.SetupDB(t)
@@ -488,9 +482,7 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      mediaDir,
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 	}
 
 	pool := testutil.SetupDB(t)
@@ -604,9 +596,7 @@ func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: time.Second,
-		},
+		Config:        Config{StallTimeout: time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -678,9 +668,7 @@ func TestIngestWorker_FollowPollingIsRateLimited(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: time.Second,
-		},
+		Config:        Config{StallTimeout: time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -790,9 +778,7 @@ func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: time.Second,
-		},
+		Config:        Config{StallTimeout: time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -875,9 +861,7 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 				Publisher:     pgstoretest.Media(pool),
 				MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 				MediaDir:      t.TempDir(),
-				Config: Config{
-					StallTimeout: time.Second,
-				},
+				Config:        Config{StallTimeout: time.Second},
 				Stores: Stores{
 					RecordTarget: pgstoretest.Recordings(pool),
 					Precheck:     pgstoretest.Media(pool),
@@ -984,9 +968,7 @@ func TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: time.Second,
-		},
+		Config:        Config{StallTimeout: time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -1054,9 +1036,7 @@ func TestIngestWorker_FollowingCaughtUpKeepsProgressFresh(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: time.Second,
-		},
+		Config:        Config{StallTimeout: time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -1177,9 +1157,7 @@ func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: time.Second,
-		},
+		Config:        Config{StallTimeout: time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -1227,9 +1205,7 @@ func TestIngestWorker_PermanentlyUnknownStatusIsBounded(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: time.Second,
-		},
+		Config:        Config{StallTimeout: time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -1288,9 +1264,7 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      mediaDir,
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 	}
 
 	pool := testutil.SetupDB(t)
@@ -1340,9 +1314,7 @@ func TestIngestWorker_HashMismatch(t *testing.T) {
 	w := &IngestWorker{
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -1537,9 +1509,7 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 		w := &IngestWorker{
 			Publisher:     pgstoretest.Media(pool),
 			MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-			Config: Config{
-				StallTimeout: time.Second,
-			},
+			Config:        Config{StallTimeout: time.Second},
 			Stores: Stores{
 				RecordTarget: pgstoretest.Recordings(pool),
 				Precheck:     pgstoretest.Media(pool),
@@ -1661,9 +1631,7 @@ func newLateSHA256IngestRun(t *testing.T, tc lateSHA256IngestCase) *lateSHA256In
 	run.worker = &IngestWorker{
 		Publisher:     pgstoretest.Media(run.pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(run.fake.URL(), nil)),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(run.pool),
 			Precheck:     pgstoretest.Media(run.pool),
@@ -1881,9 +1849,7 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 			w := &IngestWorker{
 				Publisher:     pgstoretest.Media(pool),
 				MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
-				Config: Config{
-					StallTimeout: 5 * time.Second,
-				},
+				Config:        Config{StallTimeout: 5 * time.Second},
 				Stores: Stores{
 					RecordTarget: pgstoretest.Recordings(pool),
 					Precheck:     pgstoretest.Media(pool),
@@ -1958,9 +1924,7 @@ func TestIngestWorker_UsesSHA256ThatArrivesDuringFinalSync(t *testing.T) {
 	w := &IngestWorker{
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -2031,9 +1995,7 @@ func TestIngestWorker_DoesNotWaitWhenHEADLengthIsUnknown(t *testing.T) {
 	w := &IngestWorker{
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -2132,9 +2094,7 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 	w := &IngestWorker{
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), client)),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -2209,9 +2169,7 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 			w := &IngestWorker{
 				Publisher:     pgstoretest.Media(pool),
 				MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
-				Config: Config{
-					StallTimeout: 5 * time.Second,
-				},
+				Config:        Config{StallTimeout: 5 * time.Second},
 				Stores: Stores{
 					RecordTarget: pgstoretest.Recordings(pool),
 					Precheck:     pgstoretest.Media(pool),
@@ -2324,9 +2282,7 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      mediaDir,
-		Config: Config{
-			StallTimeout: 200 * time.Millisecond,
-		},
+		Config:        Config{StallTimeout: 200 * time.Millisecond},
 	}
 
 	pool := testutil.SetupDB(t)
@@ -2520,9 +2476,7 @@ func newLinkedIngestEnvWithReservedPath(t *testing.T, recordID, contentPath stri
 	env.w = &IngestWorker{
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(env.fake.URL(), nil)),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -2828,9 +2782,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      mediaDir,
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 	}
 
 	pool := testutil.SetupDB(t)
@@ -3253,9 +3205,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -3337,9 +3287,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -3428,9 +3376,7 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -3481,9 +3427,7 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -3590,9 +3534,7 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -3678,9 +3620,7 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -3750,9 +3690,7 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -3830,9 +3768,7 @@ func TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable(t *t
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -3922,9 +3858,7 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -3998,9 +3932,7 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 			w := &IngestWorker{
 				MirakcClients: singleSiteClients("tokyo", mc),
 				MediaDir:      mediaDir,
-				Config: Config{
-					StallTimeout: 5 * time.Second,
-				},
+				Config:        Config{StallTimeout: 5 * time.Second},
 			}
 
 			pool := testutil.SetupDB(t)
@@ -4052,9 +3984,7 @@ func TestIngestWorker_DegenerateContentPath_Rejected(t *testing.T) {
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("tokyo", mc),
 		MediaDir:      mediaDir,
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 	}
 
 	pool := testutil.SetupDB(t)
@@ -4141,9 +4071,7 @@ func TestIngestWorker_SameContentFilenameGetsUniquePaths(t *testing.T) {
 	w := &IngestWorker{
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(fakeA.URL(), nil)),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -4247,9 +4175,7 @@ func TestIngestWorker_RelPathConflict_RefusesWithoutCorruptingExistingFile(t *te
 	w := &IngestWorker{
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -4338,9 +4264,7 @@ func TestIngestWorker_UsesFreshPathWhenFilenameHasTombstone(t *testing.T) {
 	w := &IngestWorker{
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),

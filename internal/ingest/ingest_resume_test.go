@@ -129,9 +129,7 @@ func TestIngestWorker_UncleanRestartUsesRangeZeroAndKeepsVisibleTemp(t *testing.
 	w := &IngestWorker{
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),

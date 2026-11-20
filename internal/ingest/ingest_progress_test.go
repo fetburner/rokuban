@@ -185,9 +185,7 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: 30 * time.Second,
-		},
+		Config:        Config{StallTimeout: 30 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -324,9 +322,7 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: 30 * time.Second,
-		},
+		Config:        Config{StallTimeout: 30 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -416,9 +412,7 @@ func TestIngestWorker_ProgressClearedWhenTempDiscarded(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: 30 * time.Second,
-		},
+		Config:        Config{StallTimeout: 30 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -490,9 +484,7 @@ func TestIngestWorker_CleanRangeEndsDoNotFlushProgress(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: 30 * time.Second,
-		},
+		Config:        Config{StallTimeout: 30 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),

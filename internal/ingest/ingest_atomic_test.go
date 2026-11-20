@@ -60,9 +60,7 @@ func TestIngestWorker_ConcurrentSameFilenameUsesDistinctPaths(t *testing.T) {
 	wA := &IngestWorker{
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvA.URL, nil)),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -72,9 +70,7 @@ func TestIngestWorker_ConcurrentSameFilenameUsesDistinctPaths(t *testing.T) {
 	wB := &IngestWorker{
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvB.URL, nil)),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -403,9 +399,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			w := &IngestWorker{
 				MirakcClients: singleSiteClients("default", mirakc.NewClient(fake.URL(), nil)),
 				Publisher:     pgstoretest.Media(pool),
-				Config: Config{
-					StallTimeout: 5 * time.Second,
-				},
+				Config:        Config{StallTimeout: 5 * time.Second},
 				Stores: Stores{
 					RecordTarget: pgstoretest.Recordings(pool),
 					Precheck:     pgstoretest.Media(pool),

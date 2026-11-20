@@ -116,9 +116,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		MediaDir:      mediaDir,
-		Config: Config{
-			StallTimeout: time.Second,
-		},
+		Config:        Config{StallTimeout: time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),
@@ -217,9 +215,7 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 			Publisher:     pgstoretest.Media(pool),
 			MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 			MediaDir:      t.TempDir(),
-			Config: Config{
-				StallTimeout: time.Second,
-			},
+			Config:        Config{StallTimeout: time.Second},
 			Stores: Stores{
 				RecordTarget: pgstoretest.Recordings(pool),
 				Precheck:     pgstoretest.Media(pool),
@@ -264,9 +260,7 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 			Publisher:     pgstoretest.Media(pool),
 			MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), client)),
 			MediaDir:      t.TempDir(),
-			Config: Config{
-				StallTimeout: time.Second,
-			},
+			Config:        Config{StallTimeout: time.Second},
 			Stores: Stores{
 				RecordTarget: pgstoretest.Recordings(pool),
 				Precheck:     pgstoretest.Media(pool),
@@ -309,9 +303,7 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 			Publisher:     pgstoretest.Media(pool),
 			MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 			MediaDir:      t.TempDir(),
-			Config: Config{
-				StallTimeout: time.Second,
-			},
+			Config:        Config{StallTimeout: time.Second},
 			Stores: Stores{
 				RecordTarget: pgstoretest.Recordings(pool),
 				Precheck:     pgstoretest.Media(pool),

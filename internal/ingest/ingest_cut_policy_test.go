@@ -61,9 +61,7 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-		Config: Config{
-			StallTimeout: 5 * time.Second,
-		},
+		Config:        Config{StallTimeout: 5 * time.Second},
 		Stores: Stores{
 			RecordTarget: pgstoretest.Recordings(pool),
 			Precheck:     pgstoretest.Media(pool),

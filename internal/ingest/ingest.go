@@ -329,8 +329,6 @@ type IngestWorker struct {
 	MediaStoreName   string
 	CMDetect         config.CMDetectConfig
 
-	// Config は ingest の設定値、Stores は ingest の永続化の契約。どちらも埋め込みで、
-	// w.StallTimeout や w.Precheck のように昇格したフィールドとして参照する。
 	Config
 	Stores
 
