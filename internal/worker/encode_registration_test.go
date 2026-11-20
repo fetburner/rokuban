@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
@@ -45,9 +46,9 @@ func TestNewWorkersRegistersEncodeJobs(t *testing.T) {
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(tokyoRoot, "tokyo"), "marking Tokyo root")
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(nagoyaRoot, "nagoya"), "marking Nagoya root")
 	registry := NewWorkers(&Deps{PerStore: map[string]*StoreDeps{
-		"tokyo":   {MediaDir: tokyoRoot, MediaStoreName: "tokyo", EncodeAttempts: encodeRouteAttempts{err: tokyoErr}},
-		"nagoya":  {MediaDir: nagoyaRoot, MediaStoreName: "nagoya", EncodeAttempts: encodeRouteAttempts{err: nagoyaErr}},
-		"swapped": {MediaDir: tokyoRoot, MediaStoreName: "swapped", EncodeAttempts: encodeRouteAttempts{err: tokyoErr}},
+		"tokyo":   {MediaDir: tokyoRoot, MediaStoreName: "tokyo", Encode: encode.Stores{Attempts: encodeRouteAttempts{err: tokyoErr}}},
+		"nagoya":  {MediaDir: nagoyaRoot, MediaStoreName: "nagoya", Encode: encode.Stores{Attempts: encodeRouteAttempts{err: nagoyaErr}}},
+		"swapped": {MediaDir: tokyoRoot, MediaStoreName: "swapped", Encode: encode.Stores{Attempts: encodeRouteAttempts{err: tokyoErr}}},
 	}})
 
 	for _, tc := range []struct {
@@ -96,7 +97,7 @@ func TestNewWorkersEncodeUsesStoreScopedMedia(t *testing.T) {
 				MediaDir:       root,
 				MediaStoreName: "tokyo",
 				MediaReconcile: encodeRouteMedia{err: scopedErr},
-				EncodeAttempts: encodeRouteAttempts{start: store.EncodeAttemptStart{Count: 1}},
+				Encode:         encode.Stores{Attempts: encodeRouteAttempts{start: store.EncodeAttemptStart{Count: 1}}},
 			},
 		},
 	})

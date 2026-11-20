@@ -953,7 +953,10 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy st
 		MediaStoreName: name,
 		MediaReconcile: mediaStore,
 		MediaPublish:   mediaStore,
-		EncodeProgress: mediaStore,
+		Encode: encode.Stores{
+			Attempts: mediaStore,
+			Progress: mediaStore,
+		},
 		DeleteReconcile: store.DeleteReconcileStores{
 			MediaDelete:         mediaStore,
 			MediaPendingReclaim: mediaStore,
@@ -961,7 +964,6 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy st
 			RecordingPurge:      recordingStore,
 		},
 		TSScan:             tsscan.ScanStores{Media: mediaStore},
-		EncodeAttempts:     mediaStore,
 		StorageObservation: mediaStore,
 		CMStationStore:     analysisStore,
 		CMDetectionStore:   analysisStore,

@@ -95,8 +95,7 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 
 			w := &EncodeWorker{
 				Publisher:       pgstoretest.Media(pool),
-				Progress:        pgstoretest.Media(pool),
-				Attempts:        pgstoretest.Media(pool),
+				Stores:          Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 				MediaDir:        mediaDir,
 				Objects:         testFSObjectStore(mediaDir),
 				ObjectPublisher: pgstoretest.Media(pool),
