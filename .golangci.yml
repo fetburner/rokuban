@@ -78,32 +78,27 @@ linters:
             - pkg: github.com/riverqueue/river
               desc: api role enqueues through jobq.Enqueuer, not River
         jobs-contract-leaf:
-          # jobs は共有のジョブ契約。mirakc と store に依存すると、契約を import する api まで届く（不変条件 1）。
+          # jobs は共有のジョブ契約。mirakc に依存すると、契約を import する api まで届く（不変条件 1）。
+          # store も入れないのは、共有の契約を store より下に保つため（api は store に正当に依存する）。
           list-mode: lax
           files:
             - "${config-path}/internal/jobs/**"
             - "!$test"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/mirakc
-              desc: jobs is a shared contract; it must not depend on the mirakc client
+              desc: jobs is a shared contract that api imports; it must not depend on the mirakc client (invariant 1)
             - pkg: github.com/fetburner/rokuban/internal/store
-              desc: jobs is a shared contract; site defaults live in internal/sitename
+              desc: jobs is a shared contract; it stays below store (site defaults live in internal/sitename)
         metrics-instruments-leaf:
-          # 計器の定義だけを持つ。DB を引く collector は internal/metrics/dbcollector にあり、
-          # 計器を使うだけのパッケージに store・mirakc などを依存させない。
+          # 計器の定義だけを持つ。internal の他のパッケージを一切 import させない。
+          # DB を引く collector は internal/metrics/dbcollector にある。
           list-mode: lax
           files:
             - "${config-path}/internal/metrics/*.go"
             - "!$test"
           deny:
-            - pkg: github.com/fetburner/rokuban/internal/store
-              desc: instruments stay leaf; DB-reading collectors live in internal/metrics/dbcollector
-            - pkg: github.com/fetburner/rokuban/internal/mirakc
-              desc: instruments stay leaf; DB-reading collectors live in internal/metrics/dbcollector
-            - pkg: github.com/fetburner/rokuban/internal/objstore
-              desc: instruments stay leaf; object-store error classification lives in internal/objstore
-            - pkg: github.com/fetburner/rokuban/internal/schedulesync
-              desc: instruments stay leaf; DB-reading collectors live in internal/metrics/dbcollector
+            - pkg: github.com/fetburner/rokuban/internal
+              desc: instruments import no internal package; DB-reading collectors live in internal/metrics/dbcollector, object-store error classification in internal/objstore
         pgstore-composition-root:
           # PostgreSQL 実装の組み立ては cmd/rokuban に置く。この規則はテストと pgstore 自身を検査しない。
           list-mode: lax

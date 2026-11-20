@@ -2,10 +2,10 @@ package store
 
 import "github.com/fetburner/rokuban/internal/sitename"
 
-// DefaultSite は site が未指定のときに解決される既定のサイト名。
+// DefaultSite は site が空のときに解決される既定のサイト名。
 //
-// 値の定義は internal/sitename にある。jobs が store に依存しないよう葉のパッケージに
-// 置き、ここは既存の利用者（api・watcher など）を動かさないための別名として残す。
+// 値の定義は internal/sitename にある（唯一の出所）。ここは既存の利用者（api・watcher など）を
+// 動かさないための別名として残す。
 const DefaultSite = sitename.Default
 
 // 録画ステータス。mirakc の RecordInfo.Status と recordings の CHECK 制約で使う。
