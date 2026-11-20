@@ -173,7 +173,7 @@ func (e *CMLogoAdoptionError) Error() string {
 // MarkLogoCandidateFailed と DiscardLogoCandidate は、現在の枠を見ず、
 // 候補行の枠の版と試行時刻が渡された値と一致する running 候補だけを対象にする。
 // 各メソッドは自身のトランザクションを完了してから返す。
-// 検査: RunCMStation の「station writes serialize with an open station write/<メソッド名>」（局の書き込みのサブテスト）。CM 検出の結果・ロゴの学習結果の保存との直列化は契約テストでは未検証。
+// 検査: RunCMStation の「station writes serialize with an open station write/<メソッド名>」（局の書き込みのサブテスト）。CM 検出の結果の保存（SaveDetection）との局の直列化は契約テストでは未検証。ロゴの学習結果の保存との直列化は RunCMDetection の「learned logo waits and rejects the changed area version」で検査する。
 type CMStation interface {
 	// ListCMLogoStates はロゴ、枠、候補および CM 検出の局別状態を返す。
 	ListCMLogoStates(ctx context.Context) ([]CMLogoState, error)

@@ -76,11 +76,16 @@ type CMDetection interface {
 	// 保存の時点で、試行の世代と試行回数が現在のものか、検出が desired か、試行がロゴを使っていた場合はロゴの版（learned_at）が現在のロゴと一致するかを確かめ直す。
 	// 検出が desired でなければ試行を消して false を返す。ロゴの版が違えば、試行を消して保存しない（試行を消すことは契約テストでは未検証）。
 	// ロゴを使わずに始まった試行は、後から現れたロゴとは照合しない。
-	// 検査: RunCMDetection の「old generation cannot commit after a current attempt starts」（世代の照合）、「trash during analysis clears the attempt budget」と「result discards the attempt when the original became missing」（desired でないとき試行を消す）、「result rejects a changed learned logo version」と「result rejects a deleted logo the attempt started with」（ロゴの版の照合）、「result started without a logo is saved even if a logo appears later」（ロゴを使わない試行）。試行回数の照合は契約テストでは未検証。
+	// 検査: RunCMDetection の次のテスト。
+	//   - 「old generation cannot commit after a current attempt starts」（世代の照合）
+	//   - 「trash during analysis clears the attempt budget」「result discards the attempt when the original became missing」（desired でないとき試行を消す）
+	//   - 「result rejects a changed learned logo version」「result rejects a deleted logo the attempt started with」（ロゴの版の照合）
+	//   - 「result started without a logo is saved even if a logo appears later」（ロゴを使わない試行）
+	// 試行回数の照合は契約テストでは未検証。
 	// 保存は同じ局のロゴ操作と、同じ録画のチャプター編集に直列化される。録画との直列化は RunCMDetection の「result waits for chapter edit row lock」で検査する。局との直列化は契約テストでは未検証。
 	SaveDetection(ctx context.Context, attempt CMDetectionAttempt, ranges []chapters.Range) (bool, error)
 	// SaveLearnedLogo は局の枠版と試行が一致する場合にロゴを保存し、保存したかを返す。
-	// 保存は同じ局の枠操作と直列化される。検査: RunCMDetection の「learned logo waits and rejects the changed area version」（枠の版の照合と局ロックでの待ち）。ロゴが既にあるときに保存しないことは契約テストでは未検証。
+	// 保存は同じ局の枠操作と直列化される。検査: RunCMDetection の「learned logo waits and rejects the changed area version」（枠の版の照合と局ロックでの待ち）。局にロゴが既にあれば保存しない（契約テストでは未検証）。
 	SaveLearnedLogo(ctx context.Context, attempt CMDetectionAttempt, logo CMDetectionLogo, observedAreaVersion *time.Time) (saved bool, err error)
 	// RetryDetection は結果と試行を消し、原本がある場合に再試行情報を返す。
 	RetryDetection(ctx context.Context, recordingID int64) (CMDetectionRetry, error)
