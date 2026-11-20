@@ -9,9 +9,20 @@ import (
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
+
+type listCountingObjectStore struct {
+	objstore.Store
+	listCalls int
+}
+
+func (s *listCountingObjectStore) List(ctx context.Context, prefix string) ([]objstore.Object, error) {
+	s.listCalls++
+	return s.Store.List(ctx, prefix)
+}
 
 // emptyDeleteStores は空の置き場を返す。呼ばない更新メソッドは埋め込みで panic させる。
 type emptyDeleteStores struct {
@@ -106,28 +117,38 @@ func TestS3DeleteMarkers(t *testing.T) {
 			empty := &emptyDeleteStores{stopped: tc.stopped}
 			markers := &selectiveMarkers{reject: tc.reject}
 			w := &DeleteReconcileWorker{MediaDir: dir, MediaStoreName: "fs-a", MediaDelete: empty, Storage: empty, RecordingPurge: empty, Breakers: empty, Markers: markers}
+			var countedObjects *listCountingObjectStore
 			if !tc.absent {
 				w.DerivedObjectStoreName = "s3-a"
-				w.DerivedObjects = testFilesystemObjectStore(t, t.TempDir())
-				w.DerivedStorage = empty
-				w.DerivedPendingReclaim = empty
-				w.DerivedMediaDelete = &emptyDeleteStores{candidate: tc.stopped}
-				if tc.fail {
-					w.DerivedMediaDelete = failingPendingDelete{empty}
+				objects := testFilesystemObjectStore(t, t.TempDir())
+				if tc.nonOwner {
+					countedObjects = &listCountingObjectStore{Store: objects}
+					objects = countedObjects
 				}
+				w.DerivedObjects = objects
+				mediaDelete := store.MediaDelete(&emptyDeleteStores{candidate: tc.stopped})
+				if tc.fail {
+					mediaDelete = failingPendingDelete{empty}
+				}
+				derivedDeleteStores, err := store.NewDerivedObjectDeleteStores(mediaDelete, empty, empty)
+				if err != nil {
+					t.Fatal(err)
+				}
+				w.DerivedObjectDeleteStores = derivedDeleteStores
 			}
 			if tc.nonOwner {
-				w.DerivedMediaDelete = nil
-				w.DerivedStorage = nil
-				w.DerivedPendingReclaim = nil
+				w.DerivedObjectDeleteStores = nil
 			}
 			for i := 1; i <= 2; i++ {
 				err := jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{})
 				if (err != nil) != (tc.fail || tc.reject) {
 					t.Fatalf("Work error = %v", err)
 				}
-				if tc.stopped && w.DerivedMediaDelete.(*emptyDeleteStores).deleteCalls != 0 {
-					t.Fatal("breaker allowed deletion")
+				if tc.stopped {
+					mediaDelete := w.DerivedObjectDeleteStores.MediaDelete().(*emptyDeleteStores)
+					if mediaDelete.deleteCalls != 0 {
+						t.Fatal("breaker allowed deletion")
+					}
 				}
 				got := markers.recordedStores()
 				fs, s3 := 0, 0
@@ -152,6 +173,9 @@ func TestS3DeleteMarkers(t *testing.T) {
 				if len(got) != fs+s3 {
 					t.Fatalf("unexpected marker stores: %v", got)
 				}
+			}
+			if countedObjects != nil && countedObjects.listCalls != 0 {
+				t.Errorf("non-owner object store List calls = %d, want 0", countedObjects.listCalls)
 			}
 		})
 	}

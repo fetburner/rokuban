@@ -135,7 +135,7 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		testutil.RequireNoError(t, media.PreparePendingMediaAssetCopy(ctx, pending), "committing pending copy")
 		testutil.RequireNoError(t, objects.Put(ctx, key, strings.NewReader(string(payload)), int64(len(payload)), digest, "image/jpeg"), "uploading object before simulated process death")
 		testutil.MustExec(t, pool, "aging pending copy", `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE store = $1 AND rel_path = $2`, objectStoreName, key)
-		reclaimer := env.deleter(100)
+		reclaimer := env.deleter(t, 100)
 		testutil.RequireNoError(t, reclaimer.workObjectStore(ctx, reclaimer.settings()), "reclaiming stale pending copy")
 		if _, err := objects.Head(ctx, key); !errors.Is(err, objstore.ErrNotFound) {
 			t.Fatalf("reclaimed S3 key HEAD error = %v, want ErrNotFound", err)
@@ -150,7 +150,7 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		payload := []byte("unknown keys are not automatically deleted")
 		digest := sha256.Sum256(payload)
 		testutil.RequireNoError(t, objects.Put(ctx, key, strings.NewReader(string(payload)), int64(len(payload)), digest, "image/jpeg"), "uploading DB-less object")
-		cleanup := env.deleter(100)
+		cleanup := env.deleter(t, 100)
 		testutil.RequireNoError(t, cleanup.reconcileObjectOrphans(ctx, -time.Second, 0), "reconciling unknown S3 key")
 		if _, err := objects.Head(ctx, key); err != nil {
 			t.Fatalf("DB-less S3 key was removed instead of retained: %v", err)

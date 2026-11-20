@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/fetburner/rokuban/internal/config"
@@ -38,6 +39,15 @@ func (r *enqueueRecorder) Enqueue(_ context.Context, args jobq.Args, _ ...jobq.E
 	defer r.mu.Unlock()
 	r.args = append(r.args, args)
 	return jobq.Result{}, nil
+}
+
+func mustNewStoreScopedDeps(t *testing.T, pool *pgxpool.Pool, cfg *config.Config, name, root string, derivedObjects objstore.Store) *worker.StoreDeps {
+	t.Helper()
+	deps, err := newStoreScopedDeps(pool, cfg, name, root, derivedObjects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return deps
 }
 
 // TestPeriodicThumbnailReconcileEnqueuesWithUnboundMedia は、buildWorkerAdapter と同じ
@@ -137,7 +147,7 @@ FROM media_assets a WHERE a.id = $1`, assetID, relPath); err != nil {
 		TransferOverlap:         cfg.Storage.Transfer.Overlap,
 		Cleanup:                 config.CleanupConfig{MaxDeletesPerPass: 100},
 	}
-	scoped := newStoreScopedDeps(pool, cfg, "test-store", roots["test-store"], nil)
+	scoped := mustNewStoreScopedDeps(t, pool, cfg, "test-store", roots["test-store"], nil)
 	base.DerivedObjectStoreName = cfg.Storage.Derived
 	base.PerStore = map[string]*worker.StoreDeps{"test-store": scoped}
 	registry := worker.NewWorkers(base)
@@ -256,7 +266,10 @@ FROM media_assets a WHERE a.id = $1`, assetID, copy.name, copy.relPath); err != 
 		TransferOverlap:         cfg.Storage.Transfer.Overlap,
 		Cleanup:                 config.CleanupConfig{MaxDeletesPerPass: 100},
 	}
-	perStore := newPerStoreWorkerDeps(pool, cfg, base.StorageRoots, derivedObjects)
+	perStore, err := newPerStoreWorkerDeps(pool, cfg, base.StorageRoots, derivedObjects)
+	if err != nil {
+		t.Fatal(err)
+	}
 	perStoreNames := make([]string, 0, len(perStore))
 	for name := range perStore {
 		perStoreNames = append(perStoreNames, name)
@@ -308,11 +321,11 @@ func TestWorkerWithoutMountsRefusesStorelessJobs(t *testing.T) {
 }
 
 // TestStoreScopedDerivedDeletePassOnlyForS3Derived は、置き場ごとの Deps に独立した派生物の削除パス
-// （DerivedMediaDelete）を載せるのが、派生物の置き場が S3 のときだけであることを確かめる。
+// （DerivedObjectDeleteStores）を載せるのが、派生物の置き場が S3 のときだけであることを確かめる。
 // FS の派生物を別の置き場の worker がマウントしているときは、その FS を objstore のパスで掃かない。
 //
 // 変異確認: newStoreScopedDeps の kind == "s3" の条件を外すと、FS 派生物のケースで
-// DerivedMediaDelete が載り、このテストが落ちる。
+// DerivedObjectDeleteStores が載り、このテストが落ちる。
 func TestStoreScopedDerivedDeletePassOnlyForS3Derived(t *testing.T) {
 	derivedObjects, err := fsstore.New(t.TempDir())
 	if err != nil {
@@ -331,8 +344,8 @@ func TestStoreScopedDerivedDeletePassOnlyForS3Derived(t *testing.T) {
 				Stores:  map[string]config.StoreConfig{"takamatsu": {Kind: "fs"}, "derived": tc.derived},
 				Derived: "derived",
 			}, Mirakcs: []config.MirakcSite{{Site: "default"}}}
-			scoped := newStoreScopedDeps(nil, cfg, "takamatsu", t.TempDir(), derivedObjects)
-			if got := scoped.DerivedMediaDelete != nil; got != tc.wantPass {
+			scoped := mustNewStoreScopedDeps(t, nil, cfg, "takamatsu", t.TempDir(), derivedObjects)
+			if got := scoped.DerivedObjectDeleteStores != nil; got != tc.wantPass {
 				t.Errorf("separate derived delete pass configured = %v, want %v", got, tc.wantPass)
 			}
 		})
@@ -357,8 +370,8 @@ func TestStoreScopedS3DeletePassHasSingleOwner(t *testing.T) {
 
 	var owners []string
 	for _, name := range []string{"tokyo", "takamatsu"} {
-		scoped := newStoreScopedDeps(nil, cfg, name, t.TempDir(), derivedObjects)
-		if scoped.DerivedMediaDelete != nil {
+		scoped := mustNewStoreScopedDeps(t, nil, cfg, name, t.TempDir(), derivedObjects)
+		if scoped.DerivedObjectDeleteStores != nil {
 			owners = append(owners, name)
 		}
 	}
@@ -382,7 +395,7 @@ func TestNewStoreScopedDepsInitializesEveryStoreDependency(t *testing.T) {
 		},
 		Derived: "derived",
 	}, Mirakcs: []config.MirakcSite{{Site: "default"}}}
-	scoped := newStoreScopedDeps(nil, cfg, "takamatsu", root, derivedObjects)
+	scoped := mustNewStoreScopedDeps(t, nil, cfg, "takamatsu", root, derivedObjects)
 	if scoped.MediaDir != root {
 		t.Errorf("StoreDeps.MediaDir = %q, want %q", scoped.MediaDir, root)
 	}
@@ -400,7 +413,7 @@ func TestNewStoreScopedDepsInitializesEveryStoreDependency(t *testing.T) {
 			if field.Name != "MediaDir" && field.Name != "MediaStoreName" {
 				t.Errorf("StoreDeps has unexpected non-store field %q", field.Name)
 			}
-		case reflect.Interface:
+		case reflect.Interface, reflect.Pointer:
 			if got.IsNil() {
 				t.Errorf("StoreDeps.%s is nil", field.Name)
 			}
@@ -425,8 +438,8 @@ func TestStoreScopedS3DeleteMarkersOnlyOwner(t *testing.T) {
 		if err := mediapath.WriteStoreMarker(dir, name); err != nil {
 			t.Fatal(err)
 		}
-		deps := newStoreScopedDeps(pool, cfg, name, dir, objects)
-		w := &storagemaint.DeleteReconcileWorker{MediaDir: deps.MediaDir, MediaStoreName: deps.MediaStoreName, MediaDelete: deps.MediaDelete, Storage: deps.StorageObservation, RecordingPurge: deps.RecordingPurge, Breakers: pgstore.NewBreakers(pool), DerivedObjects: objects, DerivedObjectStoreName: cfg.Storage.Derived, DerivedMediaDelete: deps.DerivedMediaDelete, DerivedStorage: deps.DerivedStorage, DerivedPendingReclaim: deps.DerivedPendingReclaim, Markers: markers}
+		deps := mustNewStoreScopedDeps(t, pool, cfg, name, dir, objects)
+		w := &storagemaint.DeleteReconcileWorker{MediaDir: deps.MediaDir, MediaStoreName: deps.MediaStoreName, MediaDelete: deps.MediaDelete, Storage: deps.StorageObservation, RecordingPurge: deps.RecordingPurge, Breakers: pgstore.NewBreakers(pool), DerivedObjects: objects, DerivedObjectStoreName: cfg.Storage.Derived, DerivedObjectDeleteStores: deps.DerivedObjectDeleteStores, Markers: markers}
 		before, err := markers.ReadLoopMarkers(ctx, store.LoopDeleteReconcile)
 		if err != nil {
 			t.Fatal(err)

@@ -33,6 +33,7 @@ import (
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 	"github.com/fetburner/rokuban/internal/objstore/s3store"
 	"github.com/fetburner/rokuban/internal/role"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/storemarker"
 	"github.com/fetburner/rokuban/internal/streamer"
@@ -872,7 +873,10 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		Webhook:                  webhookClient,
 		Cleanup:                  cfg.Cleanup,
 	}
-	base.PerStore = newPerStoreWorkerDeps(pool, cfg, roots, derivedObjects)
+	base.PerStore, err = newPerStoreWorkerDeps(pool, cfg, roots, derivedObjects)
+	if err != nil {
+		return nil, err
+	}
 	workers := worker.NewWorkers(base)
 	adapter, err := riveradapter.NewAdapter(pool, workers, jobs.PhysicalQueueFor, clientCfg)
 	if err != nil {
@@ -883,12 +887,16 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 }
 
 // newPerStoreWorkerDeps は、サーバーがマウントした FS 置き場ごとに worker.StoreDeps を作る。
-func newPerStoreWorkerDeps(pool *pgxpool.Pool, cfg *config.Config, roots map[string]string, derivedObjects objstore.Store) map[string]*worker.StoreDeps {
+func newPerStoreWorkerDeps(pool *pgxpool.Pool, cfg *config.Config, roots map[string]string, derivedObjects objstore.Store) (map[string]*worker.StoreDeps, error) {
 	perStore := make(map[string]*worker.StoreDeps, len(roots))
 	for _, name := range sortedKeys(roots) {
-		perStore[name] = newStoreScopedDeps(pool, cfg, name, roots[name], derivedObjects)
+		deps, err := newStoreScopedDeps(pool, cfg, name, roots[name], derivedObjects)
+		if err != nil {
+			return nil, err
+		}
+		perStore[name] = deps
 	}
-	return perStore
+	return perStore, nil
 }
 
 // newDerivedObjects は storage.derived の置き場の objstore を作る。
@@ -916,7 +924,7 @@ func newDerivedObjects(ctx context.Context, storage config.StorageConfig, mounte
 
 // newStoreScopedDeps は、置き場 name に束ねた worker.StoreDeps を新しく組み立てる。
 // 置き場で修飾するキューのワーカーと ingest がこの値を使う。
-func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, name, root string, derivedObjects objstore.Store) *worker.StoreDeps {
+func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, name, root string, derivedObjects objstore.Store) (*worker.StoreDeps, error) {
 	mediaStore := pgstore.NewMediaWithStores(pool, name, name, cfg.Storage.Derived)
 	analysisStore := pgstore.NewAnalysis(pool, name)
 	recordingStore := pgstore.NewRecordings(pool, name)
@@ -950,12 +958,14 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, name, root strin
 		if cfg.Storage.Derived != name &&
 			cfg.Storage.Stores[cfg.Storage.Derived].Kind == "s3" &&
 			len(fsNames) > 0 && name == fsNames[0] {
-			scoped.DerivedMediaDelete = derivedMedia
-			scoped.DerivedStorage = derivedMedia
-			scoped.DerivedPendingReclaim = derivedMedia
+			derivedDeleteStores, err := store.NewDerivedObjectDeleteStores(derivedMedia, derivedMedia, derivedMedia)
+			if err != nil {
+				return nil, fmt.Errorf("configuring derived object delete stores for %q: %w", name, err)
+			}
+			scoped.DerivedObjectDeleteStores = derivedDeleteStores
 		}
 	}
-	return scoped
+	return scoped, nil
 }
 
 // superviseOnceMode は once モードの完了を待ち、プロセス停止を開始する。

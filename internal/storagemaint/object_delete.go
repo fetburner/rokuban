@@ -39,18 +39,19 @@ func (c objectDeleteCandidates) total() int {
 }
 
 // objectStorePass は独立した派生物の置き場 1 つ分の削除 reconcile を 1 パス実行する。
-// DerivedObjects を設定していないときは何もしない。
+// DerivedObjectDeleteStores が nil なら、この置き場には独立パスが無いので何もしない。
 func (w *DeleteReconcileWorker) objectStorePass(
 	ctx context.Context, trashCutoff, overlapCutoff time.Time,
 	orphanMTimeGrace, orphanAge time.Duration, maxPerPass int,
 ) error {
-	if w.DerivedMediaDelete == nil && w.DerivedPendingReclaim == nil && w.DerivedStorage == nil {
+	if w.DerivedObjectDeleteStores == nil {
 		return nil
 	}
-	if w.DerivedObjects == nil || w.DerivedMediaDelete == nil || w.DerivedPendingReclaim == nil || w.DerivedStorage == nil ||
-		w.DerivedObjectStoreName == "" {
-		return errors.New("derived object store, its copy stores, and its store name must be configured together")
+	if w.DerivedObjects == nil || w.DerivedObjectStoreName == "" {
+		return errors.New("derived object store and its store name must be configured together")
 	}
+	derivedMediaDelete := w.DerivedObjectDeleteStores.MediaDelete()
+	derivedPendingReclaim := w.DerivedObjectDeleteStores.PendingCopyReclaim()
 	scope := w.DerivedObjectStoreName
 	tripped, err := w.observeDeleteReconcile(ctx, w.Breakers, scope)
 	if err != nil {
@@ -67,7 +68,7 @@ func (w *DeleteReconcileWorker) objectStorePass(
 		return err
 	}
 	// 前パスで deleting のまま止まった行の再開は、既に決めた削除の再実行なのでブレーカーの対象外にする。
-	pending, err := w.DerivedMediaDelete.ListPendingDeleteAssets(ctx, trashCutoff, overlapCutoff, placementRules, placementDerived, deleteReconcileRowLimit)
+	pending, err := derivedMediaDelete.ListPendingDeleteAssets(ctx, trashCutoff, overlapCutoff, placementRules, placementDerived, deleteReconcileRowLimit)
 	if err != nil {
 		return fmt.Errorf("listing pending object copy deletes: %w", err)
 	}
@@ -76,17 +77,17 @@ func (w *DeleteReconcileWorker) objectStorePass(
 	}
 
 	var c objectDeleteCandidates
-	if c.trash, err = w.DerivedMediaDelete.ListTrashAssetsToDelete(ctx, trashCutoff, deleteReconcileRowLimit); err != nil {
+	if c.trash, err = derivedMediaDelete.ListTrashAssetsToDelete(ctx, trashCutoff, deleteReconcileRowLimit); err != nil {
 		return fmt.Errorf("listing trash object copies past retention: %w", err)
 	}
-	if c.removedEncoded, err = w.DerivedMediaDelete.ListRemovedEncodedAssetsToDelete(ctx, deleteReconcileRowLimit); err != nil {
+	if c.removedEncoded, err = derivedMediaDelete.ListRemovedEncodedAssetsToDelete(ctx, deleteReconcileRowLimit); err != nil {
 		return fmt.Errorf("listing removed encoded object copies: %w", err)
 	}
-	if c.oldGeneration, err = w.DerivedMediaDelete.ListOldGenerationMediaAssetCopiesToDelete(ctx, overlapCutoff, deleteReconcileRowLimit); err != nil {
+	if c.oldGeneration, err = derivedMediaDelete.ListOldGenerationMediaAssetCopiesToDelete(ctx, overlapCutoff, deleteReconcileRowLimit); err != nil {
 		return fmt.Errorf("listing old-generation object copies: %w", err)
 	}
 	pendingBefore := time.Now().Add(-orphanAge)
-	if c.agedPending, err = w.DerivedPendingReclaim.ListAgedPendingMediaAssetCopies(ctx, pendingBefore, deleteReconcileRowLimit); err != nil {
+	if c.agedPending, err = derivedPendingReclaim.ListAgedPendingMediaAssetCopies(ctx, pendingBefore, deleteReconcileRowLimit); err != nil {
 		return fmt.Errorf("listing aged pending object copies: %w", err)
 	}
 	stop, err := w.applyDeleteCircuitBreaker(ctx, w.Breakers, scope, tripped, c.total(), maxPerPass)
@@ -114,12 +115,13 @@ func (w *DeleteReconcileWorker) objectStorePass(
 // reconcileObjectOrphans は、DB のコピー行に無い key を孤児候補として記録し、報告だけして残す。
 // DB を復元した直後に、唯一の実体を消さないためである。
 func (w *DeleteReconcileWorker) reconcileObjectOrphans(ctx context.Context, orphanMTimeGrace, orphanAge time.Duration) error {
+	derivedStorage := w.DerivedObjectDeleteStores.StorageObservation()
 	objects, err := w.DerivedObjects.List(ctx, "")
 	if err != nil {
 		metrics.RecordObjectStoreError("list", err)
 		return fmt.Errorf("listing derived object store: %w", err)
 	}
-	known, err := w.DerivedStorage.ListAllMediaAssetRelPaths(ctx)
+	known, err := derivedStorage.ListAllMediaAssetRelPaths(ctx)
 	if err != nil {
 		return fmt.Errorf("listing known derived object keys: %w", err)
 	}
@@ -136,13 +138,13 @@ func (w *DeleteReconcileWorker) reconcileObjectOrphans(ctx context.Context, orph
 	for _, object := range objects {
 		objectsByKey[object.Key] = object
 	}
-	observed, err := w.DerivedStorage.ListAllOrphanFiles(ctx)
+	observed, err := derivedStorage.ListAllOrphanFiles(ctx)
 	if err != nil {
 		return fmt.Errorf("listing observed derived object orphans: %w", err)
 	}
 	for _, old := range observed {
 		if _, isKnown := knownSet[old.RelPath]; isKnown {
-			if err := w.DerivedStorage.DeleteOrphanFile(ctx, old.RelPath); err != nil {
+			if err := derivedStorage.DeleteOrphanFile(ctx, old.RelPath); err != nil {
 				return fmt.Errorf("clearing adopted object orphan %q: %w", old.RelPath, err)
 			}
 			continue
@@ -151,7 +153,7 @@ func (w *DeleteReconcileWorker) reconcileObjectOrphans(ctx context.Context, orph
 			continue
 		}
 		if _, headErr := w.DerivedObjects.Head(ctx, old.RelPath); errors.Is(headErr, objstore.ErrNotFound) {
-			if err := w.DerivedStorage.DeleteOrphanFile(ctx, old.RelPath); err != nil {
+			if err := derivedStorage.DeleteOrphanFile(ctx, old.RelPath); err != nil {
 				return fmt.Errorf("clearing absent object orphan %q: %w", old.RelPath, err)
 			}
 		} else if headErr != nil {
@@ -164,11 +166,11 @@ func (w *DeleteReconcileWorker) reconcileObjectOrphans(ctx context.Context, orph
 		if _, ok := knownSet[object.Key]; ok || object.LastModified.After(mtimeCutoff) {
 			continue
 		}
-		if err := w.DerivedStorage.UpsertOrphanFile(ctx, object.Key); err != nil {
+		if err := derivedStorage.UpsertOrphanFile(ctx, object.Key); err != nil {
 			return fmt.Errorf("recording unknown object key %q: %w", object.Key, err)
 		}
 	}
-	aged, err := w.DerivedStorage.ListAgedOrphanFiles(ctx, orphanAge)
+	aged, err := derivedStorage.ListAgedOrphanFiles(ctx, orphanAge)
 	if err != nil {
 		return fmt.Errorf("listing aged unknown object keys: %w", err)
 	}
@@ -186,14 +188,15 @@ func (w *DeleteReconcileWorker) reconcileObjectOrphans(ctx context.Context, orph
 // restoreUnqualifiedObjectCopies は削除条件から外れた deleting のコピーを、key の現存を確かめてから
 // active に戻すか deleted を確定する。FS の resolveUnqualifiedDeletingAsset と同じ判断で、stat が Head になる。
 func (w *DeleteReconcileWorker) restoreUnqualifiedObjectCopies(ctx context.Context, graceCutoff, overlapCutoff time.Time, placementRules []byte, placementDerived string) error {
-	rows, err := w.DerivedMediaDelete.ListUnqualifiedDeletingAssets(ctx, graceCutoff, overlapCutoff, placementRules, placementDerived, deleteReconcileRowLimit)
+	derivedMediaDelete := w.DerivedObjectDeleteStores.MediaDelete()
+	rows, err := derivedMediaDelete.ListUnqualifiedDeletingAssets(ctx, graceCutoff, overlapCutoff, placementRules, placementDerived, deleteReconcileRowLimit)
 	if err != nil {
 		return fmt.Errorf("listing unqualified deleting object copies: %w", err)
 	}
 	for _, row := range rows {
 		_, headErr := w.DerivedObjects.Head(ctx, row.RelPath)
 		if errors.Is(headErr, objstore.ErrNotFound) {
-			if err := w.DerivedMediaDelete.MarkDeleted(ctx, row.ID); err != nil {
+			if err := derivedMediaDelete.MarkDeleted(ctx, row.ID); err != nil {
 				return fmt.Errorf("finalizing absent deleting object copy %d: %w", row.ID, err)
 			}
 			continue
@@ -202,7 +205,7 @@ func (w *DeleteReconcileWorker) restoreUnqualifiedObjectCopies(ctx context.Conte
 			metrics.RecordObjectStoreError("head", headErr)
 			return fmt.Errorf("checking deleting object %q before revert: %w", row.RelPath, headErr)
 		}
-		if _, err := w.DerivedMediaDelete.RevertToActive(ctx, row.ID, graceCutoff, overlapCutoff, placementRules, placementDerived); err != nil {
+		if _, err := derivedMediaDelete.RevertToActive(ctx, row.ID, graceCutoff, overlapCutoff, placementRules, placementDerived); err != nil {
 			return fmt.Errorf("reverting deleting object copy %d: %w", row.ID, err)
 		}
 	}
@@ -211,7 +214,7 @@ func (w *DeleteReconcileWorker) restoreUnqualifiedObjectCopies(ctx context.Conte
 
 // deleteObjectCopy は派生物のコピーを object API 経由で削除する。
 func (w *DeleteReconcileWorker) deleteObjectCopy(ctx context.Context, t store.MediaDeleteAsset, source string) {
-	w.deleteObjectCopyWithStore(ctx, w.DerivedObjects, w.DerivedMediaDelete, t, source, w.DerivedObjectStoreName, nil)
+	w.deleteObjectCopyWithStore(ctx, w.DerivedObjects, w.DerivedObjectDeleteStores.MediaDelete(), t, source, w.DerivedObjectStoreName, nil)
 }
 
 // deleteObjectCopyWithStore は 1 コピーを active → deleting → key の削除 → deleted の順で消す。
@@ -266,7 +269,7 @@ func (w *DeleteReconcileWorker) deleteObjectCopyWithStore(ctx context.Context, o
 func (w *DeleteReconcileWorker) reclaimPendingObjectCopy(ctx context.Context, t store.MediaDeleteAsset, before time.Time) {
 	log := slog.With("media_asset_id", t.MediaAssetID, "media_asset_copy_id", t.ID, "rel_path", t.RelPath,
 		"source", "pending_reclaim", "store", w.DerivedObjectStoreName)
-	reclaimed, err := w.DerivedPendingReclaim.ReclaimPendingMediaAssetCopy(ctx, t.ID, before, func() error {
+	reclaimed, err := w.DerivedObjectDeleteStores.PendingCopyReclaim().ReclaimPendingMediaAssetCopy(ctx, t.ID, before, func() error {
 		return deletePendingObjectKey(ctx, w.DerivedObjects, t.RelPath, t.Kind)
 	})
 	if err != nil {

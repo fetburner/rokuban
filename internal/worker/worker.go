@@ -195,11 +195,9 @@ type StoreDeps struct {
 
 	// DerivedMediaPublish は、この置き場で生成した派生物を DB に公開する契約。
 	DerivedMediaPublish store.DerivedMediaPublisher
-	// DerivedMediaDelete・DerivedPendingReclaim・DerivedStorage は、独立した派生物置き場の
-	// 削除 reconcile 用の store。
-	DerivedMediaDelete    store.MediaDelete
-	DerivedPendingReclaim store.PendingCopyReclaim
-	DerivedStorage        store.StorageObservation
+	// DerivedObjectDeleteStores は、派生物の置き場を掃く独立した削除パスの store 契約である。
+	// nil なら、この置き場の worker は S3 の独立パスを持たない。
+	DerivedObjectDeleteStores *store.DerivedObjectDeleteStores
 }
 
 // perStore は置き場ごとの StoreDeps を返す。空なら置き場で修飾したワーカーを 1 つも登録しない。
@@ -406,28 +404,26 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 // newDeleteReconcileWorker は削除 reconcile worker を Deps と StoreDeps から組み立てる。
 func newDeleteReconcileWorker(deps *Deps, scoped *StoreDeps) *storagemaint.DeleteReconcileWorker {
 	return &storagemaint.DeleteReconcileWorker{
-		MediaDelete:            scoped.MediaDelete,
-		MediaPendingReclaim:    scoped.MediaPendingReclaim,
-		StorageTransfer:        scoped.StorageTransfer,
-		StorageTransferPolicy:  deps.StorageTransferPolicy,
-		RecordingPurge:         scoped.RecordingPurge,
-		Breakers:               deps.Breakers,
-		Storage:                scoped.StorageObservation,
-		MediaDir:               scoped.MediaDir,
-		MediaStoreName:         scoped.MediaStoreName,
-		DerivedObjects:         deps.DerivedObjects,
-		DerivedObjectStoreName: deps.DerivedObjectStoreName,
-		DerivedMediaDelete:     scoped.DerivedMediaDelete,
-		DerivedPendingReclaim:  scoped.DerivedPendingReclaim,
-		DerivedStorage:         scoped.DerivedStorage,
-		StorageObjects:         deps.StorageObjects,
-		TransferOverlap:        deps.TransferOverlap,
-		TrashRetention:         deps.Cleanup.TrashRetention,
-		OrphanMTimeGrace:       deps.Cleanup.OrphanMTimeGrace,
-		OrphanAge:              deps.Cleanup.OrphanAge,
-		MaxDeletesPerPass:      deps.Cleanup.MaxDeletesPerPass,
-		MissingAssetAge:        deps.Cleanup.MissingAssetAge,
-		Webhook:                deps.Webhook,
-		Markers:                deps.LoopMarkers,
+		MediaDelete:               scoped.MediaDelete,
+		MediaPendingReclaim:       scoped.MediaPendingReclaim,
+		StorageTransfer:           scoped.StorageTransfer,
+		StorageTransferPolicy:     deps.StorageTransferPolicy,
+		RecordingPurge:            scoped.RecordingPurge,
+		Breakers:                  deps.Breakers,
+		Storage:                   scoped.StorageObservation,
+		MediaDir:                  scoped.MediaDir,
+		MediaStoreName:            scoped.MediaStoreName,
+		DerivedObjects:            deps.DerivedObjects,
+		DerivedObjectStoreName:    deps.DerivedObjectStoreName,
+		DerivedObjectDeleteStores: scoped.DerivedObjectDeleteStores,
+		StorageObjects:            deps.StorageObjects,
+		TransferOverlap:           deps.TransferOverlap,
+		TrashRetention:            deps.Cleanup.TrashRetention,
+		OrphanMTimeGrace:          deps.Cleanup.OrphanMTimeGrace,
+		OrphanAge:                 deps.Cleanup.OrphanAge,
+		MaxDeletesPerPass:         deps.Cleanup.MaxDeletesPerPass,
+		MissingAssetAge:           deps.Cleanup.MissingAssetAge,
+		Webhook:                   deps.Webhook,
+		Markers:                   deps.LoopMarkers,
 	}
 }

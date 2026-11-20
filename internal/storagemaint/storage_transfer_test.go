@@ -460,6 +460,8 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 	}
 	testutil.MustExec(t, pool, "retiring the test-store copy", `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = 'test-store'`, assetID)
 	testutil.MustExec(t, pool, "aging the recording past the purge window", `UPDATE recordings SET deleted_at = now() - interval '2 hours' WHERE id = $1`, recordingID)
+	derivedDeleteStores, storeErr := store.NewDerivedObjectDeleteStores(media, media, media)
+	testutil.RequireNoError(t, storeErr, "creating derived object delete stores")
 	worker := DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: cfg,
 		RecordingPurge: pgstore.NewRecordings(pool, "archive"), Breakers: pgstore.NewBreakers(pool),
@@ -467,7 +469,7 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 		OrphanAge: time.Hour, OrphanMTimeGrace: time.Minute,
 		MediaPendingReclaim: media,
 		DerivedObjects:      objects["archive"], DerivedObjectStoreName: "archive",
-		DerivedMediaDelete: media, DerivedPendingReclaim: media, DerivedStorage: media,
+		DerivedObjectDeleteStores: derivedDeleteStores,
 	}
 	deletedBefore := promtestutil.ToFloat64(metrics.DeleteReconcileDeleted.WithLabelValues("pending_transfer_reclaim"))
 	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
@@ -1593,6 +1595,8 @@ func TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded(t *testing.T) {
 
 	objects := transferTestObjectStores(t, roots)
 	derivedMedia := pgstore.NewMedia(pool, "archive", cfg.Derived)
+	derivedDeleteStores, storeErr := store.NewDerivedObjectDeleteStores(derivedMedia, derivedMedia, derivedMedia)
+	testutil.RequireNoError(t, storeErr, "creating derived object delete stores")
 	newWorker := func(storeName string) *DeleteReconcileWorker {
 		media := pgstore.NewMedia(pool, storeName, cfg.Derived)
 		worker := &DeleteReconcileWorker{
@@ -1600,7 +1604,7 @@ func TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded(t *testing.T) {
 			RecordingPurge: pgstore.NewRecordings(pool, storeName), Breakers: pgstore.NewBreakers(pool),
 			MediaDir: roots[storeName], StorageObjects: testStorageObjects(t, storeName, roots[storeName]), MediaStoreName: storeName, TrashRetention: time.Hour,
 			DerivedObjects: objects["archive"], DerivedObjectStoreName: "archive",
-			DerivedMediaDelete: derivedMedia, DerivedPendingReclaim: derivedMedia, DerivedStorage: derivedMedia,
+			DerivedObjectDeleteStores: derivedDeleteStores,
 		}
 		if storeName == "archive" {
 			worker.MediaPendingReclaim = media
