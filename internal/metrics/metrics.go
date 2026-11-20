@@ -186,13 +186,16 @@ var (
 		Help: "Differences between desired reservations and observed mirakc schedules found in the most recent pass, by action: create, delete, delete_deferred, update, or update_deferred.",
 	}, []string{"action"})
 
-	// ReconcileSchedules は mirakc schedule に対する操作の件数。
-	// 実際に差分を消した量。action="recreated" は予約オプション（priority /
-	// tag）の差分反映のための DELETE→POST 再作成が成功した件数
-	// （docs/recording.md §3.2、issue #19）。
+	// ReconcileSchedules は reconciler が mirakc schedule に対して成功させた書き込みの件数。
+	//
+	// action:
+	//   - "created": POST が成功した作成
+	//   - "deleted": DELETE が成功した削除
+	//   - "recreated": 予約オプション（priority / tag）の差分反映のための
+	//     DELETE→POST 再作成が成功した件数（docs/recording.md §3.2、issue #19）
 	ReconcileSchedules = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_reconcile_schedules_total",
-		Help: "mirakc recording schedules by action: created, deleted, or recreated by the reconciler (recreated is a DELETE followed by a successful POST).",
+		Help: "mirakc recording schedule writes by the reconciler, by action: created, deleted, or recreated. recreated counts a DELETE followed by a successful POST.",
 	}, []string{"action"})
 
 	// ReconcileCircuitBreakerTrips は reconciler のブレーカーが作動した回数。
@@ -211,7 +214,7 @@ var (
 	// docs/recording.md §3.2「大量削除サーキットブレーカー」参照）。
 	ReconcileCircuitBreakerTrips = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "rokuban_reconcile_circuit_breaker_trips_total",
-		Help: "Times the reconcile circuit breaker tripped on a total-loss signature: no desired reservations while this site's schedules are observed.",
+		Help: "Times the reconcile circuit breaker tripped on a total-loss signature: no desired reservations while schedules the reconciler owns would be deleted.",
 	})
 
 	// ReconcileScheduleLost は予約オプションの差分反映（再作成）で DELETE には

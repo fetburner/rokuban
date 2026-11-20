@@ -102,9 +102,11 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 | `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` | Gauge（DB） | 予約状況の全量取り込みが最後に成功した時刻 |
 | `rokuban_presync_scrape_errors_total{site}` | Counter（DB） | presync の収集に失敗した回数 |
 
-差分ゲージは、収束すればゼロに戻る。アラートはこちらで取る。`rokuban_reconcile_schedule_lost_total` は 0 以外がアラート対象である。意味は reconcile の節にある。
+`rokuban_reconcile_pending_diff` の `create` / `delete` / `update` は、収束すればゼロに戻り、アラートはこの 3 つで取る。`delete_deferred` と `update_deferred` は録画中などで通常非ゼロになりうるので、アラートしない。値ごとの読み方は差分ゲージの action の節にある。
 
-最終成功時刻は、DB に保存した時刻を scrape のたびに読み直して出す値である。パスが ScaledJob の `--once` で動いても、常駐 Pod の scrape から見える。
+`rokuban_reconcile_schedule_lost_total` の意味は reconcile の節にある。
+
+`rokuban_reconcile_last_success_timestamp_seconds` は、DB に保存した時刻を scrape のたびに読み直して出す値である。パスが ScaledJob の `--once` で動いても、常駐 Pod の scrape から見える。
 
 `rokuban_reconcile_circuit_breaker_trips_total` が数えるのは、全損シグネチャでの発動である。件数の閾値ではない。意味が変わってもメトリクス名を据え置いたのは、既存のダッシュボードとアラートを壊さないためである。`rokuban_circuit_breaker_tripped` はラッチなので、アラートはこちらで取る。互換性のためラベル名は `site` のままだが、`breaker="delete_reconcile"` では値に置き場名が入る。
 
@@ -115,11 +117,10 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 <details><summary>根拠</summary>
 
 - スナップショットの全量取り込み: `schedule_sync`
-- 読み方: `rokuban_reconcile_pending_diff`
-- 読み方: `rokuban_reconcile_schedule_lost_total`
-- 読み方: `rokuban_reconcile_circuit_breaker_trips_total`
-- 読み方: `rokuban_circuit_breaker_tripped`
-- 読み方: `rokuban_reconcile_last_success_timestamp_seconds`
+- create / delete / update は収束でゼロに戻り、deferred 系は非ゼロが正常でありうる: `rokuban_reconcile_pending_diff`
+- 全損シグネチャの発動は件数の閾値ではなく、名前は互換のため据え置き: `rokuban_reconcile_circuit_breaker_trips_total`
+- ラッチは解除まで発動中を示し、`delete_reconcile` では site に置き場名が入る: `rokuban_circuit_breaker_tripped`
+- DB を読み直すので、ScaledJob でも完走の停止を見られる: `rokuban_reconcile_last_success_timestamp_seconds`
 
 </details>
 
@@ -459,14 +460,14 @@ flowchart TD
 
 `pending_diff` の `update` と `update_deferred` を分けているのは、このゲージの読み方が「ゼロに戻らないまま続く = 収束できていない」だからである。意図的に見送った差分を混ぜると、正常なユーザー操作でアラートが鳴り、ゲージがアラート不能になる。
 
-`rokuban_reconcile_write_withheld_total` は、DELETE の直前の観測し直しで見送った回数である。並走や観測後の録画開始で非ゼロになりうる。カウンタなので収束は見ず、アラートにはしない。
+`rokuban_reconcile_write_withheld_total` は、並走や観測後の録画開始で非ゼロになりうる。カウンタなので収束は見ず、アラートにはしない。
 
 <details><summary>根拠</summary>
 
 - 1 パスあたりの再作成上限: `MaxRecreatesPerPass`
-- 読み方: `rokuban_reconcile_pending_diff`
-- 読み方: `rokuban_reconcile_schedule_lost_total`
-- 読み方: `rokuban_reconcile_write_withheld_total`
+- action ごとに収束の読み方が違い、`update` と `update_deferred` を分ける: `rokuban_reconcile_pending_diff`
+- 0 以外はアラート対象で、次パスの再作成までに開始時刻を越えると取りこぼす: `rokuban_reconcile_schedule_lost_total`
+- 見送りは並走や録画開始で起きるので、収束を見ずアラートしない: `rokuban_reconcile_write_withheld_total`
 
 </details>
 
