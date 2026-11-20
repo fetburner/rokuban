@@ -305,22 +305,26 @@ func startNotifier(t *testing.T, pool *pgxpool.Pool) (*EventHub, *httptest.Serve
 	return hub, srv
 }
 
-// seedIngested は録画に原本 media_asset を付ける（recordings トピックの発火源）。
+// seedIngested は録画に原本 media_asset を付け、契約 ReplaceScan で計測（PID 別 drop stats）を書く。
+// 計測サイズは原本サイズと同じにする。stats が nil・空でもよい。
 func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, stats map[int32][4]int64) {
 	t.Helper()
-	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "test/asset.m2ts"
 		fixtureParams.SizeBytes = size
 	})
-
+	media := pgstoretest.Media(pool)
+	source, err := media.GetActiveOriginalForTSScan(t.Context(), recordingID)
+	if err != nil {
+		t.Fatalf("reading original for TS scan of recording %d: %v", recordingID, err)
+	}
+	statRows := make([]store.RecordingDropStat, 0, len(stats))
 	for pid, s := range stats {
-		dbtest.DropStat(t, pool, assetID, func(p *dbtest.DropStatParams) {
-			p.Pid = pid
-			p.Packets = s[0]
-			p.Drops = s[1]
-			p.Errors = s[2]
-			p.Scrambled = s[3]
-		})
+		statRows = append(statRows, store.RecordingDropStat{Pid: pid, Packets: s[0], Drops: s[1], Errors: s[2], Scrambled: s[3]})
+	}
+	written, err := media.ReplaceScan(t.Context(), source, size, statRows, nil)
+	if err != nil || !written {
+		t.Fatalf("ReplaceScan for recording %d: written=%v err=%v", recordingID, written, err)
 	}
 }
 
