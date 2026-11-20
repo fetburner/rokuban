@@ -2,7 +2,7 @@
 
 ## 1. 監視メトリクス
 
-この節は、メトリクスの公開の仕組み、実装済みメトリクスの一覧、ループごとの読み方、メトリクスに異常が出ていなくても安全とは言えない場合をまとめる。
+この節は、メトリクスの公開の仕組みと 2 種類、領域ごとのメトリクスの読み方、ループごとの読み方、メトリクスに異常が出ていなくても安全とは言えない場合をまとめる。
 
 ### エンドポイント
 
@@ -26,9 +26,12 @@ Prometheus の text exposition format で返す。**ロールに関わらずす�
 
 プロセス内のカウンタとヒストグラムは、再起動でリセットされる。Prometheus はカウンタのリセットを扱えるので問題にならない。DB を引くゲージは、scrape のたびに正しい状態を DB から取り直す。プロセス内に溜めないので、どのロールが scrape されても同じ値になる。「イベントはヒント、正しい状態はテーブルの再読で得る」と同じ考え方である。
 
+`/metrics` の出力は、メトリクスの一覧の代わりにならない。ラベル付きの系列は、値を 1 度も観測していないプロセスでは現れないためである。
+
 <details><summary>根拠</summary>
 
 - 計器（カウンタ・ヒストグラム・プロセス内ゲージ）の置き場: `internal/metrics`。DB を引くゲージ（collector）の置き場: `internal/metrics/dbcollector`。計器だけを使うパッケージに store と mirakc の依存を運ばないため、分けてある
+- 未観測のラベル付き系列が出ないこと: CounterVec などのベクタは、すべてのラベル値を指定した系列を一度作るまで collect しない（client_golang の [`DescribeByCollect`](https://pkg.go.dev/github.com/prometheus/client_golang/prometheus#DescribeByCollect) の doc）
 
 </details>
 
@@ -54,7 +57,7 @@ PID 別のドロップ内訳はメトリクスにしない。PID × 録画数で
 
 エンコード・サムネイル・シークタイルは、ジョブの結果別件数と、reconcile の最終完走時刻で見る。
 
-名前・型・意味は `internal/metrics` と `internal/metrics/dbcollector` の定義（`Name` と `Help`）を引く。`/metrics` の出力は一覧の代わりにならない。ラベル付きの系列は、値を 1 度も観測していないプロセスでは現れないためである。
+名前・型・意味は `internal/metrics` と `internal/metrics/dbcollector` の定義（`Name` と `Help`）を引く。
 
 ジョブの結果別件数の `replan` は、計画が古く snooze で再計画した件数であり、失敗ではない。
 
@@ -68,10 +71,12 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 
 録画単位の現在の desired が現在の `encode.profiles` に無い録画が非ゼロなら、プロファイルの改名や削除で、その名前の過去録画が永久にエンコードされない。投入しても `unknown encode profile` で弾かれるので、パスは投入せず数えるだけにしている。
 
+CM 検出の所要時間は、ジョブの 1 回の実行ごとに観測する。検出済み・ごみ箱入り・無効などで解析に入らず戻った実行も数えるので、最小のバケット（30 秒以下）には解析の速さと関係の無い値が入る。この系列に結果別の件数は無い。失敗は録画の状態として[ホーム](../frontend/home.md)の要対応に出る。
+
 <details><summary>根拠</summary>
 
-- 未観測のラベル付き系列が出ないこと: CounterVec などのベクタは、すべてのラベル値を指定した系列を一度作るまで collect しない（client_golang の [`DescribeByCollect`](https://pkg.go.dev/github.com/prometheus/client_golang/prometheus#DescribeByCollect) の doc）
 - `replan` は失敗ではない: `rokuban_encode_jobs_total`
+- 解析に入らず戻った実行も観測する: `CMDetectWorker.Work` の先頭の defer
 - thumbnail の完走時刻は scrape ごとに DB から読み、投入停止とシークタイルの鮮度に使う: `rokuban_thumbnail_reconcile_last_success_timestamp_seconds`
 - encode の完走時刻は scrape ごとに DB から読み、reconcile の停止を監視する: `rokuban_encode_reconcile_last_success_timestamp_seconds`
 - thumbnail 候補数から窓の充足は分からず、継続はログで見る: `rokuban_thumbnail_reconcile_candidates`
