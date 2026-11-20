@@ -7,7 +7,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -120,7 +119,7 @@ func TestRunPass_InputRevisionMismatchLimit(t *testing.T) {
 	mismatches := 0
 	beforeRulerWriteTx = func() {
 		mismatches++
-		if _, err := sqlcgen.New(pool).BumpRulerInputRevision(ctx, store.DefaultSite); err != nil {
+		if err := pgstoretest.Reservations(pool).BumpRulerInputRevision(ctx, store.DefaultSite); err != nil {
 			t.Fatalf("bumping input revision: %v", err)
 		}
 	}

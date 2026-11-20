@@ -16,7 +16,6 @@ import (
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/ruler"
@@ -233,16 +232,11 @@ func TestRunPass_DoesNotWriteProgramIntents(t *testing.T) {
 	// program_intents への FK（#27）を満たすため、ruler が動く前に
 	// program_snapshots 行を用意しておく。
 	insertProgramSnapshotDirect(t, pool, 1001, "ニュース7", start)
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 1001, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramIntent(t, pool, 1001, func(p *dbtest.ProgramIntentParams) { p.Action = reservation.IntentRecord })
 
-	before, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: testSite, ProgramID: 1001})
-	if err != nil {
-		t.Fatal(err)
+	before, ok := dbtest.ReadProgramIntent(t, pool, testSite, 1001)
+	if !ok {
+		t.Fatal("program_intents row missing")
 	}
 
 	r := newRuler([]string{testSite}, pool, nil)
@@ -250,9 +244,9 @@ func TestRunPass_DoesNotWriteProgramIntents(t *testing.T) {
 		t.Fatalf("RunPass: %v", err)
 	}
 
-	after, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: testSite, ProgramID: 1001})
-	if err != nil {
-		t.Fatal(err)
+	after, ok := dbtest.ReadProgramIntent(t, pool, testSite, 1001)
+	if !ok {
+		t.Fatal("program_intents row missing")
 	}
 
 	if !before.UpdatedAt.Equal(after.UpdatedAt) {
@@ -282,16 +276,11 @@ func TestRunPass_DoesNotWriteProgramOverrides(t *testing.T) {
 	// program_overrides への FK（#27）を満たすため、ruler が動く前に
 	// program_snapshots 行を用意しておく。
 	insertProgramSnapshotDirect(t, pool, 1101, "上書きテスト", start)
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: testSite, ProgramID: 1101, Overrides: []byte(`{"priority":9}`),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramOverrides(t, pool, 1101, func(p *dbtest.ProgramOverridesParams) { p.Overrides = []byte(`{"priority":9}`) })
 
-	before, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: testSite, ProgramID: 1101})
-	if err != nil {
-		t.Fatal(err)
+	before, ok := dbtest.ReadProgramOverrides(t, pool, testSite, 1101)
+	if !ok {
+		t.Fatal("program_overrides row missing")
 	}
 
 	r := newRuler([]string{testSite}, pool, nil)
@@ -299,9 +288,9 @@ func TestRunPass_DoesNotWriteProgramOverrides(t *testing.T) {
 		t.Fatalf("RunPass: %v", err)
 	}
 
-	after, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: testSite, ProgramID: 1101})
-	if err != nil {
-		t.Fatal(err)
+	after, ok := dbtest.ReadProgramOverrides(t, pool, testSite, 1101)
+	if !ok {
+		t.Fatal("program_overrides row missing")
 	}
 
 	if !before.UpdatedAt.Equal(after.UpdatedAt) {
@@ -329,12 +318,7 @@ func TestRunPass_OverridesAloneKeepReservationDetached(t *testing.T) {
 	// program_overrides への FK（#27）を満たすため、ruler が動く前に
 	// program_snapshots 行を用意しておく。
 	insertProgramSnapshotDirect(t, pool, 1201, "上書き生存", start)
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: testSite, ProgramID: 1201, Overrides: []byte(`{"priority":9}`),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramOverrides(t, pool, 1201, func(p *dbtest.ProgramOverridesParams) { p.Overrides = []byte(`{"priority":9}`) })
 
 	r := newRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
@@ -380,13 +364,7 @@ func TestRunPass_SkipIntentPreventsReservation(t *testing.T) {
 	// program_intents への FK（#27）を満たすため、ruler が動く前に
 	// program_snapshots 行を用意しておく。
 	insertProgramSnapshotDirect(t, pool, 2001, "映画スペシャル", start)
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 2001,
-		Action: "skip",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramIntent(t, pool, 2001, func(p *dbtest.ProgramIntentParams) { p.Action = "skip" })
 
 	r := newRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
@@ -420,18 +398,8 @@ func TestRunPass_SkipIntentWithOverrideSurvivesViaOverride(t *testing.T) {
 	// program_intents / program_overrides への FK（#27）を満たすため、
 	// ruler が動く前に program_snapshots 行を用意しておく。
 	insertProgramSnapshotDirect(t, pool, 2011, "スキップと上書き併存", start)
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 2011,
-		Action: "skip",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: testSite, ProgramID: 2011, Overrides: []byte(`{"priority":9}`),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramIntent(t, pool, 2011, func(p *dbtest.ProgramIntentParams) { p.Action = "skip" })
+	dbtest.ProgramOverrides(t, pool, 2011, func(p *dbtest.ProgramOverridesParams) { p.Overrides = []byte(`{"priority":9}`) })
 
 	r := newRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
@@ -686,13 +654,7 @@ func TestRunPass_SkipIntentSnapshotFollowsDelayedProgramAndSurvivesGC(t *testing
 	liveStart := time.Now().Add(48 * time.Hour).Truncate(time.Second)
 	insertProgram(t, pool, ctx, programID, "後ろ倒し番組", liveStart)
 
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: programID,
-		Action: "skip",
-	}); err != nil {
-		t.Fatalf("skipping program: %v", err)
-	}
+	dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) { p.Action = "skip" })
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (after delayed skip): %v", err)
 	}
@@ -719,18 +681,14 @@ WHERE site = $2 AND program_id = $3`, staleStart, testSite, programID); err != n
 		t.Fatalf("RunPass (skip-only GC regression): %v", err)
 	}
 
-	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{
-		Site: testSite, ProgramID: programID,
-	}); err != nil {
-		t.Fatalf("skip intent should survive snapshot GC cascade: %v", err)
+	if _, ok := intentActionOf(t, pool, ctx, programID); !ok {
+		t.Fatal("skip intent should survive snapshot GC cascade")
 	}
 	// snapshot は予約が消えた後も skip 意図の FK に支えられており、live EPG に
 	// 追従しているので、古い終了時刻を条件にした GC の対象にならない。
-	snapshot, err := q.GetProgramSnapshot(ctx, sqlcgen.GetProgramSnapshotParams{
-		Site: testSite, ProgramID: programID,
-	})
-	if err != nil {
-		t.Fatalf("program snapshot should survive for skip intent: %v", err)
+	snapshot, ok := dbtest.ReadProgramSnapshot(t, pool, testSite, programID)
+	if !ok {
+		t.Fatal("program snapshot should survive for skip intent")
 	}
 	if !snapshot.StartAt.Equal(liveStart) {
 		t.Errorf("program snapshot did not follow delayed EPG program: got %v want %v", snapshot.StartAt, liveStart)
@@ -749,10 +707,7 @@ func TestRunPass_ObservesProgramIDReuse(t *testing.T) {
 	insertProgramSnapshotDirect(t, pool, programID, "旧番組", oldStart)
 	newStart := time.Now().Add(8 * 24 * time.Hour).Truncate(time.Second)
 	insertProgram(t, pool, ctx, programID, "新番組", newStart)
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{Site: testSite, ProgramID: programID, Action: "skip"}); err != nil {
-		t.Fatalf("creating skip intent: %v", err)
-	}
+	dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) { p.Action = "skip" })
 
 	before := programIDReuseCount(t)
 	r := newRuler([]string{testSite}, pool, nil)
@@ -763,9 +718,9 @@ func TestRunPass_ObservesProgramIDReuse(t *testing.T) {
 	if got := programIDReuseCount(t) - before; got != 1 {
 		t.Fatalf("program_id reuse counter delta = %v, want 1", got)
 	}
-	snapshot, err := q.GetProgramSnapshot(ctx, sqlcgen.GetProgramSnapshotParams{Site: testSite, ProgramID: programID})
-	if err != nil {
-		t.Fatalf("getting updated program snapshot: %v", err)
+	snapshot, ok := dbtest.ReadProgramSnapshot(t, pool, testSite, programID)
+	if !ok {
+		t.Fatal("getting updated program snapshot")
 	}
 	if !snapshot.StartAt.Equal(newStart) {
 		t.Fatalf("program snapshot start_at = %v, want %v", snapshot.StartAt, newStart)
@@ -837,13 +792,8 @@ func TestRunPass_RuleUnmatch_DeleteVsDetach(t *testing.T) {
 	// program_intents への FK（#27）を満たすため、ruler が動く前に
 	// program_snapshots 行を用意しておく。
 	insertProgramSnapshotDirect(t, pool, 7002, "対象B", start)
-	q := sqlcgen.New(pool)
 	// 7002 には record intent が付いている（例: ユーザーが個別に上書き済み）
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 7002, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramIntent(t, pool, 7002, func(p *dbtest.ProgramIntentParams) { p.Action = reservation.IntentRecord })
 
 	r := newRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
@@ -881,63 +831,11 @@ func TestRunPass_RuleUnmatch_DeleteVsDetach(t *testing.T) {
 	}
 }
 
-// 修正 1 の回帰テスト（方向 1/2）: DeleteReservationsBySiteAndProgramIDs は削除の
-// 瞬間に program_intents.action='record' の存在を再評価し、呼び出し側が渡した
-// programId が stale であっても実際には削除しない。
-//
-// runPassForSite は program_intents / program_overrides / 既存 reservations を
-// トランザクション外で読んでから削除対象（toDelete）を計算し、実際の DELETE は
-// 別のトランザクション内で後から実行される。api の CreateReservation
-// （program_intents{record} と reservations 行を 1 tx でコミットする）が、この
-// 読み取りと DELETE 実行の間に同じ program_id へ割り込むと、toDelete は古い
-// 読み取りのままその番組を含んでしまい、作られたばかりの手動予約を削除して
-// しまう。読み順を入れ替えても「計算してから DELETE を実行するまでの窓」は
-// 必ず残るため、直すべきは DELETE 文自体のガードである。
-//
-// このテストは「stale な toDelete に基づいて DELETE が呼ばれた」状況を、実際の
-// 予約行 + その後に着地した intent{record} という形で直接再現する
-// （sqlcgen.DeleteReservationsBySiteAndProgramIDs は runPassForSite の実削除が
-// 使うのと同じクエリなので、ここでの検証はそのまま runPassForSite の保護に
-// 直結する）。
-func TestRunPass_DeleteGuard_RecordIntentBlocksStaleDelete(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
-	const programID = 30001
-	insertReservationDirect(t, pool, ctx, programID, "並行手動予約", start)
-
-	q := sqlcgen.New(pool)
-	// api の CreateReservation が、ruler の読み取りと DELETE 実行の間に割り込んで
-	// 作った手動予約の意図。
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: programID, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	// runPassForSite がトランザクション外の古い読み取りに基づいて計算した、
-	// 既に stale になった toDelete を模す。
-	deleted, err := q.DeleteReservationsBySiteAndProgramIDs(ctx, sqlcgen.DeleteReservationsBySiteAndProgramIDsParams{
-		Site:       testSite,
-		ProgramIds: []int64{programID},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if deleted != 0 {
-		t.Errorf("rows deleted = %d, want 0 (a concurrently-created record intent must block the stale delete)", deleted)
-	}
-	if !reservationExists(t, pool, ctx, programID) {
-		t.Error("reservation with a concurrently-created record intent must survive the stale delete")
-	}
-}
-
-// 修正 1 の回帰テスト（方向 2/2、罠の確認）: program_intents の EXISTS を
-// action で絞らずに書くと、action='skip' の予約行（ユーザーが取消した予約）まで
-// 保護されてしまい「取消した予約が消えない」という重大なリグレッションになる
-// （ruler の desired 集合は skip を除外して行そのものを持たせない設計 =
-// issue #18 の案 A）。ガードは action='record' に限定されているべきことを固定する。
+// 罠の回帰テスト（方向 2/2）: skip 意図は削除を守る投資（record 意図・上書き）に数えない。
+// 数えると「取消した予約が消えない」という重大なリグレッションになる（ruler の desired
+// 集合は skip を除外して行そのものを持たせない設計 = issue #18 の案 A）。
+// skip 行は解放経路が先に取るので、導出削除の WHERE 句には届かない。ここで固定するのは
+// 「skip だけの予約は ApplyPass の削除で消える」こと。
 func TestRunPass_DeleteGuard_SkipIntentDoesNotBlockDelete(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -945,24 +843,10 @@ func TestRunPass_DeleteGuard_SkipIntentDoesNotBlockDelete(t *testing.T) {
 	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
 	const programID = 30002
 	insertReservationDirect(t, pool, ctx, programID, "取消済み", start)
-
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: programID,
-		Action: "skip",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	deleted, err := q.DeleteReservationsBySiteAndProgramIDs(ctx, sqlcgen.DeleteReservationsBySiteAndProgramIDsParams{
-		Site:       testSite,
-		ProgramIds: []int64{programID},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if deleted != 1 {
-		t.Errorf("rows deleted = %d, want 1 (a skip intent must NOT protect a stale reservation from deletion)", deleted)
+	dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) { p.Action = "skip" })
+	result := applyDeletes(t, pool, ctx, store.RulerPassPlan{DeleteProgramIDs: []int64{programID}})
+	if len(result.ReleasedProgramIDs) != 1 || result.ReleasedProgramIDs[0] != programID {
+		t.Errorf("released = %v, want [%d] (a skip intent must NOT protect a stale reservation from deletion)", result.ReleasedProgramIDs, programID)
 	}
 	if reservationExists(t, pool, ctx, programID) {
 		t.Error("reservation with only a skip intent should have been deleted")
@@ -1083,12 +967,7 @@ func TestRunPass_DisablingRuleDetachesReservationWithInvestment(t *testing.T) {
 	// program_overrides への FK（#27）を満たすため、ruler が動く前に
 	// program_snapshots 行を用意しておく。
 	insertProgramSnapshotDirect(t, pool, 31001, "マッチ掃除", start)
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: testSite, ProgramID: 31001, Overrides: []byte(`{"priority":9}`),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramOverrides(t, pool, 31001, func(p *dbtest.ProgramOverridesParams) { p.Overrides = []byte(`{"priority":9}`) })
 
 	r := newRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
@@ -1248,12 +1127,7 @@ func TestRunPass_FulfilledWithInvestmentStillRemoved(t *testing.T) {
 	insertRuleKeyword(t, pool, ctx, ruleID, "録画済み番組")
 
 	// record 意図を残す（program_investments に行が残る）。
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: programID, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) { p.Action = reservation.IntentRecord })
 
 	r := newRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
@@ -1393,17 +1267,61 @@ func reservationExists(t *testing.T, pool *pgxpool.Pool, ctx context.Context, pr
 
 // getRulerDeletesBreaker は circuit_breakers から ruler_deletes ブレーカーの行を引く。
 // 発動していなければ ok=false。
-func getRulerDeletesBreaker(t *testing.T, pool *pgxpool.Pool, ctx context.Context) (sqlcgen.CircuitBreaker, bool) {
+func getRulerDeletesBreaker(t *testing.T, pool *pgxpool.Pool, ctx context.Context) (store.CircuitBreaker, bool) {
 	t.Helper()
-	q := sqlcgen.New(pool)
-	cb, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{Scope: testSite, Name: breaker.RulerDeletes})
+	rows, err := pgstoretest.Breakers(pool).List(ctx)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return sqlcgen.CircuitBreaker{}, false
-		}
-		t.Fatalf("querying circuit_breakers: %v", err)
+		t.Fatalf("listing circuit breakers: %v", err)
 	}
-	return cb, true
+	for _, row := range rows {
+		if row.Scope == testSite && row.Name == breaker.RulerDeletes {
+			return row, true
+		}
+	}
+	return store.CircuitBreaker{}, false
+}
+
+// intentActionOf は site の録画意図のうち programID のものの action を返す。意図が無ければ ok = false。
+func intentActionOf(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64) (string, bool) {
+	t.Helper()
+	intents, err := pgstoretest.Reservations(pool).ListProgramIntents(ctx, testSite)
+	if err != nil {
+		t.Fatalf("listing program intents: %v", err)
+	}
+	for _, in := range intents {
+		if in.ProgramID == programID {
+			return in.Action, true
+		}
+	}
+	return "", false
+}
+
+// applyDeletes は削除だけを持つ計画を ApplyPass に渡す。版は読み取り時点の値を使い、
+// 上限が 0 のときは閾値で止まらないよう 10 にする。明示操作由来の解放と導出削除は
+// どちらも ApplyPass の中にあるので、テストはこの契約経由でだけ削除を起こす。
+func applyDeletes(t *testing.T, pool *pgxpool.Pool, ctx context.Context, plan store.RulerPassPlan) store.RulerPassResult {
+	t.Helper()
+	reservations := pgstoretest.Reservations(pool)
+	revision, err := reservations.GetRulerInputRevision(ctx, testSite)
+	if err != nil {
+		t.Fatalf("reading ruler input revision: %v", err)
+	}
+	plan.InputRevision = revision
+	plan.BreakerName = breaker.RulerDeletes
+	if plan.Now.IsZero() {
+		plan.Now = time.Now()
+	}
+	if plan.MaxDeletesPerPass == 0 {
+		plan.MaxDeletesPerPass = 10
+	}
+	result, err := reservations.ApplyPass(ctx, testSite, plan)
+	if err != nil {
+		t.Fatalf("ApplyPass: %v", err)
+	}
+	if result.InputRevisionChanged {
+		t.Fatal("ApplyPass reported a revision change under a fresh read")
+	}
+	return result
 }
 
 // decodeSample は circuit_breakers.detail を breaker.Sample にデコードする。
@@ -1520,17 +1438,8 @@ func TestRunPass_GC_DeletesEndedPastGrace(t *testing.T) {
 	start := time.Now().Add(-90 * time.Minute).Truncate(time.Second)
 	insertReservationDirect(t, pool, ctx, 10001, "終了番組", start)
 
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 10001, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: testSite, ProgramID: 10001, Overrides: []byte(`{"priority":3}`),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramIntent(t, pool, 10001, func(p *dbtest.ProgramIntentParams) { p.Action = reservation.IntentRecord })
+	dbtest.ProgramOverrides(t, pool, 10001, func(p *dbtest.ProgramOverridesParams) { p.Overrides = []byte(`{"priority":3}`) })
 
 	r := newRuler([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
 	if err := r.RunPass(ctx); err != nil {
@@ -1540,11 +1449,11 @@ func TestRunPass_GC_DeletesEndedPastGrace(t *testing.T) {
 	if reservationExists(t, pool, ctx, 10001) {
 		t.Error("reservation past end+grace should have been GC'd")
 	}
-	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: testSite, ProgramID: 10001}); !errors.Is(err, pgx.ErrNoRows) {
-		t.Errorf("program_intents past end+grace should have been GC'd, got err=%v", err)
+	if _, ok := dbtest.ReadProgramIntent(t, pool, testSite, 10001); ok {
+		t.Error("program_intents past end+grace should have been GC'd")
 	}
-	if _, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: testSite, ProgramID: 10001}); !errors.Is(err, pgx.ErrNoRows) {
-		t.Errorf("program_overrides past end+grace should have been GC'd, got err=%v", err)
+	if _, ok := dbtest.ReadProgramOverrides(t, pool, testSite, 10001); ok {
+		t.Error("program_overrides past end+grace should have been GC'd")
 	}
 }
 
@@ -1685,8 +1594,7 @@ func TestRunPass_GC_AllowsStaleNeverScheduledReservationBackIntoSyncEvaluation(t
 	insertReservationDirect(t, pool, ctx, programID, "欠測 GC 後に同期候補へ戻る番組", start)
 	insertNeverScheduledEvent(t, pool, ctx, 1, start, time.Now().Add(-31*24*time.Hour))
 
-	q := sqlcgen.New(pool)
-	before, err := q.ListReservationsForSyncEvaluation(ctx, testSite)
+	before, err := pgstoretest.ScheduleSync(pool).ListForSyncEvaluation(ctx, testSite)
 	if err != nil {
 		t.Fatalf("ListReservationsForSyncEvaluation before GC: %v", err)
 	}
@@ -1699,11 +1607,11 @@ func TestRunPass_GC_AllowsStaleNeverScheduledReservationBackIntoSyncEvaluation(t
 		t.Fatalf("RunPass: %v", err)
 	}
 
-	after, err := q.ListReservationsForSyncEvaluation(ctx, testSite)
+	after, err := pgstoretest.ScheduleSync(pool).ListForSyncEvaluation(ctx, testSite)
 	if err != nil {
 		t.Fatalf("ListReservationsForSyncEvaluation after GC: %v", err)
 	}
-	if len(after) != 1 || after[0].ProgramSnapshot.ProgramID != programID {
+	if len(after) != 1 || after[0].Reservation.ProgramID != programID {
 		t.Fatalf("after GC candidates = %#v, want only program_id=%d", after, programID)
 	}
 }
@@ -1773,12 +1681,7 @@ func TestRunPass_CircuitBreakerLatchBlocksDeleteEvenBelowThreshold(t *testing.T)
 
 	// 20000 番組にだけ record intent を付ける → 実際の削除候補が 2 件（閾値 2 以下）に
 	// 減る。20000 自身は intent により desired に残るので、そもそも削除候補ではない。
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 20000, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramIntent(t, pool, 20000, func(p *dbtest.ProgramIntentParams) { p.Action = reservation.IntentRecord })
 
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (still latched, candidates now below threshold): %v", err)
@@ -1880,12 +1783,7 @@ func TestRunPass_TrippedCircuitBreakerStillCreatesAndUpdatesReservations(t *test
 	// スナップショット追従（延長）が続くことを確認するため。program_intents への
 	// FK（#27）を満たすため、ruler が動く前に program_snapshots 行を用意しておく。
 	insertProgramSnapshotDirect(t, pool, 21000, "対象0", start)
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 21000, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramIntent(t, pool, 21000, func(p *dbtest.ProgramIntentParams) { p.Action = reservation.IntentRecord })
 
 	r := newRuler([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 1})
 	if err := r.RunPass(ctx); err != nil {
@@ -2042,12 +1940,7 @@ func TestRunPass_ResumeCircuitBreakerConverges(t *testing.T) {
 	// 仮定する（実運用では detail を見て個別に intent/override を足す、または
 	// 閾値を上げる）。残り 2 件は依然として削除候補だが、これで候補数が
 	// 閾値（2）以下に収まる。
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 23000, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramIntent(t, pool, 23000, func(p *dbtest.ProgramIntentParams) { p.Action = reservation.IntentRecord })
 
 	// 再開前: ラッチはまだ効いているので、候補が減っても削除は起きない。
 	if err := r.RunPass(ctx); err != nil {
@@ -2060,7 +1953,7 @@ func TestRunPass_ResumeCircuitBreakerConverges(t *testing.T) {
 	}
 
 	// 手動再開。
-	if _, err := q.ResumeCircuitBreaker(ctx, sqlcgen.ResumeCircuitBreakerParams{Scope: testSite, Name: breaker.RulerDeletes}); err != nil {
+	if err := pgstoretest.Breakers(pool).Resume(ctx, testSite, breaker.RulerDeletes); err != nil {
 		t.Fatalf("ResumeCircuitBreaker: %v", err)
 	}
 	if _, ok := getRulerDeletesBreaker(t, pool, ctx); ok {
@@ -2256,12 +2149,7 @@ func TestRunPass_ManualReservationSurvivesRuleMatchWithoutSourceColumn(t *testin
 	// program_intents への FK があるため、予約行（と、それが作る program_snapshots
 	// 行）を先に作ってから intent を書く（api.CreateReservation と同じ順序）。
 	insertReservationDirect(t, pool, ctx, programID, "手動予約サバイバル", start)
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: programID, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) { p.Action = reservation.IntentRecord })
 
 	// 後からマッチするルールを用意する（修正前バグの引き金と同じ状況）。
 	ruleID := insertRule(t, pool, ctx, "manual-survivor", 10)
@@ -2283,13 +2171,13 @@ func TestRunPass_ManualReservationSurvivesRuleMatchWithoutSourceColumn(t *testin
 	}
 
 	// 核心 (b): program_intents.action は ruler を経ても変わらない。
-	intent, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: testSite, ProgramID: programID})
-	if err != nil {
-		t.Fatalf("program_intents row must survive: %v", err)
+	action, ok := intentActionOf(t, pool, ctx, programID)
+	if !ok {
+		t.Fatal("program_intents row must survive")
 	}
-	if intent.Action != reservation.IntentRecord {
+	if action != reservation.IntentRecord {
 		t.Errorf("program_intents.action = %q, want %q "+
-			"(手動である事実はルールマッチでも消えないはず。issue #26)", intent.Action, reservation.IntentRecord)
+			"(手動である事実はルールマッチでも消えないはず。issue #26)", action, reservation.IntentRecord)
 	}
 
 	// 核心 (a): source 列は存在しない（将来の焼き直しへの防波堤）。
@@ -2317,12 +2205,7 @@ func insertManualReservation(t *testing.T, pool *pgxpool.Pool, ctx context.Conte
 	t.Helper()
 	insertProgram(t, pool, ctx, programID, title, startAt)
 	insertProgramSnapshotDirect(t, pool, programID, title, startAt)
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: programID, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatalf("upserting record intent for program %d: %v", programID, err)
-	}
+	dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) { p.Action = reservation.IntentRecord })
 }
 
 // issue #171 の核心: ラッチ中でも intent クリア（DELETE .../intent）由来の削除は
@@ -2383,10 +2266,7 @@ func TestRunPass_LatchDoesNotWithholdIntentClearDelete(t *testing.T) {
 	}
 
 	// ラッチ中にユーザーが手動予約の意図をクリアする（「意見なし」に戻す）。
-	q := sqlcgen.New(pool)
-	if _, err := q.DeleteProgramIntent(ctx, sqlcgen.DeleteProgramIntentParams{
-		Site: testSite, ProgramID: manualProgramID,
-	}); err != nil {
+	if err := pgstoretest.Reservations(pool).DeleteIntent(ctx, testSite, manualProgramID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2436,11 +2316,8 @@ func TestRunPass_IntentClearDeletesDoNotCountTowardBreaker(t *testing.T) {
 		}
 	}
 
-	q := sqlcgen.New(pool)
 	for i := range n {
-		if _, err := q.DeleteProgramIntent(ctx, sqlcgen.DeleteProgramIntentParams{
-			Site: testSite, ProgramID: int64(32000 + i),
-		}); err != nil {
+		if err := pgstoretest.Reservations(pool).DeleteIntent(ctx, testSite, int64(32000+i)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2508,13 +2385,7 @@ func TestRunPass_LatchDoesNotWithholdSkipIntentDelete(t *testing.T) {
 	}
 
 	// ラッチ中にユーザーが「録るな」を書く。
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: skippedProgramID,
-		Action: "skip",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramIntent(t, pool, skippedProgramID, func(p *dbtest.ProgramIntentParams) { p.Action = "skip" })
 
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (while latched): %v", err)
@@ -2534,9 +2405,9 @@ func TestRunPass_LatchDoesNotWithholdSkipIntentDelete(t *testing.T) {
 // program_investments を再評価する。runPassForSite が toDelete を計算してから
 // この文を実行するまでの間に record 意図が着地したら、削除してはならない。
 //
-// DeleteReleasedReservationsBySiteAndProgramIDs は runPassForSite の実削除が使うのと
-// 同じクエリなので、ここでの検証はそのまま runPassForSite の保護に直結する
-// （TestRunPass_DeleteGuard_RecordIntentBlocksStaleDelete と同じ組み立て）。
+// 削除は ApplyPass の解放経路を通すので、ここでの検証はそのまま ApplyPass の保護に
+// 直結する。古い読み取りの後に着地した意図を契約で見るのは、store の契約テスト
+// （contracttest の「delete rechecks investment after the read」）が担う。
 func TestRunPass_ReleasedDeleteGuard_RecordIntentBlocksStaleDelete(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -2546,24 +2417,12 @@ func TestRunPass_ReleasedDeleteGuard_RecordIntentBlocksStaleDelete(t *testing.T)
 	// rule_id が NULL の予約行 = 明示操作由来の削除の候補になりうる形。
 	insertReservationDirect(t, pool, ctx, programID, "並行手動予約", start)
 
-	q := sqlcgen.New(pool)
 	// ruler の読み取りと DELETE 実行の間に割り込んで着地した record 意図。
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: programID, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) { p.Action = reservation.IntentRecord })
 
-	released, err := q.DeleteReleasedReservationsBySiteAndProgramIDs(ctx,
-		sqlcgen.DeleteReleasedReservationsBySiteAndProgramIDsParams{
-			Site:       testSite,
-			ProgramIds: []int64{programID},
-		})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(released) != 0 {
-		t.Errorf("released = %v, want empty (a concurrently-created record intent must block the stale delete)", released)
+	result := applyDeletes(t, pool, ctx, store.RulerPassPlan{DeleteProgramIDs: []int64{programID}})
+	if len(result.ReleasedProgramIDs) != 0 {
+		t.Errorf("released = %v, want empty (a concurrently-created record intent must block the stale delete)", result.ReleasedProgramIDs)
 	}
 	if !reservationExists(t, pool, ctx, programID) {
 		t.Error("reservation with a concurrently-created record intent must survive the stale delete")
@@ -2611,12 +2470,7 @@ func TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease(t *testing.T) {
 	}
 
 	// ユーザーが上書きを 1 つ置く（investment）。これでルールが外れても desired に残る。
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: testSite, ProgramID: programID, Overrides: []byte(`{"priority":3}`),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramOverrides(t, pool, programID, func(p *dbtest.ProgramOverridesParams) { p.Overrides = []byte(`{"priority":3}`) })
 
 	// **EPG だけが動く**（番組名が変わってルールがマッチしなくなる）。ユーザーは何もしていない。
 	insertProgram(t, pool, ctx, programID, "別の番組", start)
@@ -2635,35 +2489,21 @@ func TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease(t *testing.T) {
 	}
 
 	// 2. 投資がある限り released にならない。ここが守備範囲を保っている条件。
-	released, err := q.DeleteReleasedReservationsBySiteAndProgramIDs(ctx,
-		sqlcgen.DeleteReleasedReservationsBySiteAndProgramIDsParams{
-			Site: testSite, ProgramIds: []int64{programID},
-		})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(released) != 0 {
+	result := applyDeletes(t, pool, ctx, store.RulerPassPlan{DeleteProgramIDs: []int64{programID}})
+	if len(result.ReleasedProgramIDs) != 0 {
 		t.Errorf("released = %v, want empty "+
-			"（EPG が rule_id を落としただけの行がブレーカーの外で消えてはならない）", released)
+			"（EPG が rule_id を落としただけの行がブレーカーの外で消えてはならない）", result.ReleasedProgramIDs)
 	}
 	if !reservationExists(t, pool, ctx, programID) {
 		t.Fatal("reservation must survive while the investment exists")
 	}
 
 	// 3. 投資を消すと released になる（境界 (c)。ユーザーの書き込みが要ることの裏返し）。
-	if _, err := q.DeleteProgramOverrides(ctx, sqlcgen.DeleteProgramOverridesParams{
-		Site: testSite, ProgramID: programID,
-	}); err != nil {
+	if err := pgstoretest.Reservations(pool).DeleteOverrides(ctx, testSite, programID); err != nil {
 		t.Fatal(err)
 	}
-	released, err = q.DeleteReleasedReservationsBySiteAndProgramIDs(ctx,
-		sqlcgen.DeleteReleasedReservationsBySiteAndProgramIDsParams{
-			Site: testSite, ProgramIds: []int64{programID},
-		})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(released) != 1 || released[0] != programID {
+	result = applyDeletes(t, pool, ctx, store.RulerPassPlan{DeleteProgramIDs: []int64{programID}})
+	if released := result.ReleasedProgramIDs; len(released) != 1 || released[0] != programID {
 		t.Errorf("released = %v, want [%d] (removing the last investment must release the row)", released, programID)
 	}
 }
@@ -2696,17 +2536,10 @@ func TestRunPass_ReleasedDeleteGuard_RuleBackedRowIsNotReleased(t *testing.T) {
 	}
 
 	// EPG の欠損でルールがマッチしなくなった状況を模して、削除候補として渡す。
-	q := sqlcgen.New(pool)
-	released, err := q.DeleteReleasedReservationsBySiteAndProgramIDs(ctx,
-		sqlcgen.DeleteReleasedReservationsBySiteAndProgramIDsParams{
-			Site:       testSite,
-			ProgramIds: []int64{programID},
-		})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(released) != 0 {
-		t.Errorf("released = %v, want empty (a rule-backed unmatch must stay subject to the circuit breaker)", released)
+	// 導出削除はラッチで止める。ここで見るのは「明示操作の解放に入らない」ことだけ。
+	result := applyDeletes(t, pool, ctx, store.RulerPassPlan{DeleteProgramIDs: []int64{programID}, BreakerTripped: true})
+	if len(result.ReleasedProgramIDs) != 0 {
+		t.Errorf("released = %v, want empty (a rule-backed unmatch must stay subject to the circuit breaker)", result.ReleasedProgramIDs)
 	}
 	if !reservationExists(t, pool, ctx, programID) {
 		t.Error("a rule-backed reservation must not be deleted by the explicit-operation delete")
@@ -3032,7 +2865,7 @@ func TestRunPass_RetractGrace_DoesNotProtectPastStart(t *testing.T) {
 // で、猶予が守るべき対象ではない（denpa の非対称「ルールごと削除・停止されたぶん
 // は直前でも引っ込める」の、予約単位版）。
 //
-// 罠の確認: 猶予を DeleteReleasedReservationsBySiteAndProgramIDs より前
+// 罠の確認: 猶予を明示操作由来の解放より前
 // （toDelete 全体）に適用すると、rule_id が非 NULL のままのこの行まで猶予が守って
 // しまい、このテストは落ちる。
 func TestRunPass_RetractGrace_SkipIntentStillReleases(t *testing.T) {
@@ -3061,10 +2894,7 @@ func TestRunPass_RetractGrace_SkipIntentStillReleases(t *testing.T) {
 
 	// タイトルは変えない（ルールはまだマッチする）。ユーザーが直前でも明示的に
 	// 「これは録らない」と押す。
-	q := sqlcgen.New(pool)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{Site: testSite, ProgramID: programID, Action: "skip"}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) { p.Action = "skip" })
 
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass after skip intent: %v", err)
@@ -3085,8 +2915,8 @@ func TestRunPass_RetractGrace_SkipIntentStillReleases(t *testing.T) {
 // program_snapshots.start_at を見ても epg_programs.start_at を見ても、この
 // シナリオでは同じ結果になる（mutation: 判定を program_snapshots 基準に戻し
 // てもこのテストは落ちない）。epg_programs を直接見る設計そのものの検証は
-// TestListRetractGraceProtectedProgramIDsBySiteAndProgramIDs_UsesLiveEpgStartAt
-// （program_snapshots を意図的に stale なまま保つクエリ単体テスト）が担う。
+// TestApplyPass_RetractGraceUsesLiveEpgStartAt
+// （program_snapshots を意図的に stale なまま保つテスト）が担う。
 //
 // このテストが今も確認するのは (1) 繰り上げ + 改題で unmatch になった予約が
 // 猶予で削除されず同じ id のまま残ること、(2) その program_snapshots が
@@ -3155,7 +2985,7 @@ func TestRunPass_RetractGrace_UsesLiveStartAtNotFrozenSnapshot(t *testing.T) {
 // 別の値に）保つことで、判定が実際にどちらの列を見ているかを区別できる。
 // mutation: SQL の join を program_snapshots に戻すと、stale な値
 // （窓の外の +5h）で判定されて結果が空になり、このテストは落ちる。
-func TestListRetractGraceProtectedProgramIDsBySiteAndProgramIDs_UsesLiveEpgStartAt(t *testing.T) {
+func TestApplyPass_RetractGraceUsesLiveEpgStartAt(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -3180,20 +3010,14 @@ func TestListRetractGraceProtectedProgramIDsBySiteAndProgramIDs_UsesLiveEpgStart
 		t.Fatalf("staling program_snapshots fixture: %v", err)
 	}
 
-	q := sqlcgen.New(pool)
 	now := time.Now()
-	got, err := q.ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs(ctx, sqlcgen.ListRetractGraceProtectedProgramIDsBySiteAndProgramIDsParams{
-		Site:       testSite,
-		ProgramIds: []int64{programID},
-		Now:        now,
-		GraceUntil: now.Add(time.Hour),
-	})
-	if err != nil {
-		t.Fatalf("ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs: %v", err)
+	result := applyDeletes(t, pool, ctx, store.RulerPassPlan{DeleteProgramIDs: []int64{programID}, Now: now, RetractGrace: time.Hour})
+	if result.GraceProtected != 1 {
+		t.Errorf("GraceProtected = %d, want 1 — program_snapshots.start_at is stale at +5h (outside the grace window), "+
+			"but epg_programs.start_at is live at +20m (inside it); the query must use the live value", result.GraceProtected)
 	}
-	if len(got) != 1 || got[0] != programID {
-		t.Errorf("got %v, want [%d] — program_snapshots.start_at is stale at +5h (outside the grace window), "+
-			"but epg_programs.start_at is live at +20m (inside it); the query must use the live value", got, programID)
+	if !reservationExists(t, pool, ctx, programID) {
+		t.Error("a reservation protected by the live EPG start must survive the delete")
 	}
 }
 
