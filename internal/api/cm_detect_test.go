@@ -73,13 +73,10 @@ func enableCMDetectWithOriginalForTest(t *testing.T, ctx context.Context, pool *
 	toggleCMDetectionForTest(t, ctx, pool, recordingID, true)
 }
 
-func markCMDetectionFailureForTest(t *testing.T, ctx context.Context, pool *pgxpool.Pool, attempt store.CMDetectionAttempt, stage, message *string) {
+// markCMDetectionFailureForTest は試行を failed にする。stage は nil でよく、message は空文字でもよい。
+func markCMDetectionFailureForTest(t *testing.T, ctx context.Context, pool *pgxpool.Pool, attempt store.CMDetectionAttempt, stage *string, message string) {
 	t.Helper()
-	msg := ""
-	if message != nil {
-		msg = *message
-	}
-	ok, err := pgstoretest.Analysis(pool).FailAttempt(ctx, attempt, "failed", stage, msg)
+	ok, err := pgstoretest.Analysis(pool).FailAttempt(ctx, attempt, "failed", stage, message)
 	if err != nil || !ok {
 		t.Fatalf("FailAttempt(%d, %d) = %v, %v", attempt.RecordingID, attempt.AttemptCount, ok, err)
 	}
@@ -197,11 +194,7 @@ func TestSetRecordingEncodePolicy_DisableLeavesCMDetectionAttemptForReconcile(t 
 
 			attempt := startCMDetectionAttemptForTest(t, ctx, pool, id)
 			for attempt.AttemptCount < tc.attemptCount {
-				next, shouldRun, err := pgstoretest.Analysis(pool).BeginAttempt(ctx, id, 3)
-				if err != nil || !shouldRun {
-					t.Fatalf("BeginAttempt(%d) = %#v, %v", id, next, err)
-				}
-				attempt = next
+				attempt = startCMDetectionAttemptForTest(t, ctx, pool, id)
 			}
 			updated, err := pgstoretest.Analysis(pool).FailAttempt(ctx, attempt, tc.state, nil, "")
 			if err != nil || !updated {
@@ -263,7 +256,7 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	// 結果は失敗の試行がある間は保存できないので、先に保存してから失敗の試行を置く。
 	saveCMDetectionForTest(t, context.Background(), pool, id)
 	attempt := startCMDetectionAttemptForTest(t, context.Background(), pool, id)
-	markCMDetectionFailureForTest(t, context.Background(), pool, attempt, nil, nil)
+	markCMDetectionFailureForTest(t, context.Background(), pool, attempt, nil, "")
 
 	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/api/recordings/%d/cm-detection/retry", srv.URL, id), nil)
 	if err != nil {
@@ -321,11 +314,11 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 	}
 	dbtest.MediaAsset(t, pool, id)
 	dbtest.CMLogo(t, pool, func(p *dbtest.CMLogoParams) {
-		p.NetworkID, p.ServiceID, p.LGD, p.PreviewPNG, p.LearnedFrom = 32678, 5168, []byte("learned logo"), []byte{1, 2, 3}, &id
+		p.NetworkID, p.ServiceID, p.LGD, p.PreviewPNG, p.LearnedFrom = cmTestStation.NetworkID, cmTestStation.ServiceID, []byte("learned logo"), []byte{1, 2, 3}, &id
 	})
 	attempt := startCMDetectionAttemptForTest(t, context.Background(), pool, id)
 	stage := "logo"
-	markCMDetectionFailureForTest(t, context.Background(), pool, attempt, &stage, nil)
+	markCMDetectionFailureForTest(t, context.Background(), pool, attempt, &stage, "")
 
 	logos := GetJSON[[]CMLogoState](t, srv.URL+"/api/cm-logos")
 	if len(logos) != 1 {
@@ -386,7 +379,7 @@ func TestRecordingsHideCMFailuresFromPreviousPolicyGeneration(t *testing.T) {
 	dbtest.MediaAsset(t, pool, id)
 	attempt := startCMDetectionAttemptForTest(t, ctx, pool, id)
 	stage, message := "logo", "previous policy generation failed"
-	markCMDetectionFailureForTest(t, ctx, pool, attempt, &stage, &message)
+	markCMDetectionFailureForTest(t, ctx, pool, attempt, &stage, message)
 
 	type recordingPair struct {
 		list   Recording
@@ -455,11 +448,11 @@ func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	dbtest.CMLogo(t, pool, func(p *dbtest.CMLogoParams) {
-		p.NetworkID, p.ServiceID, p.LGD, p.LearnedFrom = 32678, 5168, []byte("learned outside the area"), &id
+		p.NetworkID, p.ServiceID, p.LGD, p.LearnedFrom = cmTestStation.NetworkID, cmTestStation.ServiceID, []byte("learned outside the area"), &id
 	})
 	attempt := startCMDetectionAttemptForTest(t, ctx, pool, id)
 	message := "CM detection for recording 1: logoframe: no logo found"
-	markCMDetectionFailureForTest(t, ctx, pool, attempt, nil, &message)
+	markCMDetectionFailureForTest(t, ctx, pool, attempt, nil, message)
 	// 失敗した試行は、枠を教える前は候補ではない（前回の枠で既に試している）。
 	desired, err := det.IsDetectionDesired(ctx, id)
 	if err != nil {
@@ -629,8 +622,10 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 	enableCMDetectWithOriginalForTest(t, ctx, pool, failedRecording)
 	attempt := startCMDetectionAttemptForTest(t, ctx, pool, failedRecording)
 	logoStage := "logo"
-	markCMDetectionFailureForTest(t, ctx, pool, attempt, &logoStage, nil)
-	dbtest.CMLogoArea(t, pool, func(p *dbtest.CMLogoAreaParams) { p.NetworkID, p.ServiceID = 32678, 5168 })
+	markCMDetectionFailureForTest(t, ctx, pool, attempt, &logoStage, "")
+	dbtest.CMLogoArea(t, pool, func(p *dbtest.CMLogoAreaParams) {
+		p.NetworkID, p.ServiceID = cmTestStation.NetworkID, cmTestStation.ServiceID
+	})
 	area, err := det.GetLogoArea(ctx, cmTestStation)
 	if err != nil {
 		t.Fatal(err)
@@ -891,7 +886,9 @@ func TestCMLogoCandidateAdoptRejectsUnadoptableCandidates(t *testing.T) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "採用拒否", time.Now().Truncate(time.Second), "finished", 991
 	})
 	det := pgstoretest.Analysis(pool)
-	dbtest.CMLogoArea(t, pool, func(p *dbtest.CMLogoAreaParams) { p.NetworkID, p.ServiceID = 32678, 5168 })
+	dbtest.CMLogoArea(t, pool, func(p *dbtest.CMLogoAreaParams) {
+		p.NetworkID, p.ServiceID = cmTestStation.NetworkID, cmTestStation.ServiceID
+	})
 	area, err := det.GetLogoArea(ctx, cmTestStation)
 	if err != nil {
 		t.Fatal(err)
@@ -946,9 +943,11 @@ func TestCMLogoCandidateDiscardKeepsAreaAndLogo(t *testing.T) {
 	})
 	det := pgstoretest.Analysis(pool)
 	dbtest.CMLogo(t, pool, func(p *dbtest.CMLogoParams) {
-		p.NetworkID, p.ServiceID, p.LGD, p.LearnedFrom = 32678, 5168, []byte("old"), &id
+		p.NetworkID, p.ServiceID, p.LGD, p.LearnedFrom = cmTestStation.NetworkID, cmTestStation.ServiceID, []byte("old"), &id
 	})
-	dbtest.CMLogoArea(t, pool, func(p *dbtest.CMLogoAreaParams) { p.NetworkID, p.ServiceID = 32678, 5168 })
+	dbtest.CMLogoArea(t, pool, func(p *dbtest.CMLogoAreaParams) {
+		p.NetworkID, p.ServiceID = cmTestStation.NetworkID, cmTestStation.ServiceID
+	})
 	area, err := det.GetLogoArea(ctx, cmTestStation)
 	if err != nil {
 		t.Fatal(err)
@@ -999,9 +998,11 @@ func TestCMLogoAreaDeleteClearsOnlyThisStationsAdoptAttempts(t *testing.T) {
 	for id, stage := range map[int64]*string{here: &adopt, other: &adopt, hereLogo: &logo} {
 		presentOriginalForTest(t, pool, id)
 		attempt := startCMDetectionAttemptForTest(t, ctx, pool, id)
-		markCMDetectionFailureForTest(t, ctx, pool, attempt, stage, nil)
+		markCMDetectionFailureForTest(t, ctx, pool, attempt, stage, "")
 	}
-	dbtest.CMLogoArea(t, pool, func(p *dbtest.CMLogoAreaParams) { p.NetworkID, p.ServiceID = 32678, 5168 })
+	dbtest.CMLogoArea(t, pool, func(p *dbtest.CMLogoAreaParams) {
+		p.NetworkID, p.ServiceID = cmTestStation.NetworkID, cmTestStation.ServiceID
+	})
 	srv := NewTestServer(t, pool, func(c *RouterConfig) {
 		c.CMStationStore = pgstoretest.Analysis(pool)
 	})

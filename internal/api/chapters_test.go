@@ -93,12 +93,6 @@ ON CONFLICT (recording_id) DO UPDATE SET cm_detect = true`, id); err != nil {
 	}
 }
 
-// saveCMDetection は検出結果を worker と同じ経路で書く。呼ぶ前に enableCMDetect と presentOriginalForTest で、保存できる録画にしておく。
-func saveCMDetection(t *testing.T, pool *pgxpool.Pool, id int64, ranges ...chapters.Range) {
-	t.Helper()
-	saveCMDetectionForTest(t, context.Background(), pool, id, ranges...)
-}
-
 func TestGetRecordingChapters_AutoLayerReturnsCMAsCutSpans(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := NewTestServer(t, pool, withChapters(pool, true))
@@ -108,7 +102,7 @@ func TestGetRecordingChapters_AutoLayerReturnsCMAsCutSpans(t *testing.T) {
 	})
 	enableCMDetect(t, pool, id)
 	presentOriginalForTest(t, pool, id)
-	saveCMDetection(t, pool, id, chapters.Range{StartMs: 1000, EndMs: 2000})
+	saveCMDetectionForTest(t, context.Background(), pool, id, chapters.Range{StartMs: 1000, EndMs: 2000})
 
 	got := getChapters(t, chaptersURL(srv.URL, id))
 	if got.Source != Auto {
@@ -132,7 +126,7 @@ func TestGetRecordingChapters_DropsImplausibleAutoLayer(t *testing.T) {
 	enableCMDetect(t, pool, id)
 	// 30 分の録画の 29 分が CM という検出。壊れているので CM 無しとして返す。
 	presentOriginalForTest(t, pool, id)
-	saveCMDetection(t, pool, id, chapters.Range{StartMs: 1000, EndMs: 1740000})
+	saveCMDetectionForTest(t, context.Background(), pool, id, chapters.Range{StartMs: 1000, EndMs: 1740000})
 
 	got := getChapters(t, chaptersURL(srv.URL, id))
 	if len(got.Spans) != 0 {
@@ -152,7 +146,7 @@ func TestPutRecordingChapterEdits_AdoptsAndIgnoresRedetection(t *testing.T) {
 	})
 	enableCMDetect(t, pool, id)
 	presentOriginalForTest(t, pool, id)
-	saveCMDetection(t, pool, id, chapters.Range{StartMs: 1000, EndMs: 2000})
+	saveCMDetectionForTest(t, context.Background(), pool, id, chapters.Range{StartMs: 1000, EndMs: 2000})
 
 	// クライアントは GET の結果（自動層）をそのまま送る = 引き取り。
 	before := getChapters(t, chaptersURL(srv.URL, id))
@@ -166,7 +160,7 @@ func TestPutRecordingChapterEdits_AdoptsAndIgnoresRedetection(t *testing.T) {
 	if _, err := pgstoretest.Analysis(pool).RetryDetection(context.Background(), id); err != nil {
 		t.Fatal(err)
 	}
-	saveCMDetection(t, pool, id, chapters.Range{StartMs: 12000, EndMs: 19000})
+	saveCMDetectionForTest(t, context.Background(), pool, id, chapters.Range{StartMs: 12000, EndMs: 19000})
 
 	after := getChapters(t, chaptersURL(srv.URL, id))
 	if after.Source != User {
@@ -194,7 +188,7 @@ func TestPutRecordingChapterEdits_RejectsWhileDetectionIsPending(t *testing.T) {
 
 	// 終端の失敗行があれば引き取れる（自動層は空 = CM 無しという主張）。
 	attempt := startCMDetectionAttemptForTest(t, context.Background(), pool, id)
-	markCMDetectionFailureForTest(t, context.Background(), pool, attempt, nil, strPtr("detector unavailable"))
+	markCMDetectionFailureForTest(t, context.Background(), pool, attempt, nil, "detector unavailable")
 	resp = putChapters(t, chaptersURL(srv.URL, id), []ChapterSpan{{StartMs: 0, EndMs: 1001, Cut: true}})
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("PUT after terminal failure status = %d, want 204", resp.StatusCode)
@@ -213,7 +207,7 @@ func TestPutRecordingChapterEdits_WaitsAfterQuickCMDetectionReenable(t *testing.
 	dbtest.MediaAsset(t, pool, id)
 	attempt := startCMDetectionAttemptForTest(t, ctx, pool, id)
 	message := "previous policy generation failed"
-	markCMDetectionFailureForTest(t, ctx, pool, attempt, nil, &message)
+	markCMDetectionFailureForTest(t, ctx, pool, attempt, nil, message)
 
 	url := chaptersURL(srv.URL, id)
 	before := getChapters(t, url)
@@ -402,6 +396,7 @@ func TestPutRecordingChapterEdits_RejectsVersionFromBeforeDetectionCommit(t *tes
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "古い版", time.Now().Truncate(time.Second), "finished", 990
 	})
 	enableCMDetect(t, pool, id)
+	presentOriginalForTest(t, pool, id)
 	url := chaptersURL(srv.URL, id)
 
 	pending := getChapters(t, url)
@@ -413,8 +408,7 @@ func TestPutRecordingChapterEdits_RejectsVersionFromBeforeDetectionCommit(t *tes
 		t.Fatalf("PUT while detecting status = %d, want 409", resp.StatusCode)
 	}
 
-	presentOriginalForTest(t, pool, id)
-	saveCMDetection(t, pool, id, chapters.Range{StartMs: 1000, EndMs: 2000})
+	saveCMDetectionForTest(t, context.Background(), pool, id, chapters.Range{StartMs: 1000, EndMs: 2000})
 
 	resp := putChaptersWithVersion(t, url, pending.Version, draft)
 	if resp.StatusCode != http.StatusConflict {
@@ -450,7 +444,7 @@ func TestPutRecordingChapterEdits_OwnedRecordingIgnoresRedetection(t *testing.T)
 	})
 	enableCMDetect(t, pool, id)
 	presentOriginalForTest(t, pool, id)
-	saveCMDetection(t, pool, id, chapters.Range{StartMs: 1000, EndMs: 2000})
+	saveCMDetectionForTest(t, context.Background(), pool, id, chapters.Range{StartMs: 1000, EndMs: 2000})
 	url := chaptersURL(srv.URL, id)
 
 	if resp := putChapters(t, url, []ChapterSpan{{StartMs: 5005, EndMs: 6006, Cut: true}}); resp.StatusCode != http.StatusNoContent {
@@ -514,7 +508,7 @@ func TestDeleteRecordingChapterEdits_ReturnsToAutoLayer(t *testing.T) {
 	})
 	enableCMDetect(t, pool, id)
 	presentOriginalForTest(t, pool, id)
-	saveCMDetection(t, pool, id, chapters.Range{StartMs: 1000, EndMs: 2000})
+	saveCMDetectionForTest(t, context.Background(), pool, id, chapters.Range{StartMs: 1000, EndMs: 2000})
 
 	resp := putChapters(t, chaptersURL(srv.URL, id), []ChapterSpan{{StartMs: 5000, EndMs: 6006, Cut: true}})
 	if resp.StatusCode != http.StatusNoContent {
