@@ -779,10 +779,9 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 	return riveradapter.NewInsertOnlyEnqueuer(pool, jobs.PhysicalQueueFor)
 }
 
-// buildWorkerAdapter は worker ロール用のワーカー群と jobq adapter を構築する。
-// サイトごとの mirakc クライアントをここで作り、キュー設定は runServer で解決済みの
-// ものを使う。
-func buildWorkerAdapter(ctx context.Context, cfg *config.Config, storagePolicy store.StoragePolicy, bound []config.MirakcSite, mounted []string, roots map[string]string, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
+// newWorkerDeps は worker ロール用の worker.Deps と、adapter を後から差し込む Enqueuer を組み立てる。
+// サイトごとの mirakc クライアントをここで作る。
+func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.StoragePolicy, bound []config.MirakcSite, mounted []string, roots map[string]string, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*worker.Deps, *jobq.Deferred, error) {
 	// 置き場に束ねない store。DB だけを触る reconcile と、置き場をまたぐ転送が使う。
 	// until_encoded の原本の削除判定は storage.derived を使う。
 	mediaStore := pgstore.NewMediaWithPolicy(pool, "", storagePolicy)
@@ -790,13 +789,13 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, storagePolicy s
 	for _, name := range sortedKeys(roots) {
 		objects, err := fsstore.New(roots[name])
 		if err != nil {
-			return nil, fmt.Errorf("creating filesystem object store %q: %w", name, err)
+			return nil, nil, fmt.Errorf("creating filesystem object store %q: %w", name, err)
 		}
 		storageObjects[name] = objects
 	}
 	derivedObjects, err := newDerivedObjects(ctx, cfg.Storage, storageObjects)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if derivedObjects != nil {
 		storageObjects[cfg.Storage.Derived] = derivedObjects
@@ -807,12 +806,12 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, storagePolicy s
 	scheduleSyncStore := pgstore.NewScheduleSync(pool)
 	if jobs.RequiresEncodeTools(clientCfg.Queues) {
 		if err := cfg.Encode.ValidateTools(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if cfg.CMDetect.Enabled && jobs.RequiresCMDetectTools(clientCfg.Queues) {
 		if err := cfg.CMDetect.ValidateTools(cfg.Encode.FFprobe); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -878,6 +877,16 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, storagePolicy s
 		Cleanup:                  cfg.Cleanup,
 	}
 	base.PerStore, err = newPerStoreWorkerDeps(pool, cfg, storagePolicy, roots, derivedObjects)
+	if err != nil {
+		return nil, nil, err
+	}
+	return base, deferred, nil
+}
+
+// buildWorkerAdapter は worker ロール用のワーカー群と jobq adapter を構築する。
+// キュー設定は runServer で解決済みのものを使う。
+func buildWorkerAdapter(ctx context.Context, cfg *config.Config, storagePolicy store.StoragePolicy, bound []config.MirakcSite, mounted []string, roots map[string]string, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
+	base, deferred, err := newWorkerDeps(ctx, cfg, storagePolicy, bound, mounted, roots, clientCfg, pool, webhookClient, ingestStorageProbed)
 	if err != nil {
 		return nil, err
 	}
