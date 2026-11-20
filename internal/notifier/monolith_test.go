@@ -1,6 +1,7 @@
 package notifier
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -88,7 +89,9 @@ func TestMonolith_RESTAndSSEAndMediaCoexist(t *testing.T) {
 	waitForClients(t, hub, 1)
 	waitListening(t, hub)
 
-	notifyTopic(t, pool, "epg")
+	if err := pgstoretest.EPG(pool).NotifyProgramsUpdated(context.Background()); err != nil {
+		t.Fatalf("NotifyProgramsUpdated: %v", err)
+	}
 	if got := readSSEEvent(t, reader); got != "epg" {
 		t.Errorf("SSE event = %q, want epg", got)
 	}

@@ -2,11 +2,7 @@ package catalog
 
 import (
 	"context"
-	"errors"
 	"testing"
-	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -105,98 +101,5 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 	}
 	if next.ID <= high.ID || next.ID <= low.ID {
 		t.Errorf("next id = %d, want greater than %d and %d", next.ID, high.ID, low.ID)
-	}
-}
-
-// rescue の再評価は worker のジョブと同じ advisory lock で直列化する。別の tx が
-// ロックを持っている間は rescue が完了せず、手放すと完了する。ロック取得を外すと
-// 保持中でも rescue が完了してこのテストが落ちる。
-func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	mediaDir := newTestMediaDir(t)
-
-	// rescue が実際に書く行（分類ルールと録画）を用意する。空の文書だと、ロックを
-	// どこで取っても書き込み前に待つので、位置の検査にならない。
-	dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.EventID = 600
-		fixtureParams.ServiceName = "NHK総合"
-		fixtureParams.Title = "ロック位置"
-		fixtureParams.ProgramDurationMs = 60000
-	})
-	if _, err := pgstoretest.LabelRules(pool).Create(ctx, "series", "ロック", "ロック", 0); err != nil {
-		t.Fatalf("CreateLabelRule: %v", err)
-	}
-	doc, err := pgstoretest.Catalog(pool, []string{"default"}...).Export(ctx)
-	if err != nil {
-		t.Fatalf("Export: %v", err)
-	}
-	if _, err := Write(mediaDir, doc, DefaultKeep, nil); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-
-	holder, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = holder.Rollback(ctx) }()
-	// 再評価のロックを保持する契約は無い（ReevaluateAll は取った直後に適用して commit する）。
-	// ロックのキーは label_rules.sql の LockLabelRuleReevaluation にあり、そこと一致させる。
-	if _, err := holder.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('rokuban:label-rule-reconcile', 0))`); err != nil {
-		t.Fatalf("holding the lock: %v", err)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
-		done <- err
-	}()
-	// 負荷下では rescue がロック待ちに入るまでの時間が読めないので、
-	// 待ちが pg_locks に現れるまで期限付きでポーリングする。
-	deadline := time.Now().Add(5 * time.Second)
-	var waiterPID int
-	for time.Now().Before(deadline) {
-		err := pool.QueryRow(ctx, `
-SELECT pid FROM pg_locks
-WHERE locktype = 'advisory' AND NOT granted
-  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&waiterPID)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			t.Fatalf("finding the backend waiting for the advisory lock: %v", err)
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("rescue finished (err=%v) while the re-evaluation lock was held", err)
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	if waiterPID == 0 {
-		t.Fatal("rescue did not wait for the advisory lock within 5 seconds")
-	}
-	// ロック待ちの時点で、rescue の backend は label_rules / recordings に何も
-	// 触れていない（リレーションロックを持たない）。途中で取ると、upsert のトリガーが
-	// label_rule_hits の行ロックを持ったまま待ち、ジョブとデッドロックしうる。
-	var held int
-	if err := pool.QueryRow(ctx, `
-SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
-WHERE l.pid = $1 AND l.granted AND c.relname IN ('label_rules', 'recordings', 'label_rule_hits')`,
-		waiterPID).Scan(&held); err != nil {
-		t.Fatalf("reading the waiter's relation locks: %v", err)
-	}
-	if held != 0 {
-		t.Errorf("the waiting rescue already holds %d relation locks on label_rules/recordings/label_rule_hits; take the lock before the first write", held)
-	}
-	if err := holder.Commit(ctx); err != nil {
-		t.Fatalf("releasing the lock: %v", err)
-	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("rescue after the lock was released: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("rescue did not finish after the lock was released")
 	}
 }

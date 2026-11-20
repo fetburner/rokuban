@@ -20,6 +20,7 @@ import (
 	"github.com/fetburner/rokuban/internal/notifier/pgsource"
 	"github.com/fetburner/rokuban/internal/serverevent"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -323,15 +324,6 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 	}
 }
 
-// notifyTopic は Postgres の NOTIFY を送る。payload はトピック名か encode 進捗の JSON。
-// チャネル名は pgsource の notifyChannel（LISTEN 側）と一致させる。
-func notifyTopic(t *testing.T, pool *pgxpool.Pool, payload string) {
-	t.Helper()
-	if _, err := pool.Exec(context.Background(), "SELECT pg_notify('rokuban', $1)", payload); err != nil {
-		t.Fatalf("NOTIFY %q: %v", payload, err)
-	}
-}
-
 // DB の変更がトリガー → NOTIFY → SSE でクライアントに届くこと。
 func TestEvents_ReservationTriggersNotify(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -388,7 +380,9 @@ func TestEvents_ExplicitNotify(t *testing.T) {
 	waitForClients(t, hub, 1)
 	waitListening(t, hub)
 
-	notifyTopic(t, pool, "epg")
+	if err := pgstoretest.EPG(pool).NotifyProgramsUpdated(context.Background()); err != nil {
+		t.Fatalf("NotifyProgramsUpdated: %v", err)
+	}
 	if got := readSSEEvent(t, reader); got != "epg" {
 		t.Errorf("event = %q, want epg", got)
 	}
@@ -421,8 +415,14 @@ func TestEvents_EncodeProgressFromPostgres(t *testing.T) {
 	waitForClients(t, hub, 1)
 	waitListening(t, hub)
 
+	// 期待値は JSON のリテラル。契約 ReportEncodeProgress が作る payload がこれと一致することを
+	// SSE の data で確かめる。
 	payload := `{"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0.25}`
-	notifyTopic(t, pool, payload)
+	if err := pgstoretest.Media(pool).ReportEncodeProgress(context.Background(), store.EncodeProgress{
+		RecordingID: 42, Profile: "mobile", Progress: 0.25,
+	}); err != nil {
+		t.Fatalf("ReportEncodeProgress: %v", err)
+	}
 	got := readSSEMessage(t, reader)
 	if got.name != "encode-progress" || got.data != payload {
 		t.Fatalf("SSE = %+v, want encode-progress with %s", got, payload)
@@ -439,7 +439,9 @@ func TestEvents_FanOut(t *testing.T) {
 	waitForClients(t, hub, 2)
 	waitListening(t, hub)
 
-	notifyTopic(t, pool, "epg")
+	if err := pgstoretest.EPG(pool).NotifyProgramsUpdated(context.Background()); err != nil {
+		t.Fatalf("NotifyProgramsUpdated: %v", err)
+	}
 	if got := readSSEEvent(t, r1); got != "epg" {
 		t.Errorf("client 1 event = %q, want epg", got)
 	}
@@ -467,7 +469,9 @@ func TestNotifier_MultipleReplicasNotSingleton(t *testing.T) {
 	waitListening(t, hub1)
 	waitListening(t, hub2)
 
-	notifyTopic(t, pool, "epg")
+	if err := pgstoretest.EPG(pool).NotifyProgramsUpdated(context.Background()); err != nil {
+		t.Fatalf("NotifyProgramsUpdated: %v", err)
+	}
 	if got := readSSEEvent(t, r1); got != "epg" {
 		t.Errorf("replica 1 event = %q, want epg", got)
 	}

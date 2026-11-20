@@ -627,6 +627,6 @@ restore は分類ルールの再評価と同じロックを、最初の書き込
 - 同一スナップショット・往復・rollback・ロック順序・欠損ファイル: `TestCatalogContract`
 - export 中の取り込み競合: `TestExport_ConcurrentIngestStaysConsistent`
 - 欠損ファイルの deleted 復元（rescue 経由）: `TestRescueCatalogMissingFiles`
-- rescue の再評価ロック位置: `TestRescue_WaitsForLabelRuleReevaluationLock`
+- rescue の再評価ロック位置: `TestCatalogContract/restore_waits_before_writing_for_label_rule_reevaluation`
 
 </details>

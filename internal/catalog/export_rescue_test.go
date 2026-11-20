@@ -56,18 +56,27 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 
 	assetID := dbtest.MediaAsset(t, pool, recID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "sites/default/20260729/120000_ニュース_1024.m2ts"
-		fixtureParams.SizeBytes = 1_000_000
+		fixtureParams.SizeBytes = 999_000
 	})
 
-	// 計測サイズを原本サイズとずらす。復元が原本サイズを計測値として使うと
-	// 一致した値で見過ごすため、catalog の計測記録を使う経路を区別する。
-	// 計測記録は catalog だけが使う状態なので生 SQL で作る。計測サイズは原本サイズと
-	// 違う値でなければならず、TS scan の契約（ReplaceScan）は原本サイズとしか一致しない。
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes, content_revision)
-		SELECT id, $2, content_revision FROM media_assets WHERE id = $1
-	`, assetID, int64(999_000)); err != nil {
-		t.Fatalf("inserting media_asset_ts_scans: %v", err)
+	// 計測は TS scan の契約で書く。ReplaceScan は計測サイズが書く時点の原本サイズと
+	// 一致するときだけ書くので、原本を 999_000 のうちに計測し、その後で原本サイズを
+	// 1_000_000 に変える。計測サイズ ≠ 原本サイズの状態が残り、復元が原本サイズを計測値
+	// として使うと見過ごすのを防ぐ。content_revision を進めるトリガーは無い（schema.sql）。
+	pidType, elapsedMs := "video", int64(1000)
+	media := pgstoretest.Media(pool)
+	source, err := media.GetActiveOriginalForTSScan(ctx, recID)
+	if err != nil {
+		t.Fatalf("GetActiveOriginalForTSScan: %v", err)
+	}
+	scanned, err := media.ReplaceScan(ctx, source, 999_000,
+		[]store.RecordingDropStat{{Pid: 0x100, Packets: 10000, Drops: 3, PidType: &pidType}},
+		[]store.RecordingDropPosition{{Pid: 0x100, ByteOffset: 188, ElapsedMs: &elapsedMs}})
+	if err != nil || !scanned {
+		t.Fatalf("ReplaceScan: scanned=%v err=%v, want a written scan", scanned, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET size_bytes = $2 WHERE id = $1`, assetID, int64(1_000_000)); err != nil {
+		t.Fatalf("changing original size after the scan: %v", err)
 	}
 
 	// recording_processing_policy 衛星表（issue #159）。凍結済み（ingest が INSERT
@@ -103,22 +112,6 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	`, recID, purgeRequestedAt); err != nil {
 		t.Fatalf("insert recording_purge_requests: %v", err)
 	}
-
-	pidType := "video"
-	dbtest.DropStat(t, pool, assetID, func(p *dbtest.DropStatParams) {
-		p.Pid = 0x100
-		p.Packets = 10000
-		p.Drops = 3
-		p.Errors = 0
-		p.Scrambled = 0
-		p.PidType = &pidType
-	})
-	elapsedMs := int64(1000)
-	dbtest.DropPosition(t, pool, assetID, func(p *dbtest.DropPositionParams) {
-		p.ByteOffset = 188
-		p.Pid = 0x100
-		p.ElapsedMs = &elapsedMs
-	})
 
 	// program_snapshots + intent（FK のため snapshot が先）。
 	dbtest.ProgramSnapshot(t, pool, 999001, func(p *dbtest.ProgramSnapshotParams) {
