@@ -117,20 +117,18 @@ api が使うのは論理削除・復元・即時削除要求をまとめた `Re
 
 ### チューナーと容量
 
-チューナー同期は、sweep の印の取得、全量 upsert、古い行の削除を別々の store メソッドで行い、同期全体を 1 つの tx にまとめない。印の取得と upsert の間に mirakc への問い合わせが入るためである。upsert の全行は 1 つのメソッドの中で原子的に反映する。
+チューナー同期は、sweep の印の取得、全量 upsert、古い行の削除を別々の store メソッドで行い、同期全体を 1 つの tx にまとめない。印の取得と upsert の間に mirakc への問い合わせが入るためである。
 
-削除の基準には、upsert より前に `SweepMark` が返した DB の時刻を渡す。呼び出し側の時計を使うと、時計のずれで射影全体を消しうる。
+容量の読み取りは解決を store に持たせない。effective options の解決と Hall 条件の判定は `internal/capacity` が行う。
 
-容量の読み取りは、予約の base・overrides と意図を解決せずに渡す。effective options の解決と Hall 条件の判定は `internal/capacity` が行う。
-
-保存前プレビューは、対象ルールの状態の読み取りと候補の読み取りを別のメソッドにする。ルールはリクエストの時点で引けるが、候補は番組検索の後でしか引けないためである。1 つにまとめると、存在しないルールの 404 が検索の後ろへずれる。ルールの読み取りは、対象が無ければ `ErrNotFound` を返す。
+保存前プレビューは、対象ルールの状態の読み取りと候補の読み取りを別のメソッドにする。ルールはリクエストの時点で引けるが、候補は番組検索の後でしか引けないためである。1 つにまとめると、存在しないルールの 404 が検索の後ろへずれる。
 
 <details><summary>根拠</summary>
 
 - チューナー同期と一覧: `internal/store.TunerSync` / `TunerReader`
 - 容量読み取り: `internal/store.Capacity`
 - PostgreSQL 実装: `internal/store/pgstore.Tuners`
-- バッチの原子性・需要の区間の終了端: `TestTunersContract`
+- 需要の区間の終了端: `TestTunersContract` の `capacity reads preserve interval endpoints`
 - 容量需要と候補の抽出: `ListCapacityDemand` / `ListCapacityDemandAllSites` / `ListCapacityPreviewCandidates`
 
 </details>
@@ -316,40 +314,20 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 
 ### メディア公開
 
-原本・encoded・thumbnail・seek tiles の公開は、1 つの tx を開いたまま、DB の判定、ファイルの公開、commit をこの順に行う。tx は公開のメソッドごとに store が持つ。
+原本・encoded・thumbnail・seek tiles の公開は、1 つの tx を開いたまま、DB の判定、ファイルの公開、commit をこの順に行う。
 
-公開物を作って永続化する処理は、呼び出し側が関数 `publish` として store に渡す。store は検査と行の書き込みをすべて終えた後、commit の前に `publish` を 1 回だけ呼ぶ。検査で公開しないと決めたときは呼ばない。
-
-`publish` がエラーを返したら、store は rollback してそのエラーを返す。`publish` が成功した後に commit が失敗したら、store はエラーを返す。このときファイルは行を持たない孤児として残る。呼び出し側はそのファイルを消さず、孤児の監査に回収を任せる。
-
-store はファイルシステムを知らない。
+公開物を作って永続化する処理は、呼び出し側が関数 `publish` として store に渡す。
 
 `publish` は副作用を持つので、[ロック後の判断](#ロック後の判断)の「関数は DB に触れず状態を変えない」規則の例外である。DB の判定とファイルの公開の順序を固定するために、store が `publish` を呼ぶ。
 
 先に浮かぶ案は、commit してから rename する順序である。この順序は、rename の失敗が行だけを残し、コミット = DB 行なのに実体が無い状態を作る。今の順序なら、commit の失敗は孤児ファイルを残すだけである。
 
-原本の commit は、行の作成・進捗の削除・保持ポリシーの凍結を 1 つの tx で行う。同じ rel_path の原本が既にあれば `ErrConflict` を返し、`publish` は呼ばない。凍結する方針は、store が同じ tx で読んだ予約・上書き・意図を、呼び出し側の純粋な関数に渡して導く。設定に依存するクランプは、この関数の中にある。
-
-encoded の公開は、試行番号・desired・作り直し要求・cut の区間を tx の中で読み直してから `publish` を呼ぶ。版の削除・事後追加と直列化し、cut はさらにチャプター編集・作り直し要求と直列化する。古い計画なら `ErrStalePublishPlan` を返す。
-
-thumbnail と seek tiles の公開は、同じ録画のごみ箱移動・完全削除と直列化する。ごみ箱か削除済みの録画には公開しない。初回の公開は、active な行が既にあれば公開しない。thumbnail の置き換えは、観測した行（id・rel_path・seek）が変わっておらず、入力の原本が active なときだけ行う。
-
-in-place 登録は、録画とアセットの行を 1 つの tx で書く。ファイルの検査は、呼び出し側の `internal/inplace` が登録前に行う。同じ rel_path の行が既にあれば、その録画を再利用する。同じパスに deleted の行と active な行が並ぶときは、active な行を優先する。tombstone しか無いパスは拒否する。
+store はファイルシステムと設定を知らない。in-place 登録のファイルの検査は `internal/inplace` が登録前に行い、設定に依存するクランプは凍結方針を導く呼び出し側の関数が持つ。
 
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.MediaPublish`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
-- 古い試行・外した desired・publish の回数: `TestMediaStoreContract` の `encoded publication rechecks attempt and desired profiles`
-- publish の失敗で行が残らないこと: `TestMediaStoreContract` の `original callback failure rolls back rows` ほか
-- publish が成功した後の commit 失敗: `TestMediaStoreContract` の `commit failure after publish returns an error and leaves no rows`
-- rel_path の衝突: `TestMediaStoreContract` の `original publication rejects an occupied rel_path without publishing`
-- 進捗行の冪等な削除: `TestMediaStoreContract` の `clearing ingest progress is idempotent`
-- ごみ箱と既存の行: `TestMediaStoreContract` の `thumbnail and seek tiles skip trashed recordings and existing assets`
-- 公開がチャプター編集を待たせること: `TestMediaStoreContract` の `cut publication serializes with chapter edits`
-- 公開がチャプター編集を待つこと: `TestMediaStoreContract` の `cut publication waits for an open chapter edit and rechecks`
-- 版の削除との直列化: `TestMediaStoreContract` の `encoded publication waits for an open removal and rechecks`
-- in-place の冪等性と active な行の優先: `TestMediaStoreContract` の `in-place registration is idempotent and prefers published rows`
 - ingest の commit 失敗で canonical が孤児として残ること: `TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect`
 - encode の commit 失敗で古い試行が後の公開を上書きしないこと: `TestEncodeWorker_DisconnectedAttemptCannotOverwriteLaterPublication`
 - in-place 登録で通常ファイル以外を拒否すること: `TestRegister_RequiresExistingRegularFile`
@@ -360,15 +338,12 @@ in-place 登録は、録画とアセットの行を 1 つの tx で書く。フ�
 
 TS の計測結果は、対象の状態を再確認した上で一括して保存する。
 
-`TSScan` は計測対象の読み取りと計測結果の保存を担う。`ReplaceScan` は、原本がまだ active でサイズが計測時と同じかを再確認する。そのうえで、ドロップ統計・ドロップ位置・計測済みサイズ（marker）を 1 tx で置き換える。サイズが違えば何も書かない。読んでいる間に in-place 登録がファイルを差し替えうるからで、古い計測結果が残っても marker のサイズがずれたままなので、次の reconcile が計測をやり直す。途中の書き込みが失敗したときも、以前の計測結果と marker が残る。
+サイズを見るのは、読んでいる間に in-place 登録がファイルを差し替えうるからである。古い計測結果が残っても計測サイズがずれたままなので、次の reconcile が計測をやり直す。
 
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.TSScan`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
-- 置き換えの原子性: `TestTSScanStoreContract` の `replaces statistics and marker together`
-- 状態変化を待ってからの再確認: `TestTSScanStoreContract` の `rechecks active state after waiting for the asset lock`
-- 失敗時に以前の結果が残ること: `TestTSScanStoreContract` の `rolls back statistics and marker after a failed replacement`
 
 </details>
 
