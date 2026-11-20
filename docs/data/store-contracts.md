@@ -111,9 +111,15 @@ api が使うのは論理削除・復元・即時削除要求をまとめた `Re
 
 </details>
 
-### チューナーと容量
+### チューナー・EPG の同期と容量
 
-チューナー同期は、sweep の印の取得、全量 upsert、古い行の削除を別々の store メソッドで行い、同期全体を 1 つの tx にまとめない。印の取得と upsert の間に mirakc への問い合わせが入るためである。
+外から取り込む同期（チューナーと EPG）は、同期全体を 1 つの tx にまとめない。
+
+チューナー同期は、sweep の印の取得、全量 upsert、古い行の削除を別々の store メソッドで行う。印の取得と upsert の間に mirakc への問い合わせが入るためである。
+
+EPG 同期の各段階は、独立した store メソッドにして、それぞれ自分で commit する。1 つの tx にまとめると、数千行の upsert が長い tx になる。途中の段階が失敗すると、すでに書いた段階まで巻き戻る。各段階が確定していれば、次の同期が残りを書き直すだけで済む。
+
+空のレスポンスのときに sweep しない判定は、mirakc の応答を知っている worker に残す。
 
 容量の読み取りは解決を store に持たせない。effective options の解決と Hall 条件の判定は `internal/capacity` が行う。
 
@@ -126,6 +132,7 @@ api が使うのは論理削除・復元・即時削除要求をまとめた `Re
 - PostgreSQL 実装: `internal/store/pgstore.Tuners`
 - 需要の区間の終了端: `TestTunersContract` の `capacity reads preserve interval endpoints`
 - 容量需要と候補の抽出: `ListCapacityDemand` / `ListCapacityDemandAllSites` / `ListCapacityPreviewCandidates`
+- EPG 同期の契約: `internal/store.EPGSync`
 
 </details>
 
@@ -172,21 +179,9 @@ API のレスポンス状態は `recordingFromListFields` で毎回導出する�
 
 </details>
 
-### 予約の意図・上書き
+### 録画ルールと予約の意図
 
-利用者の録画意図（record / skip）とオプションの上書きは、ruler が作る予約とは別に、この契約が commit する。予約そのものはこの契約が書かない。
-
-<details><summary>根拠</summary>
-
-- ドメイン契約: `internal/store.Reservations`
-- マージの設定と reset: `TestMergeOverrides_SetsOnlyGivenFields` / `TestMergeOverrides_ResetClearsEachField`
-- reset の対象が Options と一致すること: `TestOverrideFieldsMatchOptions`
-
-</details>
-
-### 録画ルール
-
-ルールの作成・更新・削除と EPGStation からの取り込みは、それぞれ 1 つの tx で確定する。
+予約の表を書くのは ruler とルールの削除だけである。利用者の録画意図・上書きを確定する契約は予約の表を書かず、自分の tx で確定する。ルールの作成・更新・削除と EPGStation からの取り込みも、それぞれ 1 つの tx で確定する。
 
 ルールの削除が予約の表も書くのは、意図の無い予約の削除とルールの削除を別の tx にすると、間で切れたときにルールの無い予約が残るからである。
 
@@ -195,6 +190,9 @@ API のレスポンス状態は `recordingFromListFields` で毎回導出する�
 <details><summary>根拠</summary>
 
 - ドメイン契約: `internal/store.Rules` / `internal/store.RuleImport`
+- 録画意図・上書きの契約: `internal/store.Reservations`
+- マージの設定と reset: `TestMergeOverrides_SetsOnlyGivenFields` / `TestMergeOverrides_ResetClearsEachField`
+- reset の対象が Options と一致すること: `TestOverrideFieldsMatchOptions`
 - PostgreSQL 実装: `internal/store/pgstore.Rules`
 
 </details>
@@ -325,26 +323,6 @@ Dex の updater 関数（`UpdateClient(id, func(old) (new, error))`）も同じ�
 
 それより先に取るロック（局の advisory lock など）があれば、その順序をメソッドの doc コメントに書く。書き手ごとに取る順序が違うと、デッドロックしうるからである。
 
-### チャプター編集
-
-チャプター編集は、CM 検出・カット版の作り直し要求・カット版の公開と、録画ごとに直列化される。
-
-カット版の作り直し要求の記録と公開をチャプター編集と直列化するのは、作り直し要求に記録する keep と、公開時に照合する keep が、途中のチャプター編集で変わらないようにするためである。
-
-<details><summary>根拠</summary>
-
-- ドメイン契約: `internal/store.ChapterEdits`
-- PostgreSQL 実装: `internal/store/pgstore.Analysis`
-- 録画単位の直列化: `lockRecording` / `lockRecordingState` / `internal/store/pgstore.Analysis.SaveDetection`
-- 作り直し要求とカット版の公開の直列化: `ReencodeRecordingProfile` / `prepareEncodePublish`
-- 範囲制約: `recording_chapter_spans` の排他制約
-- 導出値と事実: 不変条件 9
-- 意味のある行: 不変条件 10
-- 行の寿命: 不変条件 12
-- ライブラリの公開契約: 不変条件 14
-
-</details>
-
 ### エンコード方針と試行
 
 プロファイル名の検証と cut の選択規則は API が所有し、評価は store がロック後の desired に対して行う。
@@ -360,18 +338,6 @@ cut の選択規則は設定の `recording_hls.enabled` に依存し、store は
 - 方針と作り直し要求: `internal/store.EncodePolicy`
 - 試行: `internal/store.EncodeAttempts`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
-
-</details>
-
-### EPG 同期の tx の境界
-
-EPG 同期の各段階は、独立した store メソッドにして、それぞれ自分で commit する。1 つの tx にまとめると、数千行の upsert が長い tx になる。途中の段階が失敗すると、すでに書いた段階まで巻き戻る。各段階が確定していれば、次の同期が残りを書き直すだけで済む。
-
-空のレスポンスのときに sweep しない判定は、mirakc の応答を知っている worker に残す。
-
-<details><summary>根拠</summary>
-
-- 同期の契約: `internal/store.EPGSync`
 
 </details>
 
@@ -408,20 +374,29 @@ EPG 同期の各段階は、独立した store メソッドにして、それぞ
 
 </details>
 
-### CM 検出（試行と結果）
+### CM 検出（試行と結果）とチャプター編集
 
-CM 検出の結果は前提を保存の時点で確かめ直してから書き、ジョブの投入はすべて commit 後のヒントにする。
+CM 検出の結果とチャプター編集は、カット版の作り直し要求と公開を含めて録画単位で直列化する。CM 検出の結果は前提を保存の時点で確かめ直してから書き、ジョブの投入はすべて commit 後のヒントにする。
 
-同じ録画の行で直列化されるので、検出結果の書き込みとチャプター編集の自動チャプター引き取りは、互いの commit を見落とさない。
+直列化により、検出結果の書き込みとチャプター編集の自動チャプター引き取りは、互いの commit を見落とさない。
 
 再試行 API は結果と試行を消し、commit してからジョブを投入する。ingest と reconcile の投入も含め、どれも commit 後のヒントである。投入に失敗しても、定期 reconcile が desired な集合を取り直して投入する。
+
+カット版の作り直し要求の記録と公開をチャプター編集と直列化するのは、作り直し要求に記録する keep と、公開時に照合する keep が、途中のチャプター編集で変わらないようにするためである。
 
 <details><summary>根拠</summary>
 
 - ドメイン契約: `internal/store.CMDetection`
+- ドメイン契約（チャプター編集）: `internal/store.ChapterEdits`
 - PostgreSQL 実装: `internal/store/pgstore.Analysis`
 - 契約テスト: `internal/store/contracttest.RunCMDetection`
-- チャプター編集との録画単位の直列化: `lockRecordingState`
+- チャプター編集との録画単位の直列化: `lockRecording` / `lockRecordingState` / `internal/store/pgstore.Analysis.SaveDetection`
+- 作り直し要求とカット版の公開の直列化: `ReencodeRecordingProfile` / `prepareEncodePublish`
+- 範囲制約: `recording_chapter_spans` の排他制約
+- 導出値と事実: 不変条件 9
+- 意味のある行: 不変条件 10
+- 行の寿命: 不変条件 12
+- ライブラリの公開契約: 不変条件 14
 - レベル駆動の回復: 不変条件 5
 
 </details>
@@ -446,32 +421,25 @@ CM 検出の結果は前提を保存の時点で確かめ直してから書き�
 
 </details>
 
-### schedule 同期
+### schedule 同期と欠測の観測
+
+mirakc から得た予定と欠測の観測は、書き手である reconciler のドメインの契約に置く。
 
 観測行の置き換えと snapshot marker の更新は、1 つのトランザクションで確定する。marker を観測より先に確定すると、collector が不完全な観測を新鮮と誤認するからである。
 
 reconciler は、観測全量の置き換え、同期評価の候補、開始済みイベントの読み取りを `ScheduleSync` から使う。presync collector は、marker・観測一覧・同期評価の候補を `ScheduleSyncReader` から読み、marker が無いときだけ時刻を 0 として出す。実装は `pgstore.ScheduleSync` が両方を持つ。
 
-<details><summary>根拠</summary>
-
-- reconciler の契約: `internal/store.ScheduleSync`
-- presync の読み取り契約: `internal/store.ScheduleSyncReader`
-- PostgreSQL 実装: `internal/store/pgstore.ScheduleSync`
-
-</details>
-
-### never-scheduled 観測
-
-欠測の記録は reconciler のドメインに置く。書き手が reconciler（mirakc の観測）だからである。
-
-古い行の削除は、ruler の GC が同じ契約 `NeverScheduledEvents` を呼んで行う。実装は `pgstore.NeverScheduledEvents` が持つ。
+欠測の古い行の削除は、ruler の GC が同じ契約 `NeverScheduledEvents` を呼んで行う。実装は `pgstore.NeverScheduledEvents` が持つ。
 
 削除は幅（horizon）だけを受け取り、基準時刻は受け取らない。`observed_at` は DB の時計で記録されるので、呼び出し側の時計で基準時刻を渡すと、比べる 2 つの時計がずれる。
 
 <details><summary>根拠</summary>
 
-- 契約: `internal/store.NeverScheduledEvents`
-- PostgreSQL 実装: `internal/store/pgstore.NeverScheduledEvents`
+- reconciler の契約（予定の観測の置き換え）: `internal/store.ScheduleSync`
+- presync の読み取り契約: `internal/store.ScheduleSyncReader`
+- PostgreSQL 実装（予定の観測）: `internal/store/pgstore.ScheduleSync`
+- 欠測の記録と削除の契約: `internal/store.NeverScheduledEvents`
+- 欠測の PostgreSQL 実装: `internal/store/pgstore.NeverScheduledEvents`
 - 削除の呼び出し元: `internal/ruler/ruler.go` の GC
 
 </details>

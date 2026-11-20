@@ -23,7 +23,10 @@ flowchart LR
 | §5 | 検索とルール評価の統一（POSIX ARE / pg_trgm / 全角半角正規化 / 録画検索と rulequery の境界） | [data/search.md](data/search.md) |
 | §6.5 | チューナー射影と容量超過の判定（Hall 条件 / twin vertices / 累積和 / 下界に限る原則） | [data/capacity.md](data/capacity.md) |
 | §8 | シリーズ同一性（タイトル導出が比較の基準 / 分類ルール → 自動キー / 評価結果はキャッシュで宛先にしない / ハブの起点は録画 id） | [data/series.md](data/series.md) |
-| §9 | ドメインごとの store 契約（契約の置き場 / メソッドの単位 / ジョブ投入はヒント / 方言差 / 述語の置き場 / 時刻 / 視聴状態 / ごみ箱と完全削除 / チューナーと容量 / 録画の観測 / ruler パス / ループ marker / 更新通知 / ロック後の判断 / 直列化 / チャプター編集 / メディア読み取りとストレージ観測） | [data/store-contracts.md](data/store-contracts.md) |
+| §9 | store 契約の置き場と前提（契約の置き場 / メソッドの単位 / ジョブ投入 / 方言に依存しない前提 / 述語の置き場 / 時刻） | [data/store-contracts.md](data/store-contracts.md) |
+| §9 | 利用者操作・録画・同期（視聴状態 / ごみ箱と完全削除 / チューナー・EPG の同期と容量 / 録画の観測 / 録画の検索 / 録画ルールと予約の意図） | [data/store-contracts.md](data/store-contracts.md) |
+| §9 | メディア・更新通知・ロックと直列化（メディア読み取りとストレージ観測 / メディア削除 / メディア公開 / TS scan / 更新通知 / ロック後の判断 / 直列化） | [data/store-contracts.md](data/store-contracts.md) |
+| §9 | エンコード・正規表現・CM 検出・同期とブレーカー・catalog（エンコード方針と試行 / 正規表現の構文 / CM 検出（局単位の状態） / CM 検出（試行と結果）とチャプター編集 / 分類ルール / schedule 同期と欠測の観測 / ruler パス / サーキットブレーカー / catalog の export / restore） | [data/store-contracts.md](data/store-contracts.md) |
 
 ### 読む順の目安
 
