@@ -82,15 +82,12 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 
 視聴状態の書き込みは 1 つの契約にまとめる。再生位置は録画ごとに保存する。視聴済みの印は、押した録画の行にだけ置く。
 
-読み取り側は同じ放送イベントの印を束ねるので、`ClearWatchedForEvent` はそのイベントの全行から印を消す。
-
-`MarkWatched` は印の upsert と再生位置の削除を 1 メソッドにする。2 つは「視聴済みにする」という同じ業務操作であり、呼び出し側が 2 回に分けて呼ぶと、印だけ付いて再生位置が残った状態で止まりうる。契約テストは、再生位置の削除が失敗したときに印の書き込みも巻き戻ることを固定している。
+`MarkWatched` は印の upsert と再生位置の削除を 1 メソッドにする。2 つは「視聴済みにする」という同じ業務操作であり、呼び出し側が 2 回に分けて呼ぶと、印だけ付いて再生位置が残った状態で止まりうる。
 
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.PlaybackState`
 - PostgreSQL 実装: `internal/store/pgstore.Playback`
-- 視聴済みの書き込みと位置の削除: `internal/store/contracttest.RunPlayback`
 
 </details>
 
@@ -100,17 +97,16 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 
 api が使うのは論理削除・復元・即時削除要求をまとめた `RecordingTrash` で、削除 reconcile が使うのは完全削除の確定だけの `RecordingPurge` である。実装は録画のドメインの `pgstore.Recordings` が両方を持つ。
 
-同じ録画の復元と即時削除要求は直列化される。要求が先に確定すれば、復元がそれを取り下げる。復元が先に確定すれば、後から来た要求は録画をごみ箱に戻して残る。どちらの順でも、復元された録画に要求だけが残ることはない。要求だけが残ると、次の普通の論理削除でごみ箱の猶予を飛ばして即時削除の対象になるが、ユーザーは即時削除を要求していないからである。
+同じ録画の復元と即時削除要求を直列化しないと、復元された録画に即時削除要求だけが残りうる。要求だけが残ると、次の普通の論理削除でごみ箱の猶予を飛ばして即時削除の対象になるが、ユーザーは即時削除を要求していないからである。
 
 仕組みは [削除エンジン](../storage/retention.md) §7「復元と即時削除要求の競合」にある。
 
-`RecordingPurge.MarkPurged` は呼び出し側が渡す cutoff を使い、猶予を過ぎて削除対象アセットが残っていない録画の `purged_at` を確定する。返すのは今回初めて完全削除を確定した行だけである。呼び出し側はこの結果を削除通知に使い、別の判定で発火対象を作り直さない。
+削除通知の発火対象は `RecordingPurge.MarkPurged` の返り値で決め、削除 reconcile は別の判定で作り直さない。
 
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.RecordingTrash` / `internal/store.RecordingPurge`
 - PostgreSQL 実装: `internal/store/pgstore.Recordings`
-- 復元と即時削除要求の直列化、完了記録の冪等性: `internal/store/contracttest.RunTrash`
 - 削除述語と `purged_at` の意味: [削除エンジン](../storage/retention.md) §7
 
 </details>
@@ -300,7 +296,7 @@ worker は `StorageObservation` に置き場単位の `storage_sync` と、孤�
 
 worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定する。削除可否の述語（ごみ箱・until_encoded・外した encoded）は名前のまま実装の中に閉じ、契約はメソッド名と doc コメントで意味だけを示す。
 
-遷移の時点で削除条件を再確認するのは 2 つのメソッドだけである。`MarkUntilEncodedDeleting` は、同じ録画への削除方針と作り直し要求の書き込みと直列化してから再確認する。候補を列挙した後に作り直し要求が commit されうるからである。`RevertToActive` も適用時に再確認し、`deleted` の行は戻さない。ごみ箱の猶予の cutoff は呼び出し側から受け取る（[時刻](#時刻) の例外）。
+遷移の時点で削除条件を再確認するのは `MarkUntilEncodedDeleting` と `RevertToActive` だけである。ごみ箱の猶予の cutoff は呼び出し側から受け取る（[時刻](#時刻) の例外）。
 
 原本の規則・FS 置き場・派生物の置き場は、server の起動時に `StoragePolicy` にし、store の構築時に束ねる。設定で決まる値をメソッドの引数で渡すと、構築時に束ねた方針と異なる方針を渡せてしまう。JSON にするのは pgstore である。
 
@@ -315,9 +311,6 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 - マウント集合の固定: `TestPrepareMediaAssetTransferKeepsDerivedSourcesMounted`
 - 配置削除が無効なとき: `TestStorageTransferDeletionSkipsWhenPlacementArmIsDisabled`
 - 配置削除が有効なとき: `TestStorageTransferDeletionWiresOverlapCutoff`
-- 作り直し要求との直列化と再確認: `TestMediaDeleteStoreContract` の `until-encoded transition waits for and rechecks recording writes`
-- deleted の行を戻さないこと: `TestMediaDeleteStoreContract` の `revert does not restore a deleted asset`
-- 外した encoded の削除要求が deleted 確定と同時に消えること: `TestMediaDeleteStoreContract` の `mark deleted clears the removal request`
 
 </details>
 

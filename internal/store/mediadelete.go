@@ -47,11 +47,16 @@ type MediaDelete interface {
 	MarkDeleting(ctx context.Context, copyID int64, expectedState string) (bool, error)
 	// MarkUntilEncodedDeleting は削除条件を再確認して原本を deleting にする。
 	// recordingID の録画に対する削除方針・作り直し要求の書き込みと直列化する。
+	// 候補の列挙後に作り直し要求が commit されうるため、直列化した後に削除条件を再確認する。
+	// 検査: contracttest.RunMediaDelete の「until-encoded transition waits for and rechecks recording writes」。
 	MarkUntilEncodedDeleting(ctx context.Context, recordingID, mediaAssetID, copyID int64) (bool, error)
 	// MarkDeleted は deleting アセットを deleted にし、外した encoded の削除要求も同時に消す。
+	// 検査: contracttest.RunMediaDelete の「mark deleted clears the removal request」。
 	MarkDeleted(ctx context.Context, copyID int64) error
 	// RevertToActive は削除条件を再確認し、該当しなくなった deleting アセットを active に戻す。
+	// deleted のアセットは戻さない。
 	// 配置削除の規則は、この契約を構築した store に束ねる。
+	// 検査: contracttest.RunMediaDelete の「revert does not restore a deleted asset」。
 	RevertToActive(ctx context.Context, copyID int64, graceCutoff, overlapCutoff time.Time) (bool, error)
 }
 
