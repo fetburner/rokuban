@@ -275,9 +275,9 @@ linters:
           deny:
             - pkg: os/exec
               desc: os/exec is limited to worker, cmdetect, encode, streamer, mediaexec, and config
-        mediaexec-worker-only:
+        mediaexec-import-role:
           # 不変条件 4: os/exec の制限が実行補助の import で迂回されないよう、
-          # 本番コードからの mediaexec の呼び出しを worker・cmdetect・thumbnail・encode に閉じ込める。
+          # 本番コードからの mediaexec の呼び出しを worker・cmdetect・thumbnail・encode・streamer に閉じ込める。
           list-mode: lax
           files:
             - "${config-path}/**"
@@ -285,10 +285,11 @@ linters:
             - "!${config-path}/internal/cmdetect/**"
             - "!${config-path}/internal/encode/**"
             - "!${config-path}/internal/thumbnail/**"
+            - "!${config-path}/internal/streamer/**"
             - "!$test"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/mediaexec
-              desc: mediaexec imports are limited to internal/worker, internal/cmdetect, internal/thumbnail, and internal/encode
+              desc: mediaexec imports are limited to internal/worker, internal/cmdetect, internal/thumbnail, internal/encode, and internal/streamer
         cmdetect-worker-only:
           # 不変条件 4: cmdetect は os/exec と mediaexec を使う。
           # cmdetect の import で exec の制限が迂回されないよう、本番コードからの import を worker に閉じ込める。

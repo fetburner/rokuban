@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -15,6 +17,46 @@ import (
 
 	"github.com/fetburner/rokuban/internal/testexec"
 )
+
+func TestWaitDelayExpiredOnSuccess(t *testing.T) {
+	successCmd := runWaitDelayTestCommand(t, "success", 0)
+	failureCmd := runWaitDelayTestCommand(t, "failure", 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	tests := []struct {
+		name string
+		ctx  context.Context
+		cmd  *exec.Cmd
+		err  error
+		want bool
+	}{
+		{name: "context_canceled", ctx: ctx, cmd: successCmd, err: exec.ErrWaitDelay, want: false},
+		{name: "failed_process", ctx: context.Background(), cmd: failureCmd, err: exec.ErrWaitDelay, want: false},
+		{name: "successful_process", ctx: context.Background(), cmd: successCmd, err: exec.ErrWaitDelay, want: true},
+		{name: "other_error", ctx: context.Background(), cmd: successCmd, err: errors.New("other error"), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := WaitDelayExpiredOnSuccess(tt.ctx, tt.cmd, tt.err); got != tt.want {
+				t.Fatalf("WaitDelayExpiredOnSuccess() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func runWaitDelayTestCommand(t *testing.T, name string, exitCode int) *exec.Cmd {
+	t.Helper()
+	tool := filepath.Join(t.TempDir(), name)
+	testexec.WriteExecutable(t, tool, []byte(fmt.Sprintf("#!/bin/sh\nexit %d\n", exitCode)))
+	cmd := exec.Command(tool)
+	if err := cmd.Run(); exitCode == 0 && err != nil {
+		t.Fatalf("running successful test command: %v", err)
+	} else if exitCode != 0 && err == nil {
+		t.Fatal("failed test command succeeded")
+	}
+	return cmd
+}
 
 // TestCommandOutput_IncludesStderrOnFailure は失敗時に *exec.ExitError の
 // Stderr をエラーに含めることを検査する。cmd.Output() の出力は stdout なので、
