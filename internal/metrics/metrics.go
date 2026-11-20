@@ -557,19 +557,24 @@ var (
 		Help: "Total media-store operations withheld because the configured store marker could not be verified.",
 	}, []string{"store"})
 
-	// StorageTransferWaitingAssets and StorageTransferWaitingBytes report the current
-	// desired-minus-observed transfer backlog from the database.
+	// StorageTransferWaitingAssets は、転送 reconcile の 1 パスが DB を数えた転送待ちの論理資産数を出す。
+	// 数えるのは、FS 置き場に転送元のコピーがあり、desired の置き場にコピーが無く、試行回数が転送の試行上限に届いていない資産。
+	// 削除してよい原本（until_encoded の規則で派生物が揃ったもの）は数えない。
+	// 値は、そのパスを走らせたプロセスの中にだけある。scrape のたびに DB を読み直さないので、出すのは走らせた Pod だけである。
 	StorageTransferWaitingAssets = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_storage_transfer_waiting_assets",
-		Help: "Number of logical media assets that still need a desired-store copy.",
+		Help: "Number of logical media assets with a copy in an FS store that still need a desired-store copy and have not reached the transfer attempt limit. Originals that can already be deleted because their encoded copies exist are excluded.",
 	})
+	// StorageTransferWaitingBytes は、StorageTransferWaitingAssets が数える資産のバイト数の合計を出す。値の持ち方は同じ。
 	StorageTransferWaitingBytes = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_storage_transfer_waiting_bytes",
-		Help: "Bytes represented by logical media assets that still need a desired-store copy.",
+		Help: "Bytes of the logical media assets counted by rokuban_storage_transfer_waiting_assets.",
 	})
+	// StorageTransferExhaustedAssets は、FS 置き場に転送元のコピーがあり desired の置き場にコピーが無いが、
+	// 試行回数が上限に達して reconcile から外れた資産数を出す。削除してよい原本は数えない。値の持ち方は StorageTransferWaitingAssets と同じ。
 	StorageTransferExhaustedAssets = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_storage_transfer_exhausted_assets",
-		Help: "Number of desired-store copies that stopped retrying after the transfer attempt limit.",
+		Help: "Number of logical media assets with a copy in an FS store whose desired-store copy stopped retrying after reaching the transfer attempt limit. Originals that can already be deleted because their encoded copies exist are excluded.",
 	})
 	StorageDerivedCopiesOutsideDerivedS3 = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_storage_derived_copies_outside_derived_s3",
@@ -589,9 +594,12 @@ var (
 		Name: "rokuban_store_route_mismatch_total",
 		Help: "Total store-bound jobs failed because the worker does not mount the job's store.",
 	}, []string{"kind", "store"})
+	// StorageTransferMountMismatches は、転送に要る置き場をこの worker で使えないために転送を見送った回数を、使えなかった置き場のラベルで出す。
+	// 宛先のラベルになるのは、FS の宛先のルートが未設定か目印（.rokuban-store）が一致しないときと、宛先の objstore が再開できないとき。
+	// 転送元のラベルになるのは、転送元が範囲読み取りできないときと、宛先が S3 で転送元の FS 置き場をマウントしていないとき。
 	StorageTransferMountMismatches = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_storage_transfer_mount_mismatch_total",
-		Help: "Total transfer jobs withheld because the target root is not mounted or its store marker does not match.",
+		Help: "Total transfer jobs withheld because a store the transfer needs is not usable on this worker (root not set, store marker mismatch, or object store cannot resume or range-read), by that store.",
 	}, []string{"store"})
 
 	// StorageRootTotalBytes / StorageRootUsedBytes / StorageRootAvailableBytes は

@@ -58,7 +58,7 @@ func NewSyncMarkerCollector(markers store.LoopMarkers, sites []string) *SyncMark
 		),
 		transfer: prometheus.NewDesc(
 			"rokuban_storage_transfer_last_success_timestamp_seconds",
-			"Unix time (database clock) of the last physical copy that became active in any store. Zero means none has completed. It does not advance while the transfer queue is empty, so read it with the waiting-assets backlog. A read failure omits the series instead.",
+			"Unix time (database clock) of the last physical copy that became active in any store. Zero means none has completed. It does not advance while the transfer queue is empty. A read failure omits the series instead.",
 			nil, nil,
 		),
 		errors: readErrors,
