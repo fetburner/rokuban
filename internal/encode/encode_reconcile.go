@@ -120,20 +120,6 @@ type EncodeReconcileWorker struct {
 	Markers store.LoopMarkers
 }
 
-// EnqueueReconcile は指定録画の reconcile を投入する。
-// ingest 後の best-effort 投入なので、失敗しても呼び出し元の処理は巻き戻さない。
-func EnqueueReconcile(ctx context.Context, enqueuer jobq.Enqueuer, recordingID int64) {
-	var err error
-	if enqueuer == nil {
-		err = errors.New("encode: job enqueuer is nil")
-	} else {
-		_, err = enqueuer.Enqueue(ctx, jobs.EncodeReconcileArgs{RecordingID: recordingID})
-	}
-	if err != nil {
-		slog.Error("encode_reconcile: failed to enqueue targeted pass", "recording_id", recordingID, "err", err)
-	}
-}
-
 // Work は encode reconcile を全件または指定録画について実行する。
 //
 // 候補の抽出を ListMissingEncodeProfiles でまとめて行い、不足と未充足の作り直しを

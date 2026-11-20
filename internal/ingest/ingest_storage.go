@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
@@ -24,7 +23,7 @@ import (
 // テストだけをすり抜ける）事態を防ぐ。
 //
 // 書き込みを検査するのは media_dir の root ではなく、determineRelPath が原本を
-// 置く名前空間（catalog.SiteRelPathPrefix）配下である。k8s では fsGroup が root
+// 置く名前空間（mediapath.SiteRelPathPrefix）配下である。k8s では fsGroup が root
 // にしか効かず sites/ 配下だけ書ける構成があり得るので
 // （deploy/k8s/base/media-pvc.yaml の「未解決: マウントの所有権」）、ingest が
 // 触らない root の書き込み権限を要求すると偽陽性で worker を起動不能にする。
@@ -37,7 +36,7 @@ func ProbeIngestStorage(mediaDir string) error {
 		return fmt.Errorf("storage.media_dir %q is not a directory", mediaDir)
 	}
 
-	probeDir := filepath.Join(mediaDir, catalog.SiteRelPathPrefix)
+	probeDir := filepath.Join(mediaDir, mediapath.SiteRelPathPrefix)
 	if err := os.MkdirAll(probeDir, 0o755); err != nil {
 		return fmt.Errorf("creating ingest storage probe directory %q: %w", probeDir, err)
 	}

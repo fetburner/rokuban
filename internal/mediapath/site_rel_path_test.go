@@ -1,4 +1,4 @@
-package catalog
+package mediapath
 
 import "testing"
 

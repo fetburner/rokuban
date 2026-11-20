@@ -14,6 +14,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -135,7 +136,7 @@ func TestTSScan_StatisticsAreWrittenAfterIngestCommit(t *testing.T) {
 	runTSScan(t, pool, mediaDir, recordingID)
 }
 
-func TestIngestFollowupEnqueuesTSScanHint(t *testing.T) {
+func TestIngestFollowupEnqueuesTSScanAndCMDetectionHints(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	if pool == nil {
@@ -145,11 +146,20 @@ func TestIngestFollowupEnqueuesTSScanHint(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 12920 })
 	mediaDir := t.TempDir()
 	seedOriginalAsset(t, pool, mediaDir, recordingID, "ingest-hint/original.m2ts", []byte("committed"))
+	dbtest.ProcessingPolicy(t, pool, recordingID, func(p *dbtest.ProcessingPolicyParams) {
+		p.KeepOriginal = "until_encoded"
+		p.EncodeProfiles = []string{"h264"}
+		p.CMDetect = true
+	})
+	testutil.MustExec(t, pool, "setting recording duration", `
+		UPDATE recordings
+		SET started_at = '2025-01-01T00:00:00Z', ended_at = '2025-01-01T00:45:00Z'
+		WHERE id = $1`, recordingID)
 	fake := mirakctest.New(t)
 	fake.SetRecords([]mirakc.Record{{ID: "edge-1290"}})
 
 	enqueuer := jobqfaketest.NewRecordingEnqueuer()
-	w := &IngestWorker{Publisher: pgstoretest.Media(pool), Enqueuer: enqueuer, MediaDir: mediaDir, CMDetectionStore: pgstoretest.Analysis(pool), Precheck: pgstoretest.Media(pool)}
+	w := &IngestWorker{Publisher: pgstoretest.Media(pool), Enqueuer: enqueuer, MediaDir: mediaDir, MediaStoreName: dbtest.StoreName, CMDetectionStore: pgstoretest.Analysis(pool), Precheck: pgstoretest.Media(pool)}
 	w.enqueueIngestFollowups(context.Background(), mirakc.NewClient(fake.URL(), nil), "edge-1290", recordingID,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	var deleteFound bool
@@ -163,6 +173,24 @@ func TestIngestFollowupEnqueuesTSScanHint(t *testing.T) {
 	}
 	if got := countTSScanJobs(t, enqueuer, recordingID); got != 1 {
 		t.Fatalf("TS scan jobs after ingest followup = %d, want 1", got)
+	}
+	cmJobs := enqueuedArgs[jobs.CMDetectJobArgs](enqueuer, jobs.CMDetectJobArgs{}.Kind())
+	cmJobFound := false
+	for _, args := range cmJobs {
+		if args.RecordingID != recordingID {
+			continue
+		}
+		if args.Store != dbtest.StoreName {
+			t.Errorf("recording %d CM detection store = %q, want %q", recordingID, args.Store, dbtest.StoreName)
+		}
+		if args.RecordingDurationMs != 45*60*1000 {
+			t.Errorf("recording %d job duration = %dms, want 2700000ms", recordingID, args.RecordingDurationMs)
+		}
+		cmJobFound = true
+		break
+	}
+	if !cmJobFound {
+		t.Fatalf("no CM detection job for recording %d", recordingID)
 	}
 	thumbs := countEnqueuedForRecording(t, enqueuer, "thumbnail_reconcile", recordingID)
 	if thumbs != 1 {

@@ -1401,7 +1401,7 @@ func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, at
 		}
 		return true, w.measureAdoptedSource(ctx, att, transfer, src, progress, log)
 	}
-	destinationSHA, size, matches, err := VerifyExistingFileSHA256(ctx, targetPath, transfer.SizeBytes, transfer.SHA256)
+	destinationSHA, size, matches, err := fsink.VerifyExistingFileSHA256(ctx, targetPath, transfer.SizeBytes, transfer.SHA256)
 	if err != nil {
 		return true, w.recordTransferFailure(ctx, transfer, log, err)
 	}
@@ -1560,79 +1560,16 @@ func (w *StorageTransferWorker) recordTransferFailure(ctx context.Context, trans
 	return nil
 }
 
-// HashTransferFile はファイルの SHA-256 とサイズを返す。
-func HashTransferFile(ctx context.Context, path string) ([]byte, int64, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, 0, fmt.Errorf("stating transfer file: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return nil, 0, fmt.Errorf("transfer path is not a regular file")
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, 0, fmt.Errorf("opening transfer file: %w", err)
-	}
-	hasher := sha256.New()
-	count, err := io.Copy(hasher, &storageTransferContextReader{ctx: ctx, reader: f})
-	closeErr := f.Close()
-	if err != nil {
-		return nil, count, fmt.Errorf("hashing transfer file: %w", err)
-	}
-	if closeErr != nil {
-		return nil, count, fmt.Errorf("closing transfer file after hashing: %w", closeErr)
-	}
-	if count != info.Size() {
-		return nil, count, fmt.Errorf("transfer file changed while hashing: read=%d size=%d", count, info.Size())
-	}
-	return hasher.Sum(nil), count, nil
-}
-
-// VerifyExistingFileSHA256 は既存の canonical を、期待サイズと SHA-256 の両方で照合する。
-// ingest と storage transfer が EEXIST を採用する条件を同じ実装に保つ。
-func VerifyExistingFileSHA256(ctx context.Context, path string, expectedSize int64, expectedSHA256 []byte) ([]byte, int64, bool, error) {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, 0, false, nil
-	}
-	if err != nil {
-		return nil, 0, false, fmt.Errorf("stating existing destination: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return nil, info.Size(), false, fmt.Errorf("existing destination is not a regular file")
-	}
-	if info.Size() != expectedSize {
-		return nil, info.Size(), false, nil
-	}
-	digest, size, err := HashTransferFile(ctx, path)
-	if err != nil {
-		return nil, size, false, err
-	}
-	return digest, size, size == expectedSize && bytes.Equal(digest, expectedSHA256), nil
-}
-
 func (w *StorageTransferWorker) transferSourceReader(ctx context.Context, sourceStore string, source io.Reader) (io.Reader, error) {
 	bandwidth, err := w.Config.TransferBandwidthBytesPerSecond(sourceStore)
 	if err != nil {
 		return nil, fmt.Errorf("parsing source bandwidth limit: %w", err)
 	}
-	reader := io.Reader(&storageTransferContextReader{ctx: ctx, reader: source})
+	reader := io.Reader(fsink.NewContextReader(ctx, source))
 	if bandwidth > 0 {
 		reader = &transferRateReader{ctx: ctx, reader: reader, bytesPerSecond: bandwidth, started: time.Now()}
 	}
 	return reader, nil
-}
-
-type storageTransferContextReader struct {
-	ctx    context.Context
-	reader io.Reader
-}
-
-func (r *storageTransferContextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.reader.Read(p)
 }
 
 type transferRateReader struct {
@@ -1667,5 +1604,4 @@ func (r *transferRateReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-var _ io.Reader = (*storageTransferContextReader)(nil)
 var _ io.Reader = (*transferRateReader)(nil)

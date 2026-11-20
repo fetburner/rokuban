@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -42,7 +43,7 @@ func TestTransferSourceReaderLimitsOnlyTheConfiguredSourceStore(t *testing.T) {
 			reader, err := w.transferSourceReader(context.Background(), tc.sourceStore, bytes.NewReader(make([]byte, 4000)))
 			testutil.RequireNoError(t, err, "transferSourceReader")
 			if tc.sourceStore == "central" {
-				if _, ok := reader.(*storageTransferContextReader); !ok {
+				if _, ok := reader.(*fsink.ContextReader); !ok {
 					t.Fatalf("central reader = %T, want context reader without rate limit", reader)
 				}
 			}

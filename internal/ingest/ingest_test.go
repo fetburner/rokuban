@@ -3845,7 +3845,7 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 //   - FallbackContentPath: contentPath が nil でも Content.Path のファイル名を使う。
 //     contentPath を nil のまま読む変異はこの行で落ちる（nil 参照の panic）。
 //
-// catalog.SiteRelPath が site 前置をしなくなると rel_path が "{uuid}/prog.m2ts" の
+// mediapath.SiteRelPath が site 前置をしなくなると rel_path が "{uuid}/prog.m2ts" の
 // ままになり、assertIngestRelPath が "sites/tokyo/<entropy>/prog.m2ts" を期待して落ちる。
 func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	t.Parallel()
@@ -3917,7 +3917,7 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 // 作らないことを固定する。
 //
 // 空パスを前置してから解決すると "sites/{site}/." が site directory になり、
-// ファイルを指す rel_path として通ってしまう。catalog.SiteRelPath の直接テストで
+// ファイルを指す rel_path として通ってしまう。mediapath.SiteRelPath の直接テストで
 // 検査を固定し、この経路では不正な保存先を作らないことも確認する。
 func TestIngestWorker_DegenerateContentPath_Rejected(t *testing.T) {
 	t.Parallel()
