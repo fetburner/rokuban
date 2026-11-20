@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -696,7 +697,7 @@ func TestDeleteReconcileWorker_UnqualifiedDerivedCopyAfterStoreSwitchChecksFiles
 		w.DerivedObjects = testFilesystemObjectStore(t, t.TempDir())
 		w.DerivedObjectStoreName = objectStoreName
 	})
-	testutil.RequireNoError(t, worker.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), nil, objectStoreName), "restoring unqualified deleting copies")
+	testutil.RequireNoError(t, worker.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), store.StoragePolicy{Derived: objectStoreName}), "restoring unqualified deleting copies")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Fatalf("filesystem derived copy state = %q, want active", got)
@@ -2979,4 +2980,30 @@ func publishOriginalForDeleteTest(ctx context.Context, pool *pgxpool.Pool, recor
 		}
 		return fsink.SyncParentDir(fullPath)
 	})
+}
+
+// TestPlacementPolicyIsZeroBelowTwoDestinations は、転送の宛先が 2 つ未満のとき配置の腕が零値の方針を受け取ることを固定する。
+// 零値の方針では配置の腕の削除の判定が偽になり、何も削除しない。2 つ以上なら方針を渡す。
+func TestPlacementPolicyIsZeroBelowTwoDestinations(t *testing.T) {
+	one := config.StorageConfig{
+		Stores:    map[string]config.StoreConfig{"main": {Kind: "fs"}},
+		Originals: []config.OriginalStoreRule{{Store: "main"}},
+		Derived:   "main",
+	}
+	w := &DeleteReconcileWorker{StorageTransferPolicy: one, Policy: policyOf(one)}
+	policy, enabled := w.placementPolicy()
+	if enabled || !reflect.DeepEqual(policy, store.StoragePolicy{}) {
+		t.Fatalf("placementPolicy with one destination = %+v, enabled %t; want the zero policy, disabled", policy, enabled)
+	}
+	two := config.StorageConfig{
+		Stores:    map[string]config.StoreConfig{"main": {Kind: "fs"}, "tokyo": {Kind: "fs"}},
+		Originals: []config.OriginalStoreRule{{Store: "main"}},
+		Derived:   "main",
+	}
+	w.StorageTransferPolicy = two
+	w.Policy = policyOf(two)
+	policy, enabled = w.placementPolicy()
+	if !enabled || policy.Derived != "main" || len(policy.Originals) != 1 {
+		t.Fatalf("placementPolicy with two destinations = %+v, enabled %t; want the policy, enabled", policy, enabled)
+	}
 }

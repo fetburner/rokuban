@@ -36,10 +36,10 @@ type emptyDeleteStores struct {
 	candidate   bool
 }
 
-func (f *emptyDeleteStores) ListPendingDeleteAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, originalRules []byte, derivedStore string, limit int32) ([]store.MediaDeleteAsset, error) {
+func (f *emptyDeleteStores) ListPendingDeleteAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, policy store.StoragePolicy, limit int32) ([]store.MediaDeleteAsset, error) {
 	return nil, nil
 }
-func (f *emptyDeleteStores) ListUnqualifiedDeletingAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, originalRules []byte, derivedStore string, limit int32) ([]store.MediaDeleteRevertCandidate, error) {
+func (f *emptyDeleteStores) ListUnqualifiedDeletingAssets(ctx context.Context, graceCutoff, overlapCutoff time.Time, policy store.StoragePolicy, limit int32) ([]store.MediaDeleteRevertCandidate, error) {
 	return nil, nil
 }
 func (f *emptyDeleteStores) ListOldGenerationMediaAssetCopiesToDelete(ctx context.Context, overlapCutoff time.Time, limit int32) ([]store.MediaDeleteAsset, error) {

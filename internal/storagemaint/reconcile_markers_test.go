@@ -124,7 +124,7 @@ type failingPendingDelete struct {
 	store.MediaDelete
 }
 
-func (failingPendingDelete) ListPendingDeleteAssets(context.Context, time.Time, time.Time, []byte, string, int32) ([]store.MediaDeleteAsset, error) {
+func (failingPendingDelete) ListPendingDeleteAssets(context.Context, time.Time, time.Time, store.StoragePolicy, int32) ([]store.MediaDeleteAsset, error) {
 	return nil, errors.New("listing pending rejected")
 }
 
