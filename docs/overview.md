@@ -68,6 +68,30 @@ mirakc に録画を委譲すると（詳細は [recording.md](recording.md) 参�
 
 </details>
 
+### 互換を約束する面
+
+版をまたいで互換を約束するのは、次の 2 つを両方満たす面だけである。
+
+- 保証する構成がその面を通る
+- その面の挙動を CI で継続して検査しているか、実機で確かめている
+
+どちらかを欠く面は実験的として扱い、設定キー・CLI・挙動の形を版の間で変えうる。実機で確かめる前の形を約束すると、確かめた結果で形を直すたびに移行が要る。
+
+数えない検査が 2 つある。CI のマニフェスト検査（manifests ジョブ）は、`kustomize build` で構成を組み `kubeconform` でスキーマを確かめるが、アプリは起動しない。受け入れ判定ハーネス（`deploy/k8s/e2e`）は人が kind 上で手動実行するため、CI の継続検査でも実機確認でもない。
+
+実験的な面は、`config.example.yml` の該当キーのコメントに「実験的」と書いて示す。印の無いキーには、互換を約束すると判定したものと、まだ基準を当てはめていないものが混在する。固有の設定キーを持たない配置には印を付けられない。api のサーバーレス配置は、前節で保証しない構成として名指ししている。
+
+永続資産の行は面の約束と別に扱う。実験的な面が書いた行も、マイグレーションで次の版へ運ぶ。約束しないのは形だけで、録画を失わせる変更は実験的な面でも行わない。
+
+未解決: 印の無い設定キーの多くには、まだ判定基準を当てはめていない。
+
+<details><summary>根拠</summary>
+
+- CI のマニフェスト検査と受け入れ判定ハーネスの実行範囲: `.github/workflows/ci.yml`（manifests ジョブ末尾のコメント）
+- 受け入れ判定ハーネスの手動実行: `deploy/k8s/e2e/README.md` 冒頭
+
+</details>
+
 ## 構成図
 
 構成図は、各ロールと PostgreSQL・mirakc・メディアストレージの間で、接続を張る向きと用途を示す。線の無い組み合わせは触らない。lint が判定するのは、api が mirakc・ファイルシステム・ffmpeg に依存しないことと、exec を使えるロールの限定である。
@@ -116,13 +140,13 @@ flowchart RL
 
 lint が判定するのは次の 2 つの境界である。api は mirakc・ファイルシステム・ffmpeg に依存しない（不変条件 1）。os/exec を使えるのは worker・streamer・CM 検出（cmdetect）・エンコード（encode）、共用の実行補助、起動時にツールを検査する設定の読み込み部だけである（不変条件 4）。
 
-lint は import の向きも判定する。cmdetect、ストレージの転送・削除（storagemaint）、サムネイル・シークタイルの生成（thumbnail）は worker だけが import できる。encode は worker と起動時に検査する cmd/rokuban だけが import できる。取り込み（ingest）は worker と起動時に置き場を検査する cmd/rokuban だけが import できる。共用の実行補助は worker・cmdetect・thumbnail・encode だけが import できる。それ以外の線は lint では判定していない。
+lint は import の向きも判定する。cmdetect、ストレージの転送・削除（storagemaint）、サムネイル・シークタイルの生成（thumbnail）は worker だけが import できる。encode は worker と起動時に検査する cmd/rokuban だけが import できる。取り込み（ingest）は worker と起動時に置き場を検査する cmd/rokuban だけが import できる。共用の実行補助は worker・cmdetect・thumbnail・encode・streamer だけが import できる。それ以外の線は lint では判定していない。
 
 <details><summary>根拠</summary>
 
 - 境界を判定する lint の設定: `.golangci.yml`（depguard）
 - ファイルシステムへの依存を禁じる対象: `internal/mediapath`
-- exec を使えるパッケージ: `os/exec` を使う worker・streamer・cmdetect・mediaexec と、起動時にツールを検査する `internal/config`
+- exec を使えるパッケージ: `os/exec` を使う worker・streamer・cmdetect・encode・mediaexec と、起動時にツールを検査する `internal/config`
 
 </details>
 

@@ -679,19 +679,18 @@ func encodeCommandError(ctx context.Context, cmd *exec.Cmd, waitErr error, stder
 	if waitErr == nil {
 		return nil
 	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	if errors.Is(waitErr, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
-		// ffmpeg 自体は exit 0 で完走したが、孫プロセスが stdout/stderr の
-		// fd を握ったままで WaitDelay が先に切れた（この PR が扱う
-		// ハングの exit 0 版）。以降の os.Stat / サイズ検査が出力を守るので
+	if mediaexec.WaitDelayExpiredOnSuccess(ctx, cmd, waitErr) {
+		// ffmpeg は exit 0 で完走したが、孫プロセスが stdout/stderr の fd を握ったままで
+		// WaitDelay が先に切れた。以降の os.Stat / サイズ検査が出力を守るので
 		// 失敗にはしないが、再試行ループから見分けられるよう記録は残す。その
 		// 検査は呼び出し元 runEncodeCommand が cmd.Wait() の直後（この関数を
 		// 呼んだすぐ後）に行う --- この関数はエラー変換だけを担い、出力の
 		// 検証はしない。
 		log.Warn("encode: ffmpeg exited successfully but WaitDelay expired before I/O completed", "wait_delay", mediaexec.WaitDelay)
 		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 	stderr = strings.TrimSpace(stderr)
 	if stderr != "" {

@@ -11,11 +11,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/reconciler"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -97,9 +98,8 @@ func withheldCount(action, reason string) float64 {
 type concurrentFixture struct {
 	ctx  context.Context
 	pool *pgxpool.Pool
-	q    *sqlcgen.Queries
 	fake *mirakctest.Fake
-	res  sqlcgen.Reservation
+	res  testReservation
 }
 
 func newConcurrentFixture(t *testing.T, programID int64) concurrentFixture {
@@ -107,15 +107,14 @@ func newConcurrentFixture(t *testing.T, programID int64) concurrentFixture {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	fake := mirakctest.New(t)
-	q := sqlcgen.New(pool)
-	res := createReservation(t, ctx, q, programID, "並走", time.Now().Add(time.Hour))
+	res := createReservation(t, pool, programID, "並走", time.Now().Add(time.Hour))
 	if err := newReconciler(mirakc.NewClient(fake.URL(), nil), pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (setup): %v", err)
 	}
 	if got := fake.Schedules()[programID].Options.Priority; got != 10 {
 		t.Fatalf("setup priority = %d, want 10 (DefaultPriority)", got)
 	}
-	return concurrentFixture{ctx: ctx, pool: pool, q: q, fake: fake, res: res}
+	return concurrentFixture{ctx: ctx, pool: pool, fake: fake, res: res}
 }
 
 // newStaleDeleteFixture は desired から外れた schedule（skip intent）を持つ fixture を作る。
@@ -124,12 +123,8 @@ func newConcurrentFixture(t *testing.T, programID int64) concurrentFixture {
 func newStaleDeleteFixture(t *testing.T, programID, otherProgramID int64) concurrentFixture {
 	t.Helper()
 	f := newConcurrentFixture(t, programID)
-	createReservation(t, f.ctx, f.q, otherProgramID, "残る予約", time.Now().Add(time.Hour))
-	if _, err := f.q.UpsertProgramIntent(f.ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: "default", ProgramID: programID, Action: "skip",
-	}); err != nil {
-		t.Fatalf("recording skip intent: %v", err)
-	}
+	createReservation(t, f.pool, otherProgramID, "残る予約", time.Now().Add(time.Hour))
+	dbtest.ProgramIntent(t, f.pool, programID, func(p *dbtest.ProgramIntentParams) { p.Action = "skip" })
 	return f
 }
 
@@ -155,7 +150,7 @@ func (f concurrentFixture) callsSinceSetup() (deletes, posts int) {
 // 経路だから（ReconcileWriteWithheld の converged）。
 func TestReconciler_ConcurrentRecreate_ReobservedAfterPeerRecreateIsWithheld(t *testing.T) {
 	f := newConcurrentFixture(t, 100000500017641)
-	setPriorityOverride(t, f.ctx, f.q, f.res, 77)
+	setPriorityOverride(t, f.pool, f.res, 77)
 	lostBefore := promtestutil.ToFloat64(metrics.ReconcileScheduleLost)
 	withheldBefore := withheldCount("recreate", "converged")
 
@@ -185,7 +180,7 @@ func TestReconciler_ConcurrentRecreate_ReobservedAfterPeerRecreateIsWithheld(t *
 // 前にしか効かないので、この窓は閉じない。
 func TestReconciler_ConcurrentRecreate_CreateBetweenDeleteAndPostCountsFalseLoss(t *testing.T) {
 	f := newConcurrentFixture(t, 100000500017642)
-	setPriorityOverride(t, f.ctx, f.q, f.res, 77)
+	setPriorityOverride(t, f.pool, f.res, 77)
 	lostBefore := promtestutil.ToFloat64(metrics.ReconcileScheduleLost)
 
 	passA := interleavedClient(f.fake, scheduleRequest(http.MethodPost, f.res.ProgramID), func() {
@@ -219,10 +214,10 @@ func TestReconciler_StaleRecreateAfterNewerRecreate_LeavesStalePriority(t *testi
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newConcurrentFixture(t, 100000500017643)
-			setPriorityOverride(t, f.ctx, f.q, f.res, 77)
+			setPriorityOverride(t, f.pool, f.res, 77)
 
 			passA := interleavedClient(f.fake, scheduleRequest(http.MethodDelete, f.res.ProgramID), func() {
-				setPriorityOverride(t, f.ctx, f.q, f.res, 99)
+				setPriorityOverride(t, f.pool, f.res, 99)
 				f.pass(t, "B", nil)
 			})
 			f.pass(t, "A", passA)
@@ -246,10 +241,10 @@ func TestReconciler_StaleRecreateAfterNewerRecreate_LeavesStalePriority(t *testi
 // 古い 77 が残る逆の帰結になっていた。
 func TestReconciler_StaleRecreatePostAfterNewerCreate_IsRejected(t *testing.T) {
 	f := newConcurrentFixture(t, 100000500017644)
-	setPriorityOverride(t, f.ctx, f.q, f.res, 77)
+	setPriorityOverride(t, f.pool, f.res, 77)
 
 	passA := interleavedClient(f.fake, scheduleRequest(http.MethodPost, f.res.ProgramID), func() {
-		setPriorityOverride(t, f.ctx, f.q, f.res, 99)
+		setPriorityOverride(t, f.pool, f.res, 99)
 		f.pass(t, "B", nil)
 	})
 	f.pass(t, "A", passA)
@@ -267,17 +262,11 @@ func TestReconciler_StaleRecreatePostAfterNewerCreate_IsRejected(t *testing.T) {
 func TestReconciler_StaleDeleteAfterNewerObservation_LeavesDesiredUnscheduledUntilNextPass(t *testing.T) {
 	f := newConcurrentFixture(t, 100000500017645)
 	// desired が空だと全損ブレーカーが削除を止め、割り込む DELETE 自体が飛ばない。
-	createReservation(t, f.ctx, f.q, 100000500017647, "残る予約", time.Now().Add(time.Hour))
-	if _, err := f.q.UpsertProgramIntent(f.ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: "default", ProgramID: f.res.ProgramID, Action: "skip",
-	}); err != nil {
-		t.Fatalf("recording skip intent: %v", err)
-	}
+	createReservation(t, f.pool, 100000500017647, "残る予約", time.Now().Add(time.Hour))
+	dbtest.ProgramIntent(t, f.pool, f.res.ProgramID, func(p *dbtest.ProgramIntentParams) { p.Action = "skip" })
 
 	passA := interleavedClient(f.fake, scheduleRequest(http.MethodDelete, f.res.ProgramID), func() {
-		if _, err := f.q.DeleteProgramIntent(f.ctx, sqlcgen.DeleteProgramIntentParams{
-			Site: "default", ProgramID: f.res.ProgramID,
-		}); err != nil {
+		if err := pgstoretest.Reservations(f.pool).DeleteIntent(f.ctx, "default", f.res.ProgramID); err != nil {
 			t.Fatalf("deleting skip intent: %v", err)
 		}
 		f.pass(t, "B", nil)
@@ -304,7 +293,7 @@ func TestReconciler_StaleDeleteAfterNewerObservation_LeavesDesiredUnscheduledUnt
 // 録画を落とす。
 func TestReconciler_RecreateStillDeletesScheduleThatStartsRecordingInResidualWindow(t *testing.T) {
 	f := newConcurrentFixture(t, 100000500017646)
-	setPriorityOverride(t, f.ctx, f.q, f.res, 77)
+	setPriorityOverride(t, f.pool, f.res, 77)
 
 	var stateAtDelete string
 	passA := interleavedClient(f.fake, scheduleRequest(http.MethodDelete, f.res.ProgramID), func() {
@@ -325,7 +314,7 @@ func TestReconciler_RecreateStillDeletesScheduleThatStartsRecordingInResidualWin
 // DELETE も POST もせず見送る。録画は止まらず、次のパスは録画中の schedule を触らない。
 func TestReconciler_RecreateWithheldWhenScheduleStartsRecordingBeforeReobservation(t *testing.T) {
 	f := newConcurrentFixture(t, 100000500017650)
-	setPriorityOverride(t, f.ctx, f.q, f.res, 77)
+	setPriorityOverride(t, f.pool, f.res, 77)
 	withheldBefore := withheldCount("recreate", "state")
 
 	passA := interleavedClient(f.fake, scheduleGetRequest(f.res.ProgramID), func() {
@@ -414,7 +403,7 @@ func TestReconciler_DeleteWithheldWhenReobservedScheduleIsGone(t *testing.T) {
 // 次のパスが作成する。
 func TestReconciler_RecreateWithheldWhenReobservedScheduleIsGone(t *testing.T) {
 	f := newConcurrentFixture(t, 100000500017657)
-	setPriorityOverride(t, f.ctx, f.q, f.res, 77)
+	setPriorityOverride(t, f.pool, f.res, 77)
 	withheldBefore := withheldCount("recreate", "gone")
 
 	passA := interleavedClient(f.fake, scheduleGetRequest(f.res.ProgramID), func() {
@@ -456,7 +445,7 @@ func TestReconciler_ReobservationErrorWithholdsWrite(t *testing.T) {
 	})
 	t.Run("recreate", func(t *testing.T) {
 		f := newConcurrentFixture(t, 100000500017660)
-		setPriorityOverride(t, f.ctx, f.q, f.res, 77)
+		setPriorityOverride(t, f.pool, f.res, 77)
 		f.fake.FailNext(http.MethodGet, scheduleItemPath(f.res.ProgramID), 1, http.StatusInternalServerError)
 		withheldBefore := withheldCount("recreate", "error")
 
@@ -497,7 +486,7 @@ func TestReconciler_ReobservationDeadlineWithholdsWrite(t *testing.T) {
 	})
 	t.Run("recreate", func(t *testing.T) {
 		f := newConcurrentFixture(t, 100000500017663)
-		setPriorityOverride(t, f.ctx, f.q, f.res, 77)
+		setPriorityOverride(t, f.pool, f.res, 77)
 		withheldBefore := withheldCount("recreate", "error")
 		mc := slowClient(f.fake, scheduleGetRequest(f.res.ProgramID))
 
@@ -518,7 +507,7 @@ func TestReconciler_ReobservationDeadlineWithholdsWrite(t *testing.T) {
 // 変わっていたら、再作成後の schedule は新しい方を持つ。
 func TestReconciler_RecreateInheritsContentPathFromReobservation(t *testing.T) {
 	f := newConcurrentFixture(t, 100000500017664)
-	setPriorityOverride(t, f.ctx, f.q, f.res, 77)
+	setPriorityOverride(t, f.pool, f.res, 77)
 
 	passA := interleavedClient(f.fake, scheduleGetRequest(f.res.ProgramID), func() {
 		s := f.fake.Schedules()[f.res.ProgramID]
@@ -558,7 +547,7 @@ func TestReconciler_DeleteBeyondDeadlineIsNotSent(t *testing.T) {
 	})
 	t.Run("recreate", func(t *testing.T) {
 		f := newConcurrentFixture(t, 100000500017672)
-		setPriorityOverride(t, f.ctx, f.q, f.res, 77)
+		setPriorityOverride(t, f.pool, f.res, 77)
 		mc := slowClient(f.fake, scheduleRequest(http.MethodDelete, f.res.ProgramID))
 
 		if err := newReconciler(mc, f.pool, cfg).RunPass(f.ctx); err != nil {
@@ -578,7 +567,7 @@ func TestReconciler_DeleteBeyondDeadlineIsNotSent(t *testing.T) {
 // POST を観測用 ctx が終わる（締切の 5s が過ぎる）まで止めてから送らせるので、毎回 5s 待つ。
 func TestReconciler_PostIsNotBoundByObservationDeadline(t *testing.T) {
 	f := newConcurrentFixture(t, 100000500017673)
-	setPriorityOverride(t, f.ctx, f.q, f.res, 77)
+	setPriorityOverride(t, f.pool, f.res, 77)
 	lostBefore := promtestutil.ToFloat64(metrics.ReconcileScheduleLost)
 	cfg := &reconciler.Config{ObserveAndDeleteTimeout: 5 * time.Second}
 	var observation context.Context

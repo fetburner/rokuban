@@ -64,7 +64,9 @@ storage:
   #   overlap: 48h                   # 既定 48h。cleanup.missing_asset_age を延ばしたら、
   #                                  # 実体無しの猶予 + 削除 reconcile 2 回分より長い値を明示する
   #
-  # 複数の置き場の例。
+  # 複数の置き場の例。実験的: 置き場を 2 つ以上持つ構成と、originals の match・
+  # transfer の bandwidth / backlog_limit は、版の間で形を変えうる
+  # （docs/overview.md「互換を約束する面」）。
   # stores:
   #   tokyo: { kind: fs, root: /mnt/tokyo, internal_url: http://rokuban-store-tokyo.internal:8080 }
   #   takamatsu: { kind: fs, root: /mnt/takamatsu, internal_url: http://rokuban-store-takamatsu.internal:8080 }
@@ -80,7 +82,8 @@ storage:
   #   bandwidth: { takamatsu: 50Mbps }   # 転送元の FS 置き場ごとの上限
   #   backlog_limit: { takamatsu: 20 }   # 転送待ちがこの件数に達したら、その置き場の原本を読む encode の投入を止める（ingest は止めない）
   #
-  # 派生物の置き場には S3 API の置き場も指定できる。
+  # 派生物の置き場には S3 API の置き場も指定できる。実験的: kind: s3 の置き場は、
+  # 版の間で形を変えうる（docs/overview.md「互換を約束する面」）。
   # stores:
   #   main: { kind: fs }
   #   s3main: { kind: s3, endpoint: https://s3.example.com, region: us-east-1, bucket: rokuban-derived }

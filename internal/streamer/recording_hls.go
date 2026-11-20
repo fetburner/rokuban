@@ -20,6 +20,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/store"
@@ -802,6 +803,7 @@ func probeRecordingHLSTiming(ctx context.Context, ffprobe string, file *os.File)
 		"-v", "error", "-select_streams", "v:0", "-show_packets", "-show_entries", "packet=pts",
 		"-read_intervals", "%+#1", "-of", "csv=p=0", "-i", recordingHLSFFmpegInputPath,
 	)
+	mediaexec.SetWaitDelay(packetCmd)
 	packetCmd.ExtraFiles = []*os.File{file}
 	packetOutput, err := packetCmd.Output()
 	if err != nil {
@@ -821,6 +823,7 @@ func probeRecordingHLSTiming(ctx context.Context, ffprobe string, file *os.File)
 	streamCmd := exec.CommandContext(probeCtx, ffprobe,
 		"-v", "error", "-show_entries", "stream=codec_type", "-of", "json", "-i", recordingHLSFFmpegInputPath,
 	)
+	mediaexec.SetWaitDelay(streamCmd)
 	streamCmd.ExtraFiles = []*os.File{file}
 	streamOutput, err := streamCmd.Output()
 	if err != nil {

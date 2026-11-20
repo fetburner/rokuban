@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
@@ -14,11 +15,25 @@ import (
 
 type encodeRouteAttempts struct {
 	store.EncodeAttempts
-	err error
+	start store.EncodeAttemptStart
+	err   error
 }
 
 func (a encodeRouteAttempts) Begin(context.Context, int64, string, int32) (store.EncodeAttemptStart, error) {
-	return store.EncodeAttemptStart{}, a.err
+	return a.start, a.err
+}
+
+func (encodeRouteAttempts) Fail(context.Context, int64, string, int32, string) (bool, error) {
+	return false, nil
+}
+
+type encodeRouteMedia struct {
+	store.MediaReconcile
+	err error
+}
+
+func (m encodeRouteMedia) GetEncodedPublishState(context.Context, int64, string, bool, bool) (store.EncodedPublishState, error) {
+	return store.EncodedPublishState{}, m.err
 }
 
 func TestNewWorkersRegistersEncodeJobs(t *testing.T) {
@@ -29,7 +44,7 @@ func TestNewWorkersRegistersEncodeJobs(t *testing.T) {
 	tokyoRoot, nagoyaRoot := t.TempDir(), t.TempDir()
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(tokyoRoot, "tokyo"), "marking Tokyo root")
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(nagoyaRoot, "nagoya"), "marking Nagoya root")
-	registry := NewWorkers(&Deps{PerStore: map[string]*Deps{
+	registry := NewWorkers(&Deps{PerStore: map[string]*StoreDeps{
 		"tokyo":   {MediaDir: tokyoRoot, MediaStoreName: "tokyo", EncodeAttempts: encodeRouteAttempts{err: tokyoErr}},
 		"nagoya":  {MediaDir: nagoyaRoot, MediaStoreName: "nagoya", EncodeAttempts: encodeRouteAttempts{err: nagoyaErr}},
 		"swapped": {MediaDir: tokyoRoot, MediaStoreName: "swapped", EncodeAttempts: encodeRouteAttempts{err: tokyoErr}},
@@ -63,5 +78,31 @@ func TestNewWorkersRegistersEncodeJobs(t *testing.T) {
 				t.Fatalf("Work error = %v, want %q", err, tc.wantMessage)
 			}
 		})
+	}
+}
+
+func TestNewWorkersEncodeUsesStoreScopedMedia(t *testing.T) {
+	t.Parallel()
+
+	unscopedErr := errors.New("unscoped media queried")
+	scopedErr := errors.New("store-scoped media queried")
+	root := t.TempDir()
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(root, "tokyo"), "marking Tokyo root")
+	registry := NewWorkers(&Deps{
+		UnscopedMediaReconcile: encodeRouteMedia{err: unscopedErr},
+		Encode:                 config.EncodeConfig{Profiles: []config.EncodeProfile{{Name: "h264"}}},
+		PerStore: map[string]*StoreDeps{
+			"tokyo": {
+				MediaDir:       root,
+				MediaStoreName: "tokyo",
+				MediaReconcile: encodeRouteMedia{err: scopedErr},
+				EncodeAttempts: encodeRouteAttempts{start: store.EncodeAttemptStart{Count: 1}},
+			},
+		},
+	})
+
+	err := registry.Work(t.Context(), jobs.EncodeJobArgs{Store: "tokyo", RecordingID: 1, Profile: "h264"})
+	if !errors.Is(err, scopedErr) {
+		t.Fatalf("encode media error = %v, want store-scoped error %v", err, scopedErr)
 	}
 }
