@@ -435,9 +435,9 @@ cut の選択規則は設定の `recording_hls.enabled` に依存し、store は
 
 EPG 同期の各段階は、独立した store メソッドにして、それぞれ自分で commit する。1 つの tx にまとめると、数千行の upsert が長い tx になる。途中の段階が失敗すると、すでに書いた段階まで巻き戻る。
 
-段階は、サービスの upsert、番組の upsert、sweep の印、古い行の削除、放送済みの刈り込みである。各段階が確定していれば、次の同期が残りを書き直すだけで済む。
+各段階が確定していれば、次の同期が残りを書き直すだけで済む。
 
-空のレスポンスのときに sweep しない判定は、mirakc の応答を知っている worker に残す。store は、印（sweep mark）より古い行を、渡された site・サービスの範囲で消すだけにする。
+空のレスポンスのときに sweep しない判定は、mirakc の応答を知っている worker に残す。
 
 <details><summary>根拠</summary>
 
@@ -530,19 +530,15 @@ EPG 同期の各段階は、独立した store メソッドにして、それぞ
 
 reconciler は、観測全量の置き換え、同期評価の候補、開始済みイベントの読み取りを `ScheduleSync` から使う。presync collector は、marker・観測一覧・同期評価の候補を `ScheduleSyncReader` から読む。実装は `pgstore.ScheduleSync` が両方を持つ。
 
-置き換えは、観測行の upsert、古い観測行の削除、marker の更新を 1 つの tx で行う。marker を先に確定すると、collector が不完全な観測を新鮮と誤認する。
+marker を観測より先に確定すると、collector が不完全な観測を新鮮と誤認する。
 
-古い観測行を判定する時刻（sweep の印）は DB の時計で付け、呼び出し側は時刻を渡さない。
-
-marker が無いときは、store がエラーと区別して返す。collector は、そのときだけ時刻を 0 として出す。
+collector は、marker が無いときだけ時刻を 0 として出す。
 
 <details><summary>根拠</summary>
 
 - reconciler の契約: `internal/store.ScheduleSync`
 - presync の読み取り契約: `internal/store.ScheduleSyncReader`
 - PostgreSQL 実装: `internal/store/pgstore.ScheduleSync`
-- 全量置き換えの原子性: `TestScheduleSyncContract/failed_replacement_preserves_prior_observations_and_marker`
-- marker の失敗による巻き戻し: `TestScheduleSyncContract/marker_failure_rolls_back_observations`
 
 </details>
 
@@ -552,15 +548,12 @@ marker が無いときは、store がエラーと区別して返す。collector 
 
 古い行の削除は、ruler の GC が同じ契約 `NeverScheduledEvents` を呼んで行う。実装は `pgstore.NeverScheduledEvents` が持つ。
 
-記録は放送イベントキーで冪等に行い、新しい行を作ったときだけ true を返す。
-
-削除は幅（horizon）だけを受け取る。`observed_at` を、DB の時計の now() から horizon を引いた時刻と比べる。`observed_at` が DB の時計で記録されているからである。
+削除は幅（horizon）だけを受け取る。`observed_at` は DB の時計で記録されるので、呼び出し側が基準時刻を渡すと、記録と比べる時計がずれるからである。
 
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.NeverScheduledEvents`
 - PostgreSQL 実装: `internal/store/pgstore.NeverScheduledEvents`
-- 冪等記録と horizon による削除: `TestNeverScheduledEventsContract`
 - 削除の呼び出し元: `internal/ruler/ruler.go` の GC
 
 </details>
@@ -590,7 +583,7 @@ ruler は `RulerPass` から評価に必要なルール・意図・投資・予�
 
 発動は行の存在で表し、再開は行の削除で表す。発動していない状態を表す行は作らない。
 
-reconciler と削除 reconcile は `Breakers`、API は `BreakerAdmin` を使う。`Breakers` は `Trip` と `IsTripped` だけを持つ。`Trip` は発動時刻を返し、すでに発動中なら件数と抜粋だけを更新する。`Resume` は、対象の行が無ければ `ErrNotFound` を返す。
+reconciler と削除 reconcile は `Breakers`、API は `BreakerAdmin` を使う。
 
 reconciler と削除 reconcile は、もともと tx の外で発動する。そのため、`Breakers.Trip` を単独で呼ぶ。ruler は `RulerPass.ApplyPass` の中で発動する（理由は「ruler パス」節）。
 
@@ -602,7 +595,6 @@ reconciler と削除 reconcile は、もともと tx の外で発動する。そ
 - API の一覧・再開契約: `internal/store.BreakerAdmin`
 - PostgreSQL 実装: `internal/store/pgstore.Breakers`
 - ゲージとログ: `internal/breaker.ObserveState` / `internal/breaker.Trip`
-- 発動時刻と再開後の状態: `TestBreakersContract`
 - ruler の tx 内の発動: `internal/store/pgstore.Reservations.ApplyPass`
 - ruler の発動ゲージ: `TestRunPass_TripInApplyPassRaisesCircuitBreakerGauge`
 

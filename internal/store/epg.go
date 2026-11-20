@@ -129,7 +129,7 @@ type ProgramMatch struct {
 
 // EPGSync は mirakc から取得した EPG 射影を同期する。
 //
-// 各メソッドは 1 つの同期ステップだけを実行し、複数ステップをまとめた tx を作らない。
+// 各メソッドは 1 つの同期ステップだけを実行し、複数ステップをまとめた tx を作らない（契約テストでは未検証）。
 type EPGSync interface {
 	// SweepMark は同期開始時点の DB 時刻を返す。
 	SweepMark(ctx context.Context) (time.Time, error)
