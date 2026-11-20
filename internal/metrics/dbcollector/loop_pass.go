@@ -39,17 +39,17 @@ func NewLoopPassCollector(markers store.LoopMarkers, site string) *LoopPassColle
 		site:    site,
 		ruler: prometheus.NewDesc(
 			"rokuban_ruler_last_success_timestamp_seconds",
-			"Unix time of the last successful ruler pass for this site. Zero means no pass has completed.",
+			"Unix time (database clock) of the last successful ruler pass for this site. Zero means no pass has completed. It is read from loop_success_markers on every scrape. A read failure omits the series instead.",
 			nil, labels,
 		),
 		sweep: prometheus.NewDesc(
 			"rokuban_sweep_last_success_timestamp_seconds",
-			"Unix time of the last successful record_sweep pass for this site. Zero means no pass has completed.",
+			"Unix time (database clock) of the last successful record_sweep pass for this site. Zero means no pass has completed. It is read from loop_success_markers on every scrape. A read failure omits the series instead.",
 			nil, labels,
 		),
 		reconciler: prometheus.NewDesc(
 			"rokuban_reconcile_last_success_timestamp_seconds",
-			"Unix time of the last completed reconciler pass for this site. Zero means no pass has completed.",
+			"Unix time (database clock) of the last completed reconciler pass for this site. Zero means no pass has completed. It is read from loop_success_markers on every scrape. A read failure omits the series instead.",
 			nil, labels,
 		),
 		errors: prometheus.NewCounter(prometheus.CounterOpts{

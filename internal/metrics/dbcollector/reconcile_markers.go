@@ -72,27 +72,27 @@ func NewReconcileMarkerCollector(markers store.LoopMarkers, storage store.Storag
 		deleteStores: slices.Clone(deleteStores),
 		encode: prometheus.NewDesc(
 			"rokuban_encode_reconcile_last_success_timestamp_seconds",
-			"Unix time (database clock) of the last completed page of a full (non-targeted) encode reconcile pass. A pass that continues across pages writes this at the end of every page, so it means the pass is running, not that every candidate was seen. Zero means no full pass has completed yet.",
+			"Unix time (database clock) of the last completed page of a full (non-targeted) encode reconcile pass. A pass that continues across pages writes this at the end of every page. Zero means no full pass has completed yet. It is read from loop_success_markers on every scrape. A read failure omits the series instead.",
 			nil, nil,
 		),
 		thumbnail: prometheus.NewDesc(
 			"rokuban_thumbnail_reconcile_last_success_timestamp_seconds",
-			"Unix time (database clock) of the last completed page of a full (non-targeted) thumbnail reconcile pass, written only when the seek tiles list also succeeded. A pass that continues across pages writes this at the end of every page, so it means the pass is running, not that every candidate was seen. Zero means no full pass has completed yet.",
+			"Unix time (database clock) of the last completed page of a full (non-targeted) thumbnail reconcile pass, written only when the seek tiles list also succeeded. A pass that continues across pages writes this at the end of every page. Zero means no full pass has completed yet. It is read from loop_success_markers on every scrape. A read failure omits the series instead.",
 			nil, nil,
 		),
 		tsScan: prometheus.NewDesc(
 			"rokuban_ts_scan_reconcile_last_success_timestamp_seconds",
-			"Unix time (database clock) of the last completed page of a full (non-targeted) ts-scan reconcile pass. A pass that continues across pages writes this at the end of every page, so it means the pass is running, not that every candidate was seen. Zero means no full pass has completed yet.",
+			"Unix time (database clock) of the last completed page of a full (non-targeted) ts-scan reconcile pass. A pass that continues across pages writes this at the end of every page. Zero means no full pass has completed yet. It is read from loop_success_markers on every scrape. A read failure omits the series instead.",
 			nil, nil,
 		),
 		deleteDesc: prometheus.NewDesc(
 			"rokuban_delete_reconcile_last_success_timestamp_seconds",
-			"Unix time (database clock) of the last delete reconcile pass for the store that completed, including a pass that the bulk-delete circuit breaker stopped. Zero means no pass has completed for the store yet. Store label values are the filesystem stores and, when the derived store is S3, that store.",
+			"Unix time (database clock) of the last delete reconcile pass for the store that completed, including a pass that the bulk-delete circuit breaker stopped. Zero means no pass has completed for the store yet. It is read from loop_success_markers on every scrape. A read failure omits the series instead. Store label values are the filesystem stores and, when the derived store is S3, that store.",
 			[]string{"store"}, nil,
 		),
 		storageDsc: prometheus.NewDesc(
 			"rokuban_storage_root_observed_timestamp_seconds",
-			"Unix time (database clock) of the last successful statfs observation of the root in the store, read from storage_sync. A stale root keeps its old value while the other roots advance. A store that has no observation yet reports root=\"media\" as zero.",
+			"Unix time (database clock) of the last successful statfs observation of the root in the store, read from storage_sync. A stale root keeps its old value while the other roots advance. A store that has no observation yet reports root=\"media\" as zero. A read failure omits the series instead.",
 			[]string{"store", "root"}, nil,
 		),
 		errors: readErrors,
