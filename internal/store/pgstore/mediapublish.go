@@ -409,7 +409,7 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 			return false, fmt.Errorf("checking active thumbnail: %w", err)
 		}
 		original, err := q.GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{
-			RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.originalStoreName()),
+			RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.originalStore),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
@@ -444,9 +444,9 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 		}
 		inputStore := in.InputStore
 		if inputStore == "" {
-			inputStore = s.originalStoreName()
+			inputStore = s.originalStore
 		}
-		if inputStore != s.originalStoreName() && inputStore != s.storeName {
+		if inputStore != s.originalStore && inputStore != s.storeName {
 			return false, fmt.Errorf("thumbnail input store %q is neither the original nor the publishing store", inputStore)
 		}
 		active, err := q.IsActiveThumbnailInput(ctx, sqlcgen.IsActiveThumbnailInputParams{
@@ -521,7 +521,7 @@ func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishI
 		return false, fmt.Errorf("checking active seek tiles: %w", err)
 	}
 	if _, err := q.GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{
-		RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.originalStoreName()),
+		RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.originalStore),
 	}); errors.Is(err, pgx.ErrNoRows) {
 		return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 	} else if err != nil {

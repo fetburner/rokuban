@@ -113,7 +113,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyIsDeletedThroughItsFile
 	markRecordingTrashed(t, pool, recordingID)
 
 	recorder := &callRecordingStore{Store: testFilesystemObjectStore(t, mediaDir)}
-	media := pgstore.NewMediaWithStoresAndPolicy(pool, dbtest.StoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName))
+	media := pgstore.NewMediaInStore(pool, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName))
 	w := derivedS3SwitchedWorker(t, mediaDir, recorder, media, media)
 	w.RecordingPurge = pgstoretest.Recordings(pool)
 	w.Breakers = pgstoretest.Breakers(pool)
@@ -145,7 +145,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFile
 	assetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, relPath, []byte("encoded"))
 
 	recorder := &callRecordingStore{Store: testFilesystemObjectStore(t, mediaDir)}
-	media := pgstore.NewMediaWithStoresAndPolicy(pool, dbtest.StoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName))
+	media := pgstore.NewMediaInStore(pool, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName))
 	w := derivedS3SwitchedWorker(t, mediaDir, recorder, media, media)
 
 	// 実体無しの監査: 走査結果（seenOnDisk）が空でも、Head で見つかるので欠落にならない。
@@ -194,7 +194,7 @@ func TestDeleteReconcileWorker_FilesystemStagingOrphanIsRemovedWithoutAskingTheD
 	old := time.Now().Add(-30 * 24 * time.Hour)
 	testutil.RequireNoError(t, os.Chtimes(full, old, old), "os.Chtimes")
 	testutil.MustExec(t, pool, "inserting the orphan_files row", "INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ($1, $2, $3)", dbtest.StoreName, relPath, old)
-	media := pgstore.NewMediaWithStoresAndPolicy(pool, dbtest.StoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName))
+	media := pgstore.NewMediaInStore(pool, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName))
 	w := derivedS3SwitchedWorker(t, mediaDir, testFilesystemObjectStore(t, mediaDir), media, media)
 	w.RecordingPurge = pgstoretest.Recordings(pool)
 	w.Breakers = pgstoretest.Breakers(pool)

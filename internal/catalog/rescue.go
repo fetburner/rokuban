@@ -50,7 +50,7 @@ type RescueResult struct {
 // どの経路もファイル本体はコピー・変更しない。
 //
 // storeName は今回の rescue が書く置き場の名前で、mediaDir の目印と一致しなければ
-// 何も書かずに ErrStoreMarkerMismatch で止まる（同名を pgstore.NewMediaWithPolicy にも渡すこと）。
+// 何も書かずに ErrStoreMarkerMismatch で止まる（同名を pgstore.NewMediaInStoreWithoutPolicy にも渡すこと）。
 //
 // registrySites は `mirakcs:` レジストリの site 名一覧。ストレージ走査で
 // `sites/{site}/` 前置から site を読んだとき、その site がレジストリに

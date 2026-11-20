@@ -31,32 +31,43 @@ type Media struct {
 	servingStores []string
 }
 
-// NewMediaWithPolicy は指定した方針を束ねた PostgreSQL Media を作る。
-// storeName はこのプロセスが書く置き場で、空なら置き場に束縛しない。
-// ゼロ方針は原本規則が無く、配置削除も無効である
-// （TestStorageTransferDeletionKeepsCopiesWhenPolicyHasNoDesiredStore）。
-func NewMediaWithPolicy(pool *pgxpool.Pool, storeName string, policy store.StoragePolicy) *Media {
-	return NewMediaWithStoresAndPolicy(pool, storeName, storeName, policy)
+// NewMediaUnbound は置き場で絞らず、方針もゼロ値の Media を作る。
+// 起動時の検査・API・collector が使う。
+func NewMediaUnbound(pool *pgxpool.Pool) *Media {
+	return &Media{pool: pool}
 }
 
-// NewMediaWithStoresAndPolicy は方針と別の原本・コピー置き場を持つ Media を作る。
-// storeName はこのプロセスが書く置き場で、originalStore は原本の読み取り先を束縛する。
-func NewMediaWithStoresAndPolicy(pool *pgxpool.Pool, storeName, originalStore string, policy store.StoragePolicy) *Media {
-	return &Media{pool: pool, storeName: storeName, originalStore: originalStore, policy: policy}
+// NewMediaUnboundWithPolicy は置き場で絞らず、方針で判定する Media を作る。
+// 置き場をまたぐ reconcile・transfer のワーカーが使う。
+func NewMediaUnboundWithPolicy(pool *pgxpool.Pool, policy store.StoragePolicy) *Media {
+	return &Media{pool: pool, policy: policy}
 }
 
-// NewMediaForStreamerWithPolicy は配置方針から derived store を選び、読める置き場だけを配信候補にする Media を作る。
-func NewMediaForStreamerWithPolicy(pool *pgxpool.Pool, policy store.StoragePolicy, readableStores []string) *Media {
+// NewMediaInStore は storeName の置き場に束縛し、クエリもその置き場に絞る。原本も同じ置き場から読む。
+// 方針で削除を判定する、その置き場の書き手（ingest・publish・delete）が使う。
+func NewMediaInStore(pool *pgxpool.Pool, storeName string, policy store.StoragePolicy) *Media {
+	return &Media{pool: pool, storeName: storeName, originalStore: storeName, policy: policy}
+}
+
+// NewMediaInStoreWithoutPolicy は storeName の置き場に束縛し、方針を持たない（原本規則が無く、配置削除も無効）。
+// 削除の判定をしない CLI（storage adopt・import・rescue）と録画 HLS が使う。ゼロ方針で削除されないことは
+// TestStorageTransferDeletionKeepsCopiesWhenPolicyHasNoDesiredStore が検査する。
+func NewMediaInStoreWithoutPolicy(pool *pgxpool.Pool, storeName string) *Media {
+	return &Media{pool: pool, storeName: storeName, originalStore: storeName}
+}
+
+// NewMediaForDerivedStore は派生物を derivedStore に書き、原本は originalStore から読む Media を作る。
+// 置き場が二つ要るのは、派生物の公開だけが原本の置き場と派生物の置き場を分けるから。
+func NewMediaForDerivedStore(pool *pgxpool.Pool, derivedStore, originalStore string, policy store.StoragePolicy) *Media {
+	return &Media{pool: pool, storeName: derivedStore, originalStore: originalStore, policy: policy}
+}
+
+// NewMediaForStreamer は配置方針から derived store を選び、読める置き場だけを配信候補にする Media を作る。
+// streamer は置き場に書かず読むだけなので、束縛する置き場を持たない。
+func NewMediaForStreamer(pool *pgxpool.Pool, policy store.StoragePolicy, readableStores []string) *Media {
 	stores := make([]string, len(readableStores))
 	copy(stores, readableStores)
 	return &Media{pool: pool, policy: policy, servingStores: stores}
-}
-
-func (s *Media) originalStoreName() string {
-	if s.originalStore != "" {
-		return s.originalStore
-	}
-	return s.storeName
 }
 
 func (s *Media) derivedStoreName() string {
@@ -67,8 +78,8 @@ func (s *Media) derivedStoreName() string {
 }
 
 // servingSelection は派生物の配信で選ぶコピーの置き場を、SQL の preferred_readable_media_asset_copy
-// に渡す値にする。readable が nil なら全置き場が読める扱い（NULL）で、NewMediaWithPolicy で derivedStore と
-// storeName が両方空の読み手がこれに当たる。
+// に渡す値にする。readable が nil なら全置き場が読める扱い（NULL）で、置き場に束縛せず派生物の置き場も無い読み手
+// （NewMediaUnbound と、derived store が空の NewMediaUnboundWithPolicy）がこれに当たる。
 // streamer は読めると設定された置き場を readable に、derivedStore を preferred に渡す。
 // それ以外の読み手は derivedStoreName() の置き場だけを読める扱いにして、従来の絞り込みを保つ。
 func (s *Media) servingSelection() (preferred *string, readable []string) {
@@ -157,7 +168,7 @@ func servingAsset(row sqlcgen.GetOriginalMediaAssetForServingRow) store.MediaAss
 // GetOriginalMediaAssetForServing は配信可能な原本を返す。
 func (s *Media) GetOriginalMediaAssetForServing(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
 	row, err := sqlcgen.New(s.pool).GetOriginalMediaAssetForServing(ctx, sqlcgen.GetOriginalMediaAssetForServingParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.originalStoreName()),
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.originalStore),
 	})
 	if err != nil {
 		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading original media asset for recording %d", recordingID))
@@ -218,7 +229,7 @@ func (s *Media) GetSeekTilesMediaAssetForServing(ctx context.Context, recordingI
 // GetActiveOriginalMediaAsset は録画 HLS 配信に使う active な原本を返す。
 func (s *Media) GetActiveOriginalMediaAsset(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
 	row, err := sqlcgen.New(s.pool).GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.originalStoreName()),
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.originalStore),
 	})
 	if err != nil {
 		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading active original media asset for recording %d", recordingID))
@@ -598,7 +609,7 @@ func (s *Media) ListMissingThumbnailRecordings(ctx context.Context, page store.M
 		AfterRecordingID: page.AfterRecordingID,
 		RecordingID:      page.RecordingID,
 		RowLimit:         page.RowLimit,
-		OriginalStore:    mediaStoreNameArg(s.originalStoreName()),
+		OriginalStore:    mediaStoreNameArg(s.originalStore),
 		DerivedStore:     s.derivedStoreName(),
 	})
 	if err != nil {
@@ -613,7 +624,7 @@ func (s *Media) ListThumbnailReselectCandidates(ctx context.Context, page store.
 		AfterRecordingID: page.AfterRecordingID,
 		RecordingID:      page.RecordingID,
 		RowLimit:         page.RowLimit,
-		OriginalStore:    mediaStoreNameArg(s.originalStoreName()),
+		OriginalStore:    mediaStoreNameArg(s.originalStore),
 		DerivedStore:     s.derivedStoreName(),
 	})
 	if err != nil {
@@ -686,7 +697,7 @@ func (s *Media) ListMissingSeekTilesRecordings(ctx context.Context, page store.M
 		AfterRecordingID: page.AfterRecordingID,
 		RecordingID:      page.RecordingID,
 		RowLimit:         page.RowLimit,
-		OriginalStore:    mediaStoreNameArg(s.originalStoreName()),
+		OriginalStore:    mediaStoreNameArg(s.originalStore),
 		DerivedStore:     s.derivedStoreName(),
 	})
 	if err != nil {

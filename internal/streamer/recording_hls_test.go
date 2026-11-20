@@ -366,7 +366,7 @@ func TestRecordingHLSTempWriterSwitchKeepsPublishedSegmentsAndPlaylist(t *testin
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = $2 WHERE id = $1`, recordingID, time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatal(err)
 	}
-	media := pgstore.NewMediaWithPolicy(pool, "main", store.NewStoragePolicy(nil, nil, "derived"))
+	media := pgstore.NewMediaInStore(pool, "main", store.NewStoragePolicy(nil, nil, "derived"))
 	h := newRecordingHLSTestHarnessWithProbe(t, false, false, time.Second, "", recordingHLSTestProbe{firstPacketPTS: 900000, tail: recordingHLSTailPackets(20.04)})
 	// URL の 42 は DB の録画 id と違うので、検索だけ本物の録画へ向ける。
 	h.store.setLookup(func(int64, int) (store.RecordingHLSInputTarget, error) {

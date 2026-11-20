@@ -99,7 +99,7 @@ func newTransferTestRemoteFixture(t *testing.T, content []byte, knownSHA bool, s
 		pool: pool, roots: transferTestRoots(t, "archive"), cfg: cfg, fingerprint: fingerprint,
 		assetID: assetID, recordingID: recordingID, content: content, streamer: streamer,
 		relPath:      "sites/default/transfer/source.ts",
-		storageMedia: pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)),
+		storageMedia: pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)),
 	}
 }
 
@@ -409,7 +409,7 @@ func TestPrepareMediaAssetTransferKeepsDerivedSourcesMounted(t *testing.T) {
 	source := cfg.Stores["test-store"]
 	source.InternalURL = "http://127.0.0.1:1"
 	cfg.Stores["test-store"] = source
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 	reserve := func(fsStores, sourceStores []string) bool {
 		t.Helper()
 		_, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive",
@@ -481,7 +481,7 @@ func TestStorageTransferWorkerPrefersMountedCopyOverNewerRemoteCopy(t *testing.T
 	fingerprint, err := cfg.PolicyFingerprint()
 	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	worker := StorageTransferWorker{
-		Storage: pgstore.NewMediaWithPolicy(pool, "archive", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots,
+		Storage: pgstore.NewMediaInStore(pool, "archive", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots,
 		ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir(),
 	}
 	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}), "Work")

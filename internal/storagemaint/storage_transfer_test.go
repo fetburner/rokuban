@@ -213,7 +213,7 @@ func TestPrepareMediaAssetTransferKeepsPendingRelPathAcrossRetries(t *testing.T)
 	roots := transferTestRoots(t, "test-store", "archive")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], []byte("pending transfer path"))
 	cfg := transferTestConfig("archive", "archive", "test-store")
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 	prepare := func() store.MediaAssetTransfer {
 		t.Helper()
 		transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
@@ -257,7 +257,7 @@ func TestStorageTransferWorkerCopiesAndAdopts(t *testing.T) {
 			cfg := transferTestConfig("archive", "archive", "test-store")
 			fingerprint, err := cfg.PolicyFingerprint()
 			testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
-			media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+			media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 			transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), 10)
 			if err != nil || !ok {
 				t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
@@ -340,7 +340,7 @@ func TestStorageTransferWorkerEncodedSubtitleKeys(t *testing.T) {
 			cfg := transferTestConfig("archive", "archive", "test-store")
 			fingerprint, err := cfg.PolicyFingerprint()
 			testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
-			media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+			media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 			transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 			if err != nil || !ok {
 				t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
@@ -409,7 +409,7 @@ func TestDeleteReconcilePlacementDeletionRemovesEncodedSubtitleSidecar(t *testin
 	transferTestAddCopy(t, pool, assetID, "archive", relPath)
 	testutil.MustExec(t, pool, "aging the archive copy past the overlap", `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'archive'`, assetID)
 	cfg := transferTestConfig("archive", "archive", "test-store")
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 	objects := transferTestObjectStores(t, roots)
 	worker := DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, StorageTransfer: media,
@@ -437,7 +437,7 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 	testutil.RequireNoError(t, err, "mediapath.SubtitleSibling")
 	testutil.RequireNoError(t, os.WriteFile(filepath.Join(roots["test-store"], filepath.FromSlash(subtitleRelPath)), []byte("WEBVTT\n\nabandoned captions\n"), 0o644), "os.WriteFile")
 	cfg := transferTestConfig("archive", "archive", "test-store")
-	media := pgstore.NewMediaWithPolicy(pool, "archive", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "archive", mustStoragePolicy(t, cfg))
 	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing abandoned copy = (%+v, %t, %v)", transfer, ok, err)
@@ -513,7 +513,7 @@ func TestDeleteReconcilePreservesPreexistingDestinationAfterPendingTransferRecla
 	collision := []byte("pre-existing restored file")
 	collisionSubtitle := []byte("pre-existing captions")
 	transferConfig := transferTestConfig("archive", "archive", "test-store")
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, transferConfig))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, transferConfig))
 	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", transferConfig.FSStoreNames(), transferConfig.FSStoreNames(), transferConfig.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing pending copy = (%+v, %t, %v)", transfer, ok, err)
@@ -544,7 +544,7 @@ func TestDeleteReconcilePreservesPreexistingDestinationAfterPendingTransferRecla
 	}
 
 	deleteConfig := transferTestConfig("test-store", "archive", "test-store")
-	deleteMedia := pgstore.NewMediaWithPolicy(pool, "archive", mustStoragePolicy(t, deleteConfig))
+	deleteMedia := pgstore.NewMediaInStore(pool, "archive", mustStoragePolicy(t, deleteConfig))
 	deleteWorker := DeleteReconcileWorker{
 		MediaDelete: deleteMedia, Storage: deleteMedia, StorageTransfer: deleteMedia,
 		RecordingPurge: pgstore.NewRecordings(pool, "archive"), Breakers: pgstore.NewBreakers(pool),
@@ -580,7 +580,7 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 	video := []byte("owned encoded video")
 	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, relPath, video)
 	transferConfig := transferTestConfig("archive", "archive", "test-store")
-	media := pgstore.NewMediaWithPolicy(pool, "archive", mustStoragePolicy(t, transferConfig))
+	media := pgstore.NewMediaInStore(pool, "archive", mustStoragePolicy(t, transferConfig))
 	transfer, ok, err := media.PrepareMediaAssetTransfer(
 		context.Background(), assetID, "archive", transferConfig.FSStoreNames(), transferConfig.FSStoreNames(), transferConfig.FSStoreNames(), store.MediaAssetTransferAttemptLimit,
 	)
@@ -605,7 +605,7 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 		t.Fatalf("recording pending subtitle ownership = (%d, %v), want owned", ownership, err)
 	}
 	deleteConfig := transferTestConfig("test-store", "archive", "test-store")
-	deleteMedia := pgstore.NewMediaWithPolicy(pool, "archive", mustStoragePolicy(t, deleteConfig))
+	deleteMedia := pgstore.NewMediaInStore(pool, "archive", mustStoragePolicy(t, deleteConfig))
 	worker := DeleteReconcileWorker{
 		MediaDelete: deleteMedia, Storage: deleteMedia, StorageTransfer: deleteMedia,
 		RecordingPurge: pgstore.NewRecordings(pool, "archive"), Breakers: pgstore.NewBreakers(pool),
@@ -647,7 +647,7 @@ func TestStorageTransferWorkerResumesSavedProgressWithoutReadingSourcePrefix(t *
 	expectedSHA := sha256.Sum256(content)
 	testutil.MustExec(t, pool, "setting the expected logical sha256", `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, expectedSHA[:], assetID)
 	cfg := transferTestConfig("archive", "archive", "test-store")
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), 10)
 	if err != nil || !ok {
 		t.Fatalf("preparing saved transfer = (%+v, %t, %v)", transfer, ok, err)
@@ -679,7 +679,7 @@ func TestStorageTransferWorkerRestartsFromSourceWhenPreviousAttemptFailed(t *tes
 	expectedSHA := sha256.Sum256(content)
 	testutil.MustExec(t, pool, "setting the expected logical sha256", `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, expectedSHA[:], assetID)
 	cfg := transferTestConfig("archive", "archive", "test-store")
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), 10)
 	if err != nil || !ok {
 		t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
@@ -734,7 +734,7 @@ func TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers(t *testing.T) {
 			content := []byte("a saved offset must match the temp length before the temp is continued")
 			assetID := transferTestOriginal(t, pool, roots["test-store"], content)
 			cfg := transferTestConfig("archive", "archive", "test-store")
-			media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+			media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 			transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), 10)
 			if err != nil || !ok {
 				t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
@@ -801,7 +801,7 @@ func TestStorageTransferWorkerSnoozesWhenOwnLeaseExpiredDuringSlice(t *testing.T
 	restore := storageTransferSlice
 	storageTransferSlice = 300 * time.Millisecond
 	t.Cleanup(func() { storageTransferSlice = restore })
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 	worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 	// slice の最中に lease を切る。取った直後（handed_off が偽で期限が先）の行だけを対象にする。
 	stop := make(chan struct{})
@@ -842,7 +842,7 @@ func TestStorageTransferWorkerSliceStopsAndResumesToCompletion(t *testing.T) {
 	restore := storageTransferSlice
 	storageTransferSlice = 150 * time.Millisecond
 	t.Cleanup(func() { storageTransferSlice = restore })
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 	worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 	args := jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}
 	snoozes := 0
@@ -890,7 +890,7 @@ func TestStorageTransferWorkerChecksMountsBeforePrepare(t *testing.T) {
 		cfg := transferTestConfig("archive", "archive", "test-store")
 		fingerprint, err := cfg.PolicyFingerprint()
 		testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
-		worker := StorageTransferWorker{Storage: pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
+		worker := StorageTransferWorker{Storage: pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 		if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err == nil {
 			t.Fatal("Work with unmounted target succeeded")
 		}
@@ -915,7 +915,7 @@ func TestStorageTransferWorkerChecksMountsBeforePrepare(t *testing.T) {
 		cfg := transferTestConfig("archive", "archive", "test-store")
 		fingerprint, err := cfg.PolicyFingerprint()
 		testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
-		worker := StorageTransferWorker{Storage: pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
+		worker := StorageTransferWorker{Storage: pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 		if err := worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}); err == nil {
 			t.Fatal("Work with mismatched target marker succeeded")
 		}
@@ -937,7 +937,7 @@ func TestStorageTransferWorkerChecksMountsBeforePrepare(t *testing.T) {
 		cfg := transferTestConfig("archive", "archive", "test-store")
 		fingerprint, err := cfg.PolicyFingerprint()
 		testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
-		worker := StorageTransferWorker{Storage: pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: map[string]string{"archive": roots["archive"]}, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
+		worker := StorageTransferWorker{Storage: pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: map[string]string{"archive": roots["archive"]}, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 		testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}), "Work with unmounted source")
 		var copies, attempts int
 		testutil.RequireNoError(t, pool.QueryRow(context.Background(), `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive'`, assetID).Scan(&copies), "reading archive copy count")
@@ -956,7 +956,7 @@ func TestStorageTransferWorkerSnoozesWhenSourceLockIsBusyWithoutAttempt(t *testi
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	fingerprint, err := cfg.PolicyFingerprint()
 	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 	lease, acquired, err := media.AcquireTransferSourceBandwidth(context.Background(), "test-store")
 	if err != nil || !acquired {
 		t.Fatalf("acquiring source lock = (%v, %v), want lease", acquired, err)
@@ -988,7 +988,7 @@ func TestStorageTransferWorkerSnoozesDerivedWhenSourceLockIsBusyWithoutAttempt(t
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	fingerprint, err := cfg.PolicyFingerprint()
 	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 	lease, acquired, err := media.AcquireTransferSourceBandwidth(context.Background(), "test-store")
 	if err != nil || !acquired {
 		t.Fatalf("acquiring source lock = (%v, %v), want lease", acquired, err)
@@ -1027,7 +1027,7 @@ func TestPrepareMediaAssetTransferDoesNotReviveDeletingCopy(t *testing.T) {
 		p.State = "deleting"
 	})
 	cfg := transferTestConfig("archive", "archive", "test-store")
-	transfer, ok, err := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)).PrepareMediaAssetTransfer(
+	transfer, ok, err := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)).PrepareMediaAssetTransfer(
 		context.Background(), assetID, "archive", cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), 10,
 	)
 	if err != nil || ok {
@@ -1050,7 +1050,7 @@ func TestStorageTransferWorkerReportsOriginalMismatchWithoutDeletingSource(t *te
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	fingerprint, err := cfg.PolicyFingerprint()
 	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
-	worker := StorageTransferWorker{Storage: pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
+	worker := StorageTransferWorker{Storage: pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{
 		MediaAssetID: assetID,
 		Store:        "archive", PolicyFingerprint: fingerprint,
@@ -1125,7 +1125,7 @@ func TestStorageTransferWorkerRetiresCorruptDerivedSourceOnlyWhenOriginalCanRebu
 			if bound == "" {
 				bound = "test-store"
 			}
-			worker := StorageTransferWorker{Storage: pgstore.NewMediaWithPolicy(pool, bound, mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
+			worker := StorageTransferWorker{Storage: pgstore.NewMediaInStore(pool, bound, mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 			testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{
 				MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint,
 			}), "Work with corrupt sole derived copy")
@@ -1186,7 +1186,7 @@ func TestStorageTransferWorkerUsesObjectStoreForDerivedCopies(t *testing.T) {
 	fingerprint, err := cfg.PolicyFingerprint()
 	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	worker := StorageTransferWorker{
-		Storage: pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots,
+		Storage: pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots,
 		ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir(),
 	}
 	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}), "Work")
@@ -1215,7 +1215,7 @@ func TestStorageTransferWorkerRejectsOldFingerprintAndNewPolicyKeepsAValidCopy(t
 	assetID := transferTestOriginal(t, pool, roots["test-store"], content)
 	oldConfig := transferTestConfig("archive", "archive", "cold", "test-store")
 	newConfig := transferTestConfig("cold", "archive", "cold", "test-store")
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, newConfig))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, newConfig))
 	oldFingerprint, err := oldConfig.PolicyFingerprint()
 	testutil.RequireNoError(t, err, "oldConfig.PolicyFingerprint")
 	newFingerprint, err := newConfig.PolicyFingerprint()
@@ -1282,7 +1282,7 @@ func TestStorageTransferWorkerReconcileEnqueuesDesiredCopies(t *testing.T) {
 	fingerprint, err := cfg.PolicyFingerprint()
 	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	enqueuer := &jobqfaketest.RecordingEnqueuer{}
-	reconcile := StorageTransferReconcileWorker{Enqueuer: enqueuer, Storage: pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg}
+	reconcile := StorageTransferReconcileWorker{Enqueuer: enqueuer, Storage: pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg}
 	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "reconcile Work")
 	args := enqueuer.CallsOfKind("storage_transfer")
 	if len(args) != 1 {
@@ -1331,7 +1331,7 @@ func TestStorageTransferReconcileWarnsForActiveDerivedCopyInNonDerivedS3(t *test
 	t.Cleanup(func() { metrics.StorageDerivedCopiesOutsideDerivedS3.Set(0) })
 
 	reconcile := StorageTransferReconcileWorker{
-		Enqueuer: &jobqfaketest.RecordingEnqueuer{}, Storage: pgstore.NewMediaWithPolicy(pool, "", mustStoragePolicy(t, cfg)), Config: cfg,
+		Enqueuer: &jobqfaketest.RecordingEnqueuer{}, Storage: pgstore.NewMediaUnboundWithPolicy(pool, mustStoragePolicy(t, cfg)), Config: cfg,
 	}
 	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "storage transfer reconcile")
 	if got := promtestutil.ToFloat64(metrics.StorageDerivedCopiesOutsideDerivedS3); got != 1 {
@@ -1369,7 +1369,7 @@ func TestStorageTransferReconcileDoesNotWarnWithoutActiveDerivedCopyInNonDerived
 	t.Cleanup(func() { metrics.StorageDerivedCopiesOutsideDerivedS3.Set(0) })
 
 	reconcile := StorageTransferReconcileWorker{
-		Enqueuer: &jobqfaketest.RecordingEnqueuer{}, Storage: pgstore.NewMediaWithPolicy(pool, "", mustStoragePolicy(t, cfg)), Config: cfg,
+		Enqueuer: &jobqfaketest.RecordingEnqueuer{}, Storage: pgstore.NewMediaUnboundWithPolicy(pool, mustStoragePolicy(t, cfg)), Config: cfg,
 	}
 	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "storage transfer reconcile")
 	if got := promtestutil.ToFloat64(metrics.StorageDerivedCopiesOutsideDerivedS3); got != 0 {
@@ -1385,7 +1385,7 @@ func TestStorageTransferReconcileReportsExhaustionAndClearsObsoleteAttempts(t *t
 	roots := transferTestRoots(t, "test-store", "archive", "cold")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], []byte("attempted transfer"))
 	archiveConfig := transferTestConfig("archive", "archive", "test-store")
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, archiveConfig))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, archiveConfig))
 	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", archiveConfig.FSStoreNames(), archiveConfig.FSStoreNames(), archiveConfig.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing failed transfer = (%+v, %t, %v)", transfer, ok, err)
@@ -1429,7 +1429,7 @@ func TestStorageTransferReconcileReportsExhaustionAndClearsObsoleteAttempts(t *t
 
 	coldConfig := transferTestConfig("cold", "archive", "cold", "test-store")
 	secondEnqueuer := &jobqfaketest.RecordingEnqueuer{}
-	coldMedia := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, coldConfig))
+	coldMedia := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, coldConfig))
 	secondPass := StorageTransferReconcileWorker{Enqueuer: secondEnqueuer, Storage: coldMedia, Config: coldConfig}
 	testutil.RequireNoError(t, secondPass.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "secondPass.Work")
 	if got := len(secondEnqueuer.CallsOfKind("storage_transfer")); got != 1 {
@@ -1490,7 +1490,7 @@ func TestStorageTransferPendingReclaimSelectionRechecksObsoleteState(t *testing.
 			profile := "web"
 			assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, "sites/default/transfer/pending.mp4", []byte("encoded"))
 			initialPolicy := transferTestConfig("archive", "archive", "test-store", "cold")
-			media := pgstore.NewMediaWithPolicy(pool, "archive", mustStoragePolicy(t, initialPolicy))
+			media := pgstore.NewMediaInStore(pool, "archive", mustStoragePolicy(t, initialPolicy))
 			transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", initialPolicy.FSStoreNames(), initialPolicy.FSStoreNames(), initialPolicy.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 			if err != nil || !ok {
 				t.Fatalf("preparing pending copy = (%+v, %t, %v)", transfer, ok, err)
@@ -1499,7 +1499,7 @@ func TestStorageTransferPendingReclaimSelectionRechecksObsoleteState(t *testing.
 				tc.change(t, pool, recordingID, assetID)
 			}
 			policy := tc.policy()
-			policyMedia := pgstore.NewMediaWithPolicy(pool, "archive", mustStoragePolicy(t, policy))
+			policyMedia := pgstore.NewMediaInStore(pool, "archive", mustStoragePolicy(t, policy))
 			copies, err := policyMedia.ListObsoletePendingMediaAssetTransferCopies(context.Background(), 10)
 			testutil.RequireNoError(t, err, "listing obsolete pending copies")
 			if gotOne := len(copies) == 1; gotOne != tc.wantOne {
@@ -1517,7 +1517,7 @@ func TestStorageTransferPendingReclaimRechecksAfterRecordingRestore(t *testing.T
 	profile := "web"
 	assetID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, "sites/default/transfer/restored.mp4", []byte("encoded"))
 	cfg := transferTestConfig("archive", "archive", "test-store")
-	media := pgstore.NewMediaWithPolicy(pool, "archive", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "archive", mustStoragePolicy(t, cfg))
 	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing pending copy = (%+v, %t, %v)", transfer, ok, err)
@@ -1549,7 +1549,7 @@ func prepareUntilEncodedPendingOriginal(t *testing.T, pool *pgxpool.Pool, roots 
 	originalRelPath := "sites/default/retention/pending-original.ts"
 	originalID := seedOriginalAsset(t, pool, roots["test-store"], recordingID, originalRelPath, []byte("source-original"))
 	cfg := transferTestConfig("archive", "archive", "test-store")
-	media := pgstore.NewMediaWithPolicy(pool, "archive", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "archive", mustStoragePolicy(t, cfg))
 	transfer, ok, err := media.PrepareMediaAssetTransfer(
 		context.Background(), originalID, "archive", cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit,
 	)
@@ -1589,7 +1589,7 @@ func TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded(t *testing.T) {
 	targetPath := filepath.Join(roots["archive"], filepath.FromSlash(transfer.RelPath))
 	testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(targetPath), 0o755), "os.MkdirAll")
 	// 実際の試行と同じく、進捗の行を作ってから世代の名前で temp を書く。回収は行の世代で temp を見つける。
-	progress, acquired, err := pgstore.NewMediaWithPolicy(pool, "archive", mustStoragePolicy(t, cfg)).AcquireMediaAssetTransferProgress(context.Background(), transfer.CopyID, uuid.New(), time.Minute)
+	progress, acquired, err := pgstore.NewMediaInStore(pool, "archive", mustStoragePolicy(t, cfg)).AcquireMediaAssetTransferProgress(context.Background(), transfer.CopyID, uuid.New(), time.Minute)
 	if err != nil || !acquired {
 		t.Fatalf("acquiring transfer progress = (%+v, %t, %v)", progress, acquired, err)
 	}
@@ -1598,11 +1598,11 @@ func TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded(t *testing.T) {
 	testutil.RequireNoError(t, os.Link(tempPath, targetPath), "linking published pending destination to transfer temp")
 
 	objects := transferTestObjectStores(t, roots)
-	derivedMedia := pgstore.NewMediaWithPolicy(pool, "archive", mustStoragePolicy(t, cfg))
+	derivedMedia := pgstore.NewMediaInStore(pool, "archive", mustStoragePolicy(t, cfg))
 	derivedDeleteStores, storeErr := store.NewDerivedObjectDeleteStores(derivedMedia, derivedMedia, derivedMedia)
 	testutil.RequireNoError(t, storeErr, "creating derived object delete stores")
 	newWorker := func(storeName string) *DeleteReconcileWorker {
-		media := pgstore.NewMediaWithPolicy(pool, storeName, mustStoragePolicy(t, cfg))
+		media := pgstore.NewMediaInStore(pool, storeName, mustStoragePolicy(t, cfg))
 		worker := &DeleteReconcileWorker{
 			MediaDelete: media, Storage: media, StorageTransfer: media,
 			RecordingPurge: pgstore.NewRecordings(pool, storeName), Breakers: pgstore.NewBreakers(pool),
@@ -1643,7 +1643,7 @@ func TestStorageTransferPendingReclaimRechecksUntilEncodedEligibility(t *testing
 	roots := transferTestRoots(t, "test-store", "archive")
 	recordingID := dbtest.Recording(t, pool)
 	_, transfer, cfg, seekTilesCopyID := prepareUntilEncodedPendingOriginal(t, pool, roots, recordingID)
-	media := pgstore.NewMediaWithPolicy(pool, "archive", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "archive", mustStoragePolicy(t, cfg))
 	candidates, err := media.ListObsoletePendingMediaAssetTransferCopies(
 		context.Background(), 10,
 	)
@@ -1706,7 +1706,7 @@ func TestUntilEncodedOriginalWaitsForPresentDerivedCopiesInDesiredStore(t *testi
 	assertOriginalEligibility(true)
 
 	cfg := transferTestConfig("archive", "archive", "test-store")
-	candidates, err := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)).ListMediaAssetTransferCandidates(
+	candidates, err := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)).ListMediaAssetTransferCandidates(
 		context.Background(), 10, 100,
 	)
 	testutil.RequireNoError(t, err, "listing transfer candidates after until_encoded eligibility")
@@ -1764,7 +1764,7 @@ SELECT EXISTS (
 		t.Fatal("until_encoded original became deletable although derived copies exist only in s3-a")
 	}
 
-	missing, err := pgstore.NewMediaWithPolicy(pool, "", mustStoragePolicy(t, cfg)).ListMissingEncodeProfiles(context.Background(), store.MissingEncodeProfilesParams{
+	missing, err := pgstore.NewMediaUnboundWithPolicy(pool, mustStoragePolicy(t, cfg)).ListMissingEncodeProfiles(context.Background(), store.MissingEncodeProfilesParams{
 		RecordingID:   &recordingID,
 		KnownProfiles: []string{profile},
 		CutProfiles:   []string{},
@@ -1779,7 +1779,7 @@ SELECT EXISTS (
 	}
 
 	policy := mustStoragePolicy(t, cfg)
-	candidates, err := pgstore.NewMediaWithPolicy(pool, "", policy).ListMediaAssetTransferCandidates(
+	candidates, err := pgstore.NewMediaUnboundWithPolicy(pool, policy).ListMediaAssetTransferCandidates(
 		context.Background(), 10, 100,
 	)
 	testutil.RequireNoError(t, err, "listing derived transfer candidates for s3-b")
@@ -1800,7 +1800,7 @@ func TestStorageTransferDeletionWiresOverlapCutoff(t *testing.T) {
 		p.RelPath = "sites/default/delete/source.ts"
 	})
 	cfg := transferTestConfig("archive", "archive", "test-store")
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 
 	transferTestAddCopy(t, pool, assetID, "archive", "sites/default/delete/source.ts")
 	if candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), time.Now().Add(-time.Hour), 10); err != nil || len(candidates) != 0 {
@@ -1832,7 +1832,7 @@ func TestStorageTransferDeletionKeepsCopiesWhenPolicyHasNoDesiredStore(t *testin
 	transferTestAddCopy(t, pool, assetID, "cold", "sites/default/no-desired/source.ts")
 	// overlap を外し、ゼロ方針で削除されないことを検査する。
 	testutil.MustExec(t, pool, "backdating copies past the overlap", `UPDATE media_asset_copies SET created_at = now() - interval '2 hours' WHERE media_asset_id = $1 AND store IN ('archive', 'cold')`, assetID)
-	media := pgstore.NewMediaWithPolicy(pool, "archive", store.StoragePolicy{})
+	media := pgstore.NewMediaInStoreWithoutPolicy(pool, "archive")
 
 	candidates, err := media.ListMediaAssetCopiesToDelete(context.Background(), time.Now(), 10)
 	if err != nil || len(candidates) != 0 {
@@ -1872,7 +1872,7 @@ func TestStorageTransferDeletionSkipsWhenPlacementArmIsDisabled(t *testing.T) {
 	transferTestAddCopy(t, pool, assetID, "cold", "sites/default/placement-disabled/source.ts")
 	// desired コピーを overlap より古くし、配置削除の無効化だけが削除を止めている状態にする。
 	testutil.MustExec(t, pool, "aging the desired archive copy past the overlap", `UPDATE media_asset_copies SET created_at = now() - interval '2 hours' WHERE media_asset_id = $1 AND store = 'archive'`, assetID)
-	media := pgstore.NewMediaWithPolicy(pool, "cold", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "cold", mustStoragePolicy(t, cfg))
 	candidate := store.MediaAssetCopyDeleteCandidate{
 		CopyID:       transferTestCopyID(t, pool, assetID, "cold"),
 		MediaAssetID: assetID,
@@ -1907,8 +1907,8 @@ func TestStorageTransferDeletionSerializesPolicySwitches(t *testing.T) {
 	newRules := mustStoragePolicy(t, newConfig).OriginalRules()
 	oldPolicy := store.NewStoragePolicy(oldRules, nil, "archive").WithPlacementEnabled(true)
 	newPolicy := store.NewStoragePolicy(newRules, nil, "cold").WithPlacementEnabled(true)
-	oldMedia := pgstore.NewMediaWithPolicy(pool, "test-store", oldPolicy)
-	newMedia := pgstore.NewMediaWithPolicy(pool, "test-store", newPolicy)
+	oldMedia := pgstore.NewMediaInStore(pool, "test-store", oldPolicy)
+	newMedia := pgstore.NewMediaInStore(pool, "test-store", newPolicy)
 	transferTestAddCopy(t, pool, assetID, "archive", "sites/default/policy-switch/source.ts")
 	transferTestAddCopy(t, pool, assetID, "cold", "sites/default/policy-switch/source.ts")
 	testutil.MustExec(t, pool, "retiring the test-store copy", `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = 'test-store'`, assetID)
@@ -2009,7 +2009,7 @@ func TestStorageTransferWorkerStreamsKnownSHADerivedWithoutScratch(t *testing.T)
 	fingerprint, err := cfg.PolicyFingerprint()
 	testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 	worker := StorageTransferWorker{
-		Storage: pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots,
+		Storage: pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots,
 		ObjectStores: transferTestObjectStores(t, roots), ScratchDir: filepath.Join(blocker, "scratch"),
 	}
 	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}), "Work")
@@ -2056,7 +2056,7 @@ func TestStorageTransferWorkerStreamedDerivedSourceMismatchPublishesNothing(t *t
 			fingerprint, err := cfg.PolicyFingerprint()
 			testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 			worker := StorageTransferWorker{
-				Storage: pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots,
+				Storage: pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots,
 				ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir(),
 			}
 			testutil.RequireNoError(t, worker.Work(context.Background(), jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}), "Work")
@@ -2086,7 +2086,7 @@ func TestTransferTempOrphanCleanupFollowsProgressGeneration(t *testing.T) {
 	content := []byte("progress generation decides which transfer temp is still owned")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], content)
 	cfg := transferTestConfig("archive", "archive", "test-store")
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), 10)
 	if err != nil || !ok {
 		t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)

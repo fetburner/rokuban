@@ -147,7 +147,7 @@ func newDerivedResumeFixtureWithSHA(t *testing.T, knownSHA bool) derivedResumeFi
 	return derivedResumeFixture{
 		pool: pool, roots: roots, objects: objects,
 		worker: StorageTransferWorker{
-			Storage: pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots,
+			Storage: pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots,
 			ObjectStores: objects, ScratchDir: t.TempDir(),
 		},
 		args:    jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint},

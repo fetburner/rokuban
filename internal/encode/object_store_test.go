@@ -137,7 +137,7 @@ func newObjectEnvWith(t *testing.T, objects objstore.Store) objectEnv {
 	return objectEnv{
 		pool:    pool,
 		objects: objects,
-		media:   pgstore.NewMediaWithStoresAndPolicy(pool, objectStoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName)),
+		media:   pgstore.NewMediaForDerivedStore(pool, objectStoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName)),
 	}
 }
 

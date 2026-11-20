@@ -49,7 +49,7 @@ func mediaWithStorageConfig(t *testing.T, pool *pgxpool.Pool, cfg config.Storage
 	t.Helper()
 	policy, err := cfg.BuildStorePolicy()
 	testutil.RequireNoError(t, err, "cfg.BuildStorePolicy")
-	return pgstore.NewMediaWithPolicy(pool, pgstoretest.TestStore, policy)
+	return pgstore.NewMediaInStore(pool, pgstoretest.TestStore, policy)
 }
 
 // runEncodeReconcilePass runs one pass and records the Args it asks the queue to deliver.

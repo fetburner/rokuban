@@ -867,7 +867,7 @@ func TestServerStreamsOldDerivedCopyFromMountedFSDuringS3Switch(t *testing.T) {
 }
 
 // 読める置き場が重なるとき、名前順で先に来る FS（test-store）より派生物の置き場の S3 コピーを選ぶ。
-// newStreamerObjectStores と NewMediaForStreamerWithPolicy の配線が外れると、FS のコピーを 200 で配ってしまう。
+// newStreamerObjectStores と NewMediaForStreamer の配線が外れると、FS のコピーを 200 で配ってしまう。
 func TestServerStreamsPreferredS3CopyWhenMountedFSCopyAlsoActive(t *testing.T) {
 	// 署名 URL の生成に資格情報が要る。宛先は newFakeS3Bucket の HTTP サーバーで、外へは出ない。
 	t.Setenv("AWS_ACCESS_KEY_ID", "test-access-key")

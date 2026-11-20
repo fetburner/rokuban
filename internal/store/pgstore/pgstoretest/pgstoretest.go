@@ -42,7 +42,7 @@ func LabelRules(pool *pgxpool.Pool) *pgstore.LabelRules {
 
 // Media はテスト用の既定値で Media を作る。
 func Media(pool *pgxpool.Pool) *pgstore.Media {
-	return pgstore.NewMediaWithPolicy(pool, TestStore, store.NewStoragePolicy(nil, nil, TestStore))
+	return pgstore.NewMediaInStore(pool, TestStore, store.NewStoragePolicy(nil, nil, TestStore))
 }
 
 // NeverScheduledEvents はテスト用の既定値で NeverScheduledEvents を作る。

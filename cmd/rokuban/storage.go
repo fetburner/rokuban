@@ -11,7 +11,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/mediapath"
-	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -80,7 +79,7 @@ func newStorageAdoptCmd() *cobra.Command {
 			if err := db.CheckMigrationsCurrent(cmd.Context(), cfg.DB.DSN()); err != nil {
 				return fmt.Errorf("storage adopt: %w", err)
 			}
-			media := pgstore.NewMediaWithPolicy(pool, name, store.NewStoragePolicy(nil, nil, "")) // 照合だけで削除の判定はしない
+			media := pgstore.NewMediaInStoreWithoutPolicy(pool, name)
 			if !markerExists {
 				has, err := media.HasStoreCopies(cmd.Context())
 				if err != nil {

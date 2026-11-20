@@ -51,7 +51,7 @@ MP4 / MKV / WebM を既存位置のまま素の asset として登録する。�
 			defer pool.Close()
 
 			siteNames := registryNames(cfg.Registry())
-			return runRescue(ctx, pgstore.NewCatalog(pool, siteNames, storeName), pgstore.NewMediaWithPolicy(pool, storeName, store.NewStoragePolicy(nil, nil, "")) /* rescue は削除の判定をしない */, root, storeName, siteNames, cmd.OutOrStdout())
+			return runRescue(ctx, pgstore.NewCatalog(pool, siteNames, storeName), pgstore.NewMediaInStoreWithoutPolicy(pool, storeName), root, storeName, siteNames, cmd.OutOrStdout())
 		},
 	}
 	addCommandStoreFlag(cmd)
