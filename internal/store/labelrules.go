@@ -33,6 +33,7 @@ type LabelRules interface {
 	// Delete は id のルールを削除する。存在しないときは ErrNotFound を返す。
 	Delete(ctx context.Context, id int64) error
 	// SeriesKey は DB の series_key 関数で value を正規化する。キーが作れない場合は nil を返す。
+	// 返すキーは LabelRule.ValueKey と同じ規則で正規化される。検査: `RunLabelRules` の「CRUD and series key」。
 	SeriesKey(ctx context.Context, value string) (*string, error)
 }
 
@@ -40,7 +41,8 @@ type LabelRules interface {
 type LabelRuleReevaluation interface {
 	// ReevaluateAll は全録画の当たりを差分適用し、変更した行数を返す。
 	// 差分は原子的に適用され、読み手は適用前か適用後の当たりしか見ない。
-	// 当たりが変わったときだけ、録画の購読者へ通知する。
+	// 既に commit 済みの録画も、この再評価で新しいルールの集合に追従する。検査: `RunLabelRules` の「reevaluation applies the committed rule set」。
+	// 当たりが変わったときだけ、録画のトピックへ 1 回通知する（契約テストでは未検証）。
 	// 同時に実行できる再評価は 1 本だけである。後から始まった再評価は、先に
 	// commit されたルールの集合で評価する。
 	ReevaluateAll(ctx context.Context) (changed int64, err error)
