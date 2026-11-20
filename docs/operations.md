@@ -4,7 +4,7 @@
 
 | 節 | 内容 | ファイル |
 |---|---|---|
-| §1 | 監視メトリクス: `/metrics` エンドポイント / 実装済みメトリクス一覧 / 録画品質 / ruler / ingest / reconcile / 開始遅延検出器 / 警告が出ないことは保証ではない | [operations/monitoring.md](operations/monitoring.md) |
+| §1 | 監視メトリクス: `/metrics` エンドポイント / メトリクスの 2 種類 / 領域ごとの読み方 / 録画品質 / ruler / ingest / encode reconcile / TS scan / reconcile / 開始遅延検出器 / ライブ視聴 / 警告が出ないことは保証ではない / チューナー故障の 1 行 | [operations/monitoring.md](operations/monitoring.md) |
 | §1 | ジョブ化されたループの監視（`rokuban enqueue`）: 停止を見分けるメトリクス / 完走時刻の記録 / アラート式の集約と初回パス / CronJob の忘れ / record_sweep の起動契機 | [operations/monitoring-scaled-jobs.md](operations/monitoring-scaled-jobs.md) |
 | §1 | FS 置き場間の転送の監視: 転送待ちのゲージ / 背圧 / ログ / 対処 | [operations/monitoring-transfer.md](operations/monitoring-transfer.md) |
 | §2 | アラート設計: scrambled / エッジディスク残量 / 大量削除サーキットブレーカー / 開始遅延 | [operations/alerts.md](operations/alerts.md) |
