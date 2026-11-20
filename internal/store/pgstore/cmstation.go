@@ -121,7 +121,7 @@ func (s *Analysis) GetCandidateRecording(ctx context.Context, recordingID int64)
 	}
 	return store.CMLogoCandidateRecording{
 		ID: row.ID, NetworkID: row.NetworkID, ServiceID: row.ServiceID,
-		RelPath: optionalMediaRelPath(row.RelPath), IsTrashed: row.IsTrashed, OriginalMissing: row.OriginalMissing,
+		RelPath: row.RelPath, IsTrashed: row.IsTrashed, OriginalMissing: row.OriginalMissing,
 	}, nil
 }
 

@@ -358,7 +358,8 @@ SELECT r.id, r.network_id, r.service_id, copy.rel_path,
 FROM recordings r
 LEFT JOIN recording_processing_policy p ON p.recording_id = r.id
 LEFT JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
-LEFT JOIN LATERAL preferred_active_media_asset_copy(o.id, $1::text) copy ON true
+LEFT JOIN media_asset_copies copy
+  ON copy.id = (SELECT c.id FROM preferred_active_media_asset_copy(o.id, $1::text) c)
 WHERE r.id = $2
 `
 
@@ -371,7 +372,7 @@ type GetCMDetectionWorkItemRow struct {
 	ID              int64
 	NetworkID       int32
 	ServiceID       int32
-	RelPath         string
+	RelPath         *string
 	CmDetect        bool
 	IsTrashed       bool
 	OriginalMissing bool
@@ -379,6 +380,9 @@ type GetCMDetectionWorkItemRow struct {
 }
 
 // preferred_active_media_asset_copy が返す現行の原本コピーを 1 件選ぶ。
+// 関数を LATERAL で JOIN すると sqlc が rel_path を NOT NULL の string と推論し、
+// コピーが無いとき NULL を scan できず失敗する。そのため関数は ID を引く副問い合わせに置き、
+// コピー行は実テーブルへの LEFT JOIN で読む（sqlc は LEFT JOIN の右側を nullable にする）。
 func (q *Queries) GetCMDetectionWorkItem(ctx context.Context, arg GetCMDetectionWorkItemParams) (GetCMDetectionWorkItemRow, error) {
 	row := q.db.QueryRow(ctx, getCMDetectionWorkItem, arg.StoreName, arg.RecordingID)
 	var i GetCMDetectionWorkItemRow

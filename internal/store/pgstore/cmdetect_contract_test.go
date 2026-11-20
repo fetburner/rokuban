@@ -49,6 +49,9 @@ func newCMDetectionContractFixture(t *testing.T) contracttest.CMDetectionFixture
 		MarkOriginalMissing: func(t *testing.T, recordingID int64) {
 			markCMDetectionOriginalMissing(t, pool, recordingID)
 		},
+		NewRecordingWithoutActiveOriginal: func(t *testing.T, absence contracttest.CMOriginalAbsence) int64 {
+			return seedCMDetectionContractRecordingWithoutActiveOriginal(t, pool, absence)
+		},
 		AdvancePolicyGeneration: func(t *testing.T, recordingID int64) {
 			advanceCMDetectionPolicyGeneration(t, pool, recordingID)
 		},
@@ -57,14 +60,35 @@ func newCMDetectionContractFixture(t *testing.T) contracttest.CMDetectionFixture
 
 func seedCMDetectionContractRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
-	ctx := context.Background()
-	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.Title = "CM detection store contract fixture"
-	})
-
+	id := seedCMDetectionContractRecordingRow(t, pool)
 	dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", id)
 		fixtureParams.SizeBytes = 1000
+	})
+	return id
+}
+
+// seedCMDetectionContractRecordingWithoutActiveOriginal は CM 検出を有効にした録画を作り、absence の形で生きた原本を外す。
+func seedCMDetectionContractRecordingWithoutActiveOriginal(t *testing.T, pool *pgxpool.Pool, absence contracttest.CMOriginalAbsence) int64 {
+	t.Helper()
+	id := seedCMDetectionContractRecordingRow(t, pool)
+	if absence == contracttest.CMOriginalNoRow {
+		return id
+	}
+	assetID := dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", id)
+		fixtureParams.SizeBytes = 1000
+	})
+	dbtest.SetMediaAssetState(t, pool, assetID, "deleted")
+	return id
+}
+
+// seedCMDetectionContractRecordingRow は原本の行を作らず、CM 検出を有効にした録画を 1 件作る。
+func seedCMDetectionContractRecordingRow(t *testing.T, pool *pgxpool.Pool) int64 {
+	t.Helper()
+	ctx := context.Background()
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.Title = "CM detection store contract fixture"
 	})
 	if _, err := pool.Exec(ctx, `
 INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)

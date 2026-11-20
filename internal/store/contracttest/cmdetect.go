@@ -30,9 +30,21 @@ type CMDetectionFixture struct {
 	WaitForStationWriteWait func(t *testing.T, station store.CMStationRef, name string)
 	// MarkOriginalMissing は録画の有効な原本を missing として記録する。
 	MarkOriginalMissing func(t *testing.T, recordingID int64)
+	// NewRecordingWithoutActiveOriginal は生きた原本が無い CM 検出対象の録画を作る。
+	NewRecordingWithoutActiveOriginal func(t *testing.T, absence CMOriginalAbsence) int64
 	// AdvancePolicyGeneration は現在の CM 検出世代を進める。
 	AdvancePolicyGeneration func(t *testing.T, recordingID int64)
 }
+
+// CMOriginalAbsence は生きた原本が無い録画の作り方を表す。
+type CMOriginalAbsence int
+
+const (
+	// CMOriginalNoRow は原本の media_assets 行が無い録画を表す。
+	CMOriginalNoRow CMOriginalAbsence = iota
+	// CMOriginalNoActiveCopy は原本の行はあるが active なコピーが無い録画を表す。
+	CMOriginalNoActiveCopy
+)
 
 // NewCMDetectionStore は実在する CMDetection 契約と fixture を作る。
 type NewCMDetectionStore func(t *testing.T) CMDetectionFixture
@@ -43,6 +55,9 @@ func RunCMDetection(t *testing.T, newStore NewCMDetectionStore) {
 	station := store.CMStationRef{NetworkID: 32678, ServiceID: 5168}
 
 	t.Run("work item maps missing recording", func(t *testing.T) { testMissingCMDetectionWorkItem(t, newStore) })
+	t.Run("recording without an active original is read without error", func(t *testing.T) {
+		testCMDetectionWithoutActiveOriginal(t, newStore)
+	})
 	t.Run("attempt failure cancel and abort preserve their transitions", func(t *testing.T) {
 		testCMDetectionAttemptTransitions(t, newStore, station)
 	})
@@ -118,6 +133,49 @@ func testMissingCMDetectionWorkItem(t *testing.T, newStore NewCMDetectionStore) 
 	f := newStore(t)
 	if _, err := f.Store.GetWorkItem(context.Background(), -1); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetWorkItem(missing) error = %v, want ErrNotFound", err)
+	}
+}
+
+// testCMDetectionWithoutActiveOriginal は生きた原本が無い録画で、読み手がエラーを返さず RelPath を nil にすることを確かめる。
+// BeginAttempt は試行を作らず実行しない。
+func testCMDetectionWithoutActiveOriginal(t *testing.T, newStore NewCMDetectionStore) {
+	t.Helper()
+	for _, tt := range []struct {
+		name    string
+		absence CMOriginalAbsence
+	}{
+		{name: "no original row", absence: CMOriginalNoRow},
+		{name: "original without active copy", absence: CMOriginalNoActiveCopy},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newStore(t)
+			ctx := context.Background()
+			id := f.NewRecordingWithoutActiveOriginal(t, tt.absence)
+
+			item, err := f.Store.GetWorkItem(ctx, id)
+			if err != nil {
+				t.Fatalf("GetWorkItem() error = %v", err)
+			}
+			if item.ID != id || item.RelPath != nil || !item.OriginalMissing || !item.Enabled {
+				t.Fatalf("GetWorkItem() = %+v, want recording %d with nil RelPath, OriginalMissing, and Enabled", item, id)
+			}
+
+			candidate, err := f.CMStationStore.GetCandidateRecording(ctx, id)
+			if err != nil {
+				t.Fatalf("GetCandidateRecording() error = %v", err)
+			}
+			if candidate.ID != id || candidate.RelPath != nil || !candidate.OriginalMissing {
+				t.Fatalf("GetCandidateRecording() = %+v, want recording %d with nil RelPath and OriginalMissing", candidate, id)
+			}
+
+			attempt, shouldRun, err := f.Store.BeginAttempt(ctx, id, 3)
+			if err != nil {
+				t.Fatalf("BeginAttempt() error = %v", err)
+			}
+			if shouldRun || attempt != (store.CMDetectionAttempt{}) {
+				t.Fatalf("BeginAttempt() = %+v, %v; want no attempt and shouldRun false", attempt, shouldRun)
+			}
+		})
 	}
 }
 

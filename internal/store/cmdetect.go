@@ -55,6 +55,7 @@ type CMDetectionRetry struct {
 // SaveDetection は局、録画、試行の順で書き手を直列化し、SaveLearnedLogo は局、試行の順で直列化する。
 type CMDetection interface {
 	// GetWorkItem は録画と有効な原本の検出入力を返す。録画が無ければ ErrNotFound を返す。
+	// 生きた原本のコピーが無ければ RelPath は nil で、エラーにはしない。
 	GetWorkItem(ctx context.Context, recordingID int64) (CMDetectionWorkItem, error)
 	// GetLogoArea は局のロゴ枠を返す。
 	GetLogoArea(ctx context.Context, station CMStationRef) (CMLogoArea, error)
@@ -65,6 +66,7 @@ type CMDetection interface {
 	// GetRecordingDuration は録画の実尺または番組尺をミリ秒で返す。
 	GetRecordingDuration(ctx context.Context, recordingID int64) (int64, error)
 	// BeginAttempt は現在の方針世代で試行を開始し、実行するかを返す。
+	// 生きた原本のコピーが無い録画では試行行を作らず、shouldRun は false・err は nil を返す。
 	BeginAttempt(ctx context.Context, recordingID int64, maxAttempts int32) (attempt CMDetectionAttempt, shouldRun bool, err error)
 	// FailAttempt は一致する running 試行を失敗状態にし、更新したかを返す。
 	FailAttempt(ctx context.Context, attempt CMDetectionAttempt, state string, stage *string, message string) (bool, error)

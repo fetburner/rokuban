@@ -30,19 +30,12 @@ func (s *Analysis) GetWorkItem(ctx context.Context, recordingID int64) (store.CM
 	return store.CMDetectionWorkItem{
 		ID:              row.ID,
 		Station:         store.CMStationRef{NetworkID: row.NetworkID, ServiceID: row.ServiceID},
-		RelPath:         optionalMediaRelPath(row.RelPath),
+		RelPath:         row.RelPath,
 		Enabled:         row.CmDetect,
 		IsTrashed:       row.IsTrashed,
 		OriginalMissing: row.OriginalMissing,
 		Detected:        row.Detected,
 	}, nil
-}
-
-func optionalMediaRelPath(relPath string) *string {
-	if relPath == "" {
-		return nil
-	}
-	return &relPath
 }
 
 // IsDetectionDesired は録画の現在の CM 検出が desired かを返す。
@@ -82,6 +75,10 @@ func (s *Analysis) BeginAttempt(ctx context.Context, recordingID int64, maxAttem
 			return store.CMDetectionAttempt{}, false, fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
 		}
 		return store.CMDetectionAttempt{}, false, fmt.Errorf("loading station for CM detection attempt on recording %d: %w", recordingID, err)
+	}
+	// 原本の生きたコピーが無い録画は試行を作らず、実行しない。Work の判定と読み直しの間に消えた場合も同じ扱い。
+	if item.RelPath == nil {
+		return store.CMDetectionAttempt{}, false, nil
 	}
 	row, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
 		RecordingID: recordingID,
