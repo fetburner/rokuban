@@ -176,21 +176,9 @@ API のレスポンス状態は `recordingFromListFields` で毎回導出する�
 
 利用者の録画意図（record / skip）とオプションの上書きは、ruler が作る予約とは別に、この契約が commit する。予約そのものはこの契約が書かない。
 
-意図・上書きの書き込みは、番組スナップショットの確保と同じトランザクションで確定する。`PutIntent` は EPG 射影か既存の凍結スナップショットを必要とし、どちらも無ければ `ErrNotFound` を返す。`PatchOverrides` も同じ条件で `ErrNotFound` を返す。
-
-同じ番組の書き込みは、射影にある番組でも凍結スナップショットだけの番組でも直列化する。`PatchOverrides` は、store が直列化した後の既存の上書きと予約の base にパッチをマージし、その実効値を検証する。違反は型付きエラーで返る。直列化の後に評価するのは、先に読むと別フィールドの同時 PATCH が互いの値を消すからである。マージ結果が空なら上書きの行を削除する。
-
-予約の詳細・一覧・重なりに必要な結合結果は store が返す。`source` / `state` と実効オプションは、読み取り時に api が導出する。
-
 <details><summary>根拠</summary>
 
 - ドメイン契約: `internal/store.Reservations`
-- 射影・凍結スナップショット・欠損の意図書き込み: `TestReservationsContract/intent_snapshots_projection_and_rejects_missing_program`
-- 欠損番組への PATCH: `TestReservationsContract/patch_rejects_a_missing_program`
-- 射影にある番組の同時 PATCH: `TestReservationsContract/concurrent_field_patches_preserve_both_values/projected_program`
-- 凍結スナップショットだけの番組の同時 PATCH: `TestReservationsContract/concurrent_field_patches_preserve_both_values/frozen_snapshot`
-- 空の上書き行の削除: `TestReservationsContract/empty_overrides_delete_their_row`
-- 一覧・詳細・重なりの読み取り: `TestReservationsContract/reservation_reads_return_details_and_overlaps`
 - マージの設定と reset: `TestMergeOverrides_SetsOnlyGivenFields` / `TestMergeOverrides_ResetClearsEachField`
 - reset の対象が Options と一致すること: `TestOverrideFieldsMatchOptions`
 
@@ -200,11 +188,7 @@ API のレスポンス状態は `recordingFromListFields` で毎回導出する�
 
 ルールの作成・更新・削除と EPGStation からの取り込みは、それぞれ 1 つの tx で確定する。
 
-`Rules` は API が使うルールの読み書きの契約である。作成と更新は、ルール本体と全ての子条件を同じ tx で書く。更新では子条件を全て置き換える。
-
-ルールの削除だけは予約の表も書く。意図の無い予約の削除とルールの削除を別の tx にすると、間で切れたときにルールの無い予約が残るからである。意図の有無は削除の瞬間に再評価するので、削除と同時に入った意図の予約は消えない。意図のある予約と、そのルール由来の録画は残り、ルールへの参照だけが外れる。
-
-`RuleImport` は、EPGStation のルール ID で既存のルールを引く取り込みの契約である。ID の保存方法は store の内側に閉じる。
+ルールの削除が予約の表も書くのは、意図の無い予約の削除とルールの削除を別の tx にすると、間で切れたときにルールの無い予約が残るからである。
 
 正規表現の構文検査は `ProgramSearch.ValidateRegex` を使う。
 
@@ -212,11 +196,6 @@ API のレスポンス状態は `recordingFromListFields` で毎回導出する�
 
 - ドメイン契約: `internal/store.Rules` / `internal/store.RuleImport`
 - PostgreSQL 実装: `internal/store/pgstore.Rules`
-- 子条件の挿入失敗で create が巻き戻る: `TestRulesContract/create child failure rolls back`
-- 子条件の全置換と失敗時の復元: `TestRulesContract/update replaces all children atomically`
-- 削除と予約の保持: `TestRulesContract/delete preserves reservations with intent`
-- ルールの削除が失敗したときの予約の保持: `TestRulesContract/delete failure keeps reservations without intent`
-- EPGStation import の冪等性と原子性: `TestRulesContract/EPGStation import uses stable identity atomically`
 
 </details>
 
@@ -501,19 +480,18 @@ reconciler は、観測全量の置き換え、同期評価の候補、開始済
 
 ルールから予約を導出する処理は、読み取りを tx の外で行い、書き込みを 1 tx にまとめる。削除判断に必要な状態は適用時に確かめ直し、ブレーカー発動と同じ tx で確定する。
 
-ruler は `RulerPass` から評価に必要なルール・意図・投資・予約・射影・履歴を読み、1 サイト分の書き込みを `ApplyPass` に渡す。`ApplyPass` は、スナップショットの追従、予約の差分 upsert、fulfilled / released / 導出削除を 1 つの tx で確定する。
+ruler は `RulerPass` から評価に必要なルール・意図・投資・予約・射影・履歴を読み、1 サイト分の書き込みを `ApplyPass` に渡す。
 
-読み取りの後に、削除候補の番組へ意図や投資が追加されることがある。導出削除と released 削除の `DELETE` は適用時に投資を再評価するため、古い入力で新しい予約意図の行を消さない。契約テストは入力を読んだ後に意図を書き、同じ予約が残ることを固定する。
+読み取りの後に削除候補の番組へ意図や投資が追加されうるので、削除は適用時に投資を再評価する。再評価しないと、古い入力で新しい予約意図の行を消しうるからである。
 
-大量削除ブレーカーの Trip も `ApplyPass` に含める。Trip が止める削除と発動行を別 tx にすると、発動を記録できないまま予約を消しうるためである。発動記録に失敗した tx は削除も巻き戻す。メトリクスとログは commit 後に反映する。
+ブレーカーの発動を `ApplyPass` に含めるのは、発動行を削除と別の tx にすると、発動を記録できないまま予約を消しうるからである。
 
-重複排除の類似度は pg_trgm の `similarity()` と同じ値で判定する。これは実装依存ではなく契約である。候補ごとに最良一致を 1 件返し、同率は録画 ID 昇順で決める。マッチの無い候補はマップに現れない。時間窓は録画の `program_start_at`（放送時刻）と比べる。比べる相手が store の記録した時刻ではないので、呼び出し側の時刻を受け取る（「時刻」節の規則）。番組 ID 再利用の検出と snapshot GC も、それぞれ比較に使う時刻を呼び出し側から受け取る。
+時間窓の比較時刻を呼び出し側から受け取るのは、比べる相手（録画の `program_start_at`）が store の記録した時刻ではないからである（「時刻」節の規則）。
 
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.RulerPass`
 - PostgreSQL 実装: `internal/store/pgstore.Reservations`
-- 削除時の意図再評価、ブレーカーとの原子性、重複排除の類似度: `TestRulerPassContract`
 - ループの成功時刻（ruler・record_sweep・全件パス・削除 reconcile）: `internal/store.LoopMarkers` / `TestLoopMarkersContract`
 
 </details>
