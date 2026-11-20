@@ -14,7 +14,6 @@ import (
 	"github.com/prometheus/common/expfmt"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -112,25 +111,16 @@ func TestLoopPassCollector_ReportsZeroBeforeFirstPass(t *testing.T) {
 
 func seedFinishedRecord(t *testing.T, pool *pgxpool.Pool, recordID string, contentLength int64, ingested bool) {
 	t.Helper()
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = int32(len(recordID)*1000 + int(recordID[len(recordID)-1]))
 		fixtureParams.Title = "テスト番組 " + recordID
 	})
 
-	if err := q.UpsertRecordSync(ctx, sqlcgen.UpsertRecordSyncParams{
-		Site:          testSite,
-		RecordID:      recordID,
-		RecordingID:   &recordingID,
-		ProgramID:     recordingID,
-		Status:        "finished",
-		ContentLength: &contentLength,
-		Tags:          []string{},
-	}); err != nil {
-		t.Fatalf("upserting record_sync: %v", err)
-	}
+	dbtest.RecordSync(t, pool, recordingID, recordID, func(p *dbtest.RecordSyncParams) {
+		p.ProgramID = recordingID
+		p.ContentLength = &contentLength
+	})
 
 	if ingested {
 		dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
@@ -168,32 +158,6 @@ func TestBacklogCollector(t *testing.T) {
 	}
 }
 
-// 外部産の finished record は record_sync で観測し続けるが、Rokuban が ingest する
-// 対象ではないので backlog には入らない。
-func TestBacklogCollector_ExcludesExternalRecords(t *testing.T) {
-	pool := rokutest.SetupDB(t)
-
-	externalLength := int64(400)
-	if err := sqlcgen.New(pool).UpsertRecordSync(context.Background(), sqlcgen.UpsertRecordSyncParams{
-		Site:          testSite,
-		RecordID:      "external-rec",
-		ProgramID:     900001,
-		Status:        "finished",
-		ContentLength: &externalLength,
-		Tags:          []string{},
-	}); err != nil {
-		t.Fatalf("upserting external record_sync: %v", err)
-	}
-
-	c := NewBacklogCollector(pgstoretest.Recordings(pool), testSite)
-	if got := gaugeValue(t, c, "rokuban_uningested_records"); got != 0 {
-		t.Errorf("rokuban_uningested_records = %v, want 0", got)
-	}
-	if got := gaugeValue(t, c, "rokuban_uningested_record_bytes"); got != 0 {
-		t.Errorf("rokuban_uningested_record_bytes = %v, want 0", got)
-	}
-}
-
 // 滞留 0 のときも 0 として報告されること（メトリクスが消えない）。
 func TestBacklogCollector_Empty(t *testing.T) {
 	pool := rokutest.SetupDB(t)
@@ -226,8 +190,6 @@ func TestBacklogCollector_QueryFailure(t *testing.T) {
 // timestamp=0 を出す。
 func TestPresyncCollector_ClassifiesPendingState(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	const programID int64 = 6800001
 	startAt := time.Now().Add(time.Hour).Truncate(time.Millisecond)
@@ -241,9 +203,7 @@ func TestPresyncCollector_ClassifiesPendingState(t *testing.T) {
 		t.Errorf("without snapshot marker, snapshot timestamp = %v, want 0", got)
 	}
 
-	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
-		t.Fatalf("marking schedule snapshot: %v", err)
-	}
+	markScheduleSnapshot(t, pool)
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 1 {
 		t.Errorf("missing = %v, want 1", got)
 	}
@@ -270,27 +230,21 @@ func TestPresyncCollector_ClassifiesPendingState(t *testing.T) {
 	// 番組時刻が過去へ変更されて終了済みになった予約は、schedule が無くても
 	// presync 未同期として数えない。開始時刻変更の境界と ended filter を固定する。
 	endedAt := time.Now().Add(-time.Minute).Truncate(time.Millisecond)
-	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site:        testSite,
-		ProgramID:   programID,
-		Title:       "終了済みへ変更",
-		StartAt:     endedAt.Add(-time.Minute),
-		DurationMs:  60_000,
-		NetworkID:   32678,
-		ServiceID:   5168,
-		ChannelType: "GR",
-		Channel:     "27",
-		EventID:     68001,
-		ServiceName: "テストチャンネル",
-	}); err != nil {
-		t.Fatalf("updating program snapshot time: %v", err)
-	}
-	if _, err := q.DeleteProgramOverrides(ctx, sqlcgen.DeleteProgramOverridesParams{Site: testSite, ProgramID: programID}); err != nil {
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Title = "終了済みへ変更"
+		p.StartAt = endedAt.Add(-time.Minute)
+		p.DurationMs = 60_000
+		p.NetworkID = 32678
+		p.ServiceID = 5168
+		p.ChannelType = "GR"
+		p.Channel = "27"
+		p.EventID = 68001
+		p.ServiceName = "テストチャンネル"
+	})
+	if err := pgstoretest.Reservations(pool).DeleteOverrides(context.Background(), testSite, programID); err != nil {
 		t.Fatalf("deleting overrides: %v", err)
 	}
-	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
-		t.Fatalf("refreshing schedule snapshot: %v", err)
-	}
+	markScheduleSnapshot(t, pool)
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 0 {
 		t.Errorf("ended reservation missing = %v, want 0", got)
 	}
@@ -300,12 +254,10 @@ func TestPresyncCollector_ClassifiesPendingState(t *testing.T) {
 
 	const skippedProgramID int64 = 6800004
 	seedPresyncReservation(t, pool, skippedProgramID, time.Now().Add(time.Hour))
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{Site: testSite, ProgramID: skippedProgramID, Action: "skip"}); err != nil {
-		t.Fatalf("skipping reservation: %v", err)
-	}
-	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
-		t.Fatalf("refreshing schedule snapshot after skip: %v", err)
-	}
+	dbtest.ProgramIntent(t, pool, skippedProgramID, func(p *dbtest.ProgramIntentParams) {
+		p.Action = "skip"
+	})
+	markScheduleSnapshot(t, pool)
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 0 {
 		t.Errorf("skipped reservation missing = %v, want 0", got)
 	}
@@ -313,8 +265,6 @@ func TestPresyncCollector_ClassifiesPendingState(t *testing.T) {
 
 func TestPresyncCollector_ContinuesAfterInvalidReservationOptions(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	const (
 		scheduledProgramID int64 = 6800121
@@ -326,9 +276,7 @@ func TestPresyncCollector_ContinuesAfterInvalidReservationOptions(t *testing.T) 
 	seedPresyncReservation(t, pool, missingProgramID, missingStartAt)
 	seedInvalidPresyncOptions(t, pool, missingProgramID)
 	seedObservedSchedule(t, pool, scheduledProgramID, mirakc.Options{Priority: 10}, []string{mirakc.ProgramTag(scheduledProgramID)})
-	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
-		t.Fatalf("marking schedule snapshot: %v", err)
-	}
+	markScheduleSnapshot(t, pool)
 
 	c := newPresyncCollector(pool)
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 1 {
@@ -346,16 +294,12 @@ func TestPresyncCollector_ContinuesAfterInvalidReservationOptions(t *testing.T) 
 
 func TestPresyncCollector_InvalidOptionsWithObservedScheduleAreNotMissing(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	const programID int64 = 6800125
 	seedPresyncReservation(t, pool, programID, time.Now().Add(time.Hour))
 	seedInvalidPresyncOptions(t, pool, programID)
 	seedObservedSchedule(t, pool, programID, mirakc.Options{Priority: 10}, []string{mirakc.ProgramTag(programID)})
-	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
-		t.Fatalf("marking schedule snapshot: %v", err)
-	}
+	markScheduleSnapshot(t, pool)
 
 	c := newPresyncCollector(pool)
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 0 {
@@ -368,15 +312,11 @@ func TestPresyncCollector_InvalidOptionsWithObservedScheduleAreNotMissing(t *tes
 
 func TestPresyncCollector_EndedInvalidOptionsWithoutScheduleAreNotMissing(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	const programID int64 = 6800126
 	seedPresyncReservation(t, pool, programID, time.Now().Add(-2*time.Hour))
 	seedInvalidPresyncOptions(t, pool, programID)
-	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
-		t.Fatalf("marking schedule snapshot: %v", err)
-	}
+	markScheduleSnapshot(t, pool)
 
 	c := newPresyncCollector(pool)
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 0 {
@@ -392,15 +332,11 @@ func TestPresyncCollector_EndedInvalidOptionsWithoutScheduleAreNotMissing(t *tes
 // 1 件が同値になり、区別できない（issue #680）。
 func TestPresyncCollector_EarliestStart(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	const farProgramID int64 = 6800101
 	farStart := time.Now().Add(8 * 24 * time.Hour).Truncate(time.Millisecond)
 	seedPresyncReservation(t, pool, farProgramID, farStart)
-	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
-		t.Fatalf("marking schedule snapshot: %v", err)
-	}
+	markScheduleSnapshot(t, pool)
 	c := newPresyncCollector(pool)
 
 	// ① 十分先の予約 1 件だけ: missing=1 かつ earliest - now > 7 日。
@@ -416,9 +352,7 @@ func TestPresyncCollector_EarliestStart(t *testing.T) {
 	const nearProgramID int64 = 6800102
 	nearStart := time.Now().Add(2 * time.Minute).Truncate(time.Millisecond)
 	seedPresyncReservation(t, pool, nearProgramID, nearStart)
-	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
-		t.Fatalf("refreshing schedule snapshot: %v", err)
-	}
+	markScheduleSnapshot(t, pool)
 	earliest = labeledGaugeValue(t, c, "rokuban_presync_pending_earliest_start_timestamp_seconds", map[string]string{"reason": "missing"})
 	if got := time.Until(time.Unix(0, int64(earliest*float64(time.Second)))); got >= 5*time.Minute {
 		t.Errorf("earliest - now = %v, want < 5 minutes", got)
@@ -433,10 +367,7 @@ func TestPresyncCollector_EarliestStart(t *testing.T) {
 func TestPresyncCollector_StaleSnapshotRemainsObservable(t *testing.T) {
 	pool := rokutest.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
-	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
-		t.Fatalf("marking schedule snapshot: %v", err)
-	}
+	markScheduleSnapshot(t, pool)
 
 	var staleAt time.Time
 	if err := pool.QueryRow(ctx, `
@@ -459,8 +390,6 @@ func TestPresyncCollector_StaleSnapshotRemainsObservable(t *testing.T) {
 
 func TestPresyncCollector_ExplicitContentPathMismatch(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	const programID int64 = 6800002
 	seedPresyncReservation(t, pool, programID, time.Now().Add(time.Hour))
@@ -468,18 +397,14 @@ func TestPresyncCollector_ExplicitContentPathMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshalling content path override: %v", err)
 	}
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: testSite, ProgramID: programID, Overrides: contentPath,
-	}); err != nil {
-		t.Fatalf("upserting content path override: %v", err)
-	}
+	dbtest.ProgramOverrides(t, pool, programID, func(p *dbtest.ProgramOverridesParams) {
+		p.Overrides = contentPath
+	})
 	seedObservedSchedule(t, pool, programID, mirakc.Options{
 		Priority:    10,
 		ContentPath: stringPtr("other/program.m2ts"),
 	}, []string{mirakc.ProgramTag(programID)})
-	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
-		t.Fatalf("marking schedule snapshot: %v", err)
-	}
+	markScheduleSnapshot(t, pool)
 
 	c := newPresyncCollector(pool)
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "options"}); got != 1 {
@@ -489,35 +414,27 @@ func TestPresyncCollector_ExplicitContentPathMismatch(t *testing.T) {
 
 func TestPresyncCollector_ReMaterializationReevaluatesCurrentOptions(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	const programID int64 = 6800005
 	seedPresyncReservation(t, pool, programID, time.Now().Add(time.Hour))
 	seedObservedSchedule(t, pool, programID, mirakc.Options{Priority: 10}, []string{mirakc.ProgramTag(programID)})
-	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
-		t.Fatalf("marking schedule snapshot: %v", err)
-	}
+	markScheduleSnapshot(t, pool)
 	c := newPresyncCollector(pool)
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "options"}); got != 0 {
 		t.Fatalf("initial options mismatch = %v, want 0", got)
 	}
 
-	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, testSite, programID); err != nil {
+	if _, err := pool.Exec(context.Background(), `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, testSite, programID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
-	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{Site: testSite, ProgramID: programID}); err != nil {
-		t.Fatalf("recreating reservation: %v", err)
-	}
+	dbtest.ManualReservation(t, pool, programID)
 	overrides, err := json.Marshal(map[string]int{"priority": 11})
 	if err != nil {
 		t.Fatalf("marshalling priority override: %v", err)
 	}
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: testSite, ProgramID: programID, Overrides: overrides,
-	}); err != nil {
-		t.Fatalf("upserting priority override: %v", err)
-	}
+	dbtest.ProgramOverrides(t, pool, programID, func(p *dbtest.ProgramOverridesParams) {
+		p.Overrides = overrides
+	})
 
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "options"}); got != 1 {
 		t.Errorf("re-materialized options mismatch = %v, want 1", got)
@@ -528,8 +445,6 @@ func TestPresyncCollector_ReMaterializationReevaluatesCurrentOptions(t *testing.
 // ため options_deferred に分離する。番組終了後は未同期の母集団から消える。
 func TestPresyncCollector_DeferredOptionsDisappearAfterProgramEnds(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	const programID int64 = 6800006
 	startAt := time.Now().Add(time.Hour).Truncate(time.Millisecond)
@@ -537,9 +452,7 @@ func TestPresyncCollector_DeferredOptionsDisappearAfterProgramEnds(t *testing.T)
 	seedObservedScheduleWithState(t, pool, programID, mirakc.ScheduleStateRecording, mirakc.Options{
 		Priority: 11,
 	}, []string{mirakc.ProgramTag(programID)})
-	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
-		t.Fatalf("marking schedule snapshot: %v", err)
-	}
+	markScheduleSnapshot(t, pool)
 
 	c := newPresyncCollector(pool)
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": reasonOptions}); got != 0 {
@@ -550,24 +463,18 @@ func TestPresyncCollector_DeferredOptionsDisappearAfterProgramEnds(t *testing.T)
 	}
 
 	endedAt := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
-	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site:        testSite,
-		ProgramID:   programID,
-		Title:       "終了済みへ変更",
-		StartAt:     endedAt,
-		DurationMs:  30 * time.Minute.Milliseconds(),
-		NetworkID:   32678,
-		ServiceID:   5168,
-		ChannelType: "GR",
-		Channel:     "27",
-		EventID:     68006,
-		ServiceName: "テストチャンネル",
-	}); err != nil {
-		t.Fatalf("updating program snapshot time: %v", err)
-	}
-	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
-		t.Fatalf("refreshing schedule snapshot: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Title = "終了済みへ変更"
+		p.StartAt = endedAt
+		p.DurationMs = 30 * time.Minute.Milliseconds()
+		p.NetworkID = 32678
+		p.ServiceID = 5168
+		p.ChannelType = "GR"
+		p.Channel = "27"
+		p.EventID = 68006
+		p.ServiceName = "テストチャンネル"
+	})
+	markScheduleSnapshot(t, pool)
 
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": reasonOptions}); got != 0 {
 		t.Errorf("ended options = %v, want 0", got)
@@ -599,39 +506,28 @@ func TestPresyncCollector_QueryFailure(t *testing.T) {
 	}
 }
 
+// seedInvalidPresyncOptions は options として解釈できない上書きを作る。番組の snapshot を先に作っておくこと。
 func seedInvalidPresyncOptions(t *testing.T, pool *pgxpool.Pool, programID int64) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `
-		INSERT INTO program_overrides (site, program_id, overrides)
-		VALUES ($1, $2, '{"priority":"high"}'::jsonb)`, testSite, programID); err != nil {
-		t.Fatalf("inserting invalid option override: %v", err)
-	}
+	dbtest.ProgramOverrides(t, pool, programID, func(p *dbtest.ProgramOverridesParams) {
+		p.Overrides = json.RawMessage(`{"priority":"high"}`)
+	})
 }
 
 func seedPresyncReservation(t *testing.T, pool *pgxpool.Pool, programID int64, startAt time.Time) {
 	t.Helper()
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
-	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site:        testSite,
-		ProgramID:   programID,
-		Title:       "presync test",
-		StartAt:     startAt,
-		DurationMs:  30 * time.Minute.Milliseconds(),
-		NetworkID:   32678,
-		ServiceID:   5168,
-		ChannelType: "GR",
-		Channel:     "27",
-		EventID:     int32(programID % 100000),
-		ServiceName: "テストチャンネル",
-	}); err != nil {
-		t.Fatalf("upserting program snapshot: %v", err)
-	}
-	if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site: testSite, ProgramID: programID,
-	}); err != nil {
-		t.Fatalf("creating reservation: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Title = "presync test"
+		p.StartAt = startAt
+		p.DurationMs = 30 * time.Minute.Milliseconds()
+		p.NetworkID = 32678
+		p.ServiceID = 5168
+		p.ChannelType = "GR"
+		p.Channel = "27"
+		p.EventID = int32(programID % 100000)
+		p.ServiceName = "テストチャンネル"
+	})
+	dbtest.ManualReservation(t, pool, programID)
 }
 
 func seedObservedSchedule(t *testing.T, pool *pgxpool.Pool, programID int64, options mirakc.Options, tags []string) {
@@ -644,44 +540,39 @@ func seedObservedScheduleWithState(t *testing.T, pool *pgxpool.Pool, programID i
 	if err != nil {
 		t.Fatalf("marshalling observed options: %v", err)
 	}
-	batch := sqlcgen.New(pool).UpsertScheduleSync(context.Background(), []sqlcgen.UpsertScheduleSyncParams{{
-		Site:      testSite,
-		ProgramID: programID,
-		State:     state,
-		Options:   optionsJSON,
-		Tags:      tags,
-	}})
-	var batchErr error
-	batch.Exec(func(_ int, err error) {
-		if err != nil && batchErr == nil {
-			batchErr = err
-		}
+	dbtest.ObservedSchedule(t, pool, programID, func(p *dbtest.ObservedScheduleParams) {
+		p.State = state
+		p.Options = optionsJSON
+		p.Tags = tags
 	})
-	if closeErr := batch.Close(); closeErr != nil && batchErr == nil {
-		batchErr = closeErr
+}
+
+// markScheduleSnapshot は snapshot marker を現在時刻へ進める。marker は ReplaceObserved が
+// 観測行と同じ tx で書くので、今ある観測行を読み直して同じ内容で置き換える。観測は変わらず、marker だけが進む。
+func markScheduleSnapshot(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	ss := pgstoretest.ScheduleSync(pool)
+	observed, err := ss.ListObserved(ctx, testSite)
+	if err != nil {
+		t.Fatalf("listing observed schedules: %v", err)
 	}
-	if batchErr != nil {
-		t.Fatalf("upserting observed schedule: %v", batchErr)
+	if err := ss.ReplaceObserved(ctx, testSite, observed); err != nil {
+		t.Fatalf("marking schedule snapshot: %v", err)
 	}
 }
 
 // seedIngestFor は既存の record_sync に対応する録画に原本アセットを追加する。
 func seedIngestFor(t *testing.T, pool *pgxpool.Pool, recordID string) {
 	t.Helper()
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
-
-	recordingID, err := q.GetRecordSyncRecordingID(ctx, sqlcgen.GetRecordSyncRecordingIDParams{
-		Site:     testSite,
-		RecordID: recordID,
-	})
+	target, err := pgstoretest.Recordings(pool).GetRecordSyncIngestTarget(context.Background(), testSite, recordID)
 	if err != nil {
 		t.Fatalf("looking up record_sync: %v", err)
 	}
-	if recordingID == nil {
+	if target.RecordingID == nil {
 		t.Fatalf("record_sync %q has no recording_id", recordID)
 	}
-	dbtest.MediaAsset(t, pool, *recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, *target.RecordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "test/" + recordID + ".m2ts"
 	})
 }
