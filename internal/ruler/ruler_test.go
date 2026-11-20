@@ -831,11 +831,12 @@ func TestRunPass_RuleUnmatch_DeleteVsDetach(t *testing.T) {
 	}
 }
 
-// 罠の回帰テスト（方向 2/2）: skip 意図は削除を守る投資（record 意図・上書き）に数えない。
+// 罠の回帰テスト: skip 意図は削除を守る投資（record 意図・上書き）に数えない。
 // 数えると「取消した予約が消えない」という重大なリグレッションになる（ruler の desired
 // 集合は skip を除外して行そのものを持たせない設計 = issue #18 の案 A）。
-// skip 行は解放経路が先に取るので、導出削除の WHERE 句には届かない。ここで固定するのは
-// 「skip だけの予約は ApplyPass の削除で消える」こと。
+// ここで固定するのは、skip だけの予約が解放経路で ApplyPass の削除に消えること。
+// record 意図の側（投資は削除を守る）は internal/store/contracttest/rulerpass.go の
+// 「delete rechecks investment after the read」（TestRulerPassContract/delete_rechecks_investment_after_the_read）が担う。
 func TestRunPass_DeleteGuard_SkipIntentDoesNotBlockDelete(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -1440,6 +1441,10 @@ func TestRunPass_GC_DeletesEndedPastGrace(t *testing.T) {
 
 	dbtest.ProgramIntent(t, pool, 10001, func(p *dbtest.ProgramIntentParams) { p.Action = reservation.IntentRecord })
 	dbtest.ProgramOverrides(t, pool, 10001, func(p *dbtest.ProgramOverridesParams) { p.Overrides = []byte(`{"priority":3}`) })
+	// 意図の不在を空の読み取りで判定しないよう、GC の前に存在を確かめる。
+	if _, ok := intentActionOf(t, pool, ctx, 10001); !ok {
+		t.Fatal("program_intents row must exist before the GC pass (otherwise the absence check below asserts nothing)")
+	}
 
 	r := newRuler([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
 	if err := r.RunPass(ctx); err != nil {
@@ -1449,7 +1454,7 @@ func TestRunPass_GC_DeletesEndedPastGrace(t *testing.T) {
 	if reservationExists(t, pool, ctx, 10001) {
 		t.Error("reservation past end+grace should have been GC'd")
 	}
-	if _, ok := dbtest.ReadProgramIntent(t, pool, testSite, 10001); ok {
+	if _, ok := intentActionOf(t, pool, ctx, 10001); ok {
 		t.Error("program_intents past end+grace should have been GC'd")
 	}
 	if _, ok := dbtest.ReadProgramOverrides(t, pool, testSite, 10001); ok {
