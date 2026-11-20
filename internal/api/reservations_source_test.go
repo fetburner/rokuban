@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -28,7 +28,6 @@ func getReservationJSON(t *testing.T, srv *httptest.Server, programID int64) api
 func TestGetReservation_SourceManualDespiteRuleMatch(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
@@ -39,11 +38,9 @@ func TestGetReservation_SourceManualDespiteRuleMatch(t *testing.T) {
 
 	// 手動予約であることを表す program_intents{record} を足す
 	// （このテストの核心: rule_id があっても intent が「手動」を主張する）。
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: "default", ProgramID: programID, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatalf("seeding intent: %v", err)
-	}
+	dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) {
+		p.Action = reservation.IntentRecord
+	})
 
 	got := getReservationJSON(t, srv, programID)
 	if got.Source != "manual" {

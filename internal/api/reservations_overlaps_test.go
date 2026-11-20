@@ -12,8 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -240,7 +238,6 @@ func TestGetProgramOverlaps_ExcludesSkippedIntent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	srv := NewTestServer(t, pool)
-	q := sqlcgen.New(pool)
 
 	base := time.Now().Truncate(time.Hour).Add(24 * time.Hour)
 	seedEpgService(t, pool, 32678, 5168, 8, "テスト局", "27")
@@ -250,26 +247,21 @@ func TestGetProgramOverlaps_ExcludesSkippedIntent(t *testing.T) {
 
 	skippedStart := base.Add(30 * time.Minute)
 	networkID, serviceID := int32(32678), int32(5168)
-	channelType, channel := "GR", "27"
 	// program_intents / program_overrides / reservations はいずれも
-	// program_snapshots への FK（#27）を持つので、先に upsert しておく。
-	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site: store.DefaultSite, ProgramID: skippedProgramID, Title: "skip された番組",
-		StartAt: skippedStart, DurationMs: testProgramDuration.Milliseconds(),
-		NetworkID: networkID, ServiceID: serviceID, ChannelType: channelType, Channel: channel,
-	}); err != nil {
-		t.Fatalf("upserting program snapshot: %v", err)
-	}
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: store.DefaultSite, ProgramID: skippedProgramID, Action: "skip",
-	}); err != nil {
-		t.Fatalf("upserting skip intent: %v", err)
-	}
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: store.DefaultSite, ProgramID: skippedProgramID, Overrides: json.RawMessage(`{"priority":9}`),
-	}); err != nil {
-		t.Fatalf("upserting program overrides: %v", err)
-	}
+	// program_snapshots への FK（#27）を持つので、先に作っておく。
+	dbtest.ProgramSnapshot(t, pool, skippedProgramID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Title = "skip された番組"
+		p.StartAt = skippedStart
+		p.DurationMs = testProgramDuration.Milliseconds()
+		p.NetworkID = networkID
+		p.ServiceID = serviceID
+	})
+	dbtest.ProgramIntent(t, pool, skippedProgramID, func(p *dbtest.ProgramIntentParams) {
+		p.Action = "skip"
+	})
+	dbtest.ProgramOverrides(t, pool, skippedProgramID, func(p *dbtest.ProgramOverridesParams) {
+		p.Overrides = json.RawMessage(`{"priority":9}`)
+	})
 	if _, err := pool.Exec(ctx, `
 INSERT INTO reservations (site, program_id) VALUES ('default', $1)`,
 		skippedProgramID); err != nil {

@@ -8,21 +8,21 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // seedTunerSync は tuner_sync に 1 行 upsert する。
 func seedTunerSync(t *testing.T, pool *pgxpool.Pool, site string, index int32, name string, types []string, isAvailable, isFault bool) {
 	t.Helper()
-	err := sqlcgen.New(pool).UpsertTunerSync(context.Background(), []sqlcgen.UpsertTunerSyncParams{{
-		Site:        site,
-		TunerIndex:  index,
+	err := pgstoretest.Tuners(pool).Upsert(context.Background(), site, []store.TunerInput{{
+		Index:       index,
 		Name:        name,
 		Types:       types,
 		IsAvailable: isAvailable,
 		IsFault:     isFault,
-	}}).Close()
+	}})
 	if err != nil {
 		t.Fatalf("seeding tuner_sync: %v", err)
 	}

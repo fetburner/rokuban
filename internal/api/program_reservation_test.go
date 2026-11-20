@@ -9,7 +9,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -41,19 +40,13 @@ func programReservationPath(programID int64) string {
 func TestGetProgramReservation_SurvivesRematerialization(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 900000090011234
 	insertProgramSnapshotFixture(t, pool, programID, 90000, 9001)
 
-	res1, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site: "default", ProgramID: programID,
-	})
-	if err != nil {
-		t.Fatalf("creating initial reservation: %v", err)
-	}
+	dbtest.ManualReservation(t, pool, programID)
 
 	path := srv.URL + programReservationPath(programID)
 
@@ -64,15 +57,10 @@ func TestGetProgramReservation_SurvivesRematerialization(t *testing.T) {
 
 	// ruler の導出削除 → 再実体化を模す（同じ番組・同じ複合キー）。program_snapshots
 	// は放送が続く限り生きているので作り直さない（#27 の分離の帰結）。
-	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, res1.Site, res1.ProgramID); err != nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, "default", programID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
-	_, err = q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site: "default", ProgramID: programID,
-	})
-	if err != nil {
-		t.Fatalf("re-materializing reservation: %v", err)
-	}
+	dbtest.ManualReservation(t, pool, programID)
 
 	// 核心: 同じ URL（(site, programId) 宛先）でもう一度引くと、再実体化された
 	// 予約が 200 で返る。複合キー以外を宛先にしていれば、ここは
@@ -106,17 +94,12 @@ func TestGetProgramReservation_NoReservation_Returns404(t *testing.T) {
 // 規約。GetProgram / GetProgramOverlaps 等）。
 func TestGetProgramReservation_UnknownSite_Returns404(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
 
 	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 900000090031234
 	insertProgramSnapshotFixture(t, pool, programID, 90000, 9003)
-	if _, err := sqlcgen.New(pool).CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site: "default", ProgramID: programID,
-	}); err != nil {
-		t.Fatalf("creating reservation: %v", err)
-	}
+	dbtest.ManualReservation(t, pool, programID)
 
 	resp, err := http.Get(srv.URL + "/api/sites/other-site/programs/" + itoa(programID) + "/reservation")
 	if err != nil {

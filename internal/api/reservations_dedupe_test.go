@@ -11,7 +11,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -111,7 +110,6 @@ func TestGetReservation_DedupeSkipExposed(t *testing.T) {
 func TestGetReservation_RecordIntentClearsDedupeSkip(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
@@ -132,11 +130,9 @@ func TestGetReservation_RecordIntentClearsDedupeSkip(t *testing.T) {
 		t.Fatal("precondition: skip should be true before the record intent")
 	}
 
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: "default", ProgramID: programID, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatalf("seeding intent: %v", err)
-	}
+	dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) {
+		p.Action = reservation.IntentRecord
+	})
 
 	got := getReservationDedupeJSON(t, srv, programID)
 	if got.Skip {
@@ -177,7 +173,6 @@ func TestGetReservation_NoDedupeEvidenceOmitsFields(t *testing.T) {
 func TestGetReservation_SkipIntentSetsSkip(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
@@ -185,11 +180,9 @@ func TestGetReservation_SkipIntentSetsSkip(t *testing.T) {
 	ruleID := insertRuleFixture(t, pool, ctx)
 	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
 
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: "default", ProgramID: programID, Action: reservation.IntentSkip,
-	}); err != nil {
-		t.Fatalf("seeding intent: %v", err)
-	}
+	dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) {
+		p.Action = reservation.IntentSkip
+	})
 
 	if got := getReservationDedupeJSON(t, srv, programID); !got.Skip {
 		t.Error("skip = false with program_intents.action = 'skip'")
