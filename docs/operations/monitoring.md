@@ -118,17 +118,7 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 
 ruler と record_sweep は、パスの所要時間と作成・削除の件数を見て、停止は最終成功時刻で検出する。
 
-| メトリクス | 型 | 意味 |
-|---|---|---|
-| `rokuban_ruler_pass_duration_seconds` | Histogram | ruler 1 パスの所要時間 |
-| `rokuban_ruler_reservations_total{action}` | Counter | ruler が作成・更新・削除した予約数 |
-| `rokuban_ruler_program_id_reuse_total` | Counter | 番組 ID の再利用を疑った観測件数 |
-| `rokuban_ruler_circuit_breaker_trips_total` | Counter | 大量削除ブレーカーの発動遷移回数 |
-| `rokuban_ruler_last_success_timestamp_seconds{site}` | Gauge（DB） | `ruler_pass` が site 単位で成功した最後の時刻 |
-| `rokuban_sweep_last_success_timestamp_seconds{site}` | Gauge（DB） | `record_sweep` が site 単位で成功した最後の時刻 |
-| `rokuban_loop_pass_marker_scrape_errors_total{site}` | Counter（DB） | ruler / record_sweep / reconciler の成功 marker を scrape できなかった回数 |
-
-DB を引く時刻は、marker 未確立なら 0 になる。`rokuban_ruler_program_id_reuse_total` が数えるのは、終了済み snapshot と EPG の開始時刻が 24 時間超ずれた `program_id` の観測件数である。再利用を検出しても挙動は変えない。
+名前・型・意味は `internal/metrics` と `internal/metrics/dbcollector` の定義（`Name` と `Help`）を引く。
 
 #### EPG とチューナーのメトリクス
 
@@ -299,16 +289,29 @@ ruler の削除は、ルールに合わなくなったことによるものと�
 
 ruler の停止は最終成功時刻の系列で、書き込みの異常は予約数のカウンタで見る。
 
-| メトリクス | 説明 |
-|---|---|
-| `rokuban_ruler_pass_duration_seconds` | 1 パス（全ルール x 全射影番組）の所要時間。射影の件数に上限があるので伸び続けることはない |
-| `rokuban_ruler_reservations_total{action}` | ruler が書いた予約の action 別件数（値は下の節） |
-| `rokuban_ruler_program_id_reuse_total` | 終了済みの旧 snapshot と EPG 射影の開始時刻が 24 時間超ずれた行の観測件数（読み方は下の節） |
-| `rokuban_ruler_circuit_breaker_trips_total` | 大量削除で停止した回数。EPG の一時欠損を疑う入口 |
-| `rokuban_circuit_breaker_tripped{breaker="ruler_deletes"}` | 1 の間は導出削除が一切走らない（手動再開まで止まるラッチ）。いま止まっているかに答える |
-| `rokuban_ruler_last_success_timestamp_seconds{site}` | DB に確定した site 単位の最終成功時刻。ScaledJob ではこちらで停止を検出する |
+名前・型・意味は `internal/metrics` と `internal/metrics/dbcollector` の定義（`Name` と `Help`）を引く。
 
-最終成功時刻を使うのは、ゲージが凍る問題への対策である。ブレーカーのゲージは、カウンタと違って「いま止まっているか」に答える。
+1 パスの所要時間は伸び続けない。射影は剪定されるので、件数は EPG の窓に収まる。
+
+大量削除ブレーカーの発動回数が増えたら、EPG の一時欠損を疑う。
+
+`rokuban_circuit_breaker_tripped{breaker="ruler_deletes"}` が 1 の間は、導出削除が走らない。手動で再開するまで止まるラッチなので、いま止まっているかに答える。
+
+最終成功時刻は、DB に保存した時刻を scrape のたびに読み直して出す値である。パスが ScaledJob の `--once` で動いても、常駐 Pod の scrape から見える。ScaledJob ではこれで停止を検出する。
+
+<details><summary>根拠</summary>
+
+- 射影は剪定されるので、所要時間は伸び続けない: `rokuban_ruler_pass_duration_seconds`
+- 終了した番組の剪定: `PruneEpgPrograms` (`internal/db/queries/epg.sql`)
+- 収集で消えた番組の剪定: `DeleteStaleEpgProgramsForServices` (`internal/db/queries/epg.sql`)
+- 増えたら EPG の一時欠損を疑う: `rokuban_ruler_circuit_breaker_trips_total`
+- 発動への遷移だけを数える: `NewlyTripped` (`internal/store/pgstore/rulerpass.go`)
+- 1 の間は導出削除が走らず、いま止まっているかに答える: `rokuban_circuit_breaker_tripped`
+- ラッチの判定: `applyRulerDeleteGuard` (`internal/store/pgstore/rulerpass.go`)
+- DB に保存した時刻を読み直し、ScaledJob の停止もこれで検出する: `rokuban_ruler_last_success_timestamp_seconds`
+- scrape ごとの読み直し: `LoopPassCollector` (`internal/metrics/dbcollector/loop_pass.go`)
+
+</details>
 
 #### 予約の action の値
 
