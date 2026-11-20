@@ -30,6 +30,8 @@ type RecordingTrash interface {
 type RecordingPurge interface {
 	// MarkPurged は猶予の cutoff を過ぎ、削除対象アセットが残っていない録画を
 	// 完全削除済みにする。初めて確定した録画だけを返し、繰り返し呼んでも結果は変わらない。
+	// 返り値は削除通知の対象としてそのまま使い、別の判定で作り直さない（契約テストでは未検証）。
+	// 検査: contracttest.RunTrash の「mark purged is idempotent」。
 	MarkPurged(ctx context.Context, graceCutoff time.Time) ([]PurgedRecording, error)
 }
 

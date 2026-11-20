@@ -51,7 +51,9 @@ type MediaDelete interface {
 	// MarkDeleted は deleting アセットを deleted にし、外した encoded の削除要求も同時に消す。
 	MarkDeleted(ctx context.Context, copyID int64) error
 	// RevertToActive は削除条件を再確認し、該当しなくなった deleting アセットを active に戻す。
+	// deleted のアセットは戻さない。
 	// 配置削除の規則は、この契約を構築した store に束ねる。
+	// 検査: contracttest.RunMediaDelete の「revert does not restore a deleted asset」。
 	RevertToActive(ctx context.Context, copyID int64, graceCutoff, overlapCutoff time.Time) (bool, error)
 }
 
