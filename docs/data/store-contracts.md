@@ -101,11 +101,12 @@ api が使うのは論理削除・復元・即時削除要求をまとめた `Re
 
 仕組みは [削除エンジン](../storage/retention.md) §7「復元と即時削除要求の競合」にある。
 
+削除通知の発火対象は `RecordingPurge.MarkPurged` の返り値で決め、削除 reconcile は別の判定で作り直さない。
+
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.RecordingTrash` / `internal/store.RecordingPurge`
 - PostgreSQL 実装: `internal/store/pgstore.Recordings`
-- 復元と即時削除要求の直列化、完了記録の冪等性: `internal/store/contracttest.RunTrash`
 - 削除述語と `purged_at` の意味: [削除エンジン](../storage/retention.md) §7
 
 </details>
@@ -295,9 +296,9 @@ worker は `StorageObservation` に置き場単位の `storage_sync` と、孤�
 
 worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定する。削除可否の述語（ごみ箱・until_encoded・外した encoded）は名前のまま実装の中に閉じ、契約はメソッド名と doc コメントで意味だけを示す。
 
-遷移の時点で削除条件を再確認するのは 2 つのメソッドだけである。`MarkUntilEncodedDeleting` は、候補を列挙した後に作り直し要求が commit されうるので再確認する。`RevertToActive` も適用時に再確認する。ごみ箱の猶予の cutoff は呼び出し側から受け取る（[時刻](#時刻) の例外）。
+遷移の時点で削除条件を再確認するのは `MarkUntilEncodedDeleting` と `RevertToActive` だけである。ごみ箱の猶予の cutoff は呼び出し側から受け取る（[時刻](#時刻) の例外）。
 
-原本の規則・FS 置き場・派生物の置き場は、server の起動時に `StoragePolicy` にし、store の構築時に束ねる。設定で決まる値をメソッドの引数で渡すと、構築時に束ねた方針と異なる方針を渡せてしまう。
+原本の規則・FS 置き場・派生物の置き場は、server の起動時に `StoragePolicy` にし、store の構築時に束ねる。設定で決まる値をメソッドの引数で渡すと、構築時に束ねた方針と異なる方針を渡せてしまう。JSON にするのは pgstore である。
 
 `PrepareMediaAssetTransfer` の `fsStores` は、パスごとにマーカーを検査して決まる実行時のマウント集合なので引数に残す。設定にある FS 置き場をすべて渡すと、マウントしていない置き場の派生物コピーを転送元に選べてしまう。
 
@@ -310,8 +311,6 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 - マウント集合の固定: `TestPrepareMediaAssetTransferKeepsDerivedSourcesMounted`
 - 配置削除が無効なとき: `TestStorageTransferDeletionSkipsWhenPlacementArmIsDisabled`
 - 配置削除が有効なとき: `TestStorageTransferDeletionWiresOverlapCutoff`
-- 作り直し要求との直列化と再確認: `TestMediaDeleteStoreContract` の `until-encoded transition waits for and rechecks recording writes`
-- 外した encoded の削除要求が deleted 確定と同時に消えること: `TestMediaDeleteStoreContract` の `mark deleted clears the removal request`
 
 </details>
 

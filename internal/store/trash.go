@@ -9,6 +9,7 @@ import (
 // 各メソッドは自身のトランザクションを完了してから返す。
 type RecordingTrash interface {
 	// SoftDelete は録画を論理削除する。既にごみ箱にある場合も成功し、対象が無ければ ErrNotFound を返す。
+	// 検査: contracttest.RunTrash の「soft delete is idempotent」。
 	SoftDelete(ctx context.Context, recordingID int64) error
 
 	// Restore は録画を復元し、同じ録画の即時削除要求を取り下げる。
@@ -18,11 +19,13 @@ type RecordingTrash interface {
 	// 要求が先に確定すれば、復元がそれを取り下げる。
 	// 復元が先に確定すれば、後から来た要求は録画をごみ箱に戻して残る。
 	// どちらの順でも、復元された録画に要求だけが残ることはない。
+	// 検査: contracttest.RunTrash の「restore withdraws purge request」、「restore rejects conflicts and purged tombstones」、「restore removes a concurrently committed purge request」、「purge request serializes behind restore」。
 	Restore(ctx context.Context, recordingID int64) error
 
 	// RequestPurge は即時削除を要求し、まだごみ箱に無ければ論理削除も行う。
 	// 対象が無ければ ErrNotFound を返す。
 	// 同じ録画の復元と即時削除要求は直列化される（保証の内容は Restore を参照）。
+	// 検査: contracttest.RunTrash の「purge request also trashes recording and is idempotent」、「restore removes a concurrently committed purge request」、「purge request serializes behind restore」。
 	RequestPurge(ctx context.Context, recordingID int64) error
 }
 
@@ -30,7 +33,6 @@ type RecordingTrash interface {
 type RecordingPurge interface {
 	// MarkPurged は猶予の cutoff を過ぎ、削除対象アセットが残っていない録画を
 	// 完全削除済みにする。初めて確定した録画だけを返し、繰り返し呼んでも結果は変わらない。
-	// 返り値は削除通知の対象としてそのまま使い、別の判定で作り直さない（契約テストでは未検証）。
 	// 検査: contracttest.RunTrash の「mark purged is idempotent」。
 	MarkPurged(ctx context.Context, graceCutoff time.Time) ([]PurgedRecording, error)
 }
