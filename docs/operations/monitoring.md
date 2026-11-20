@@ -226,22 +226,24 @@ FS 置き場間の転送のメトリクスと、その見方は [FS 置き場間
 
 ライブ視聴のセッション数と開始失敗・退避・回収は、プロセスごとのメトリクスで見る。
 
-| メトリクス | 型 | 意味 |
-|---|---|---|
-| `rokuban_live_active_sessions{kind}` | GaugeVec | ライブセッション数 |
-| `rokuban_live_session_start_failures_total{reason}` | Counter | ライブセッションの開始失敗数 |
-| `rokuban_live_session_evictions_total{reason,result}` | Counter | 起動失敗からの再試行のために退避したセッション数 |
-| `rokuban_live_idle_gc_reclaimed_total` | Counter | idle GC が回収したセッション数 |
-| `rokuban_live_leave_hints_total{result}` | Counter | 離脱ヒントの受信数 |
-| `rokuban_live_idle_gc_last_pass_timestamp_seconds` | Gauge | 最後に完走した idle GC パスの時刻 |
+名前・型・意味は `internal/metrics` の定義（`Name` と `Help`）を引く。
 
-セッション数のゲージは per-process なので、全体は Prometheus 側で sum する（[k8s 運用](k8s-streamer.md) §5「streamer のスケール」）。`kind` の値は `live` である。開始失敗の `reason` の値は、実装の呼び出し箇所が権威で、`session_limit` や `ffmpeg_error` などがある。`rokuban_live_session_evictions_total` の `reason` と `result` の値は、本書の「ライブ視聴」節にある。
+セッション数のゲージは per-process なので、全体は Prometheus 側で sum する（[k8s 運用](k8s-streamer.md) §5「streamer のスケール」）。
 
-離脱ヒントの `result` は `deadline_shortened` / `no_session` / `no_effect` の 3 値である。回収数と対で読む。ヒントは停止命令ではないので、回収数とは一致しない（差が開いていれば共有セッションが多い）。`no_effect` が定常的に出るなら、猶予が `live.idle_timeout` 以上で、ヒントが機能しない設定になっている。
+退避の `result` の読み方は本書の「ライブ視聴」節にある。
+
+離脱ヒントの受信数は回収数と対で読む。ヒントは idle 期限を詰めるだけで、他に視聴者がいれば次のセグメント要求が期限を戻すので、両者は一致しない。差が 0 に近ければ離脱がそのまま回収につながっており、開いていれば共有セッションが多い。
+
+`no_effect` が定常的に出るなら、猶予が `live.idle_timeout` 以上で、ヒントが効かない設定になっている。連打の 2 発目以降も `no_effect` になる。
+
+idle GC の最終完走時刻は、`time() -` で idle GC の停止を検出するために使う。セッション数のゲージはループが止まると直近の値のまま凍結し、0 になったのか回収が止まったのかを区別できないためである。
 
 <details><summary>根拠</summary>
 
-- 開始失敗の reason の値の権威: `internal/streamer/session.go` の `LiveSessionStartFailures`
+- 読み方: `rokuban_live_active_sessions`
+- 読み方: `rokuban_live_idle_gc_reclaimed_total`
+- 読み方: `rokuban_live_leave_hints_total`
+- 読み方: `rokuban_live_idle_gc_last_pass_timestamp_seconds`
 
 </details>
 
