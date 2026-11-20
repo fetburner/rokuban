@@ -44,23 +44,31 @@ type RecordingRemovalState struct {
 }
 
 // MediaServing は streamer が使うメディアと録画状態の読み取り契約である。
+// 「配信可能」と書いたメソッドは、active なコピーがあり（deleting と deleted のアセットは返さない）、録画がごみ箱に無いものを返す。
+// 検査: contracttest.RunMedia の「serving returns only active assets」（original と encoded の deleting・deleted）、「serving covers thumbnails and seek tiles」（thumbnail と seek_tiles の deleting・deleted、ごみ箱の録画）。
+// 原本と encoded のごみ箱の除外、置き場ごとの原本取得（GetOriginalMediaAssetForServingInStore）の除外は契約テストでは未検証。
 type MediaServing interface {
 	// GetOriginalMediaAssetForServing は配信可能な原本を返す。無ければ ErrNotFound を返す。
 	GetOriginalMediaAssetForServing(ctx context.Context, recordingID int64) (MediaAsset, error)
 	// GetOriginalMediaAssetForServingInStore は storeName の置き場にコピーがある配信可能な原本を返す。
 	// 置き場ごとの URL（/api/media/stores/{store}/recordings/{id}/file）が使う。無ければ ErrNotFound を返す。
 	GetOriginalMediaAssetForServingInStore(ctx context.Context, recordingID int64, storeName string) (MediaAsset, error)
-	// GetEncodedMediaAssetForServing は指定プロファイルの配信可能な encoded を返す。
+	// GetEncodedMediaAssetForServing は指定プロファイルの配信可能な encoded を返す。対象が無ければ ErrNotFound を返す。
+	// 検査: contracttest.RunMedia の「serving returns only active assets」。
 	GetEncodedMediaAssetForServing(ctx context.Context, recordingID int64, profile string) (MediaAsset, error)
-	// GetThumbnailMediaAssetForServing は配信可能なサムネイルを返す。
+	// GetThumbnailMediaAssetForServing は配信可能なサムネイルを返す。対象が無ければ ErrNotFound を返す。
+	// 検査: contracttest.RunMedia の「serving covers thumbnails and seek tiles」。
 	GetThumbnailMediaAssetForServing(ctx context.Context, recordingID int64) (MediaAsset, error)
-	// GetSeekTilesMediaAssetForServing は配信可能なシークタイルを返す。
+	// GetSeekTilesMediaAssetForServing は配信可能なシークタイルを返す。対象が無ければ ErrNotFound を返す。
+	// 検査: contracttest.RunMedia の「serving covers thumbnails and seek tiles」。
 	GetSeekTilesMediaAssetForServing(ctx context.Context, recordingID int64) (MediaAsset, error)
-	// GetActiveOriginalMediaAsset は録画 HLS が使う active な原本を返す。
+	// GetActiveOriginalMediaAsset は録画 HLS が使う active な原本を返す。対象が無ければ ErrNotFound を返す（契約テストでは未検証）。
 	GetActiveOriginalMediaAsset(ctx context.Context, recordingID int64) (MediaAsset, error)
-	// GetRecordingHLSTarget は配信可能な原本か ingest temp と世代を返す。
+	// GetRecordingHLSTarget は配信可能な原本か ingest temp と世代を返す。対象が無ければ ErrNotFound を返す。
+	// 検査: contracttest.RunMedia の「recording HLS target shares the committed-original visibility predicate」。
 	GetRecordingHLSTarget(ctx context.Context, recordingID int64) (RecordingHLSInputTarget, error)
-	// GetRecordingRemovalState は録画の削除・purge・supersede の状態を返す。
+	// GetRecordingRemovalState は録画の削除・purge・supersede の状態を返す。対象が無ければ ErrNotFound を返す。
+	// 検査: contracttest.RunMedia の「recording removal state reports deleted, purged and superseded times」。
 	GetRecordingRemovalState(ctx context.Context, recordingID int64) (RecordingRemovalState, error)
 }
 
@@ -201,14 +209,16 @@ type MediaReconcile interface {
 	// OriginalLocator は reconcile が読み取りジョブを積む置き場を選ぶのに使う。
 	OriginalLocator
 	// GetCurrentCutKeep は確認済みチャプターから現在の keep 区間を導出する。
-	// 所有状態と区間は同じ時点の 1 回の読み取りで返す。
+	// 所有状態と区間は同じ時点の 1 回の読み取りで返す（契約テストでは未検証）。
 	// 確認されていなければ owned=false、purged の録画なら ErrNotFound を返す。
+	// 検査: contracttest.RunMedia の「current cut keep is derived from owned chapters」。
 	GetCurrentCutKeep(ctx context.Context, recordingID int64) (keep []chapters.Range, owned bool, err error)
 	// GetRecordingEncodeTimes はエンコード締切の計算に使う録画時刻を返す。
 	// 録画が無ければ ErrNotFound を返す。
 	GetRecordingEncodeTimes(ctx context.Context, recordingID int64) (RecordingEncodeTimes, error)
 	// GetRecordingNotifySubject はエンコード通知に載せる局と番組名を返す。
 	// purged の録画も返し、録画が無ければ ErrNotFound を返す。
+	// 検査: contracttest.RunMedia の「encode notify subject includes purged recordings」。
 	GetRecordingNotifySubject(ctx context.Context, recordingID int64) (RecordingNotifySubject, error)
 	// GetActiveOriginalMediaAsset はメディア処理の入力に使う active な原本を返す。
 	GetActiveOriginalMediaAsset(ctx context.Context, recordingID int64) (MediaAsset, error)
@@ -217,7 +227,7 @@ type MediaReconcile interface {
 	// HasActiveSeekTilesMediaAsset は active なシークタイルがあれば true を返す。
 	HasActiveSeekTilesMediaAsset(ctx context.Context, recordingID int64) (bool, error)
 	// GetEncodedPublishState は desired、作り直し要求、encoded 行と必要なカット版の状態を、
-	// ロックを取らずに同じ時点の値として返す（エンコード前の判定用）。
+	// ロックを取らずに同じ時点の値として返す（エンコード前の判定用。同じ時点の読み取りは契約テストでは未検証）。
 	// cut=true なら encoded 行の凍結 keep も読む。includeCurrentCut=true かつ profile が
 	// desired のときだけ、現在の章所有と keep 区間も読む（要求に由来しないカット版ジョブ用）。
 	GetEncodedPublishState(ctx context.Context, recordingID int64, profile string, cut, includeCurrentCut bool) (EncodedPublishState, error)
@@ -239,7 +249,9 @@ type MediaReconcile interface {
 	// ListMissingSeekTilesRecordings はシークタイルが無い録画をページ単位で返す。
 	ListMissingSeekTilesRecordings(ctx context.Context, page MediaReconcilePage) ([]int64, error)
 	// FindInvalidMediaAssetRelPath は予約されたサイト名空間の外にある原本または encoded を返す。
-	// 違反が無ければ nil, nil を返す。
+	// 違反が無ければ nil, nil を返す。見るのは deleted でない original と encoded のコピーだけで、thumbnails/ の名前空間に置くサムネイルとシークタイルは見ない。sites// のような空の site 成分も違反に数える。
+	// 検査: contracttest.RunMedia の「namespace guard accepts site paths and rejects malformed ones」、「namespace guard rejects unprefixed originals and encoded files」、
+	// 「namespace guard leaves thumbnails and seek tiles to their own namespace」。
 	FindInvalidMediaAssetRelPath(ctx context.Context) (*MediaAssetRelPathViolation, error)
 }
 
@@ -247,6 +259,7 @@ type MediaReconcile interface {
 type IngestPrecheck interface {
 	// HasOriginalMediaAsset は kind='original' の media_asset 行があれば true を返す。
 	// state は問わない。行の存在が原本のコミットを表す。
+	// 検査: contracttest.RunMedia の「ingest precheck recognizes committed originals in every state」。
 	HasOriginalMediaAsset(ctx context.Context, recordingID int64) (bool, error)
 	// GetIngestOriginalRelPath は置き場にある原本コピーの rel_path を state に関係なく返す。
 	GetIngestOriginalRelPath(ctx context.Context, recordingID int64) (string, error)
@@ -254,6 +267,7 @@ type IngestPrecheck interface {
 	// 転送前のヒントであり、一意性の最終判定ではない。対象は削除済みでない行
 	// （state <> 'deleted'）で、state='deleting' の行も衝突に数える。墓石はここでは
 	// 返さないが、(store, rel_path) の一意索引が墓石のパスへの INSERT を拒む。
+	// 検査: contracttest.RunMedia の「live rel_path precheck skips tombstones and counts deleting rows」。
 	GetLiveMediaAssetRecordingID(ctx context.Context, relPath string) (int64, error)
 }
 
