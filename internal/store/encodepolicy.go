@@ -45,17 +45,23 @@ type EncodePolicy interface {
 	// 続いて方針の行で AppendProfiles と直列化する。順序は録画の行、方針の行の順である。
 	// validate は profile がロック後の desired に含まれる場合だけ、profile を除いた desired で呼ぶ。
 	// validate が返したエラーは包まずそのまま返す。
+	// 残りのコピーの検査は要求を書いた後の状態で行うので、同じ録画の削除が競合しても最後のコピーを失わない。
+	// ごみ箱にある録画にも適用できる。
+	// 検査: `RunEncodePolicy` の「concurrent encoded removals preserve one viewable copy」「removal remains available for trashed recordings」。
 	RemoveEncodedAsset(ctx context.Context, recordingID int64, profile string, validate func(desired []string) error) error
 
 	// RequestCutRebuild は現在の確認済みチャプターから keep を導出して作り直し要求を記録する。
 	// 録画の行を取る他の書き手すべてと直列化し、keep はチャプター編集の commit 後の確認済みチャプターから導く。
 	// desired の検査は、AppendProfiles・RemoveEncodedAsset の commit 後の desired を見る。
 	// 順序は録画の行、方針の行の順である。
+	// ごみ箱にある録画にも適用できる。検査: `RunEncodePolicy` の「cut rebuild remains available for trashed recordings」。
 	RequestCutRebuild(ctx context.Context, recordingID int64, profile string) error
 
 	// SetPolicy は指定された保持・CM 検出方針を 1 つのトランザクションで更新する。
 	// 先にロックを取らず、読んだ値で判断しない。
 	// 適用条件（until_encoded には空でない desired、CM 検出の有効化には active な原本）は
 	// 書き込む瞬間の行に対して判定するので、並行する追加・削除の commit 後の desired に対して効く。
+	// どちらかの適用条件を満たさなければ、保持と CM 検出の両方を巻き戻してエラーを返す。
+	// 検査: `RunEncodePolicy` の「policy update is atomic and returns typed precondition errors」。
 	SetPolicy(ctx context.Context, recordingID int64, update EncodePolicyUpdate) error
 }
