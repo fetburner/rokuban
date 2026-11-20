@@ -12,8 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -22,7 +22,7 @@ const rfc3339 = time.RFC3339
 // seedEpgService は epg_services に 1 行入れる。
 func seedEpgService(t *testing.T, pool *pgxpool.Pool, networkID, serviceID, remoteKey int32, name, channel string) {
 	t.Helper()
-	err := sqlcgen.New(pool).UpsertEpgService(context.Background(), []sqlcgen.UpsertEpgServiceParams{{
+	err := pgstoretest.EPG(pool).UpsertServices(context.Background(), []store.EPGServiceUpsert{{
 		Site:               store.DefaultSite,
 		NetworkID:          networkID,
 		ServiceID:          serviceID,
@@ -33,7 +33,7 @@ func seedEpgService(t *testing.T, pool *pgxpool.Pool, networkID, serviceID, remo
 		ChannelType:        "GR",
 		Channel:            channel,
 		HasLogoData:        true,
-	}}).Close()
+	}})
 	if err != nil {
 		t.Fatalf("seeding epg_service: %v", err)
 	}
@@ -47,7 +47,7 @@ func seedEpgProgram(t *testing.T, pool *pgxpool.Pool, programID int64, networkID
 	name string, start time.Time, detail bool,
 ) {
 	t.Helper()
-	p := sqlcgen.UpsertEpgProgramParams{
+	p := store.EPGProgramUpsert{
 		Site:        store.DefaultSite,
 		ProgramID:   programID,
 		NetworkID:   networkID,
@@ -66,7 +66,7 @@ func seedEpgProgram(t *testing.T, pool *pgxpool.Pool, programID int64, networkID
 		p.Video = json.RawMessage(`{"type":"mpeg2","resolution":"1080i","streamContent":1,"componentType":179}`)
 		p.Audios = json.RawMessage(`[{"componentType":3,"isMain":true,"samplingRate":48000,"langs":["jpn"]}]`)
 	}
-	if err := sqlcgen.New(pool).UpsertEpgProgram(context.Background(), []sqlcgen.UpsertEpgProgramParams{p}).Close(); err != nil {
+	if err := pgstoretest.EPG(pool).UpsertPrograms(context.Background(), []store.EPGProgramUpsert{p}); err != nil {
 		t.Fatalf("seeding epg_program: %v", err)
 	}
 }
@@ -393,25 +393,14 @@ func seedProgramIntent(
 	action string,
 ) {
 	t.Helper()
-	q := sqlcgen.New(pool)
-	if err := q.UpsertProgramSnapshot(context.Background(), sqlcgen.UpsertProgramSnapshotParams{
-		Site:        store.DefaultSite,
-		ProgramID:   programID,
-		Title:       "テスト番組",
-		StartAt:     start,
-		DurationMs:  testProgramDuration.Milliseconds(),
-		NetworkID:   networkID,
-		ServiceID:   serviceID,
-		ChannelType: "GR",
-		Channel:     "27",
-		EventID:     eventID,
-		ServiceName: "テスト局",
-	}); err != nil {
-		t.Fatalf("seeding program snapshot: %v", err)
-	}
-	if _, err := q.UpsertProgramIntent(context.Background(), sqlcgen.UpsertProgramIntentParams{
-		Site: store.DefaultSite, ProgramID: programID, Action: action,
-	}); err != nil {
-		t.Fatalf("seeding program intent: %v", err)
-	}
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.StartAt = start
+		p.DurationMs = testProgramDuration.Milliseconds()
+		p.NetworkID = networkID
+		p.ServiceID = serviceID
+		p.EventID = eventID
+	})
+	dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) {
+		p.Action = action
+	})
 }

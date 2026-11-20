@@ -3,19 +3,17 @@ package api_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -55,6 +53,19 @@ VALUES ('default', $1, $2, '{}'::jsonb)
 	if err != nil {
 		t.Fatalf("inserting reservation fixture: %v", err)
 	}
+}
+
+// reservationOf は (default, programID) の予約を、番組スナップショットと利用者の入力つきで
+// 契約（store.Reservations.GetReservation）から読む。上書きと意図は予約行の LEFT JOIN で
+// 読まれるので、行が無ければ Overrides と IntentAction は nil になる。予約行は呼び出し側が
+// 作ってある前提で、無ければテストの準備の誤りとして止める。
+func reservationOf(t *testing.T, pool *pgxpool.Pool, programID int64) store.ReservationDetails {
+	t.Helper()
+	got, err := pgstoretest.Reservations(pool).GetReservation(context.Background(), "default", programID)
+	if err != nil {
+		t.Fatalf("reading reservation for program %d: %v", programID, err)
+	}
+	return got
 }
 
 func overridesPath(programID int64) string {
@@ -102,7 +113,6 @@ func doDelete(t *testing.T, srv *httptest.Server, path string) *http.Response {
 func TestPatchProgramOverrides_CreatesOverrideForRuleReservation_NotIntent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
@@ -111,11 +121,12 @@ func TestPatchProgramOverrides_CreatesOverrideForRuleReservation_NotIntent(t *te
 	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11000, 1100)
 
 	// 事前に意図も上書きも存在しない。
-	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: "default", ProgramID: programID}); !errIsNoRows(err) {
-		t.Fatalf("intent should not exist before patch, got err=%v", err)
+	before := reservationOf(t, pool, programID)
+	if before.IntentAction != nil {
+		t.Fatalf("intent should not exist before patch, got %q", *before.IntentAction)
 	}
-	if _, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: "default", ProgramID: programID}); !errIsNoRows(err) {
-		t.Fatalf("overrides should not exist before patch, got err=%v", err)
+	if before.Overrides != nil {
+		t.Fatalf("overrides should not exist before patch, got %s", before.Overrides)
 	}
 
 	resp := doPatch(t, srv, overridesPath(programID), `{"priority":7}`)
@@ -124,17 +135,17 @@ func TestPatchProgramOverrides_CreatesOverrideForRuleReservation_NotIntent(t *te
 		t.Fatalf("patch status = %d, want 204", resp.StatusCode)
 	}
 
-	overrides, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: "default", ProgramID: programID})
-	if err != nil {
-		t.Fatalf("overrides after patch: %v", err)
+	after := reservationOf(t, pool, programID)
+	if after.Overrides == nil {
+		t.Fatal("overrides after patch: no row")
 	}
-	if got := overridesPriority(t, overrides.Overrides); got != 7 {
-		t.Errorf("overrides priority = %d, want 7 (%s)", got, overrides.Overrides)
+	if got := overridesPriority(t, after.Overrides); got != 7 {
+		t.Errorf("overrides priority = %d, want 7 (%s)", got, after.Overrides)
 	}
 
 	// 核心: program_intents には一切行ができない。
-	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: "default", ProgramID: programID}); !errIsNoRows(err) {
-		t.Errorf("program_intents should still not exist after patching a rule-derived reservation's overrides, err=%v", err)
+	if after.IntentAction != nil {
+		t.Errorf("program_intents should still not exist after patching a rule-derived reservation's overrides, action=%q", *after.IntentAction)
 	}
 }
 
@@ -151,7 +162,6 @@ func TestPatchProgramOverrides_CreatesOverrideForRuleReservation_NotIntent(t *te
 func TestDeleteProgramOverrides_DoesNotTouchProgramIntents_ManualReservationSurvives(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
@@ -160,16 +170,12 @@ func TestDeleteProgramOverrides_DoesNotTouchProgramIntents_ManualReservationSurv
 	// reservation 行 + intent{record}。
 	ruleID := insertRuleFixture(t, pool, ctx)
 	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11500, 1150)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: "default", ProgramID: programID, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatalf("seeding intent: %v", err)
-	}
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: "default", ProgramID: programID, Overrides: []byte(`{"priority":5}`),
-	}); err != nil {
-		t.Fatalf("seeding overrides: %v", err)
-	}
+	dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) {
+		p.Action = reservation.IntentRecord
+	})
+	dbtest.ProgramOverrides(t, pool, programID, func(p *dbtest.ProgramOverridesParams) {
+		p.Overrides = []byte(`{"priority":5}`)
+	})
 
 	resp := doDelete(t, srv, overridesPath(programID))
 	defer func() { _ = resp.Body.Close() }()
@@ -178,18 +184,18 @@ func TestDeleteProgramOverrides_DoesNotTouchProgramIntents_ManualReservationSurv
 	}
 
 	// program_overrides の行は消える。
-	if _, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: "default", ProgramID: programID}); !errIsNoRows(err) {
-		t.Errorf("overrides row should be deleted, err=%v", err)
+	if got := reservationOf(t, pool, programID); got.Overrides != nil {
+		t.Errorf("overrides row should be deleted, got %s", got.Overrides)
 	}
 
 	// 核心: program_intents の行は残る（DELETE /overrides は触らない）。
-	intent, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: "default", ProgramID: programID})
-	if err != nil {
-		t.Fatalf("program_intents row must survive resetting overrides "+
-			"(the old single-table cleanup rule would have deleted it here): %v", err)
+	got := reservationOf(t, pool, programID)
+	if got.IntentAction == nil {
+		t.Fatal("program_intents row must survive resetting overrides " +
+			"(the old single-table cleanup rule would have deleted it here)")
 	}
-	if intent.Action != reservation.IntentRecord {
-		t.Errorf("action = %q, want record", intent.Action)
+	if *got.IntentAction != reservation.IntentRecord {
+		t.Errorf("action = %q, want record", *got.IntentAction)
 	}
 
 	// 核心: 予約行も残る（意図が生きている限り、次の ruler パスでも消えない）。
@@ -207,7 +213,6 @@ func TestDeleteProgramOverrides_DoesNotTouchProgramIntents_ManualReservationSurv
 func TestPatchProgramOverrides_EmptyPatch_DoesNotTouchProgramIntents(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
@@ -215,11 +220,9 @@ func TestPatchProgramOverrides_EmptyPatch_DoesNotTouchProgramIntents(t *testing.
 	const programID int64 = 1160000116011234
 	ruleID := insertRuleFixture(t, pool, ctx)
 	insertReservationDirect(t, pool, ctx, programID, &ruleID, 11600, 1160)
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: "default", ProgramID: programID, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatalf("seeding intent: %v", err)
-	}
+	dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) {
+		p.Action = reservation.IntentRecord
+	})
 
 	for _, body := range []string{`{}`, `{"reset":[]}`} {
 		t.Run(body, func(t *testing.T) {
@@ -229,14 +232,12 @@ func TestPatchProgramOverrides_EmptyPatch_DoesNotTouchProgramIntents(t *testing.
 				t.Errorf("patch %s status = %d, want 204 (empty patch is a harmless no-op)", body, resp.StatusCode)
 			}
 
-			intent, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{
-				Site: "default", ProgramID: programID,
-			})
-			if err != nil {
-				t.Fatalf("no-op PATCH must not delete the intent row: %v", err)
+			got := reservationOf(t, pool, programID)
+			if got.IntentAction == nil {
+				t.Fatal("no-op PATCH must not delete the intent row")
 			}
-			if intent.Action != reservation.IntentRecord {
-				t.Errorf("action = %q, want record", intent.Action)
+			if *got.IntentAction != reservation.IntentRecord {
+				t.Errorf("action = %q, want record", *got.IntentAction)
 			}
 		})
 	}
@@ -258,19 +259,15 @@ func TestPatchProgramOverrides_EmptyPatch_DoesNotTouchProgramIntents(t *testing.
 func TestPatchProgramOverrides_PartialUpdatePreservesOtherFields(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1200000120021234
 	ruleID := insertRuleFixture(t, pool, ctx)
 	insertReservationDirect(t, pool, ctx, programID, &ruleID, 12000, 1200)
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: "default", ProgramID: programID,
-		Overrides: []byte(`{"priority":5,"keepOriginal":"always"}`),
-	}); err != nil {
-		t.Fatalf("seeding overrides: %v", err)
-	}
+	dbtest.ProgramOverrides(t, pool, programID, func(p *dbtest.ProgramOverridesParams) {
+		p.Overrides = []byte(`{"priority":5,"keepOriginal":"always"}`)
+	})
 
 	resp := doPatch(t, srv, overridesPath(programID), `{"encodeProfiles":["h264"]}`)
 	defer func() { _ = resp.Body.Close() }()
@@ -278,11 +275,11 @@ func TestPatchProgramOverrides_PartialUpdatePreservesOtherFields(t *testing.T) {
 		t.Fatalf("patch status = %d, want 204", resp.StatusCode)
 	}
 
-	overrides, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: "default", ProgramID: programID})
-	if err != nil {
-		t.Fatalf("overrides after patch: %v", err)
+	overrides := reservationOf(t, pool, programID).Overrides
+	if overrides == nil {
+		t.Fatal("overrides after patch: no row")
 	}
-	got := jsonMap(t, overrides.Overrides)
+	got := jsonMap(t, overrides)
 	if intJSONNumber(t, got["priority"]) != 5 {
 		t.Errorf("priority should be preserved, got %+v", got)
 	}
@@ -299,19 +296,15 @@ func TestPatchProgramOverrides_PartialUpdatePreservesOtherFields(t *testing.T) {
 func TestPatchProgramOverrides_ResetRemovesOnlyThatField(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1300000130031234
 	ruleID := insertRuleFixture(t, pool, ctx)
 	insertReservationDirect(t, pool, ctx, programID, &ruleID, 13000, 1300)
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: "default", ProgramID: programID,
-		Overrides: []byte(`{"priority":5,"keepOriginal":"always"}`),
-	}); err != nil {
-		t.Fatalf("seeding overrides: %v", err)
-	}
+	dbtest.ProgramOverrides(t, pool, programID, func(p *dbtest.ProgramOverridesParams) {
+		p.Overrides = []byte(`{"priority":5,"keepOriginal":"always"}`)
+	})
 
 	resp := doPatch(t, srv, overridesPath(programID), `{"reset":["priority"]}`)
 	defer func() { _ = resp.Body.Close() }()
@@ -319,11 +312,11 @@ func TestPatchProgramOverrides_ResetRemovesOnlyThatField(t *testing.T) {
 		t.Fatalf("patch status = %d, want 204", resp.StatusCode)
 	}
 
-	overrides, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: "default", ProgramID: programID})
-	if err != nil {
-		t.Fatalf("overrides row should still exist (not empty): %v", err)
+	overrides := reservationOf(t, pool, programID).Overrides
+	if overrides == nil {
+		t.Fatal("overrides row should still exist (not empty)")
 	}
-	got := jsonMap(t, overrides.Overrides)
+	got := jsonMap(t, overrides)
 	if _, ok := got["priority"]; ok {
 		t.Errorf("priority should be reset away, got %+v", got)
 	}
@@ -336,19 +329,15 @@ func TestPatchProgramOverrides_ResetRemovesOnlyThatField(t *testing.T) {
 func TestPatchProgramOverrides_ResetLastField_DeletesOverridesRow(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1400000140041234
 	ruleID := insertRuleFixture(t, pool, ctx)
 	insertReservationDirect(t, pool, ctx, programID, &ruleID, 14000, 1400)
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: "default", ProgramID: programID,
-		Overrides: []byte(`{"priority":5}`),
-	}); err != nil {
-		t.Fatalf("seeding overrides: %v", err)
-	}
+	dbtest.ProgramOverrides(t, pool, programID, func(p *dbtest.ProgramOverridesParams) {
+		p.Overrides = []byte(`{"priority":5}`)
+	})
 
 	resp := doPatch(t, srv, overridesPath(programID), `{"reset":["priority"]}`)
 	defer func() { _ = resp.Body.Close() }()
@@ -356,8 +345,8 @@ func TestPatchProgramOverrides_ResetLastField_DeletesOverridesRow(t *testing.T) 
 		t.Fatalf("patch status = %d, want 204", resp.StatusCode)
 	}
 
-	if _, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: "default", ProgramID: programID}); !errIsNoRows(err) {
-		t.Errorf("program_overrides row should be deleted when overrides become empty, err=%v", err)
+	if got := reservationOf(t, pool, programID).Overrides; got != nil {
+		t.Errorf("program_overrides row should be deleted when overrides become empty, got %s", got)
 	}
 
 	// 予約行自体はこの操作では触らない（削除は次の ruler パスの仕事）。
@@ -374,27 +363,23 @@ func TestPatchProgramOverrides_ResetLastField_DeletesOverridesRow(t *testing.T) 
 func TestDeleteProgramOverrides_ClearsAll(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
 	const programID int64 = 1600000160061234
 	ruleID := insertRuleFixture(t, pool, ctx)
 	insertReservationDirect(t, pool, ctx, programID, &ruleID, 16000, 1600)
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: "default", ProgramID: programID,
-		Overrides: []byte(`{"priority":5,"keepOriginal":"always"}`),
-	}); err != nil {
-		t.Fatalf("seeding overrides: %v", err)
-	}
+	dbtest.ProgramOverrides(t, pool, programID, func(p *dbtest.ProgramOverridesParams) {
+		p.Overrides = []byte(`{"priority":5,"keepOriginal":"always"}`)
+	})
 
 	resp := doDelete(t, srv, overridesPath(programID))
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete overrides status = %d, want 204", resp.StatusCode)
 	}
-	if _, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: "default", ProgramID: programID}); !errIsNoRows(err) {
-		t.Errorf("overrides row should be deleted, err=%v", err)
+	if got := reservationOf(t, pool, programID).Overrides; got != nil {
+		t.Errorf("overrides row should be deleted, got %s", got)
 	}
 }
 
@@ -403,7 +388,6 @@ func TestDeleteProgramOverrides_ClearsAll(t *testing.T) {
 func TestPatchProgramOverrides_ValueAndResetConflict_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
@@ -417,8 +401,8 @@ func TestPatchProgramOverrides_ValueAndResetConflict_Returns400(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
-	if _, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: "default", ProgramID: programID}); !errIsNoRows(err) {
-		t.Errorf("no overrides should be created on a rejected request, err=%v", err)
+	if got := reservationOf(t, pool, programID).Overrides; got != nil {
+		t.Errorf("no overrides should be created on a rejected request, got %s", got)
 	}
 }
 
@@ -450,7 +434,6 @@ func TestPatchProgramOverrides_UnknownResetField_Returns400(t *testing.T) {
 func TestPatchProgramOverrides_UnknownEncodeProfile(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
 		c.EncodeProfileNames = []string{"h264"}
@@ -472,10 +455,8 @@ func TestPatchProgramOverrides_UnknownEncodeProfile(t *testing.T) {
 	if !strings.Contains(errBody.Error, "unknown encode profile") {
 		t.Errorf("error body = %q, want mention of unknown encode profile", errBody.Error)
 	}
-	if _, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{
-		Site: "default", ProgramID: programID,
-	}); !errors.Is(err, pgx.ErrNoRows) {
-		t.Errorf("rejected request created program_overrides, err=%v", err)
+	if got := reservationOf(t, pool, programID).Overrides; got != nil {
+		t.Errorf("rejected request created program_overrides, got %s", got)
 	}
 
 	resp = doPatch(t, srv, overridesPath(programID), `{"encodeProfiles":["h264"]}`)
@@ -483,20 +464,18 @@ func TestPatchProgramOverrides_UnknownEncodeProfile(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("known encode profile status = %d, want 204", resp.StatusCode)
 	}
-	row, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{
-		Site: "default", ProgramID: programID,
-	})
-	if err != nil {
-		t.Fatalf("loading known-profile overrides: %v", err)
+	stored := reservationOf(t, pool, programID).Overrides
+	if stored == nil {
+		t.Fatal("loading known-profile overrides: no row")
 	}
-	var stored struct {
+	var decoded struct {
 		EncodeProfiles []string `json:"encodeProfiles"`
 	}
-	if err := json.Unmarshal(row.Overrides, &stored); err != nil {
-		t.Fatalf("unmarshalling stored overrides %s: %v", row.Overrides, err)
+	if err := json.Unmarshal(stored, &decoded); err != nil {
+		t.Fatalf("unmarshalling stored overrides %s: %v", stored, err)
 	}
-	if len(stored.EncodeProfiles) != 1 || stored.EncodeProfiles[0] != "h264" {
-		t.Errorf("stored encodeProfiles = %v, want [h264]", stored.EncodeProfiles)
+	if len(decoded.EncodeProfiles) != 1 || decoded.EncodeProfiles[0] != "h264" {
+		t.Errorf("stored encodeProfiles = %v, want [h264]", decoded.EncodeProfiles)
 	}
 }
 
@@ -545,7 +524,6 @@ func TestPatchProgramOverrides_InvalidFields_Returns400(t *testing.T) {
 // （issue #312 の方針決定）。
 func TestPatchProgramOverrides_ContentPathWithoutExistingSchedule_Succeeds(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
 
 	srv := api.NewTestServer(t, pool)
 
@@ -558,10 +536,10 @@ func TestPatchProgramOverrides_ContentPathWithoutExistingSchedule_Succeeds(t *te
 	}
 	_ = resp.Body.Close()
 
-	q := sqlcgen.New(pool)
-	row, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: "default", ProgramID: programID})
-	if err != nil {
-		t.Fatalf("getting program overrides: %v", err)
+	// 予約行が無いので契約の GetReservation では読めない。上書きの行を直接読む。
+	row, found := dbtest.ReadProgramOverrides(t, pool, "default", programID)
+	if !found {
+		t.Fatal("getting program overrides: no row")
 	}
 	var stored struct {
 		ContentPath *string `json:"contentPath"`
@@ -610,7 +588,6 @@ func TestDeleteProgramOverrides_NoRow_IsIdempotent(t *testing.T) {
 func TestPatchProgramOverrides_EffectiveOptionsRoundTrip(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
@@ -629,12 +606,7 @@ func TestPatchProgramOverrides_EffectiveOptionsRoundTrip(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
-	row, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
-		Site: "default", ProgramID: programID,
-	})
-	if err != nil {
-		t.Fatalf("reloading reservation: %v", err)
-	}
+	row := reservationOf(t, pool, programID)
 	eff, err := reservation.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
 	if err != nil {
 		t.Fatalf("computing effective options: %v", err)
@@ -660,7 +632,6 @@ func TestPatchProgramOverrides_EffectiveOptionsRoundTrip(t *testing.T) {
 func TestPatchProgramOverrides_UntilEncodedWithoutProfiles_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
@@ -681,17 +652,14 @@ func TestPatchProgramOverrides_UntilEncodedWithoutProfiles_Returns400(t *testing
 	if !strings.Contains(errBody.Error, "encodeProfiles") {
 		t.Errorf("error body = %q, want mention of encodeProfiles", errBody.Error)
 	}
-	if _, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{
-		Site: "default", ProgramID: programID,
-	}); !errIsNoRows(err) {
-		t.Errorf("rejected request created program_overrides, err=%v", err)
+	if got := reservationOf(t, pool, programID).Overrides; got != nil {
+		t.Errorf("rejected request created program_overrides, got %s", got)
 	}
 }
 
 func TestPatchProgramOverrides_UntilEncodedResetEncodeProfiles_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
@@ -701,12 +669,9 @@ func TestPatchProgramOverrides_UntilEncodedResetEncodeProfiles_Returns400(t *tes
 	// 既存の override に encodeProfiles を立てておく。単体のリクエストボディだけ
 	// 見ると reset:["encodeProfiles"] は encodeProfiles に触れていないように
 	// 見えるが、マージ後の実効値では消える。
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: "default", ProgramID: programID,
-		Overrides: []byte(`{"encodeProfiles":["h264"]}`),
-	}); err != nil {
-		t.Fatalf("seeding existing overrides: %v", err)
-	}
+	dbtest.ProgramOverrides(t, pool, programID, func(p *dbtest.ProgramOverridesParams) {
+		p.Overrides = []byte(`{"encodeProfiles":["h264"]}`)
+	})
 
 	resp := doPatch(t, srv, overridesPath(programID),
 		`{"keepOriginal":"until_encoded","reset":["encodeProfiles"]}`)
@@ -716,14 +681,12 @@ func TestPatchProgramOverrides_UntilEncodedResetEncodeProfiles_Returns400(t *tes
 	}
 
 	// 拒否されたリクエストは既存の override を変えない。
-	row, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{
-		Site: "default", ProgramID: programID,
-	})
-	if err != nil {
-		t.Fatalf("existing overrides should survive a rejected patch, err=%v", err)
+	row := reservationOf(t, pool, programID).Overrides
+	if row == nil {
+		t.Fatal("existing overrides should survive a rejected patch, got no row")
 	}
-	if !strings.Contains(string(row.Overrides), "h264") {
-		t.Errorf("existing overrides changed: %s", row.Overrides)
+	if !strings.Contains(string(row), "h264") {
+		t.Errorf("existing overrides changed: %s", row)
 	}
 }
 
@@ -732,7 +695,6 @@ func TestPatchProgramOverrides_UntilEncodedResetEncodeProfiles_Returns400(t *tes
 func TestPatchProgramOverrides_UntilEncodedWithProfilesFromBase_Succeeds(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool)
 
@@ -750,12 +712,7 @@ func TestPatchProgramOverrides_UntilEncodedWithProfilesFromBase_Succeeds(t *test
 		t.Fatalf("keepOriginal alone with profiles from base: status = %d, want 204", resp.StatusCode)
 	}
 
-	row, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
-		Site: "default", ProgramID: programID,
-	})
-	if err != nil {
-		t.Fatalf("reloading reservation: %v", err)
-	}
+	row := reservationOf(t, pool, programID)
 	eff, err := reservation.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
 	if err != nil {
 		t.Fatalf("computing effective options: %v", err)
@@ -778,7 +735,6 @@ func TestPatchProgramOverrides_UntilEncodedWithProfilesFromBase_Succeeds(t *test
 func TestDeleteRule_ReservationWithOnlyOverridesSurvivesDetached(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	srv := api.NewTestServer(t, pool, func(c *api.RouterConfig) {
 		c.RuleStore = pgstoretest.Rules(pool, []string{"default"}...)
@@ -794,8 +750,8 @@ func TestDeleteRule_ReservationWithOnlyOverridesSurvivesDetached(t *testing.T) {
 		t.Fatalf("seeding patch status = %d, want 204", resp.StatusCode)
 	}
 	_ = resp.Body.Close()
-	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: "default", ProgramID: programID}); !errIsNoRows(err) {
-		t.Fatalf("test setup: program_intents should not exist, err=%v", err)
+	if got := reservationOf(t, pool, programID).IntentAction; got != nil {
+		t.Fatalf("test setup: program_intents should not exist, action=%q", *got)
 	}
 
 	delResp := doDelete(t, srv, "/api/rules/"+itoa(ruleID))
@@ -911,10 +867,6 @@ INSERT INTO program_intents (site, program_id, action) VALUES ('default', $1, 'r
 		t.Errorf("reservation row count = %d, want 1 "+
 			"(a reservation with an intent{record} row must survive rule deletion, not be deleted)", n)
 	}
-}
-
-func errIsNoRows(err error) bool {
-	return errors.Is(err, pgx.ErrNoRows)
 }
 
 func jsonMap(t *testing.T, raw []byte) map[string]interface{} {

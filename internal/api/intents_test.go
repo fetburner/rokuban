@@ -3,17 +3,16 @@ package api_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -71,21 +70,19 @@ func TestPutProgramIntent_SkipDoesNotTouchOverrides(t *testing.T) {
 		t.Fatalf("patch overrides status = %d, want 204", patchResp.StatusCode)
 	}
 
-	q := sqlcgen.New(pool)
-	intent, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{
-		Site: "default", ProgramID: programID,
-	})
+	detail, err := pgstoretest.EPG(pool).GetProgram(ctx, "default", programID)
 	if err != nil {
-		t.Fatalf("intent after record: %v", err)
+		t.Fatalf("reading program after record: %v", err)
 	}
-	if intent.Action != "record" {
-		t.Errorf("action after record = %q, want record", intent.Action)
+	if detail.IntentAction == nil {
+		t.Fatal("intent after record: no row")
 	}
-	overrides, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{
-		Site: "default", ProgramID: programID,
-	})
-	if err != nil {
-		t.Fatalf("overrides after patch: %v", err)
+	if *detail.IntentAction != "record" {
+		t.Errorf("action after record = %q, want record", *detail.IntentAction)
+	}
+	overrides, found := dbtest.ReadProgramOverrides(t, pool, "default", programID)
+	if !found {
+		t.Fatal("overrides after patch: no row")
 	}
 	if got := overridesPriority(t, overrides.Overrides); got != 7 {
 		t.Errorf("overrides priority = %d, want 7 (%s)", got, overrides.Overrides)
@@ -108,22 +105,21 @@ func TestPutProgramIntent_SkipDoesNotTouchOverrides(t *testing.T) {
 	}
 
 	// 意図は skip として残る。これがないと ruler が復活させてしまう
-	intent, err = q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{
-		Site: "default", ProgramID: programID,
-	})
+	detail, err = pgstoretest.EPG(pool).GetProgram(ctx, "default", programID)
 	if err != nil {
-		t.Fatalf("intent after skip: %v (skip intent must survive)", err)
+		t.Fatalf("reading program after skip: %v", err)
 	}
-	if intent.Action != "skip" {
-		t.Errorf("action after skip = %q, want skip", intent.Action)
+	if detail.IntentAction == nil {
+		t.Fatal("intent after skip: no row (skip intent must survive)")
+	}
+	if *detail.IntentAction != "skip" {
+		t.Errorf("action after skip = %q, want skip", *detail.IntentAction)
 	}
 	// 取消は program_intents.action を倒すだけで、program_overrides には
 	// 一切触れない（別の軸なので、ユーザーが設定した上書きは保たれる）。
-	overrides, err = q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{
-		Site: "default", ProgramID: programID,
-	})
-	if err != nil {
-		t.Fatalf("overrides after skip: %v (PutProgramIntent must not touch program_overrides)", err)
+	overrides, found = dbtest.ReadProgramOverrides(t, pool, "default", programID)
+	if !found {
+		t.Fatal("overrides after skip: no row (PutProgramIntent must not touch program_overrides)")
 	}
 	if got := overridesPriority(t, overrides.Overrides); got != 7 {
 		t.Errorf("overrides lost on cancel: priority = %d, want 7 (%s)", got, overrides.Overrides)
@@ -137,44 +133,31 @@ func TestPutProgramIntent_SkipDoesNotTouchOverrides(t *testing.T) {
 func TestDeleteEndedProgramIntents(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	past := time.Now().Add(-3 * time.Hour)
 	future := time.Now().Add(3 * time.Hour)
 	for i, st := range []time.Time{past, future} {
 		programID := int64(9000 + i)
-		if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-			Site: "default", ProgramID: programID, Title: "", StartAt: st, DurationMs: 1800000,
-			NetworkID: 32736, ServiceID: 1024, ChannelType: "GR", Channel: "27",
-			EventID: int32(programID), ServiceName: "テスト局",
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-			Site:      "default",
-			ProgramID: programID,
-			Action:    "skip",
-		}); err != nil {
-			t.Fatal(err)
-		}
+		dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+			p.StartAt = st
+		})
+		dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) {
+			p.Action = "skip"
+		})
 	}
 
-	deleted, err := q.DeleteEndedProgramSnapshots(ctx, time.Now())
+	deleted, err := pgstoretest.Reservations(pool).PruneEndedSnapshots(ctx, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if deleted != 1 {
 		t.Errorf("deleted program_snapshots = %d, want 1 (only the ended program)", deleted)
 	}
-	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{
-		Site: "default", ProgramID: 9001,
-	}); err != nil {
-		t.Errorf("future intent should survive GC: %v", err)
+	if _, ok := dbtest.ReadProgramIntent(t, pool, "default", 9001); !ok {
+		t.Error("future intent should survive GC")
 	}
-	if _, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{
-		Site: "default", ProgramID: 9000,
-	}); !errors.Is(err, pgx.ErrNoRows) {
-		t.Errorf("ended intent should be gone via FK CASCADE from program_snapshots, got err=%v", err)
+	if _, ok := dbtest.ReadProgramIntent(t, pool, "default", 9000); ok {
+		t.Error("ended intent should be gone via FK CASCADE from program_snapshots")
 	}
 }
 
