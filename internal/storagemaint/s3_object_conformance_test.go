@@ -18,7 +18,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -28,6 +27,7 @@ import (
 	"github.com/fetburner/rokuban/internal/objstore/s3store"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -66,9 +66,7 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		recordingID := dbtest.Recording(t, pool)
 		profile := "h264"
 		dbtest.ProcessingPolicy(t, pool, recordingID, func(p *dbtest.ProcessingPolicyParams) { p.EncodeProfiles = []string{profile} })
-		if _, err := sqlcgen.New(pool).CreateRecordingEncodeAttemptRunning(ctx, sqlcgen.CreateRecordingEncodeAttemptRunningParams{
-			RecordingID: recordingID, Profile: profile,
-		}); err != nil {
+		if _, err := pgstoretest.Media(pool).Begin(ctx, recordingID, profile, jobs.EncodeAttemptLimit); err != nil {
 			t.Fatalf("seeding running encode attempt: %v", err)
 		}
 		payload := []byte("first encoded object bytes")

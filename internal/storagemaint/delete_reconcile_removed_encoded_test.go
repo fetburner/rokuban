@@ -12,7 +12,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
@@ -49,11 +48,7 @@ func seedRemovedEncodedRecording(t *testing.T, pool *pgxpool.Pool, mediaDir stri
 
 func requestEncodedRemoval(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) {
 	t.Helper()
-	if err := sqlcgen.New(pool).InsertEncodedAssetRemovalRequest(context.Background(), sqlcgen.InsertEncodedAssetRemovalRequestParams{
-		RecordingID: recordingID, Profile: profile,
-	}); err != nil {
-		t.Fatalf("inserting removal request: %v", err)
-	}
+	dbtest.EncodedAssetRemovalRequest(t, pool, recordingID, profile)
 }
 
 func removalRequestExists(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) bool {
@@ -78,7 +73,6 @@ func TestRemovedEncodedAssets_NamedPredicateBothDirections(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
-	q := sqlcgen.New(pool)
 
 	// 要求行あり + desired に無い + 原本あり → 消える。
 	removed := seedRemovedEncodedRecording(t, pool, mediaDir, 9101, []string{"h265"})
@@ -103,9 +97,7 @@ func TestRemovedEncodedAssets_NamedPredicateBothDirections(t *testing.T) {
 	requestEncodedRemoval(t, pool, lastCopy.recordingID, "h265")
 	setAssetState(t, pool, lastCopy.originalID, "deleted")
 
-	rows, err := q.ListRemovedEncodedAssetsToDelete(context.Background(), sqlcgen.ListRemovedEncodedAssetsToDeleteParams{
-		StoreName: dbtest.StoreName, RowLimit: deleteReconcileRowLimit,
-	})
+	rows, err := pgstoretest.Media(pool).ListRemovedEncodedAssetsToDelete(context.Background(), deleteReconcileRowLimit)
 	testutil.RequireNoError(t, err, "ListRemovedEncodedAssetsToDelete")
 	var got []int64
 	for _, r := range rows {
@@ -152,7 +144,7 @@ func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.
 		t.Errorf("original copy state = %q, want active", got)
 	}
 
-	missing, err := sqlcgen.New(pool).ListMissingEncodeProfiles(context.Background(), sqlcgen.ListMissingEncodeProfilesParams{
+	missing, err := pgstoretest.Media(pool).ListMissingEncodeProfiles(context.Background(), store.MissingEncodeProfilesParams{
 		KnownProfiles: []string{"h264", "h265"},
 		CutProfiles:   []string{},
 		AttemptLimit:  jobs.EncodeAttemptLimit,
@@ -174,16 +166,13 @@ func TestDeleteReconcileWorker_RemovedEncodedDeleting_ReaddRevertsOtherwiseResum
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
-	q := sqlcgen.New(pool)
 	testutil.RequireNoError(t, breaker.Trip(context.Background(), pgstoretest.Breakers(pool), "", breaker.DeleteReconcile, 1, breaker.Sample{Total: 2}), "tripping breaker")
 
 	readded := seedRemovedEncodedRecording(t, pool, mediaDir, 9301, []string{"h265"})
 	requestEncodedRemoval(t, pool, readded.recordingID, "h264")
 	setAssetState(t, pool, readded.h264ID, "deleting")
-	if err := q.AppendRecordingEncodeProfiles(context.Background(), sqlcgen.AppendRecordingEncodeProfilesParams{
-		ID: readded.recordingID, Profiles: []string{"h264"},
-	}); err != nil {
-		t.Fatalf("AppendRecordingEncodeProfiles: %v", err)
+	if err := pgstoretest.Media(pool).AppendProfiles(context.Background(), readded.recordingID, []string{"h264"}, nil); err != nil {
+		t.Fatalf("AppendProfiles: %v", err)
 	}
 	if removalRequestExists(t, pool, readded.recordingID, "h264") {
 		t.Error("removal request survived re-adding the profile, want cleared in the same statement")
@@ -240,10 +229,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T)
 			t.Errorf("asset %d copy state = %q, want active (breaker should have withheld deletes)", id, got)
 		}
 	}
-	cb, err := sqlcgen.New(pool).GetCircuitBreaker(context.Background(), sqlcgen.GetCircuitBreakerParams{
-		Scope: "", Name: breaker.DeleteReconcile,
-	})
-	testutil.RequireNoError(t, err, "expected circuit breaker to be tripped, got error")
+	cb := circuitBreakerAt(t, pool, "", breaker.DeleteReconcile)
 	if cb.Pending != 3 {
 		t.Errorf("breaker pending = %d, want 3", cb.Pending)
 	}

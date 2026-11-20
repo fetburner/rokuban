@@ -24,10 +24,8 @@ import (
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/fetburner/rokuban/internal/breaker"
-	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/inplace"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
@@ -122,6 +120,32 @@ func (r *webhookRecorder) reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = nil
+}
+
+// circuitBreakerAt は scope と name の発動中のブレーカーの行を返す。発動していなければ失敗する。
+// pending の値を見るために、発動の有無だけを返す IsTripped ではなく一覧を読む。
+func circuitBreakerAt(t *testing.T, pool *pgxpool.Pool, scope, name string) store.CircuitBreaker {
+	t.Helper()
+	all, err := pgstoretest.Breakers(pool).List(context.Background())
+	testutil.RequireNoError(t, err, "listing circuit breakers")
+	for _, cb := range all {
+		if cb.Scope == scope && cb.Name == name {
+			return cb
+		}
+	}
+	t.Fatalf("circuit breaker %q at scope %q is not tripped", name, scope)
+	return store.CircuitBreaker{}
+}
+
+// requireRecordingOutOfTrash は録画がごみ箱から出ていることを、録画状態の読み取り契約で確かめる。
+// Restore が何もしなかった（録画が残った）ときに、後続の検査より前で失敗させるために置く。
+func requireRecordingOutOfTrash(t *testing.T, pool *pgxpool.Pool, recordingID int64) {
+	t.Helper()
+	state, err := pgstoretest.Media(pool).GetRecordingRemovalState(context.Background(), recordingID)
+	testutil.RequireNoError(t, err, "reading recording removal state after restore")
+	if state.DeletedAt != nil {
+		t.Fatalf("recording %d is still in the trash (deleted_at = %v) after Restore", recordingID, *state.DeletedAt)
+	}
 }
 
 // markRecordingUntilEncoded は recording_processing_policy 衛星表（issue #159）に
@@ -284,12 +308,9 @@ func TestDeleteReconcileWorker_OldGenerationWaitsForOverlapAndRetries(t *testing
 	newPath := filepath.Join(mediaDir, filepath.FromSlash(newRelPath))
 	testutil.RequireNoError(t, os.WriteFile(newPath, []byte("current generation"), 0o644), "writing current-generation file")
 	currentCopyCreatedAt := time.Now().Add(-30 * time.Minute)
-	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: newRelPath,
-		Generation: 1, State: "active", CreatedAt: &currentCopyCreatedAt,
-	}); err != nil {
-		t.Fatalf("inserting current-generation copy: %v", err)
-	}
+	dbtest.MediaAssetCopy(t, pool, assetID, func(p *dbtest.MediaAssetCopyParams) {
+		p.RelPath, p.Generation, p.CreatedAt = newRelPath, 1, &currentCopyCreatedAt
+	})
 	var currentCopyID int64
 	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2 AND rel_path = $3`, assetID, dbtest.StoreName, newRelPath).Scan(&currentCopyID), "reading current copy ID")
 	testutil.MustExec(t, pool, "advancing logical asset generation", `UPDATE media_assets SET derived_generation = 1 WHERE id = $1`, assetID)
@@ -658,8 +679,9 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 	}
 
 	// ここでユーザーがごみ箱から復元する。
-	_, err := sqlcgen.New(pool).RestoreRecording(context.Background(), recordingID)
+	err := pgstoretest.Recordings(pool).Restore(context.Background(), recordingID)
 	testutil.RequireNoError(t, err, "restoring recording")
+	requireRecordingOutOfTrash(t, pool, recordingID)
 	testutil.RequireNoError(t, os.Remove(blockerFile), "removing blocker file")
 	rec.reset()
 
@@ -727,8 +749,9 @@ func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDel
 	dbtest.SetMediaAssetState(t, pool, assetID, "deleting")
 
 	// ここでユーザーがごみ箱から復元する。
-	_, err := sqlcgen.New(pool).RestoreRecording(context.Background(), recordingID)
+	err := pgstoretest.Recordings(pool).Restore(context.Background(), recordingID)
 	testutil.RequireNoError(t, err, "restoring recording")
+	requireRecordingOutOfTrash(t, pool, recordingID)
 
 	w := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.TrashRetention = 30 * 24 * time.Hour
@@ -884,34 +907,17 @@ func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCo
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/candidate-race.jpg", []byte("thumbnail"))
 	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/candidate-race-tiles.jpg")
 	markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
+	// 作り直し要求は確認済みチャプターから keep を導くので、所有と区間を先に作る。
+	dbtest.AdoptChapters(t, pool, recordingID)
+	dbtest.ChapterSpan(t, pool, recordingID)
 	assertUntilEncodedQualifies(t, pool, originalID, true)
 
 	originalHook := afterDeleteCandidatesCollected
 	t.Cleanup(func() { afterDeleteCandidatesCollected = originalHook })
 	afterDeleteCandidatesCollected = func() {
-		tx, err := pool.Begin(ctx)
-		if err != nil {
-			t.Errorf("beginning rebuild request transaction: %v", err)
-			return
-		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		q := sqlcgen.New(tx)
-		if _, err := q.LockRecording(ctx, recordingID); err != nil {
-			t.Errorf("locking recording for rebuild request: %v", err)
-			return
-		}
-		keep, err := pgstore.KeepRangesParam([]chapters.Range{{StartMs: 0, EndMs: 1000}})
-		testutil.RequireNoError(t, err, "encoding requested keep ranges")
-		if err := q.UpsertEncodedAssetRebuildRequest(ctx, sqlcgen.UpsertEncodedAssetRebuildRequestParams{
-			RecordingID:   recordingID,
-			Profile:       profile,
-			RequestedKeep: keep,
-		}); err != nil {
-			t.Errorf("inserting rebuild request after candidate collection: %v", err)
-			return
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Errorf("committing rebuild request after candidate collection: %v", err)
+		// RequestCutRebuild は録画の行を取ってから要求を書く。候補収集の後に、削除側と直列化して commit する。
+		if err := pgstoretest.Media(pool).RequestCutRebuild(ctx, recordingID, profile); err != nil {
+			t.Errorf("requesting cut rebuild after candidate collection: %v", err)
 		}
 	}
 
@@ -1583,10 +1589,7 @@ func TestDeleteReconcileWorker_KeepsVisibleIngestWriterAndDeletesSupersededGener
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, "local"), "WriteStoreMarker")
 	const recordID = "rec-ingest-orphan-generations"
 	recordingID := dbtest.Recording(t, pool)
-	testutil.RequireNoError(t, sqlcgen.New(pool).UpsertRecordSync(ctx, sqlcgen.UpsertRecordSyncParams{
-		Site: "default", RecordID: recordID, RecordingID: &recordingID,
-		ProgramID: 327361024000001, Status: "finished", Tags: []string{},
-	}), "inserting test record_sync")
+	dbtest.RecordSync(t, pool, recordingID, recordID)
 	media := pgstoretest.Media(pool)
 	oldOwner := uuid.New()
 	if _, acquired, err := media.AcquireIngestCheckpoint(ctx, recordingID, oldOwner, time.Minute); err != nil || !acquired {
@@ -1647,10 +1650,10 @@ func TestDeleteReconcileWorker_CanonicalOrphanIsNeverDeleted(t *testing.T) {
 	old := time.Now().Add(-48 * time.Hour)
 	testutil.RequireNoError(t, os.Chtimes(orphanPath, old, old), "making orphan old")
 
-	q := sqlcgen.New(pool)
-	testutil.RequireNoError(t, q.UpsertOrphanFile(ctx, sqlcgen.UpsertOrphanFileParams{Store: dbtest.StoreName, RelPath: relPath}), "seeding orphan record")
+	media := pgstoretest.Media(pool)
+	testutil.RequireNoError(t, media.UpsertOrphanFile(ctx, relPath), "seeding orphan record")
 	t.Cleanup(func() {
-		_ = q.DeleteOrphanFile(context.Background(), sqlcgen.DeleteOrphanFileParams{Store: dbtest.StoreName, RelPath: relPath})
+		_ = media.DeleteOrphanFile(context.Background(), relPath)
 	})
 
 	w := buildDeleteReconcileWorker(t, pool, mediaDir)
@@ -1748,7 +1751,7 @@ func TestDeleteReconcileWorker_CanonicalAssetKindsAreReportOnly(t *testing.T) {
 		"encoded/program_h264.vtt",
 	}
 	old := time.Now().Add(-30 * 24 * time.Hour)
-	q := sqlcgen.New(pool)
+	media := pgstoretest.Media(pool)
 	w := buildDeleteReconcileWorker(t, pool, mediaDir)
 	for _, relPath := range paths {
 		if classifyOrphanCleanup(relPath) != orphanCleanupCanonical {
@@ -1758,7 +1761,7 @@ func TestDeleteReconcileWorker_CanonicalAssetKindsAreReportOnly(t *testing.T) {
 		testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(path), 0o755), "MkdirAll")
 		testutil.RequireNoError(t, os.WriteFile(path, []byte("canonical"), 0o644), "WriteFile")
 		testutil.RequireNoError(t, os.Chtimes(path, old, old), "Chtimes")
-		if err := q.UpsertOrphanFile(ctx, sqlcgen.UpsertOrphanFileParams{Store: dbtest.StoreName, RelPath: relPath}); err != nil {
+		if err := media.UpsertOrphanFile(ctx, relPath); err != nil {
 			t.Fatalf("seeding %s orphan: %v", relPath, err)
 		}
 		w.deleteOrphanFile(relPath, time.Hour)
@@ -2185,11 +2188,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 	}
 
 	// この legacy test worker は置き場名を省略しているので scope は空文字列。
-	q := sqlcgen.New(pool)
-	cb, err := q.GetCircuitBreaker(context.Background(), sqlcgen.GetCircuitBreakerParams{
-		Scope: "", Name: breaker.DeleteReconcile,
-	})
-	testutil.RequireNoError(t, err, "expected circuit breaker to be tripped, got error")
+	cb := circuitBreakerAt(t, pool, "", breaker.DeleteReconcile)
 	if cb.Pending != 3 {
 		t.Errorf("breaker pending = %d, want 3", cb.Pending)
 	}
@@ -2947,10 +2946,7 @@ func TestDeleteReconcileWorker_OldGenerationCountsTowardBreaker(t *testing.T) {
 			t.Errorf("old-generation file %s was removed although the breaker should have withheld deletes", p)
 		}
 	}
-	cb, err := sqlcgen.New(pool).GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
-		Scope: dbtest.StoreName, Name: breaker.DeleteReconcile,
-	})
-	testutil.RequireNoError(t, err, "expected circuit breaker to be tripped, got error")
+	cb := circuitBreakerAt(t, pool, dbtest.StoreName, breaker.DeleteReconcile)
 	if cb.Pending != 2 {
 		t.Errorf("breaker pending = %d, want 2", cb.Pending)
 	}
