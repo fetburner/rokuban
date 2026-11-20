@@ -19,13 +19,13 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/storagemaint"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -436,13 +436,8 @@ func TestSetRecordingEncodePolicy_BeforeIngest_NoOpAndDoesNotBlockFreeze(t *test
 
 	// ingest の resolveAndSnapshotEncodePolicy が原本 media_asset の INSERT と
 	// 同一トランザクションで呼ぶ操作を模す。行が残っていれば PK 衝突する。
-	if err := sqlcgen.New(pool).FreezeRecordingEncodePolicy(context.Background(), sqlcgen.FreezeRecordingEncodePolicyParams{
-		RecordingID:    id,
-		KeepOriginal:   "always",
-		EncodeProfiles: []string{},
-	}); err != nil {
-		t.Fatalf("FreezeRecordingEncodePolicy after PATCH before ingest: %v (must succeed; the endpoint must not have pre-created a policy row)", err)
-	}
+	// 既定値は always / 空 desired。行が無ければ成功し、あれば PK 衝突で失敗する。
+	dbtest.ProcessingPolicy(t, pool, id)
 }
 
 // purge 済み（purged_at が立った tombstone）の録画への PATCH は 404 で、
@@ -725,13 +720,15 @@ func TestAddRecordingEncodeProfiles_WithReservation_Success(t *testing.T) {
 	).Scan(&site, &networkID, &serviceID, &eventID); err != nil {
 		t.Fatalf("loading broadcast event key for recording %d: %v", id, err)
 	}
-	if _, err := sqlcgen.New(pool).GetReservationEncodePolicyByEvent(context.Background(), sqlcgen.GetReservationEncodePolicyByEventParams{
-		Site:      site,
-		NetworkID: networkID,
-		ServiceID: serviceID,
-		EventID:   eventID,
-	}); err != nil {
-		t.Fatalf("recording is not reachable from the seeded reservation via broadcast event key: %v", err)
+	// 予約の同期候補（予約行と番組スナップショットの結合）の中に、録画と同じ放送イベントキーの行があること。
+	candidates, err := pgstoretest.ScheduleSync(pool).ListForSyncEvaluation(context.Background(), site)
+	if err != nil {
+		t.Fatalf("listing reservations with their program snapshots: %v", err)
+	}
+	if !slices.ContainsFunc(candidates, func(r reservation.SyncEvaluationRow) bool {
+		return r.ProgramSnapshot.NetworkID == networkID && r.ProgramSnapshot.ServiceID == serviceID && r.ProgramSnapshot.EventID == eventID
+	}) {
+		t.Fatalf("recording is not reachable from the seeded reservation via broadcast event key")
 	}
 
 	resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"h264"})

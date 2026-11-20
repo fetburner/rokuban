@@ -14,12 +14,10 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/encode"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -163,7 +161,7 @@ func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 	}
 
 	// ListMissingEncodeProfiles は投入候補（不足と作り直し）を合わせて返す。
-	missing, err := sqlcgen.New(pool).ListMissingEncodeProfiles(context.Background(), sqlcgen.ListMissingEncodeProfilesParams{
+	missing, err := pgstoretest.Media(pool).ListMissingEncodeProfiles(context.Background(), store.MissingEncodeProfilesParams{
 		KnownProfiles: []string{"h264", "h265", "cut"},
 		CutProfiles:   []string{"cut"},
 		AttemptLimit:  jobs.EncodeAttemptLimit,
@@ -378,15 +376,8 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 		exec(`INSERT INTO media_asset_cuts (media_asset_id, keep_ranges)
 			 SELECT id, '{[0,1800000)}'::int8multirange FROM media_assets
 			 WHERE recording_id = $1 AND kind = 'encoded' AND profile = 'cut'`, id)
-		keep, err := pgstore.KeepRangesParam(chapters.KeepRanges(chapters.Derive(true, cmSpan, nil, (30 * time.Minute).Milliseconds())))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := sqlcgen.New(pool).UpsertEncodedAssetRebuildRequest(ctx, sqlcgen.UpsertEncodedAssetRebuildRequestParams{
-			RecordingID: id, Profile: "cut", RequestedKeep: keep,
-		}); err != nil {
-			t.Fatalf("seeding rebuild request: %v", err)
-		}
+		keep := chapters.KeepRanges(chapters.Derive(true, cmSpan, nil, (30 * time.Minute).Milliseconds()))
+		dbtest.EncodedAssetRebuildRequest(t, pool, id, "cut", keep)
 		return id
 	}
 	trash := func(id int64) { exec(`UPDATE recordings SET deleted_at = now() WHERE id = $1`, id) }

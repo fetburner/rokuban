@@ -13,8 +13,8 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -30,37 +30,36 @@ import (
 // （AddRecordingEncodeProfiles）を呼ぶテストが「行が無い」で 500 になる。
 func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, stats map[int32][4]int64) int64 {
 	t.Helper()
+	rows := make([]store.RecordingDropStat, 0, len(stats))
+	for pid, s := range stats {
+		rows = append(rows, store.RecordingDropStat{Pid: pid, Packets: s[0], Drops: s[1], Errors: s[2], Scrambled: s[3]})
+	}
+	return seedIngestedScan(t, pool, recordingID, size, rows, nil)
+}
+
+// seedIngestedScan は seedIngested と同じ原本と凍結済みの方針を作り、計測値と位置を
+// 契約の ReplaceScan で置く。計測記録と計測サイズは ReplaceScan が同時に書く。
+func seedIngestedScan(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, stats []store.RecordingDropStat, positions []store.RecordingDropPosition) int64 {
+	t.Helper()
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.m2ts", recordingID)
 		fixtureParams.SizeBytes = size
 	})
+	dbtest.ProcessingPolicy(t, pool, recordingID)
 
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles)
-		 VALUES ($1, 'always', '{}')`, recordingID); err != nil {
-		t.Fatalf("seeding recording_processing_policy: %v", err)
+	media := pgstoretest.Media(pool)
+	source, err := media.GetActiveOriginalForTSScan(ctx, recordingID)
+	if err != nil {
+		t.Fatalf("loading original of recording %d for drop scan: %v", recordingID, err)
 	}
-	params := make([]sqlcgen.InsertDropStatParams, 0, len(stats))
-	for pid, s := range stats {
-		params = append(params, sqlcgen.InsertDropStatParams{
-			MediaAssetID: assetID,
-			Pid:          pid,
-			Packets:      s[0],
-			Drops:        s[1],
-			Errors:       s[2],
-			Scrambled:    s[3],
-		})
+	// 計測サイズには原本サイズを渡す。一致しなければ書かれないので、false はテストの失敗にする。
+	stored, err := media.ReplaceScan(ctx, source, size, stats, positions)
+	if err != nil {
+		t.Fatalf("storing drop scan of recording %d: %v", recordingID, err)
 	}
-	batch := q.InsertDropStat(ctx, params)
-	batch.Exec(nil)
-	if err := batch.Close(); err != nil {
-		t.Fatalf("seeding drop_stat batch: %v", err)
-	}
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes) VALUES ($1, $2)`, assetID, size); err != nil {
-		t.Fatalf("seeding media_asset_ts_scan: %v", err)
+	if !stored {
+		t.Fatalf("drop scan of recording %d was not stored (scanned size %d)", recordingID, size)
 	}
 	return assetID
 }
@@ -217,18 +216,11 @@ func TestListRecordings_FailedFilterExcludesSuperseded(t *testing.T) {
 	// watcher の createRecording と同じ順序: 生きた failed 行を supersede してから
 	// 同一 active-event の成功行を作る。
 	const eventID = 700
-	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+	failedID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "擬似失敗（置換済み）", base.Add(-time.Hour), "failed", eventID
 	})
-	n, err := sqlcgen.New(pool).SupersedeFailedRecording(context.Background(), sqlcgen.SupersedeFailedRecordingParams{
-		Site:           store.DefaultSite,
-		NetworkID:      32678,
-		ServiceID:      5168,
-		EventID:        eventID,
-		ProgramStartAt: base.Add(-time.Hour),
-	})
-	if err != nil || n != 1 {
-		t.Fatalf("SupersedeFailedRecording: rows=%d err=%v", n, err)
+	if n := dbtest.SupersedeFailedRecording(t, pool, failedID); n != 1 {
+		t.Fatalf("SupersedeFailedRecording: rows=%d, want 1", n)
 	}
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "本物の成功", base, "finished", eventID
@@ -281,38 +273,18 @@ func TestListRecordings_DeletingOriginal_StillShowsSizeBytes(t *testing.T) {
 func TestRecordingDropHistorySurvivesOriginalDeletion(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := NewTestServer(t, pool)
-	ctx := context.Background()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本削除後も drop 履歴を表示", time.Now().Truncate(time.Second), "finished", 402
 	})
-	assetID := seedIngested(t, pool, id, 500, map[int32][4]int64{
-		0x100: {500, 2, 1, 0},
-		0x110: {300, 0, 0, 5},
-	})
-	q := sqlcgen.New(pool)
 	elapsed := int64(1000)
-	positionParams := make([]sqlcgen.InsertDropPositionParams, 0, 2)
-	for _, p := range []struct {
-		pid     int32
-		offset  int64
-		elapsed *int64
-	}{
-		{pid: 0x100, offset: 188, elapsed: &elapsed},
-		{pid: 0x110, offset: 376},
-	} {
-		positionParams = append(positionParams, sqlcgen.InsertDropPositionParams{
-			MediaAssetID: assetID,
-			ByteOffset:   p.offset,
-			Pid:          p.pid,
-			ElapsedMs:    p.elapsed,
-		})
-	}
-	batch := q.InsertDropPosition(ctx, positionParams)
-	batch.Exec(nil)
-	if err := batch.Close(); err != nil {
-		t.Fatalf("seeding drop position batch: %v", err)
-	}
+	assetID := seedIngestedScan(t, pool, id, 500, []store.RecordingDropStat{
+		{Pid: 0x100, Packets: 500, Drops: 2, Errors: 1},
+		{Pid: 0x110, Packets: 300, Scrambled: 5},
+	}, []store.RecordingDropPosition{
+		{Pid: 0x100, ByteOffset: 188, ElapsedMs: &elapsed},
+		{Pid: 0x110, ByteOffset: 376},
+	})
 
 	fetchListRecording := func() Recording {
 		t.Helper()
@@ -585,32 +557,18 @@ func TestListRecordingDropStats_PIDType(t *testing.T) {
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "種別あり", time.Now().Truncate(time.Second), "finished", 1
 	})
-	assetID := seedIngested(t, pool, id, 1000, map[int32][4]int64{
-		0x200: {100, 0, 0, 0}, // 種別なし（分類できなかった PID）
-	})
-
 	// api にとって pid_type は素通しの文字列（値の権威は internal/tsstat）。
 	// ここで定数を参照しないのは、この層が値集合を知らないことを表すため。
-	q := sqlcgen.New(pool)
 	typed := map[int32]string{
 		0x000: "pat",
 		0x100: "video",
 		0x110: "audio",
 	}
-	statParams := make([]sqlcgen.InsertDropStatParams, 0, len(typed))
+	stats := []store.RecordingDropStat{{Pid: 0x200, Packets: 100}} // 種別なし（分類できなかった PID）
 	for pid, pidType := range typed {
-		statParams = append(statParams, sqlcgen.InsertDropStatParams{
-			MediaAssetID: assetID,
-			Pid:          pid,
-			Packets:      10,
-			PidType:      &pidType,
-		})
+		stats = append(stats, store.RecordingDropStat{Pid: pid, Packets: 10, PidType: &pidType})
 	}
-	batch := q.InsertDropStat(context.Background(), statParams)
-	batch.Exec(nil)
-	if err := batch.Close(); err != nil {
-		t.Fatalf("seeding typed drop_stat batch: %v", err)
-	}
+	seedIngestedScan(t, pool, id, 1000, stats, nil)
 
 	got := GetJSON[[]DropStat](t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id))
 	if len(got) != 4 {
@@ -660,31 +618,13 @@ func TestListRecordingDropStats_Positions(t *testing.T) {
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "位置付き録画", time.Now().Truncate(time.Second), "finished", 1
 	})
-	assetID := seedIngested(t, pool, id, 1000, map[int32][4]int64{
-		0x100: {500, 2, 0, 0},
-	})
-	q := sqlcgen.New(pool)
 	elapsed := int64(1000)
-	positionParams := make([]sqlcgen.InsertDropPositionParams, 0, 2)
-	for _, p := range []struct {
-		offset  int64
-		elapsed *int64
-	}{
-		{offset: 188, elapsed: &elapsed},
-		{offset: 376},
-	} {
-		positionParams = append(positionParams, sqlcgen.InsertDropPositionParams{
-			MediaAssetID: assetID,
-			ByteOffset:   p.offset,
-			Pid:          0x100,
-			ElapsedMs:    p.elapsed,
-		})
-	}
-	batch := q.InsertDropPosition(context.Background(), positionParams)
-	batch.Exec(nil)
-	if err := batch.Close(); err != nil {
-		t.Fatalf("seeding drop position batch: %v", err)
-	}
+	assetID := seedIngestedScan(t, pool, id, 1000, []store.RecordingDropStat{
+		{Pid: 0x100, Packets: 500, Drops: 2},
+	}, []store.RecordingDropPosition{
+		{Pid: 0x100, ByteOffset: 188, ElapsedMs: &elapsed},
+		{Pid: 0x100, ByteOffset: 376},
+	})
 
 	got := GetJSON[[]DropStat](t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id))
 	if len(got) != 1 || len(got[0].Positions) != 2 {
