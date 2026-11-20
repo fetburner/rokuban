@@ -611,7 +611,7 @@ var (
 func newLiveActiveSessions() *prometheus.GaugeVec {
 	g := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_live_active_sessions",
-		Help: "Live-viewing sessions (ffmpeg processes) currently held by this process. Per-process; sum across replicas in Prometheus for the whole picture.",
+		Help: "Live-viewing sessions (ffmpeg processes) currently held by this process, by kind: live.",
 	}, []string{"kind"})
 	// GaugeVec は WithLabelValues が呼ばれるまで系列を exposition しない。live
 	// streamer を持たない api / worker ロールでも、起動直後の 0 を観測できるよう
@@ -628,9 +628,16 @@ var (
 	// であり、この値を全体像として読む UI を作らない（docs/operations.md §5
 	// 「既定を 1 にする根拠と、増やす判定基準」）。全体を見たいときは Prometheus 側で
 	// sum する。
+	//
+	// ラベル kind の値は常に "live"（newLiveActiveSessions と streamer のセッション数の
+	// 更新が書く）。
 	LiveActiveSessions = newLiveActiveSessions()
 
 	// LiveSessionStartFailures はライブセッションの開始に失敗した回数の理由別件数。
+	//
+	// reason の値は internal/streamer/session.go の各
+	// LiveSessionStartFailures.WithLabelValues が文字列リテラルで書き、1 か所に
+	// 閉じていないので Help には列挙しない。下は各値の意味である。
 	//
 	// reason:
 	//   - "session_limit": このプロセスの同時セッション上限（live.max_sessions、
@@ -639,7 +646,7 @@ var (
 	//   - "ffmpeg_error": ffmpeg の起動に失敗した
 	LiveSessionStartFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_live_session_start_failures_total",
-		Help: "Live-viewing session start failures by reason (session_limit, upstream_error, ffmpeg_error).",
+		Help: "Live-viewing session start failures by reason.",
 	}, []string{"reason"})
 
 	// LiveSessionEvictions は、起動失敗からの再試行のためにライブ
@@ -659,7 +666,7 @@ var (
 	//     いる」と誤診断する
 	LiveSessionEvictions = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_live_session_evictions_total",
-		Help: "Live-viewing sessions evicted to retry a failed start, by trigger reason and retry result.",
+		Help: "Live-viewing sessions evicted to retry a failed start, by reason (upstream or session_limit) and result (retry_succeeded, retry_failed, or retry_abandoned).",
 	}, []string{"reason", "result"})
 
 	// LiveIdleGCReclaimed は idle GC が回収した（クライアントが離れて ffmpeg を
@@ -699,7 +706,7 @@ var (
 	// idle GC の停止を検出する。
 	LiveIdleGCLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_live_idle_gc_last_pass_timestamp_seconds",
-		Help: "Unix time of the last completed live idle-GC pass. Use with time() to detect a stalled idle GC (which would leave tuners unreleased).",
+		Help: "Unix time of the last completed live idle-GC pass.",
 	})
 )
 
