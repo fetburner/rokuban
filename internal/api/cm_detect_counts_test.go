@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -21,7 +20,6 @@ func TestCMLogoAPICountsDetectedAndRedetectable(t *testing.T) {
 		c.CMStationStore = pgstoretest.Analysis(pool)
 	})
 
-	q := sqlcgen.New(pool)
 	ids := make([]int64, 3)
 	for i := range ids {
 		ids[i] = dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -33,9 +31,8 @@ func TestCMLogoAPICountsDetectedAndRedetectable(t *testing.T) {
 		})
 	}
 	for _, id := range ids[:2] {
-		if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: id, CmRanges: "{}"}); err != nil {
-			t.Fatal(err)
-		}
+		toggleCMDetectionForTest(t, ctx, pool, id, true)
+		saveCMDetectionForTest(t, ctx, pool, id)
 	}
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO missing_media_assets (media_asset_copy_id)

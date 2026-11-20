@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -45,7 +45,7 @@ func TestPlaybackPositionAndWatchedAPI(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := NewTestServer(t, pool)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
+	playback := pgstoretest.Playback(pool)
 	start := time.Date(2026, 8, 1, 1, 0, 0, 0, time.UTC)
 	one := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.EventID = 100
@@ -66,10 +66,10 @@ func TestPlaybackPositionAndWatchedAPI(t *testing.T) {
 		p.ProgramDurationMs = time.Hour.Milliseconds()
 	})
 
-	if _, err := q.UpsertRecordingPlaybackPosition(ctx, sqlcgen.UpsertRecordingPlaybackPositionParams{RecordingID: one, PositionMs: 12_000}); err != nil {
+	if err := playback.SavePosition(ctx, one, 12_000); err != nil {
 		t.Fatalf("seed playback position: %v", err)
 	}
-	if _, err := q.UpsertRecordingPlaybackPosition(ctx, sqlcgen.UpsertRecordingPlaybackPositionParams{RecordingID: duplicate, PositionMs: 22_000}); err != nil {
+	if err := playback.SavePosition(ctx, duplicate, 22_000); err != nil {
 		t.Fatalf("seed duplicate playback position: %v", err)
 	}
 
@@ -151,7 +151,7 @@ func TestListContinueWatchingOrderLimitAndWatchedGrouping(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := NewTestServer(t, pool)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
+	playback := pgstoretest.Playback(pool)
 	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	ids := make([]int64, 8)
 	for i := range ids {
@@ -162,9 +162,7 @@ func TestListContinueWatchingOrderLimitAndWatchedGrouping(t *testing.T) {
 			p.ProgramStartAt = start.Add(time.Duration(i) * time.Hour)
 			p.ProgramDurationMs = time.Hour.Milliseconds()
 		})
-		if _, err := q.UpsertRecordingPlaybackPosition(ctx, sqlcgen.UpsertRecordingPlaybackPositionParams{
-			RecordingID: ids[i], PositionMs: int64(5_000 + i*1_000),
-		}); err != nil {
+		if err := playback.SavePosition(ctx, ids[i], int64(5_000+i*1_000)); err != nil {
 			t.Fatalf("seed position %d: %v", i, err)
 		}
 		if _, err := pool.Exec(ctx, `UPDATE recording_playback_positions SET updated_at = $2 WHERE recording_id = $1`, ids[i], start.Add(time.Duration(i)*time.Minute)); err != nil {
@@ -190,7 +188,7 @@ func TestListContinueWatchingOrderLimitAndWatchedGrouping(t *testing.T) {
 		if _, err := pool.Exec(ctx, `UPDATE recordings SET status = $2, deleted_at = CASE WHEN $3 THEN now() ELSE NULL END, superseded_at = CASE WHEN $4 THEN now() ELSE NULL END WHERE id = $1`, id, status.status, status.deleted, status.superseded); err != nil {
 			t.Fatalf("set excluded recording state %d: %v", id, err)
 		}
-		if _, err := q.UpsertRecordingPlaybackPosition(ctx, sqlcgen.UpsertRecordingPlaybackPositionParams{RecordingID: id, PositionMs: 15_000}); err != nil {
+		if err := playback.SavePosition(ctx, id, 15_000); err != nil {
 			t.Fatalf("seed excluded position %d: %v", id, err)
 		}
 		if _, err := pool.Exec(ctx, `UPDATE recording_playback_positions SET updated_at = now() + interval '1 hour' WHERE recording_id = $1`, id); err != nil {
@@ -205,11 +203,12 @@ func TestListContinueWatchingOrderLimitAndWatchedGrouping(t *testing.T) {
 		p.ProgramStartAt = start.Add(7 * time.Hour)
 		p.ProgramDurationMs = time.Hour.Milliseconds()
 	})
-	if _, err := q.UpsertRecordingPlaybackPosition(ctx, sqlcgen.UpsertRecordingPlaybackPositionParams{RecordingID: sibling, PositionMs: 9_000}); err != nil {
-		t.Fatalf("seed sibling position: %v", err)
-	}
-	if _, err := q.UpsertRecordingWatched(ctx, sibling); err != nil {
+	// MarkWatched は録画の再生位置を消すので、印を先に付けてから位置を置く（印と位置の両方がある行を作る）。
+	if err := playback.MarkWatched(ctx, sibling); err != nil {
 		t.Fatalf("mark sibling watched: %v", err)
+	}
+	if err := playback.SavePosition(ctx, sibling, 9_000); err != nil {
+		t.Fatalf("seed sibling position: %v", err)
 	}
 
 	got := GetJSON[[]Recording](t, srv.URL+"/api/recordings/continue-watching")

@@ -491,8 +491,7 @@ func TestEncodeWorker_RemovesStaleScratchForRecordingProfile(t *testing.T) {
 
 	w := &EncodeWorker{
 		Publisher:       pgstoretest.Media(pool),
-		Progress:        pgstoretest.Media(pool),
-		Attempts:        pgstoretest.Media(pool),
+		Stores:          Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
 		Objects:         testFSObjectStore(mediaDir),
@@ -538,8 +537,7 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Stores:    Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -637,8 +635,7 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 	rec, client := newWebhookRecorder(t)
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Stores:    Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -716,8 +713,7 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 	rec, client := newWebhookRecorder(t)
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Stores:    Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -811,8 +807,7 @@ func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 	rec, client := newWebhookRecorder(t)
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Stores:    Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,

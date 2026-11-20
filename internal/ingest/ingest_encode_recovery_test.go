@@ -39,8 +39,8 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 	}
 
 	programID := int64(900000000163001)
-	res := insertProgramSnapshotAndReservation(t, pool, programID, "ヒントを落とす番組")
-	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"always","encodeProfiles":["h265"]}`)
+	insertProgramSnapshotAndReservation(t, pool, programID, "ヒントを落とす番組")
+	setReservationBase(t, pool, programID, `{"keepOriginal":"always","encodeProfiles":["h265"]}`)
 
 	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)

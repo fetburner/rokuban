@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -51,6 +51,26 @@ WHERE datname = current_database()
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("row lock waiter did not appear (%s)", operation)
+}
+
+// lockRecordingRow は録画の行を tx で FOR UPDATE する。本番の LockRecording と同じ表・同じ行・同じロック強度。
+// 途中で止めた削除の tx を作るために使う。ロックを取る契約は commit まで保持できない。
+func lockRecordingRow(t *testing.T, tx pgx.Tx, id int64) {
+	t.Helper()
+	var one int64
+	if err := tx.QueryRow(t.Context(), `SELECT id FROM recordings WHERE id = $1 FOR UPDATE`, id).Scan(&one); err != nil {
+		t.Fatalf("locking recording row: %v", err)
+	}
+}
+
+// lockEncodePolicyRow は録画の方針の行を tx で FOR UPDATE する。本番の LockRecordingEncodePolicy と同じ表・同じ行・同じロック強度。
+// lockRecordingRow と同じく、途中で止めた tx を作るために使う。
+func lockEncodePolicyRow(t *testing.T, tx pgx.Tx, id int64) {
+	t.Helper()
+	var one int64
+	if err := tx.QueryRow(t.Context(), `SELECT recording_id FROM recording_processing_policy WHERE recording_id = $1 FOR UPDATE`, id).Scan(&one); err != nil {
+		t.Fatalf("locking encode policy row: %v", err)
+	}
 }
 
 // seedEncodedVersions は seedIngested 済みの録画に active な encoded を置き、desired も揃える。
@@ -302,16 +322,9 @@ func TestRemoveRecordingEncodedAsset_ConcurrentRemovalsLeaveOneCopy(t *testing.T
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	q := sqlcgen.New(tx)
-	if _, err := q.LockRecordingEncodePolicy(ctx, id); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.RemoveRecordingEncodeProfile(ctx, sqlcgen.RemoveRecordingEncodeProfileParams{RecordingID: id, Profile: "h265"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.InsertEncodedAssetRemovalRequest(ctx, sqlcgen.InsertEncodedAssetRemovalRequestParams{RecordingID: id, Profile: "h265"}); err != nil {
-		t.Fatal(err)
-	}
+	lockEncodePolicyRow(t, tx, id)
+	dbtest.RemoveEncodeProfile(t, tx, id, "h265")
+	dbtest.EncodedAssetRemovalRequest(t, tx, id, "h265")
 
 	status := make(chan int, 1)
 	go func() {
@@ -366,18 +379,14 @@ func TestRemoveRecordingEncodedAssetLocksRecordingBeforePolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = recordingTx.Rollback(ctx) }()
-	if _, err := sqlcgen.New(recordingTx).LockRecording(ctx, id); err != nil {
-		t.Fatalf("locking recording row: %v", err)
-	}
+	lockRecordingRow(t, recordingTx, id)
 
 	policyTx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = policyTx.Rollback(ctx) }()
-	if _, err := sqlcgen.New(policyTx).LockRecordingEncodePolicy(ctx, id); err != nil {
-		t.Fatalf("locking encode policy row: %v", err)
-	}
+	lockEncodePolicyRow(t, policyTx, id)
 
 	type response struct {
 		status int
@@ -479,16 +488,9 @@ func TestAddRecordingEncodeProfiles_WaitsForConcurrentRemovalAndClearsRequest(t 
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	q := sqlcgen.New(tx)
-	if _, err := q.LockRecordingEncodePolicy(ctx, id); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.RemoveRecordingEncodeProfile(ctx, sqlcgen.RemoveRecordingEncodeProfileParams{RecordingID: id, Profile: "h264"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.InsertEncodedAssetRemovalRequest(ctx, sqlcgen.InsertEncodedAssetRemovalRequestParams{RecordingID: id, Profile: "h264"}); err != nil {
-		t.Fatal(err)
-	}
+	lockEncodePolicyRow(t, tx, id)
+	dbtest.RemoveEncodeProfile(t, tx, id, "h264")
+	dbtest.EncodedAssetRemovalRequest(t, tx, id, "h264")
 
 	status := make(chan int, 1)
 	go func() {
@@ -668,16 +670,9 @@ func TestAddRecordingEncodeProfiles_CutRuleUsesDesiredAfterConcurrentRemoval(t *
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	q := sqlcgen.New(tx)
-	if _, err := q.LockRecordingEncodePolicy(ctx, id); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.RemoveRecordingEncodeProfile(ctx, sqlcgen.RemoveRecordingEncodeProfileParams{RecordingID: id, Profile: "h264"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.InsertEncodedAssetRemovalRequest(ctx, sqlcgen.InsertEncodedAssetRemovalRequestParams{RecordingID: id, Profile: "h264"}); err != nil {
-		t.Fatal(err)
-	}
+	lockEncodePolicyRow(t, tx, id)
+	dbtest.RemoveEncodeProfile(t, tx, id, "h264")
+	dbtest.EncodedAssetRemovalRequest(t, tx, id, "h264")
 
 	status := make(chan int, 1)
 	go func() {

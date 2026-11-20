@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
@@ -107,6 +106,8 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 	}
 	seedShelfBenchmark(t, conn.Conn())
 	conn.Release()
+
+	reevaluateAndVacuumShelfBenchmark(t, pool)
 
 	shapes := []shelfShape{
 		{name: "(a) production buildRecordingShelvesQuery", run: func() (map[string]shelfResult, error) {
@@ -561,6 +562,27 @@ func queryReservationSeries(ctx context.Context, conn *pgx.Conn, query string) (
 	return series, rows.Err()
 }
 
+// reevaluateAndVacuumShelfBenchmark はラベルルールの当たりを本番の再評価で付け、統計を取り直す。
+// pool の接続は 1 本なので、seed の接続を返した後に呼ぶ。
+func reevaluateAndVacuumShelfBenchmark(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	changed, err := pgstoretest.LabelRules(pool).ReevaluateAll(ctx)
+	if err != nil {
+		t.Fatalf("evaluating benchmark label rules: %v", err)
+	}
+	// 再評価が当たりを 1 件も付けなければ、棚の形の比較がシリーズ無しの母集団で通ってしまう。
+	if changed == 0 {
+		t.Fatal("label rule re-evaluation changed no rows; the benchmark population must carry series hits")
+	}
+	// VACUUM は暗黙のトランザクションになる複数文の送信では実行できないので 1 文ずつ送る。
+	for _, table := range []string{"recordings", "media_assets", "media_asset_copies", "recording_watched", "label_rules", "label_rule_hits"} {
+		if _, err := pool.Exec(ctx, "VACUUM ANALYZE "+table); err != nil {
+			t.Fatalf("vacuum-analyzing %s: %v", table, err)
+		}
+	}
+}
+
 func seedShelfBenchmark(t *testing.T, conn *pgx.Conn) {
 	t.Helper()
 	ctx := context.Background()
@@ -644,16 +666,6 @@ WHERE id BETWEEN 101 AND 200
    OR id BETWEEN 72001 AND 72050;
 	`, pgx.QueryExecModeSimpleProtocol); err != nil {
 		t.Fatalf("seeding shelf benchmark: %v", err)
-	}
-
-	if _, err := sqlcgen.New(conn).ApplyLabelRuleReevaluation(ctx); err != nil {
-		t.Fatalf("evaluating benchmark label rules: %v", err)
-	}
-	// VACUUM は暗黙のトランザクションになる複数文の送信では実行できないので 1 文ずつ送る。
-	for _, table := range []string{"recordings", "media_assets", "media_asset_copies", "recording_watched", "label_rules", "label_rule_hits"} {
-		if _, err := conn.Exec(ctx, "VACUUM ANALYZE "+table); err != nil {
-			t.Fatalf("vacuum-analyzing %s: %v", table, err)
-		}
 	}
 }
 

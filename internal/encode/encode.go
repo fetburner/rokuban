@@ -37,6 +37,14 @@ import (
 // 次の reconcile が引き直す。
 var errNoActiveOriginal = errors.New("no active original copy to choose a store from")
 
+// Stores は encode worker が使う永続化の契約。EncodeWorker に埋め込み、encode だけが使う。
+type Stores struct {
+	// Attempts はエンコード試行の開始・完了・失敗を記録する永続化契約。
+	Attempts store.EncodeAttempts
+	// Progress はエンコードの進捗を報告する永続化契約。
+	Progress store.EncodeProgressReporter
+}
+
 // EncodeWorker は原本 media_asset から構造化プロファイルで派生物を作る。
 // 原本は mediapath.Resolve で読み、ffmpeg 出力はローカル scratch に書く。完成した
 // 派生物は objstore.Store.Put で永続化し、その後 DB transaction が pending copy を
@@ -94,14 +102,14 @@ var errNoActiveOriginal = errors.New("no active original copy to choose a store 
 // 他サイトの worker が拾っても mediapath.Resolve が解決する先は変わらず、
 // 「別インスタンスの id を投げる」形の壊れ方が起きない。
 type EncodeWorker struct {
+	Stores
+
 	// Media はエンコード計画と原本の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
 	Media     store.MediaReconcile
-	Attempts  store.EncodeAttempts
 	Publisher store.MediaPublish
 	// Objects は派生物の置き場。実装差は objstore に閉じ、公開は ObjectPublisher の pending → active で行う。
 	Objects         objstore.Store
 	ObjectPublisher store.DerivedMediaPublisher
-	Progress        store.EncodeProgressReporter
 	MediaDir        string
 	MediaStoreName  string
 	ScratchDir      string

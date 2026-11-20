@@ -161,8 +161,7 @@ func newH264Worker(pool *pgxpool.Pool, mediaDir, scratchDir, ffmpegPath string) 
 		Publisher:       pgstoretest.Media(pool),
 		ObjectPublisher: pgstoretest.Media(pool),
 		Objects:         testFSObjectStore(mediaDir),
-		Progress:        pgstoretest.Media(pool),
-		Attempts:        pgstoretest.Media(pool),
+		Stores:          Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 
 		Media:      pgstoretest.Media(pool),
 		MediaDir:   mediaDir,

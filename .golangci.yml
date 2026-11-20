@@ -183,26 +183,6 @@ linters:
             # 移行中
             - "!${config-path}/internal/metrics/*"
             - "!${config-path}/internal/metrics/dbcollector/*"
-            # worker から移した既存の派生物公開・thumbnail のテスト。
-            - "!${config-path}/internal/thumbnail/s3_conformance_test.go"
-            - "!${config-path}/internal/thumbnail/seek_tiles_test.go"
-            - "!${config-path}/internal/thumbnail/thumbnail_reconcile_test.go"
-            - "!${config-path}/internal/thumbnail/thumbnail_test.go"
-            # worker から移した既存の ingest のテスト。
-            - "!${config-path}/internal/ingest/fixtures_test.go"
-            - "!${config-path}/internal/ingest/ingest_cut_policy_test.go"
-            - "!${config-path}/internal/ingest/ingest_test.go"
-            # api のテストのうち、録画・CM・再生・エンコードのキューの状態をまだ sqlcgen で作るもの。
-            - "!${config-path}/internal/api/cm_detect_test.go"
-            - "!${config-path}/internal/api/cm_detect_counts_test.go"
-            - "!${config-path}/internal/api/chapters_test.go"
-            - "!${config-path}/internal/api/encode_queue_test.go"
-            - "!${config-path}/internal/api/playback_state_test.go"
-            - "!${config-path}/internal/api/playback_watched_grouping_test.go"
-            - "!${config-path}/internal/api/recordings_encoded_remove_test.go"
-            - "!${config-path}/internal/api/recordings_encode_profiles_test.go"
-            - "!${config-path}/internal/api/recordings_test.go"
-            - "!${config-path}/internal/api/shelves_bench_test.go"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/db/sqlcgen
               desc: tests build state through store contracts or internal/db/dbtest

@@ -437,8 +437,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Stores:    Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -634,8 +633,7 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 	profile := cutFFmpegProfile()
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Stores:    Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -683,8 +681,7 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	profile := cutFFmpegProfile()
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
-		Progress:  pgstoretest.Media(pool),
-		Attempts:  pgstoretest.Media(pool),
+		Stores:    Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)},
 
 		Media:           pgstoretest.Media(pool),
 		MediaDir:        mediaDir,
@@ -727,7 +724,7 @@ func TestEncodeWorker_RequestBoundJobDrawsRequestedKeepAfterChapterEdit(t *testi
 	if err != nil || !owned || chapters.SameRanges(currentKeep, requestedKeep) {
 		t.Fatalf("edited currentKeep = %v, owned %v, err %v; want different keep", currentKeep, owned, err)
 	}
-	w := &EncodeWorker{Publisher: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool), Attempts: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}}
+	w := &EncodeWorker{Stores: Stores{Attempts: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool)}, Publisher: pgstoretest.Media(pool), Media: pgstoretest.Media(pool), Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}}
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestJSON
 	_, cut, expected, skip, err := w.observeEncodePlan(ctx, job, slog.Default())
