@@ -44,7 +44,7 @@ type CircuitBreaker struct {
 // Breakers は worker がサーキットブレーカーを発動・観測する契約である。
 type Breakers interface {
 	// Trip は発動を記録し、発動時刻（tripped_at）を返す。すでに発動中なら pending・threshold・detail を更新し、tripped_at は変えない。
-	// 検査: contracttest.RunBreakers（平坦なテストのため名前付きの検査は無い）。
+	// 検査: contracttest.RunBreakers。
 	Trip(ctx context.Context, scope, name string, threshold int, sample BreakerSample) (time.Time, error)
 	// IsTripped は指定したブレーカーが発動中かを返す。
 	IsTripped(ctx context.Context, scope, name string) (bool, error)

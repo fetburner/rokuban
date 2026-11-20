@@ -433,9 +433,7 @@ cut の選択規則は設定の `recording_hls.enabled` に依存し、store は
 
 ### EPG 同期の tx の境界
 
-EPG 同期の各段階は、独立した store メソッドにして、それぞれ自分で commit する。1 つの tx にまとめると、数千行の upsert が長い tx になる。途中の段階が失敗すると、すでに書いた段階まで巻き戻る。
-
-各段階が確定していれば、次の同期が残りを書き直すだけで済む。
+EPG 同期の各段階は、独立した store メソッドにして、それぞれ自分で commit する。1 つの tx にまとめると、数千行の upsert が長い tx になる。途中の段階が失敗すると、すでに書いた段階まで巻き戻る。各段階が確定していれば、次の同期が残りを書き直すだけで済む。
 
 空のレスポンスのときに sweep しない判定は、mirakc の応答を知っている worker に残す。
 
@@ -526,13 +524,9 @@ EPG 同期の各段階は、独立した store メソッドにして、それぞ
 
 ### schedule 同期
 
-観測行の置き換えと snapshot marker の更新は、1 つのトランザクションで確定する。
+観測行の置き換えと snapshot marker の更新は、1 つのトランザクションで確定する。marker を観測より先に確定すると、collector が不完全な観測を新鮮と誤認するからである。
 
-reconciler は、観測全量の置き換え、同期評価の候補、開始済みイベントの読み取りを `ScheduleSync` から使う。presync collector は、marker・観測一覧・同期評価の候補を `ScheduleSyncReader` から読む。実装は `pgstore.ScheduleSync` が両方を持つ。
-
-marker を観測より先に確定すると、collector が不完全な観測を新鮮と誤認する。
-
-collector は、marker が無いときだけ時刻を 0 として出す。
+reconciler は、観測全量の置き換え、同期評価の候補、開始済みイベントの読み取りを `ScheduleSync` から使う。presync collector は、marker・観測一覧・同期評価の候補を `ScheduleSyncReader` から読み、marker が無いときだけ時刻を 0 として出す。実装は `pgstore.ScheduleSync` が両方を持つ。
 
 <details><summary>根拠</summary>
 
@@ -548,7 +542,7 @@ collector は、marker が無いときだけ時刻を 0 として出す。
 
 古い行の削除は、ruler の GC が同じ契約 `NeverScheduledEvents` を呼んで行う。実装は `pgstore.NeverScheduledEvents` が持つ。
 
-削除は幅（horizon）だけを受け取る。`observed_at` は DB の時計で記録されるので、呼び出し側が基準時刻を渡すと、記録と比べる時計がずれるからである。
+削除は幅（horizon）だけを受け取り、基準時刻は受け取らない。`observed_at` は DB の時計で記録されるので、呼び出し側の時計で基準時刻を渡すと、比べる 2 つの時計がずれる。
 
 <details><summary>根拠</summary>
 
@@ -583,9 +577,7 @@ ruler は `RulerPass` から評価に必要なルール・意図・投資・予�
 
 発動は行の存在で表し、再開は行の削除で表す。発動していない状態を表す行は作らない。
 
-reconciler と削除 reconcile は `Breakers`、API は `BreakerAdmin` を使う。
-
-reconciler と削除 reconcile は、もともと tx の外で発動する。そのため、`Breakers.Trip` を単独で呼ぶ。ruler は `RulerPass.ApplyPass` の中で発動する（理由は「ruler パス」節）。
+reconciler と削除 reconcile は `Breakers`、API は `BreakerAdmin` を使う。両者はもともと tx の外で発動するので、`Breakers.Trip` を単独で呼ぶ。ruler は `RulerPass.ApplyPass` の中で発動する（理由は「ruler パス」節）。
 
 ゲージとログは store の外で出す。`breaker.Trip` と、ruler が commit 後に呼ぶ `breaker.AnnounceTrip` が同じ `announceTrip` を共有しているので、出し方は 1 か所にある。パスの先頭の `breaker.ObserveState` は、プロセス再起動後も DB の発動状態をゲージへ戻す。
 
