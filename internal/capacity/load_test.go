@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -170,7 +169,6 @@ func TestLoad_ReportsOverage(t *testing.T) {
 
 // 数えるのは reconciler が実際に schedule を作る予約だけ。
 func TestLoad_ExcludesReservationsThatProduceNoSchedule(t *testing.T) {
-	ctx := context.Background()
 	duration := time.Hour
 
 	tests := []struct {
@@ -197,22 +195,20 @@ func TestLoad_ExcludesReservationsThatProduceNoSchedule(t *testing.T) {
 			name: "overrides.skip = true",
 			seed: func(t *testing.T, pool *pgxpool.Pool, start time.Time) {
 				seedReservation(t, pool, 101, "GR", "25", start, duration, "")
-				if _, err := sqlcgen.New(pool).UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-					Site: testSite, ProgramID: 101, Overrides: json.RawMessage(`{"skip":true}`),
-				}); err != nil {
-					t.Fatalf("upserting overrides: %v", err)
-				}
+				dbtest.ProgramOverrides(t, pool, 101, func(p *dbtest.ProgramOverridesParams) {
+					p.Site = testSite
+					p.Overrides = json.RawMessage(`{"skip":true}`)
+				})
 			},
 		},
 		{
 			name: "intent action = skip",
 			seed: func(t *testing.T, pool *pgxpool.Pool, start time.Time) {
 				seedReservation(t, pool, 101, "GR", "25", start, duration, "")
-				if _, err := sqlcgen.New(pool).UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-					Site: testSite, ProgramID: 101, Action: "skip",
-				}); err != nil {
-					t.Fatalf("upserting intent: %v", err)
-				}
+				dbtest.ProgramIntent(t, pool, 101, func(p *dbtest.ProgramIntentParams) {
+					p.Site = testSite
+					p.Action = "skip"
+				})
 			},
 		},
 		// 「チャンネルスナップショットが無い（reservation_channel 列を追加する前の
@@ -248,11 +244,10 @@ func TestLoad_IntentRecordBeatsBaseSkip(t *testing.T) {
 	seedTuner(t, pool, 0, "PX-S1UD_T1", []string{"GR"}, true, false)
 	seedReservation(t, pool, 100, "GR", "27", start, time.Hour, "")
 	seedReservation(t, pool, 101, "GR", "25", start, time.Hour, `{"skip":true}`)
-	if _, err := sqlcgen.New(pool).UpsertProgramIntent(context.Background(), sqlcgen.UpsertProgramIntentParams{
-		Site: testSite, ProgramID: 101, Action: "record",
-	}); err != nil {
-		t.Fatalf("upserting intent: %v", err)
-	}
+	dbtest.ProgramIntent(t, pool, 101, func(p *dbtest.ProgramIntentParams) {
+		p.Site = testSite
+		p.Action = "record"
+	})
 
 	if overages := loadOverages(t, pool); len(overages) != 1 {
 		t.Errorf("overages = %+v, want 1 (action='record' は base.skip に勝つので需要になる)", overages)

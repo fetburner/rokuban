@@ -183,14 +183,11 @@ linters:
             # 移行中
             - "!${config-path}/cmd/rokuban/*"
             - "!${config-path}/internal/api/*"
-            - "!${config-path}/internal/capacity/*"
             - "!${config-path}/internal/catalog/*"
             - "!${config-path}/internal/metrics/*"
             - "!${config-path}/internal/metrics/dbcollector/*"
             - "!${config-path}/internal/notifier/*"
             - "!${config-path}/internal/ruler/*"
-            - "!${config-path}/internal/tsscan/*"
-            - "!${config-path}/internal/watcher/*"
             - "!${config-path}/internal/worker/*"
             # worker から移した既存の CM テスト。
             - "!${config-path}/internal/cmdetect/cm_detect_budget_test.go"

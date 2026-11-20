@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/inplace"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
@@ -300,7 +299,6 @@ func TestTSScanReconcile_EnqueuesOnlyUnmeasuredCurrentOriginals(t *testing.T) {
 
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	q := sqlcgen.New(pool)
 	missingScanID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 12901 })
 	staleScanID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 12902 })
 	equalScanID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 12903 })
@@ -312,7 +310,7 @@ func TestTSScanReconcile_EnqueuesOnlyUnmeasuredCurrentOriginals(t *testing.T) {
 	equalAsset := seedOriginalAsset(t, pool, mediaDir, equalScanID, "ts-scan/equal.m2ts", []byte("equal"))
 	trashedAsset := seedOriginalAsset(t, pool, mediaDir, trashedID, "ts-scan/trashed.m2ts", []byte("trash"))
 	missingAssetID := seedOriginalAsset(t, pool, mediaDir, missingFileID, "ts-scan/missing-file.m2ts", []byte("gone"))
-	if _, err := q.SoftDeleteRecording(ctx, trashedID); err != nil {
+	if err := pgstoretest.Recordings(pool).SoftDelete(ctx, trashedID); err != nil {
 		t.Fatalf("soft deleting recording: %v", err)
 	}
 	for _, row := range []struct {
