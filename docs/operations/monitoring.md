@@ -97,21 +97,14 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 
 | メトリクス | 型 | 意味 |
 |---|---|---|
-| `rokuban_reconcile_pending_diff{action}` | Gauge | reconcile 差分数 |
-| `rokuban_reconcile_schedules_total{action}` | Counter | 実際に差分を消した量 |
-| `rokuban_reconcile_schedule_lost_total` | Counter | 再作成で DELETE 成功後に POST が失敗した回数 |
-| `rokuban_reconcile_write_withheld_total{action,reason}` | Counter | DELETE の直前の観測し直しで DELETE / POST を見送った回数（理由別） |
-| `rokuban_reconcile_circuit_breaker_trips_total` | Counter | 全損シグネチャでの発動回数 |
-| `rokuban_circuit_breaker_tripped{site,breaker}` | Gauge | いま止まっているか（1 = 発動中） |
-| `rokuban_reconcile_last_success_timestamp_seconds{site}` | Gauge（DB） | 予約同期（reconciler）のパスが site 単位で完走した最後の時刻（0 は未完走）。ScaledJob でもこの系列で停止を検出する |
-| `rokuban_reconcile_start_delayed{site}` | Gauge | 開始時刻を過ぎたのに録画が始まっていない予約数 |
-| `rokuban_reconcile_start_delay_errors_total{site}` | Counter | 開始遅延の検出に失敗した回数 |
 | `rokuban_presync_pending{site,reason}` | Gauge（DB） | 開始前から録画中の、未収束の予約数 |
 | `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` | Gauge（DB） | pending のうち最も開始が近い番組の開始時刻 |
 | `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` | Gauge（DB） | 予約状況の全量取り込みが最後に成功した時刻 |
 | `rokuban_presync_scrape_errors_total{site}` | Counter（DB） | presync の収集に失敗した回数 |
 
 差分ゲージは、収束すればゼロに戻る。アラートはこちらで取る。`rokuban_reconcile_schedule_lost_total` は 0 以外がアラート対象である。意味は reconcile の節にある。
+
+最終成功時刻は、DB に保存した時刻を scrape のたびに読み直して出す値である。パスが ScaledJob の `--once` で動いても、常駐 Pod の scrape から見える。
 
 `rokuban_reconcile_circuit_breaker_trips_total` が数えるのは、全損シグネチャでの発動である。件数の閾値ではない。意味が変わってもメトリクス名を据え置いたのは、既存のダッシュボードとアラートを壊さないためである。`rokuban_circuit_breaker_tripped` はラッチなので、アラートはこちらで取る。互換性のためラベル名は `site` のままだが、`breaker="delete_reconcile"` では値に置き場名が入る。
 
@@ -122,6 +115,11 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 <details><summary>根拠</summary>
 
 - スナップショットの全量取り込み: `schedule_sync`
+- 読み方: `rokuban_reconcile_pending_diff`
+- 読み方: `rokuban_reconcile_schedule_lost_total`
+- 読み方: `rokuban_reconcile_circuit_breaker_trips_total`
+- 読み方: `rokuban_circuit_breaker_tripped`
+- 読み方: `rokuban_reconcile_last_success_timestamp_seconds`
 
 </details>
 
@@ -449,15 +447,7 @@ flowchart TD
 
 差分ゲージはラベルで分かれ、アラートに使うものと使わないものがある。
 
-| メトリクス | 説明 |
-|---|---|
-| `rokuban_reconcile_pending_diff{action="create"\|"delete"}` | desired（reservations）と observed（schedule_sync）の存在の差分。通常はゼロ付近に収束する |
-| `rokuban_reconcile_pending_diff{action="delete_deferred"}` | desired にないが state allowlist で削除を見送った数 |
-| `rokuban_reconcile_pending_diff{action="update"}` | 予約オプション（priority / tag）の差分のうち、このパスで反映しようとした件数 |
-| `rokuban_reconcile_pending_diff{action="update_deferred"}` | 差分はあるが schedule の state が `scheduled` でないため、意図的に触らなかった件数 |
-| `rokuban_reconcile_schedules_total{action="recreated"}` | 予約オプションの差分反映で DELETE → POST の再作成が成功した件数 |
-| `rokuban_reconcile_schedule_lost_total` | 再作成で DELETE には成功したが POST が失敗した回数 |
-| `rokuban_reconcile_write_withheld_total{action="delete"\|"recreate",reason}` | DELETE の直前の観測し直しで見送った回数。並走や観測後の録画開始で非ゼロになりうる。カウンタなので収束は見ず、アラートにはしない |
+名前・型・意味は `internal/metrics` の定義（`Name` と `Help`）を引く。
 
 `delete` は、削除 allowlist の `scheduled` / `finished` / `failed` だけを数える。`delete_deferred` は、録画中・追従中または未知 state なら非ゼロが正常なので、アラートしない。
 
@@ -469,9 +459,14 @@ flowchart TD
 
 `pending_diff` の `update` と `update_deferred` を分けているのは、このゲージの読み方が「ゼロに戻らないまま続く = 収束できていない」だからである。意図的に見送った差分を混ぜると、正常なユーザー操作でアラートが鳴り、ゲージがアラート不能になる。
 
+`rokuban_reconcile_write_withheld_total` は、DELETE の直前の観測し直しで見送った回数である。並走や観測後の録画開始で非ゼロになりうる。カウンタなので収束は見ず、アラートにはしない。
+
 <details><summary>根拠</summary>
 
 - 1 パスあたりの再作成上限: `MaxRecreatesPerPass`
+- 読み方: `rokuban_reconcile_pending_diff`
+- 読み方: `rokuban_reconcile_schedule_lost_total`
+- 読み方: `rokuban_reconcile_write_withheld_total`
 
 </details>
 
