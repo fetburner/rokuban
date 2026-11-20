@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/objstore/s3store"
@@ -71,12 +71,9 @@ func TestThumbnailReselectionReadsEncodedInputFromS3(t *testing.T) {
 		p.Kind, p.RelPath, p.SizeBytes = store.AssetKindThumbnail, oldThumbnailKey, int64(len(oldThumbnail))
 	})
 	testutil.MustExec(t, pool, "placing the thumbnail copy in the S3 store", `UPDATE media_asset_copies SET store = $2 WHERE media_asset_id = $1`, thumbnailID, objectStoreName)
-	testutil.RequireNoError(t, sqlcgen.New(pool).UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
-		MediaAssetID: thumbnailID, SeekMs: 30000,
-	}), "seeding current thumbnail seek")
-	testutil.RequireNoError(t, sqlcgen.New(pool).SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
-		RecordingID: recordingID, CmRanges: "{[0,60000)}",
-	}), "seeding CM ranges")
+	setThumbnailSeek(t, pool, thumbnailID, 30000)
+	// 状態: active な原本が無い（検出の後で原本が削除された）。CM 検出は原本が実体を持つ時点で必要なので、先に作って検出してから削除する。
+	seedDeletedOriginalCMRanges(t, pool, t.TempDir(), recordingID, []chapters.Range{{StartMs: 0, EndMs: 60000}})
 	testutil.RequireNoError(t, objects.Put(ctx, oldThumbnailKey, strings.NewReader(string(oldThumbnail)), int64(len(oldThumbnail)), oldDigest, "image/jpeg"), "uploading current thumbnail")
 
 	mediaDir := t.TempDir()
@@ -109,10 +106,7 @@ func TestThumbnailReselectionReadsEncodedInputFromS3(t *testing.T) {
 	if !verifiedRemoteInput {
 		t.Fatal("thumbnail generation did not read the S3 encoded input")
 	}
-	row, err := sqlcgen.New(pool).LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{
-		RecordingID: recordingID, StoreName: objectStoreName,
-	})
-	testutil.RequireNoError(t, err, "loading replacement thumbnail")
+	row := requireThumbnailState(t, pool, recordingID, objectStoreName)
 	if row.RelPath != newThumbnailKey || row.SeekMs == nil || *row.SeekMs != 89993 {
 		t.Fatalf("replacement thumbnail = (%q, %v), want (%q, 89993)", row.RelPath, row.SeekMs, newThumbnailKey)
 	}

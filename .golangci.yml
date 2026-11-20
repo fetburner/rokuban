@@ -183,11 +183,6 @@ linters:
             # 移行中
             - "!${config-path}/internal/metrics/*"
             - "!${config-path}/internal/metrics/dbcollector/*"
-            # worker から移した既存の派生物公開・thumbnail のテスト。
-            - "!${config-path}/internal/thumbnail/s3_conformance_test.go"
-            - "!${config-path}/internal/thumbnail/seek_tiles_test.go"
-            - "!${config-path}/internal/thumbnail/thumbnail_reconcile_test.go"
-            - "!${config-path}/internal/thumbnail/thumbnail_test.go"
             # worker から移した既存の転送・削除のテスト。
             - "!${config-path}/internal/storagemaint/delete_reconcile_test.go"
             - "!${config-path}/internal/storagemaint/delete_reconcile_removed_encoded_test.go"
