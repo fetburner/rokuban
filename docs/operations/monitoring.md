@@ -144,19 +144,20 @@ DB を引く時刻は、marker 未確立なら 0 になる。`rokuban_ruler_prog
 
 EPG とチューナーの射影は、投影件数で空になっていないことを、最終成功時刻で止まっていないことを見る。
 
-| メトリクス | 型 | 意味 |
-|---|---|---|
-| `rokuban_epg_sync_duration_seconds` | Histogram | EPG 全量同期の所要時間 |
-| `rokuban_epg_programs_projected` | Gauge | 直近パスの投影件数 |
-| `rokuban_epg_channels_without_programs` | Gauge | 番組を返さなかったチャンネル数 |
-| `rokuban_epg_sync_last_success_timestamp_seconds` | Gauge（DB） | 最後に成功した同期の時刻。設定された site の最新で、ラベルは無い。初回の同期が完了するまでは 0 |
-| `rokuban_tuners_projected{site}` | Gauge | 直近のチューナー同期で投影した本数 |
-| `rokuban_tuner_sync_last_success_timestamp_seconds{site}` | Gauge（DB） | 最後に成功したチューナー全量同期の時刻。site ごと。初回の同期が完了するまでは 0 |
-| `rokuban_capacity_overages{site}` | Gauge | チューナー不足区間の数 |
+名前・型・意味は `internal/metrics` の定義（`Name` と `Help`）を引く。
 
-これらの時刻は、同期を走らせるジョブが DB に保存した値を読む。どの Pod から scrape しても同じ値が出る。読み取りに失敗した scrape では系列が出ず、`rokuban_sync_marker_scrape_errors_total{source}` が増える（[ジョブ化されたループの監視](monitoring-scaled-jobs.md)）。
+EPG と各 site のチューナーの最終成功時刻は、同期を走らせるジョブが DB に保存した値を読む。どの Pod から scrape しても同じ値が出る。読み取りに失敗した scrape では系列が出ず、`rokuban_sync_marker_scrape_errors_total{source}` が増える（[ジョブ化されたループの監視](monitoring-scaled-jobs.md)）。
 
-チューナーの投影本数は、射影が空になっていないかを見るために出す。チューナー不足区間は、非ゼロは信頼できるが、ゼロは保証ではない（「警告が出ないことは保証ではない」）。
+`rokuban_tuners_projected` は、射影が空になっていないかを見るために出す。`rokuban_capacity_overages` は、非ゼロは信頼できるが、ゼロは保証ではない（「警告が出ないことは保証ではない」）。
+
+<details><summary>根拠</summary>
+
+- 投影本数は射影が空になっていないかを見るために出す: `rokuban_tuners_projected`
+- 非ゼロは信頼できるが、ゼロは保証ではない: `rokuban_capacity_overages`
+- DB に保存した時刻を読み、どの Pod から scrape しても同じ値が出る: `rokuban_epg_sync_last_success_timestamp_seconds`
+- DB に保存した時刻を読み、どの Pod から scrape しても同じ値が出る: `rokuban_tuner_sync_last_success_timestamp_seconds`
+
+</details>
 
 #### 削除とストレージのメトリクス
 
@@ -419,16 +420,18 @@ SHA-256 待ちは、同じ River job を snooze し、結果の 3 値と duratio
 
 ヒントを落とした scan は、定期 reconcile が再投入する。投入の停止は、定期 reconcile が最後に完走した時刻からの経過時間で検出する。
 
-| メトリクス | 説明 |
-|---|---|
-| `rokuban_ts_scan_jobs_total{result}` | scan ジョブの成功・失敗件数 |
-| `rokuban_ts_scan_duration_seconds` | 原本の全量読み出しと DB 更新にかかった秒数 |
-| `rokuban_ts_scan_dropped_packets_total` | scan 中に観測したドロップパケットの累計 |
-| `rokuban_ts_scan_error_packets_total` | scan 中に観測した transport error の累計 |
-| `rokuban_ts_scan_scrambled_packets_total` | scan 中に観測したスクランブルパケットの累計 |
-| `rokuban_ts_scan_reconcile_last_success_timestamp_seconds` | ts_scan reconcile の全件パスの完走時刻を DB から読んだ値（0 は未完走）。投入停止は `time() -` で検出。ScaledJob でも使える |
+名前・型・意味は `internal/metrics` の定義（`Name` と `Help`）を引く。
+
+完走時刻の系列は `rokuban_ts_scan_reconcile_last_success_timestamp_seconds` である。DB に保存した時刻を scrape のたびに読み直して出すので、パスが ScaledJob の `--once` で動いても、常駐 Pod の scrape から見える。
 
 各 scan の成否は、`rokuban_ts_scan_jobs_total` と River のジョブ状態で確認する。
+
+<details><summary>根拠</summary>
+
+- 完走時刻は scrape のたびに DB から読み、ScaledJob の `--once` でも常駐 Pod から見える: `rokuban_ts_scan_reconcile_last_success_timestamp_seconds`
+- 成否は件数と River のジョブ状態で確認する: `rokuban_ts_scan_jobs_total`
+
+</details>
 
 ### reconcile
 
