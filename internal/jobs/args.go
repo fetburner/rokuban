@@ -8,7 +8,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/mediapath"
-	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/sitename"
 )
 
 // IngestJobArgs は ingest ジョブの引数。mirakc サイトと record ID を指定する。
@@ -284,7 +284,7 @@ func PhysicalQueueFor(args jobq.Args) (string, error) {
 		if storeName == "" {
 			// River validates a registered worker with its zero-value Args. Route that
 			// registration probe to the same fallback name used for an unbound site.
-			storeName = store.DefaultSite
+			storeName = sitename.Default
 		}
 		if !mediapath.ValidStoreName(storeName) {
 			return "", fmt.Errorf("jobs: %s queue args %T contain invalid store name %q", logical, args, storeName)

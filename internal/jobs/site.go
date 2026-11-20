@@ -3,13 +3,12 @@ package jobs
 import (
 	"fmt"
 	"sort"
-
-	"github.com/fetburner/rokuban/internal/mirakc"
 )
 
 // VerifySite は、mirakc かファイルシステムに触るジョブ worker が処理しようとしている
 // ジョブの site（jobSite）が、このプロセスが束縛している mirakc クライアントの集合
-// （clients、site → *mirakc.Client。worker.Deps.MirakcClients / `--sites` の束縛）に
+// （clients、site → C。C は呼び出し側の mirakc クライアント型で、
+// worker.Deps.MirakcClients / `--sites` の束縛では *mirakc.Client）に
 // 含まれるかを検査する fail-fast ガード（issue #139。1 プロセスが N site を束縛できるようになった
 // issue #532 で map 化した）。
 //
@@ -29,13 +28,13 @@ import (
 // **1 プロセスが N site を束縛しうるため、「一致するか」ではなく「clients に
 // jobSite のエントリがあるか」を見る。** site 単位のキューは束縛サイトの数だけ
 // 物理キューを購読するので、1 つの worker が複数 site のジョブを受け取りうる。
-// 見つかれば、呼び出し側がそのまま使う *mirakc.Client を返す（呼び出し側が再度 map を
+// 見つかれば、呼び出し側がそのまま使う C を返す（呼び出し側が再度 map を
 // 引く必要をなくし、VerifySite が通した site とその後実際に使うクライアントがズレる経路を
 // 作らない）。
 //
 // **jobSite は正規化しない。空文字列は無条件に拒む。** config のバリデーションが
 // site 名の非空を要求するため、clients のキーは常に実際の site 名であり、
-// 空文字列がキーになることはない。jobSite を store.DefaultSite へ読み替えてから
+// 空文字列がキーになることはない。jobSite を sitename.Default へ読み替えてから
 // 引くと、たまたま "default" という名前の site が束縛されているデプロイでは
 // `Site: ""` の（本来壊れている）ジョブが素通りしてしまう。二次防御として拾いたいのは
 // まさにこの「args.Site 自体が壊れている経路」なので、jobSite を素の値のまま引く。
@@ -49,10 +48,13 @@ import (
 // この判定が jobs にあるのは、呼び出し元がどのパッケージにあっても同じ理由
 // （ジョブの site を束縛と照合する）で変わるからである。キューの定義を持つ jobs が、
 // internal/worker と各ドメインパッケージの両方から既に import される共通の置き場になる。
-func VerifySite(clients map[string]*mirakc.Client, jobSite, queue string) (*mirakc.Client, error) {
+// クライアントの型は型引数にし、jobs は mirakc を import しない（不変条件 1 の依存を
+// jobs 経由で api に運ばない）。
+func VerifySite[C any](clients map[string]C, jobSite, queue string) (C, error) {
 	client, ok := clients[jobSite]
 	if !ok {
-		return nil, fmt.Errorf(
+		var zero C
+		return zero, fmt.Errorf(
 			"%s: job site %q is not among this process's bound sites %s, refusing before touching mirakc/FS (issue #139)",
 			queue, jobSite, sortedSiteNames(clients))
 	}
@@ -62,7 +64,7 @@ func VerifySite(clients map[string]*mirakc.Client, jobSite, queue string) (*mira
 // sortedSiteNames は clients のキー（site 名）をソートして返す。VerifySite の
 // エラーメッセージ用（map の反復順は不定なので、エラーメッセージが実行のたびに
 // 揺れないようにする）。
-func sortedSiteNames(clients map[string]*mirakc.Client) []string {
+func sortedSiteNames[C any](clients map[string]C) []string {
 	sites := make([]string, 0, len(clients))
 	for site := range clients {
 		sites = append(sites, site)

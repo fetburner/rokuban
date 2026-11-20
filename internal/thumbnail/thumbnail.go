@@ -308,7 +308,7 @@ func (w *ThumbnailWorker) resolveThumbnailInput(ctx context.Context, relPath, st
 	}
 	body, err := reader.Get(ctx, relPath)
 	if err != nil {
-		metrics.RecordObjectStoreError("get", err)
+		objstore.RecordError("get", err)
 		return "", fmt.Errorf("getting thumbnail input object %q: %w", relPath, err)
 	}
 	defer func() { _ = body.Close() }()
@@ -320,7 +320,7 @@ func (w *ThumbnailWorker) resolveThumbnailInput(ctx context.Context, relPath, st
 	n, copyErr := io.Copy(file, body)
 	closeErr := file.Close()
 	if copyErr != nil {
-		metrics.RecordObjectStoreError("get", copyErr)
+		objstore.RecordError("get", copyErr)
 		return "", fmt.Errorf("downloading thumbnail input object %q: %w", relPath, copyErr)
 	}
 	if closeErr != nil {
@@ -349,7 +349,7 @@ func (w *ThumbnailWorker) nextUnusedThumbnailRelPath(ctx context.Context, record
 			return candidate, generation, nil
 		}
 		if err != nil {
-			metrics.RecordObjectStoreError("head", err)
+			objstore.RecordError("head", err)
 			return "", 0, err
 		}
 		if generation == int64(^uint64(0)>>1) {

@@ -242,7 +242,7 @@ func (w *SeekTilesWorker) nextUnusedSeekTilesRelPath(ctx context.Context, record
 			return relPath, generation, nil
 		}
 		if err != nil {
-			metrics.RecordObjectStoreError("head", err)
+			objstore.RecordError("head", err)
 			return "", 0, err
 		}
 		if generation == int64(^uint64(0)>>1) {

@@ -938,7 +938,7 @@ func (w *StorageTransferWorker) putDerivedResumable(
 	_, mainOwned := owned[transfer.RelPath]
 	exists, err := existingTransferredObjectMatches(ctx, objects, transfer.RelPath, transfer.SHA256, transfer.SizeBytes, mainOwned)
 	if err != nil {
-		metrics.RecordObjectStoreError("put", err)
+		objstore.RecordError("put", err)
 		return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing derived transfer destination: %w", err))
 	}
 	if exists {
@@ -985,7 +985,7 @@ func (w *StorageTransferWorker) putDerivedResumable(
 		}
 		fresh, startErr := dest.StartUpload(ctx, transfer.RelPath, transfer.SizeBytes, checksum, mediapublish.ObjectContentType(transfer.RelPath))
 		if startErr != nil {
-			metrics.RecordObjectStoreError("put", startErr)
+			objstore.RecordError("put", startErr)
 			return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("starting derived upload: %w", startErr))
 		}
 		if replaceErr := w.Storage.ReplaceMediaAssetTransferUpload(ctx, transfer.CopyID, owner, progress.WriterGeneration, args.Store, fresh); replaceErr != nil {
@@ -1037,7 +1037,7 @@ func (w *StorageTransferWorker) putDerivedResumable(
 			w.keepDerivedProgress(transfer, owner, progress.WriterGeneration, state, offset, log)
 			return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("continuing derived upload: %w", sendErr))
 		default:
-			metrics.RecordObjectStoreError("put", sendErr)
+			objstore.RecordError("put", sendErr)
 			saved = w.keepDerivedProgress(transfer, owner, progress.WriterGeneration, state, offset, log)
 			return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("copying derived transfer source: %w", sendErr))
 		}
@@ -1054,7 +1054,7 @@ func (w *StorageTransferWorker) putDerivedResumable(
 			w.keepDerivedProgress(transfer, owner, progress.WriterGeneration, state, offset, log)
 			return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("completing derived upload: %w", completeErr))
 		}
-		metrics.RecordObjectStoreError("put", completeErr)
+		objstore.RecordError("put", completeErr)
 		saved = w.keepDerivedProgress(transfer, owner, progress.WriterGeneration, state, offset, log)
 		return false, true, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing derived transfer destination: %w", completeErr))
 	}
@@ -1136,7 +1136,7 @@ func (w *StorageTransferWorker) syncDerivedTransferSubtitle(
 	_, subtitleOwned := owned[subtitleKey]
 	subtitleCreated, err := putTransferredObject(ctx, targetStore, subtitleKey, func() (io.ReadCloser, error) { return os.Open(subtitlePath) }, subtitleSize, subtitleDigest, "text/vtt; charset=utf-8", subtitleOwned)
 	if err != nil {
-		metrics.RecordObjectStoreError("put", err)
+		objstore.RecordError("put", err)
 		return false, w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("publishing transferred subtitle: %w", err))
 	}
 	if !subtitleCreated {
