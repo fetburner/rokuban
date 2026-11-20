@@ -412,20 +412,23 @@ var (
 // 削除 reconcile（M3-8、docs/storage.md §7）のメトリクス。
 var (
 	// DeleteReconcileDeleted は物理削除したアセット件数。source は
-	// trash / until_encoded / removed_encoded / orphan / pending（前パスの deleting 再開）。
+	// trash / until_encoded / removed_encoded / old_generation / pending（前パスの deleting 再開）/
+	// pending_reclaim / placement / pending_transfer_reclaim / orphan。
 	DeleteReconcileDeleted = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_delete_reconcile_deleted_total",
-		Help: "Physically deleted assets by source.",
+		Help: "Physically deleted assets by source: trash, until_encoded, removed_encoded, old_generation, pending, pending_reclaim, placement, pending_transfer_reclaim, or orphan.",
 	}, []string{"source"})
 
-	// DeleteReconcileBytes は物理削除で解放したバイト数。
+	// DeleteReconcileBytes は物理削除で解放したバイト数。source は
+	// trash / until_encoded / removed_encoded / old_generation / pending / placement / orphan。
+	// pending_reclaim と pending_transfer_reclaim はバイト数を足さず、件数だけを DeleteReconcileDeleted で数える。
 	DeleteReconcileBytes = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_delete_reconcile_bytes_total",
-		Help: "Bytes freed by physical deletion, by source.",
+		Help: "Bytes freed by physical deletion, by source: trash, until_encoded, removed_encoded, old_generation, pending, placement, or orphan.",
 	}, []string{"source"})
 
 	// MediaAssetsMissing は state='active' なのに実体ファイルが無いと確認できた
-	// media_asset の件数（kind 別。issue #343）。「確認できた」は
+	// media_asset の件数（kind 別: original / encoded / thumbnail。issue #343）。「確認できた」は
 	// missing_media_assets の first_seen が MissingAssetAge を超えて連続して
 	// いること --- 単発の観測揺れでは増減しない。**ゼロは「大丈夫」の証明では
 	// ない** --- ファイルシステムの走査が 1 件もファイルを観測しなかったパス
@@ -438,7 +441,7 @@ var (
 	// kind はラベルの系列自体が消える（0 を出さない）。
 	MediaAssetsMissing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_media_assets_missing",
-		Help: "Active media_assets rows confirmed to have no file on disk, by kind. Not a deletion candidate list — file-missing is necessary but not sufficient for deletion.",
+		Help: "Active media_assets rows confirmed to have no file on disk, by kind: original, encoded, or thumbnail. Not a deletion candidate list — file-missing is necessary but not sufficient for deletion.",
 	}, []string{"kind"})
 
 	// OrphanFilesUnresolved は aging 後も残っている canonical 名の孤児数。
@@ -447,9 +450,11 @@ var (
 		Name: "rokuban_orphan_files_unresolved",
 		Help: "Aged canonical orphan files that require review. Files without a media_assets row are not automatically deleted unless their reserved name proves they never reached publication.",
 	})
+	// ObjectStoreErrors は S3 の置き場の操作の失敗を operation 別に数える。
+	// 値は objstore.RecordError の呼び出し元（put / head / get / list / delete / presign / open）。
 	ObjectStoreErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_object_store_errors_total",
-		Help: "Object store operation failures by operation.",
+		Help: "Object store operation failures by operation: put, head, get, list, delete, presign, or open.",
 	}, []string{"operation"})
 	ObjectStoreCredentialErrors = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "rokuban_object_store_credential_errors_total",
@@ -470,7 +475,7 @@ var (
 	// で実測）。
 	MissingAssetScanSuspectedStorageFailure = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "rokuban_missing_asset_scan_suspected_storage_failure_total",
-		Help: "Times the missing-asset scan saw zero files on disk while active media_assets rows exist, and skipped reporting for that pass (suspected mount failure or empty mount).",
+		Help: "Times the missing-asset scan saw zero files on disk while active media_assets rows exist and the delete reconcile worker has no store name, and skipped reporting for that pass (suspected mount failure or empty mount).",
 	})
 )
 

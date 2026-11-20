@@ -143,58 +143,54 @@ EPG と各 site のチューナーの最終成功時刻は、同期を走らせ�
 
 物理削除の量は件数とバイト数で、ストレージの観測は root ごとの鮮度と容量で見る。
 
-| メトリクス | 型 | 意味 |
-|---|---|---|
-| `rokuban_delete_reconcile_deleted_total{source}` | Counter | 物理削除したアセット件数 |
-| `rokuban_delete_reconcile_bytes_total{source}` | Counter | 物理削除で解放したバイト数 |
-| `rokuban_delete_reconcile_last_success_timestamp_seconds{store}` | Gauge | 置き場ごとの削除 reconcile の完走時刻を DB から読んだ値（0 は未完走）。ブレーカーで止めたパスも含む。FS の置き場と派生物用の S3 の置き場が対象 |
-| `rokuban_media_assets_missing{kind}` | Gauge | 実体ファイルが無いと確認できた media_asset 数 |
-| `rokuban_orphan_files_unresolved` | Gauge | 登録されないまま残っている canonical file の数 |
-| `rokuban_object_store_errors_total{operation}` | Counter | S3 の置き場の操作（put / head / get / list / delete / presign）の失敗回数 |
-| `rokuban_object_store_credential_errors_total` | Counter | 上の失敗のうち、資格情報の取得失敗・失効・不明が原因のもの |
-| `rokuban_object_store_orphans_unresolved` | Gauge | DB にコピー行が無いまま残っている S3 のキーの数。報告だけで削除しない |
-| `rokuban_storage_derived_copies_outside_derived_s3` | Gauge | 設定中の S3 のうち、現在の `storage.derived` 以外にある active な現世代の派生コピー数 |
-| `rokuban_store_marker_mismatch_total{store}` | Counter | 置き場の目印を確認できず、操作を見送った回数 |
-| `rokuban_missing_asset_scan_suspected_storage_failure_total` | Counter | 置き場名が空の構成で、0 件走査を検出して記録を見送った回数 |
-| `rokuban_storage_root_observed_timestamp_seconds{store,root}` | Gauge | 置き場と root ごとの最後の観測時刻を `storage_sync` から DB で読んだ値。観測できていない置き場は `root="media"` が 0。ScaledJob でも使える |
-| `rokuban_reconcile_marker_scrape_errors_total{source}` | Counter | 完走時刻と観測時刻の読み取りに失敗した回数（`source` は `reconcile_pass` / `delete_reconcile` / `storage_sync`）。読めなかった表の系列は出さず、0 にも置き換えない |
-| `rokuban_storage_total_bytes{store,root}` / `rokuban_storage_used_bytes{store,root}` / `rokuban_storage_available_bytes{store,root}` | Gauge | 置き場と root ごとの直近観測バイト数 |
+名前・型・意味は `internal/metrics` と `internal/metrics/dbcollector` の定義（`Name` と `Help`）を引く。
 
 派生物の置き場が S3 のとき、その削除パスを走らせるのは、FS 置き場を名前順に並べた先頭の置き場（所有者）の worker だけである。所有者の worker が動いていない場合も、S3 のパスが失敗し続ける場合も、S3 の置き場名の系列は消えず、古い値のまま進まなくなる。完走時刻の行は DB に残り、collector は設定にある置き場ごとに系列を出すためである。初回の完走までは 0 が出る。式は [アラート式の集約と初回パス](monitoring-scaled-jobs.md#アラート式の集約と初回パス) を参照する。
+
+`rokuban_media_assets_missing` は、孤児回収の逆方向の検出である（[ストレージ](../storage/missing-assets.md)）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定する）。ゼロは大丈夫の証明ではない（「警告が出ないことは保証ではない」）。
+
+`rokuban_store_marker_mismatch_total{store}` は、起動時と操作ごとに増える。同じ障害中は再試行のたびに増える。
+
+`rokuban_storage_derived_copies_outside_derived_s3` は、storage transfer reconcile が DB のコピー行と設定中の S3 置き場を照合して更新する。非ゼロなら転送 reconcile の Warn に出る置き場名を調べる。storage transfer reconcile は起動を止めず、旧い S3 のコピーも自動削除しない。
+
+`rokuban_orphan_files_unresolved` が非ゼロなら調査が必要である。canonical file は自動削除しない。削除 reconcile は個別の Warn を上限 20 行まで出し、超過分を件数でまとめる。
+
+`rokuban_missing_asset_scan_suspected_storage_failure_total` が進むのは、置き場名が空の構成でだけである。進んだパスでは `rokuban_media_assets_missing` が前回値のまま凍結する（「警告が出ないことは保証ではない」）。
 
 <details><summary>根拠</summary>
 
 - `TestReconcileMarkerS3Series`: 保存済み時刻と未完走の 0、削除と storage の集合の分離
 - `TestNewReconcileMarkerCollectorS3Series`: 設定から削除系列を作る配線
 - `TestStoreScopedS3DeleteMarkersOnlyOwner`: 非所有者は S3 の完走時刻を進めない
+- 所有者の worker だけが S3 の系列を進める: `rokuban_delete_reconcile_last_success_timestamp_seconds`
+- 単発の走査揺れでは増減しない。ゼロは大丈夫の証明ではない: `rokuban_media_assets_missing`
+- 起動時と操作ごとに増える: `rokuban_store_marker_mismatch_total`
+- 旧い S3 のコピーは自動削除しない: `rokuban_storage_derived_copies_outside_derived_s3`
+- 非ゼロは調査が必要で、canonical file は自動削除しない: `rokuban_orphan_files_unresolved`
+- 進んだパスは欠損ゲージを更新しない: `rokuban_missing_asset_scan_suspected_storage_failure_total`
+- `TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge`: 上の凍結を実測
 
 </details>
-
-`rokuban_media_assets_missing` が数えるのは、有効（active）なのに実体ファイルが無いと確認できた media_asset である（孤児回収の逆方向。[ストレージ](../storage/missing-assets.md)）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定する）。ゼロは大丈夫の証明ではない（「警告が出ないことは保証ではない」）。
-
-`rokuban_store_marker_mismatch_total{store}` は、設定した置き場名と `.rokuban-store` が一致しない、または目印を読めないときに操作を見送った回数である。起動時と操作ごとに増えるため、同じ障害中は再試行のたびに増える。
-
-`rokuban_storage_derived_copies_outside_derived_s3` は、storage transfer reconcile が DB のコピー行と設定中の S3 置き場を照合して更新する。非ゼロなら転送 reconcile の Warn に出る置き場名を調べる。storage transfer reconcile は起動を止めず、旧い S3 のコピーも自動削除しない。
-
-`rokuban_orphan_files_unresolved` は、`media_assets` に登録されない canonical file のうち、`orphan_age` を超えて残っている数である。
-
-非ゼロは調査が必要である。canonical file は自動削除しない。削除 reconcile は個別の Warn を上限 20 行まで出し、超過分を件数でまとめる。
-
-`rokuban_missing_asset_scan_suspected_storage_failure_total` は、`storage.stores` に FS 置き場が無い構成でだけ進む。走査でファイルを 1 件も観測せず active 行がある場合に、欠損検出を見送った回数である（「警告が出ないことは保証ではない」）。
 
 #### 観測の鮮度と集約
 
 置き場の観測は、root ごとの鮮度と置き場ごとの容量で読む。
 
+鮮度は DB の `storage_sync` から読むので、`storage-sync` の CronJob が書いた観測も、どの Pod の scrape からも同じ値に見える。
+
 置き場の鮮度は、置き場の中で最も古い root の観測時刻で読む。1 つの root の観測が止まると、置き場の最小値も進まなくなる。式は `time() - min by (store) (rokuban_storage_root_observed_timestamp_seconds) > 閾値` である。式の詳細は [ジョブ化されたループの監視](monitoring-scaled-jobs.md)。どの root が止まっているかは、root ラベルの系列で確かめる。
 
 容量の 3 本は、`GET /api/storage` を経由せず Prometheus 側で置き場ごとの容量アラートを組むために出す。
+
+`rokuban_reconcile_marker_scrape_errors_total` が増えた scrape では、読めなかった表の系列が出ない。その系列を 0 と読んではならない。
 
 以上の storage ゲージはすべて `store` ラベルを持ち、置き場が 1 つの構成でも付く。`store` を指定しないセレクタ（`root="media"` など）は全置き場の系列に一致するので、そのまま動く。`root` だけで集約・結合している式（`by (root)` / `on (root)`）は置き場をまたいで合算・照合してしまうので、`store` を含めるよう直す。scratch はプロセスで共有するが、置き場の数だけ同じ値の系列が出るので、scratch の容量アラートは置き場の数だけ鳴る。
 
 <details><summary>根拠</summary>
 
 - 欠損ゲージが数える状態: `state='active'`
+- DB から読むので、どの Pod の scrape も同じ値: `rokuban_storage_root_observed_timestamp_seconds`
+- 読めなかった系列は出さず、0 にもしない: `rokuban_reconcile_marker_scrape_errors_total`
 
 </details>
 
