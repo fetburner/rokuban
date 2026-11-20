@@ -13,7 +13,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -90,8 +89,8 @@ func TestMonolith_RESTAndSSEAndMediaCoexist(t *testing.T) {
 	waitForClients(t, hub, 1)
 	waitListening(t, hub)
 
-	if err := sqlcgen.New(pool).NotifyTopic(context.Background(), "epg"); err != nil {
-		t.Fatalf("NotifyTopic: %v", err)
+	if err := pgstoretest.EPG(pool).NotifyProgramsUpdated(context.Background()); err != nil {
+		t.Fatalf("NotifyProgramsUpdated: %v", err)
 	}
 	if got := readSSEEvent(t, reader); got != "epg" {
 		t.Errorf("SSE event = %q, want epg", got)

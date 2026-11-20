@@ -173,7 +173,7 @@ UPDATE のトリガーは、タイトルが変わったときだけ当てる。�
 
 <details><summary>根拠</summary>
 
-- ロックのキー: `LockLabelRuleReevaluation` の 1 箇所。テストは `TestRescue_WaitsForLabelRuleReevaluationLock`
+- ロックのキー: `LockLabelRuleReevaluation` の 1 箇所。テストは `TestCatalogContract/restore_waits_before_writing_for_label_rule_reevaluation`
 - 外した集合をエラーにする River の設定: `UniqueOpts.ByState` から `running` を外した集合（`requiredV3states`）
 - cleanup キューを使う他のジョブ: `delete_reconcile` / `catalog_export`
 - ruler キューの設定: `MaxWorkers: 1`

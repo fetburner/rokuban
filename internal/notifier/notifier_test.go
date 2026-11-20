@@ -17,10 +17,10 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/notifier/pgsource"
 	"github.com/fetburner/rokuban/internal/serverevent"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -305,31 +305,26 @@ func startNotifier(t *testing.T, pool *pgxpool.Pool) (*EventHub, *httptest.Serve
 	return hub, srv
 }
 
-// seedIngested は録画に原本 media_asset を付ける（recordings トピックの発火源）。
+// seedIngested は録画に原本 media_asset を付け、契約 ReplaceScan で計測（PID 別 drop stats）を書く。
+// 計測サイズは原本サイズと同じにする。stats が nil・空でもよい。
 func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, stats map[int32][4]int64) {
 	t.Helper()
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
-	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "test/asset.m2ts"
 		fixtureParams.SizeBytes = size
 	})
-
-	params := make([]sqlcgen.InsertDropStatParams, 0, len(stats))
-	for pid, s := range stats {
-		params = append(params, sqlcgen.InsertDropStatParams{
-			MediaAssetID: assetID,
-			Pid:          pid,
-			Packets:      s[0],
-			Drops:        s[1],
-			Errors:       s[2],
-			Scrambled:    s[3],
-		})
+	media := pgstoretest.Media(pool)
+	source, err := media.GetActiveOriginalForTSScan(t.Context(), recordingID)
+	if err != nil {
+		t.Fatalf("reading original for TS scan of recording %d: %v", recordingID, err)
 	}
-	batch := q.InsertDropStat(ctx, params)
-	batch.Exec(nil)
-	if err := batch.Close(); err != nil {
-		t.Fatalf("seeding drop_stat batch: %v", err)
+	statRows := make([]store.RecordingDropStat, 0, len(stats))
+	for pid, s := range stats {
+		statRows = append(statRows, store.RecordingDropStat{Pid: pid, Packets: s[0], Drops: s[1], Errors: s[2], Scrambled: s[3]})
+	}
+	written, err := media.ReplaceScan(t.Context(), source, size, statRows, nil)
+	if err != nil || !written {
+		t.Fatalf("ReplaceScan for recording %d: written=%v err=%v", recordingID, written, err)
 	}
 }
 
@@ -345,30 +340,11 @@ func TestEvents_ReservationTriggersNotify(t *testing.T) {
 	// 予約を作ると reservations トピックが届く。#27 で番組の事実のスナップショットが
 	// program_snapshots に抽出され、reservations への FK が張られたため、
 	// 予約行より先に program_snapshots を作る。
-	q := sqlcgen.New(pool)
-	ctx := context.Background()
-	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site:        defaultSite,
-		ProgramID:   1,
-		Title:       "テスト番組",
-		StartAt:     time.Now().Add(time.Hour),
-		DurationMs:  1800000,
-		NetworkID:   32736,
-		ServiceID:   1024,
-		ChannelType: "GR",
-		Channel:     "27",
-		EventID:     1,
-		ServiceName: "テスト局",
-	}); err != nil {
-		t.Fatalf("upserting program snapshot: %v", err)
-	}
-	_, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site:      defaultSite,
-		ProgramID: 1,
+	dbtest.ProgramSnapshot(t, pool, 1, func(p *dbtest.ProgramSnapshotParams) {
+		p.Site = defaultSite
+		p.StartAt = time.Now().Add(time.Hour)
 	})
-	if err != nil {
-		t.Fatalf("creating reservation: %v", err)
-	}
+	dbtest.ManualReservation(t, pool, 1, func(p *dbtest.ManualReservationParams) { p.Site = defaultSite })
 
 	if got := readSSEEvent(t, reader); got != "reservations" {
 		t.Errorf("event = %q, want reservations", got)
@@ -408,8 +384,8 @@ func TestEvents_ExplicitNotify(t *testing.T) {
 	waitForClients(t, hub, 1)
 	waitListening(t, hub)
 
-	if err := sqlcgen.New(pool).NotifyTopic(context.Background(), "epg"); err != nil {
-		t.Fatalf("NotifyTopic: %v", err)
+	if err := pgstoretest.EPG(pool).NotifyProgramsUpdated(context.Background()); err != nil {
+		t.Fatalf("NotifyProgramsUpdated: %v", err)
 	}
 	if got := readSSEEvent(t, reader); got != "epg" {
 		t.Errorf("event = %q, want epg", got)
@@ -443,9 +419,13 @@ func TestEvents_EncodeProgressFromPostgres(t *testing.T) {
 	waitForClients(t, hub, 1)
 	waitListening(t, hub)
 
+	// 期待値は JSON のリテラル。契約 ReportEncodeProgress が作る payload がこれと一致することを
+	// SSE の data で確かめる。
 	payload := `{"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0.25}`
-	if err := sqlcgen.New(pool).NotifyTopic(context.Background(), payload); err != nil {
-		t.Fatalf("NotifyTopic: %v", err)
+	if err := pgstoretest.Media(pool).ReportEncodeProgress(context.Background(), store.EncodeProgress{
+		RecordingID: 42, Profile: "mobile", Progress: 0.25,
+	}); err != nil {
+		t.Fatalf("ReportEncodeProgress: %v", err)
 	}
 	got := readSSEMessage(t, reader)
 	if got.name != "encode-progress" || got.data != payload {
@@ -463,8 +443,8 @@ func TestEvents_FanOut(t *testing.T) {
 	waitForClients(t, hub, 2)
 	waitListening(t, hub)
 
-	if err := sqlcgen.New(pool).NotifyTopic(context.Background(), "epg"); err != nil {
-		t.Fatalf("NotifyTopic: %v", err)
+	if err := pgstoretest.EPG(pool).NotifyProgramsUpdated(context.Background()); err != nil {
+		t.Fatalf("NotifyProgramsUpdated: %v", err)
 	}
 	if got := readSSEEvent(t, r1); got != "epg" {
 		t.Errorf("client 1 event = %q, want epg", got)
@@ -493,8 +473,8 @@ func TestNotifier_MultipleReplicasNotSingleton(t *testing.T) {
 	waitListening(t, hub1)
 	waitListening(t, hub2)
 
-	if err := sqlcgen.New(pool).NotifyTopic(context.Background(), "epg"); err != nil {
-		t.Fatalf("NotifyTopic: %v", err)
+	if err := pgstoretest.EPG(pool).NotifyProgramsUpdated(context.Background()); err != nil {
+		t.Fatalf("NotifyProgramsUpdated: %v", err)
 	}
 	if got := readSSEEvent(t, r1); got != "epg" {
 		t.Errorf("replica 1 event = %q, want epg", got)

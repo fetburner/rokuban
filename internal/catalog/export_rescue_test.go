@@ -2,7 +2,6 @@ package catalog
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -10,7 +9,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -24,32 +22,25 @@ import (
 func TestExportRescue_RoundTrip(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	// --- seed ---
-	rule, err := q.CreateRule(ctx, sqlcgen.CreateRuleParams{
+	description, keepOriginal, filenameTemplate := "seed", "always", ""
+	enabled, priority := true, int32(10)
+	encodeProfiles, metadata := []string{}, map[string]any{}
+	rule, err := pgstoretest.Rules(pool).Create(ctx, store.RuleInput{
 		Name:             "news",
-		Description:      "seed",
-		Enabled:          true,
-		Priority:         10,
-		KeepOriginal:     "always",
-		EncodeProfiles:   []string{},
-		FilenameTemplate: "",
-		Metadata:         json.RawMessage(`{}`),
+		Description:      &description,
+		Enabled:          &enabled,
+		Priority:         &priority,
+		KeepOriginal:     &keepOriginal,
+		EncodeProfiles:   &encodeProfiles,
+		FilenameTemplate: &filenameTemplate,
+		Metadata:         &metadata,
+		TextMatches:      []store.RuleTextMatch{{Target: "name", Mode: "keyword", Value: "ニュース"}},
+		ChannelTypes:     []string{"GR"},
 	})
 	if err != nil {
-		t.Fatalf("CreateRule: %v", err)
-	}
-	if err := q.InsertRuleTextMatch(ctx, sqlcgen.InsertRuleTextMatchParams{
-		RuleID: rule.ID, Seq: 0, Target: "name", Mode: "keyword",
-		Value: "ニュース", CaseSensitive: false, Negate: false,
-	}); err != nil {
-		t.Fatalf("InsertRuleTextMatch: %v", err)
-	}
-	if err := q.InsertRuleChannelType(ctx, sqlcgen.InsertRuleChannelTypeParams{
-		RuleID: rule.ID, ChannelType: "GR",
-	}); err != nil {
-		t.Fatalf("InsertRuleChannelType: %v", err)
+		t.Fatalf("Rules.Create: %v", err)
 	}
 
 	recID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
@@ -65,15 +56,27 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 
 	assetID := dbtest.MediaAsset(t, pool, recID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "sites/default/20260729/120000_ニュース_1024.m2ts"
-		fixtureParams.SizeBytes = 1_000_000
+		fixtureParams.SizeBytes = 999_000
 	})
 
-	// 計測サイズを原本サイズとずらす。復元が原本サイズを計測値として使うと
-	// 一致した値で見過ごすため、catalog の計測記録を使う経路を区別する。
-	if err := q.UpsertMediaAssetTSScan(ctx, sqlcgen.UpsertMediaAssetTSScanParams{
-		MediaAssetID: assetID, ScannedSizeBytes: 999_000,
-	}); err != nil {
-		t.Fatalf("UpsertMediaAssetTSScan: %v", err)
+	// 計測は TS scan の契約で書く。ReplaceScan は計測サイズが書く時点の原本サイズと
+	// 一致するときだけ書くので、原本を 999_000 のうちに計測し、その後で原本サイズを
+	// 1_000_000 に変える。計測サイズ ≠ 原本サイズの状態が残り、復元が原本サイズを計測値
+	// として使うと見過ごすのを防ぐ。content_revision を進めるトリガーは無い（schema.sql）。
+	pidType, elapsedMs := "video", int64(1000)
+	media := pgstoretest.Media(pool)
+	source, err := media.GetActiveOriginalForTSScan(ctx, recID)
+	if err != nil {
+		t.Fatalf("GetActiveOriginalForTSScan: %v", err)
+	}
+	scanned, err := media.ReplaceScan(ctx, source, 999_000,
+		[]store.RecordingDropStat{{Pid: 0x100, Packets: 10000, Drops: 3, PidType: &pidType}},
+		[]store.RecordingDropPosition{{Pid: 0x100, ByteOffset: 188, ElapsedMs: &elapsedMs}})
+	if err != nil || !scanned {
+		t.Fatalf("ReplaceScan: scanned=%v err=%v, want a written scan", scanned, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET size_bytes = $2 WHERE id = $1`, assetID, int64(1_000_000)); err != nil {
+		t.Fatalf("changing original size after the scan: %v", err)
 	}
 
 	// recording_processing_policy 衛星表（issue #159）。凍結済み（ingest が INSERT
@@ -110,32 +113,6 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 		t.Fatalf("insert recording_purge_requests: %v", err)
 	}
 
-	pidType := "video"
-	statBatch := q.InsertDropStat(ctx, []sqlcgen.InsertDropStatParams{{
-		MediaAssetID: assetID,
-		Pid:          0x100,
-		Packets:      10000,
-		Drops:        3,
-		Errors:       0,
-		Scrambled:    0,
-		PidType:      &pidType,
-	}})
-	statBatch.Exec(nil)
-	if err := statBatch.Close(); err != nil {
-		t.Fatalf("InsertDropStat: %v", err)
-	}
-	elapsedMs := int64(1000)
-	positionBatch := q.InsertDropPosition(ctx, []sqlcgen.InsertDropPositionParams{{
-		MediaAssetID: assetID,
-		ByteOffset:   188,
-		Pid:          0x100,
-		ElapsedMs:    &elapsedMs,
-	}})
-	positionBatch.Exec(nil)
-	if err := positionBatch.Close(); err != nil {
-		t.Fatalf("InsertDropPosition: %v", err)
-	}
-
 	// program_snapshots + intent（FK のため snapshot が先）。
 	dbtest.ProgramSnapshot(t, pool, 999001, func(p *dbtest.ProgramSnapshotParams) {
 		p.Title = "手動"
@@ -146,11 +123,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 		p.EventID = 200
 		p.ServiceName = "NHK総合"
 	})
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: "default", ProgramID: 999001, Action: "record",
-	}); err != nil {
-		t.Fatalf("UpsertProgramIntent: %v", err)
-	}
+	dbtest.ProgramIntent(t, pool, 999001)
 
 	// --- export ---
 	doc, err := pgstoretest.Catalog(pool, []string{"default"}...).Export(ctx)
@@ -203,6 +176,9 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 	if len(doc.ProgramIntents) != 1 {
 		t.Fatalf("exported program_intents = %d, want 1", len(doc.ProgramIntents))
+	}
+	if in := doc.ProgramIntents[0]; in.Site != "default" || in.ProgramID != 999001 || in.Action != "record" {
+		t.Fatalf("exported program_intent = %+v, want site default program 999001 action record", in)
 	}
 	// recording_processing_policy（issue #159）: 凍結済みの recID だけが載り、
 	// 未凍結の unfrozenRecID は載らない（行の有無そのものが意味を持つ。

@@ -2,14 +2,9 @@ package catalog
 
 import (
 	"context"
-	"errors"
 	"testing"
-	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -23,7 +18,7 @@ import (
 func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
+	labelRules := pgstoretest.LabelRules(pool)
 	mediaDir := newTestMediaDir(t)
 
 	recID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
@@ -33,15 +28,11 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 	})
 
 	// 値に空白を含む（棚キーは最初の空白で切れる）ルールと、優先度が違うルール。
-	low, err := q.CreateLabelRule(ctx, sqlcgen.CreateLabelRuleParams{
-		Key: "series", Value: "数学", Keyword: "数学", Priority: 1,
-	})
+	low, err := labelRules.Create(ctx, "series", "数学", "数学", 1)
 	if err != nil {
 		t.Fatalf("CreateLabelRule low: %v", err)
 	}
-	high, err := q.CreateLabelRule(ctx, sqlcgen.CreateLabelRuleParams{
-		Key: "series", Value: "高校数学 I", Keyword: "数学I", Priority: 7,
-	})
+	high, err := labelRules.Create(ctx, "series", "高校数学 I", "数学I", 7)
 	if err != nil {
 		t.Fatalf("CreateLabelRule high: %v", err)
 	}
@@ -74,16 +65,16 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 		t.Fatalf("rescued label rules = %d, want 2", result.LabelRules)
 	}
 
-	rows, err := q.ListLabelRules(ctx)
+	rows, err := labelRules.List(ctx)
 	if err != nil {
-		t.Fatalf("ListLabelRules: %v", err)
+		t.Fatalf("LabelRules.List: %v", err)
 	}
 	if len(rows) != 2 {
 		t.Fatalf("restored rules = %d, want 2", len(rows))
 	}
 	// priority DESC の順（high が先）。id・値・優先度が保たれ、生成列は作り直される。
 	if rows[0].ID != high.ID || rows[0].Value != "高校数学 I" || rows[0].Priority != 7 ||
-		rows[0].ValueKey == nil || *rows[0].ValueKey != "高校数学" {
+		rows[0].ValueKey != "高校数学" {
 		t.Errorf("restored high rule = %+v, want id %d value %q priority 7 value_key 高校数学", rows[0], high.ID, "高校数学 I")
 	}
 	if rows[1].ID != low.ID || rows[1].Keyword != "数学" || rows[1].Priority != 1 {
@@ -104,105 +95,11 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 	}
 
 	// IDENTITY は max(id) に揃う（次の作成が復元した id と衝突しない）。
-	next, err := q.CreateLabelRule(ctx, sqlcgen.CreateLabelRuleParams{
-		Key: "series", Value: "次", Keyword: "次",
-	})
+	next, err := labelRules.Create(ctx, "series", "次", "次", 0)
 	if err != nil {
 		t.Fatalf("creating a rule after rescue: %v", err)
 	}
 	if next.ID <= high.ID || next.ID <= low.ID {
 		t.Errorf("next id = %d, want greater than %d and %d", next.ID, high.ID, low.ID)
-	}
-}
-
-// rescue の再評価は worker のジョブと同じ advisory lock で直列化する。別の tx が
-// ロックを持っている間は rescue が完了せず、手放すと完了する。ロック取得を外すと
-// 保持中でも rescue が完了してこのテストが落ちる。
-func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	mediaDir := newTestMediaDir(t)
-
-	// rescue が実際に書く行（分類ルールと録画）を用意する。空の文書だと、ロックを
-	// どこで取っても書き込み前に待つので、位置の検査にならない。
-	dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.EventID = 600
-		fixtureParams.ServiceName = "NHK総合"
-		fixtureParams.Title = "ロック位置"
-		fixtureParams.ProgramDurationMs = 60000
-	})
-	createRule := sqlcgen.CreateLabelRuleParams{Key: "series", Value: "ロック", Keyword: "ロック"}
-	if _, err := sqlcgen.New(pool).CreateLabelRule(ctx, createRule); err != nil {
-		t.Fatalf("CreateLabelRule: %v", err)
-	}
-	doc, err := pgstoretest.Catalog(pool, []string{"default"}...).Export(ctx)
-	if err != nil {
-		t.Fatalf("Export: %v", err)
-	}
-	if _, err := Write(mediaDir, doc, DefaultKeep, nil); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-
-	holder, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	defer func() { _ = holder.Rollback(ctx) }()
-	if err := sqlcgen.New(holder).LockLabelRuleReevaluation(ctx); err != nil {
-		t.Fatalf("holding the lock: %v", err)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
-		done <- err
-	}()
-	// 負荷下では rescue がロック待ちに入るまでの時間が読めないので、
-	// 待ちが pg_locks に現れるまで期限付きでポーリングする。
-	deadline := time.Now().Add(5 * time.Second)
-	var waiterPID int
-	for time.Now().Before(deadline) {
-		err := pool.QueryRow(ctx, `
-SELECT pid FROM pg_locks
-WHERE locktype = 'advisory' AND NOT granted
-  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&waiterPID)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			t.Fatalf("finding the backend waiting for the advisory lock: %v", err)
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("rescue finished (err=%v) while the re-evaluation lock was held", err)
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	if waiterPID == 0 {
-		t.Fatal("rescue did not wait for the advisory lock within 5 seconds")
-	}
-	// ロック待ちの時点で、rescue の backend は label_rules / recordings に何も
-	// 触れていない（リレーションロックを持たない）。途中で取ると、upsert のトリガーが
-	// label_rule_hits の行ロックを持ったまま待ち、ジョブとデッドロックしうる。
-	var held int
-	if err := pool.QueryRow(ctx, `
-SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
-WHERE l.pid = $1 AND l.granted AND c.relname IN ('label_rules', 'recordings', 'label_rule_hits')`,
-		waiterPID).Scan(&held); err != nil {
-		t.Fatalf("reading the waiter's relation locks: %v", err)
-	}
-	if held != 0 {
-		t.Errorf("the waiting rescue already holds %d relation locks on label_rules/recordings/label_rule_hits; take the lock before the first write", held)
-	}
-	if err := holder.Commit(ctx); err != nil {
-		t.Fatalf("releasing the lock: %v", err)
-	}
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("rescue after the lock was released: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("rescue did not finish after the lock was released")
 	}
 }

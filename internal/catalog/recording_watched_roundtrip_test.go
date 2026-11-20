@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -16,7 +15,6 @@ import (
 func TestExportRescue_PreservesWatchedButOmitsPlaybackPosition(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = 701
 		fixtureParams.ServiceName = "NHK総合"
@@ -26,15 +24,22 @@ func TestExportRescue_PreservesWatchedButOmitsPlaybackPosition(t *testing.T) {
 	})
 
 	watchedAt := time.Date(2026, 8, 2, 3, 4, 5, 0, time.UTC)
-	if err := q.CatalogUpsertRecordingWatched(ctx, sqlcgen.CatalogUpsertRecordingWatchedParams{
-		RecordingID: recordingID, WatchedAt: watchedAt,
-	}); err != nil {
-		t.Fatalf("insert watched marker: %v", err)
+	playback := pgstoretest.Playback(pool)
+	if err := playback.MarkWatched(ctx, recordingID); err != nil {
+		t.Fatalf("mark watched: %v", err)
 	}
-	if _, err := q.UpsertRecordingPlaybackPosition(ctx, sqlcgen.UpsertRecordingPlaybackPositionParams{
-		RecordingID: recordingID, PositionMs: 12_345,
-	}); err != nil {
-		t.Fatalf("insert playback position: %v", err)
+	// MarkWatched は現在時刻を入れる。往復の検査は固定の視聴日時で行う。
+	if _, err := pool.Exec(ctx, `UPDATE recording_watched SET watched_at = $2 WHERE recording_id = $1`, recordingID, watchedAt); err != nil {
+		t.Fatalf("pinning watched_at: %v", err)
+	}
+	if err := playback.SavePosition(ctx, recordingID, 12_345); err != nil {
+		t.Fatalf("save playback position: %v", err)
+	}
+	// 再生位置が実際に存在することを確かめてから書き出す。無いまま通ると、
+	// 「書き出さない」の検査が空虚になる。
+	var seededPositions int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recording_playback_positions WHERE recording_id = $1`, recordingID).Scan(&seededPositions); err != nil || seededPositions != 1 {
+		t.Fatalf("seeded playback positions = %d (err %v), want 1 before export", seededPositions, err)
 	}
 
 	doc, err := pgstoretest.Catalog(pool, []string{"default"}...).Export(ctx)
