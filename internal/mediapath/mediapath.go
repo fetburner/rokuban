@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/fetburner/rokuban/internal/storagename"
 )
 
 // ErrEscapesMediaDir は相対パスがメディアディレクトリの外を指す場合のエラー。
@@ -57,20 +59,6 @@ const MediaRelPathLockFilePrefix = ".rokuban-rel-path-lock-"
 // （7 日）の後に deleteOrphanFile が canonical と同じ手順で消す。
 const EncodeTempFilePrefix = ".rokuban-encode-"
 
-// ValidStoreName は置き場名が小文字 ASCII・数字・ハイフンだけで構成されるかを返す。
-func ValidStoreName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for _, r := range name {
-		if ('a' <= r && r <= 'z') || ('0' <= r && r <= '9') || r == '-' {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
 // CheckStoreMarker は mediaDir の目印が expected と一致することを確認する。
 // expected が空なら、従来構成との互換性のため検査しない。
 func CheckStoreMarker(mediaDir, expected string) error {
@@ -101,7 +89,7 @@ func CheckStoreMarker(mediaDir, expected string) error {
 // RequireStoreMarker は name が有効な置き場名で、mediaDir の目印と一致することを確認する。
 // CheckStoreMarker と違い、空の name は検査省略ではなくエラーにする（置き場を決めずに書かせない）。
 func RequireStoreMarker(mediaDir, name string) error {
-	if !ValidStoreName(name) {
+	if !storagename.ValidStoreName(name) {
 		return fmt.Errorf("invalid media store name %q: define one fs store in storage.stores", name)
 	}
 	return CheckStoreMarker(mediaDir, name)
@@ -125,7 +113,7 @@ func ReadStoreMarker(mediaDir string) (string, error) {
 		return "", fmt.Errorf("reading store marker %q: %w", markerPath, err)
 	}
 	name := string(contents)
-	if !ValidStoreName(name) {
+	if !storagename.ValidStoreName(name) {
 		return "", fmt.Errorf("%w: %s contains invalid store name %q", ErrStoreMarkerMismatch, markerPath, name)
 	}
 	return name, nil
@@ -134,7 +122,7 @@ func ReadStoreMarker(mediaDir string) (string, error) {
 // WriteStoreMarker は marker が無い mediaDir の root に expected を書き、ファイルと root を同期する。
 // 既存の同名 marker は成功とし、別名の marker は置き場の改名になるため上書きしない。
 func WriteStoreMarker(mediaDir, expected string) error {
-	if !ValidStoreName(expected) {
+	if !storagename.ValidStoreName(expected) {
 		return fmt.Errorf("invalid media store name %q: use lowercase ASCII letters, digits, and hyphens", expected)
 	}
 	markerPath := filepath.Join(mediaDir, StoreMarkerFileName)

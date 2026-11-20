@@ -115,7 +115,7 @@ type RouterConfig struct {
 	EncodeProfileNames []string
 
 	// CutProfileNames は config.encode.profiles のうち `cut: true` の名前一覧。
-	// recording_hls.enabled=false での cut だけの選択を 400 で拒否し（config.ValidateCutSelection）、
+	// recording_hls.enabled=false での cut だけの選択を 400 で拒否し（cutselect.ValidateCutSelection）、
 	// `EncodeJobStatus.state = awaiting_review` の導出にも使う。
 	// 空/nil なら cut の規則を検査しない（テストの部分構成を許す）。
 	CutProfileNames []string

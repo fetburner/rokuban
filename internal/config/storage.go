@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/jobq"
-	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/storagename"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -229,7 +229,7 @@ func (c StorageConfig) validateStoreDefinitions() []string {
 	sort.Strings(storeNames)
 	for _, name := range storeNames {
 		store := c.Stores[name]
-		if !mediapath.ValidStoreName(name) {
+		if !storagename.ValidStoreName(name) {
 			errs = append(errs, fmt.Sprintf("storage.stores key %q must contain only lowercase ASCII letters, digits and hyphens", name))
 		}
 		if len(name) > MaxStoreNameLen {

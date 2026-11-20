@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/storagename"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -115,7 +116,7 @@ func RescueFile(ctx context.Context, catalogStore store.Catalog, mediaDir, store
 		if asset.Store == "" {
 			return nil, fmt.Errorf("catalog media asset %d is missing store", asset.ID)
 		}
-		if !mediapath.ValidStoreName(asset.Store) {
+		if !storagename.ValidStoreName(asset.Store) {
 			return nil, fmt.Errorf("catalog media asset %d has invalid store name %q", asset.ID, asset.Store)
 		}
 	}
