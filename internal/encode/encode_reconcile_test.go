@@ -45,6 +45,13 @@ func encodeConfigWith(names ...string) config.EncodeConfig {
 	return config.EncodeConfig{Profiles: profiles}
 }
 
+func mediaWithStorageConfig(t *testing.T, pool *pgxpool.Pool, cfg config.StorageConfig) *pgstore.Media {
+	t.Helper()
+	policy, err := cfg.BuildStorePolicy()
+	testutil.RequireNoError(t, err, "cfg.BuildStorePolicy")
+	return pgstore.NewMediaWithPolicy(pool, pgstoretest.TestStore, policy)
+}
+
 // runEncodeReconcilePass runs one pass and records the Args it asks the queue to deliver.
 func runEncodeReconcilePass(t *testing.T, w *EncodeReconcileWorker) *jobqfaketest.RecordingEnqueuer {
 	return runEncodeReconcilePassArgs(t, w, jobs.EncodeReconcileArgs{})
@@ -155,7 +162,7 @@ func TestEncodeReconcile_TransferBacklogStopsEncodesIntoTheSourceStore(t *testin
 		t.Run(tc.name, func(t *testing.T) {
 			policy := centralTransferTestConfig()
 			policy.Transfer.BacklogLimit = map[string]int{"edge": tc.limit}
-			transfers := &countingTransfers{StorageTransfer: pgstoretest.Media(pool)}
+			transfers := &countingTransfers{StorageTransfer: mediaWithStorageConfig(t, pool, policy)}
 			w := &EncodeReconcileWorker{
 				Profiles:      encodeConfigWith("h265"),
 				Media:         pgstoretest.Media(pool),
@@ -203,10 +210,10 @@ func (c *countingTransfers) RecordTransferBacklog(ctx context.Context, counts ma
 	return c.StorageTransfer.RecordTransferBacklog(ctx, counts, countedAt)
 }
 
-func (c *countingTransfers) CountMediaAssetTransferBacklogBySourceStore(ctx context.Context, originalRules []byte, fsStores, sourceStores []string, derivedStore string, attemptLimit int32) (map[string]int64, error) {
+func (c *countingTransfers) CountMediaAssetTransferBacklogBySourceStore(ctx context.Context, sourceStores []string, attemptLimit int32) (map[string]int64, error) {
 	c.calls++
 	c.attemptLimit = attemptLimit
-	return c.StorageTransfer.CountMediaAssetTransferBacklogBySourceStore(ctx, originalRules, fsStores, sourceStores, derivedStore, attemptLimit)
+	return c.StorageTransfer.CountMediaAssetTransferBacklogBySourceStore(ctx, sourceStores, attemptLimit)
 }
 
 // seedEdgeOriginal は原本のコピーだけを edge に置いた録画を作る（desired は central なので edge の転送待ち）。
@@ -237,7 +244,7 @@ func scrapeBacklogGauges(t *testing.T, pool *pgxpool.Pool, policy config.Storage
 		limits[name] = policy.TransferBacklogLimit(name)
 	}
 	reg := prometheus.NewPedanticRegistry()
-	reg.MustRegister(dbcollector.NewTransferBacklogCollector(pgstoretest.Media(pool), limits))
+	reg.MustRegister(dbcollector.NewTransferBacklogCollector(mediaWithStorageConfig(t, pool, policy), limits))
 	families, err := reg.Gather()
 	testutil.RequireNoError(t, err, "gathering backlog gauges")
 	out := make(map[string]float64)
@@ -268,7 +275,7 @@ func TestEncodeReconcile_BacklogGaugeClearsOnTargetedPass(t *testing.T) {
 		return &EncodeReconcileWorker{
 			Profiles:      encodeConfigWith("h265"),
 			Media:         pgstoretest.Media(pool),
-			Transfers:     pgstoretest.Media(pool),
+			Transfers:     mediaWithStorageConfig(t, pool, policy),
 			StoragePolicy: policy,
 		}
 	}
@@ -301,7 +308,7 @@ func TestEncodeReconcile_BacklogSnapshotDroppedWhenLimitRemoved(t *testing.T) {
 	policy := centralTransferTestConfig()
 	policy.Transfer.BacklogLimit = map[string]int{"edge": 1}
 	newWorker := func(p config.StorageConfig) *EncodeReconcileWorker {
-		return &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: pgstoretest.Media(pool), StoragePolicy: p}
+		return &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: mediaWithStorageConfig(t, pool, p), StoragePolicy: p}
 	}
 	runEncodeReconcilePassArgs(t, newWorker(policy), jobs.EncodeReconcileArgs{})
 	if got, _ := pgstoretest.Media(pool).ReadTransferBacklog(t.Context()); got["edge"].Assets != 1 {
@@ -329,7 +336,7 @@ func TestEncodeReconcile_PassWithoutDecisionSkipsBacklogCount(t *testing.T) {
 	t.Run("original on an unlimited store is not counted", func(t *testing.T) {
 		recordingID, assetID := seedEdgeOriginal(t, pool)
 		moveOriginalToCentral(t, pool, assetID)
-		counting := &countingTransfers{StorageTransfer: pgstoretest.Media(pool)}
+		counting := &countingTransfers{StorageTransfer: mediaWithStorageConfig(t, pool, policy)}
 		w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: counting, StoragePolicy: policy}
 		enqueuer := runEncodeReconcilePassArgs(t, w, jobs.EncodeReconcileArgs{RecordingID: recordingID})
 		if counting.calls != 0 {
@@ -342,7 +349,7 @@ func TestEncodeReconcile_PassWithoutDecisionSkipsBacklogCount(t *testing.T) {
 
 	t.Run("original on a limited store is counted and stops the encode", func(t *testing.T) {
 		recordingID, _ := seedEdgeOriginal(t, pool)
-		counting := &countingTransfers{StorageTransfer: pgstoretest.Media(pool)}
+		counting := &countingTransfers{StorageTransfer: mediaWithStorageConfig(t, pool, policy)}
 		w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: counting, StoragePolicy: policy}
 		enqueuer := runEncodeReconcilePassArgs(t, w, jobs.EncodeReconcileArgs{RecordingID: recordingID})
 		if counting.calls != 1 {
@@ -364,7 +371,7 @@ func TestEncodeReconcile_NoLimitPassDoesNotTouchBacklogState(t *testing.T) {
 	}
 	recordingID, _ := seedEdgeOriginal(t, pool)
 	policy := centralTransferTestConfig()
-	counting := &countingTransfers{StorageTransfer: pgstoretest.Media(pool)}
+	counting := &countingTransfers{StorageTransfer: mediaWithStorageConfig(t, pool, policy)}
 	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: counting, StoragePolicy: policy}
 
 	runEncodeReconcilePassArgs(t, w, jobs.EncodeReconcileArgs{RecordingID: recordingID})
@@ -404,7 +411,7 @@ func TestEncodeReconcile_StaleCountDecidesByTheSavedCount(t *testing.T) {
 	w := &EncodeReconcileWorker{
 		Profiles:      encodeConfigWith("h265"),
 		Media:         pgstoretest.Media(pool),
-		Transfers:     &newerCountTransfers{StorageTransfer: pgstoretest.Media(pool), newer: map[string]int64{"edge": 2}},
+		Transfers:     &newerCountTransfers{StorageTransfer: mediaWithStorageConfig(t, pool, policy), newer: map[string]int64{"edge": 2}},
 		StoragePolicy: policy,
 	}
 	enqueuer := runEncodeReconcilePassArgs(t, w, jobs.EncodeReconcileArgs{})
@@ -432,7 +439,7 @@ func TestEncodeReconcile_LostSnapshotIsRebuiltAndWarnsAgain(t *testing.T) {
 	policy := centralTransferTestConfig()
 	policy.Transfer.BacklogLimit = map[string]int{"edge": 1}
 	pass := func() {
-		w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: pgstoretest.Media(pool), StoragePolicy: policy}
+		w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: mediaWithStorageConfig(t, pool, policy), StoragePolicy: policy}
 		runEncodeReconcilePassArgs(t, w, jobs.EncodeReconcileArgs{})
 	}
 	pass()
@@ -474,7 +481,7 @@ func TestEncodeReconcile_CountedAtComesFromTheDatabaseClock(t *testing.T) {
 	policy := centralTransferTestConfig()
 	policy.Transfer.BacklogLimit = map[string]int{"edge": 1}
 	clock := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
-	transfers := &clockTransfers{StorageTransfer: pgstoretest.Media(pool), clock: clock}
+	transfers := &clockTransfers{StorageTransfer: mediaWithStorageConfig(t, pool, policy), clock: clock}
 	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: transfers, StoragePolicy: policy}
 	runEncodeReconcilePassArgs(t, w, jobs.EncodeReconcileArgs{})
 	if !transfers.recorded.Equal(clock) {
@@ -494,7 +501,7 @@ func TestEncodeReconcile_BacklogLogsOnlyOnTransitions(t *testing.T) {
 	policy := centralTransferTestConfig()
 	policy.Transfer.BacklogLimit = map[string]int{"edge": 1}
 	pass := func() {
-		w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: pgstoretest.Media(pool), StoragePolicy: policy}
+		w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: pgstoretest.Media(pool), Transfers: mediaWithStorageConfig(t, pool, policy), StoragePolicy: policy}
 		runEncodeReconcilePassArgs(t, w, jobs.EncodeReconcileArgs{})
 	}
 

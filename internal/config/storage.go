@@ -17,6 +17,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // StoreConfig は 1 つの物理置き場の接続定義。
@@ -400,31 +401,28 @@ func parseOlderThan(raw string) (time.Duration, error) {
 	return duration, nil
 }
 
-type sqlOriginalStoreRule struct {
-	Match *sqlOriginalStoreMatch `json:"match,omitempty"`
-	Store string                 `json:"store"`
+type fingerprintOriginalRule struct {
+	Match *fingerprintOriginalMatch `json:"match,omitempty"`
+	Store string                    `json:"store"`
 }
 
-type sqlOriginalStoreMatch struct {
+type fingerprintOriginalMatch struct {
 	Site            string `json:"site,omitempty"`
 	OlderThanMicros int64  `json:"older_than_us,omitempty"`
 }
 
-func (c StorageConfig) sqlOriginalRules() ([]sqlOriginalStoreRule, error) {
-	rules := make([]sqlOriginalStoreRule, 0, len(c.Originals))
+func (c StorageConfig) normalizedOriginalRules() ([]store.OriginalStoreRule, error) {
+	rules := make([]store.OriginalStoreRule, 0, len(c.Originals))
 	for i, rule := range c.Originals {
-		converted := sqlOriginalStoreRule{Store: rule.Store}
+		converted := store.OriginalStoreRule{Store: rule.Store}
 		if rule.Match != nil {
-			match := &sqlOriginalStoreMatch{Site: rule.Match.Site}
+			converted.Site = rule.Match.Site
 			if rule.Match.OlderThan != "" {
 				duration, err := parseOlderThan(rule.Match.OlderThan)
 				if err != nil {
 					return nil, fmt.Errorf("storage.originals[%d].match.older_than: %w", i, err)
 				}
-				match.OlderThanMicros = duration.Microseconds()
-			}
-			if match.Site != "" || match.OlderThanMicros != 0 {
-				converted.Match = match
+				converted.OlderThan = duration
 			}
 		}
 		rules = append(rules, converted)
@@ -432,14 +430,14 @@ func (c StorageConfig) sqlOriginalRules() ([]sqlOriginalStoreRule, error) {
 	return rules, nil
 }
 
-// OriginalRulesJSON は desired_media_store が受け取る、正規化済みの規則の JSON を返す。
-// 時間はマイクロ秒に揃える。
-func (c StorageConfig) OriginalRulesJSON() ([]byte, error) {
-	rules, err := c.sqlOriginalRules()
+// BuildStorePolicy は設定を store 契約で渡す置き場方針へ変換する。
+func (c StorageConfig) BuildStorePolicy() (store.StoragePolicy, error) {
+	originalRules, err := c.normalizedOriginalRules()
 	if err != nil {
-		return nil, err
+		return store.StoragePolicy{}, err
 	}
-	return json.Marshal(rules)
+	policy := store.NewStoragePolicy(originalRules, c.fsStoreNames(), c.Derived)
+	return policy.WithPlacementEnabled(len(c.TransferDestinationStoreNames()) >= 2), nil
 }
 
 // TransferBandwidthBytesPerSecond は、指定した転送元の帯域上限を byte/s で返す。
@@ -497,10 +495,26 @@ func parseTransferBandwidth(raw string) (int64, error) {
 }
 
 type storagePolicyFingerprintInput struct {
-	Version   int                    `json:"version"`
-	Stores    map[string]StoreConfig `json:"stores"`
-	Originals []sqlOriginalStoreRule `json:"originals"`
-	Derived   string                 `json:"derived"`
+	Version   int                       `json:"version"`
+	Stores    map[string]StoreConfig    `json:"stores"`
+	Originals []fingerprintOriginalRule `json:"originals"`
+	Derived   string                    `json:"derived"`
+}
+
+func fingerprintRules(originalRules []store.OriginalStoreRule) []fingerprintOriginalRule {
+	rules := make([]fingerprintOriginalRule, 0, len(originalRules))
+	for _, rule := range originalRules {
+		converted := fingerprintOriginalRule{Store: rule.Store}
+		if rule.Site != "" || rule.OlderThan != 0 {
+			match := &fingerprintOriginalMatch{Site: rule.Site}
+			if rule.OlderThan != 0 {
+				match.OlderThanMicros = rule.OlderThan.Microseconds()
+			}
+			converted.Match = match
+		}
+		rules = append(rules, converted)
+	}
+	return rules
 }
 
 // PolicyFingerprint は置き場の定義と原本・派生物の規則だけをハッシュした指紋を返す。
@@ -509,7 +523,7 @@ type storagePolicyFingerprintInput struct {
 // 置き場の定義のうち root と internal_url も含めない。どちらも転送元をどこから読むかを決めるだけで、宛先の判断に使わない。
 // encoding/json が map のキーを整列し、時間はマイクロ秒で表す。
 func (c StorageConfig) PolicyFingerprint() (string, error) {
-	rules, err := c.sqlOriginalRules()
+	originalRules, err := c.normalizedOriginalRules()
 	if err != nil {
 		return "", err
 	}
@@ -520,7 +534,7 @@ func (c StorageConfig) PolicyFingerprint() (string, error) {
 	payload := storagePolicyFingerprintInput{
 		Version:   1,
 		Stores:    stores,
-		Originals: rules,
+		Originals: fingerprintRules(originalRules),
 		Derived:   c.Derived,
 	}
 	encoded, err := json.Marshal(payload)

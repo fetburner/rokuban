@@ -94,7 +94,7 @@ func newObjectEnv(t *testing.T) objectEnv {
 	testutil.RequireNoError(t, err, "creating filesystem object store")
 	return objectEnv{
 		pool: pool, objects: objects,
-		media: pgstore.NewMediaWithStores(pool, objectStoreName, dbtest.StoreName, objectStoreName),
+		media: pgstore.NewMediaWithStoresAndPolicy(pool, objectStoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName)),
 	}
 }
 

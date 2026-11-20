@@ -29,11 +29,11 @@ type transferRegistrationStore struct {
 	transferErr  error
 }
 
-func (s transferRegistrationStore) ListActiveDerivedCopiesInNonDerivedS3(context.Context, []string, string) ([]store.DerivedS3CopyCount, error) {
+func (s transferRegistrationStore) ListActiveDerivedCopiesInNonDerivedS3(context.Context, []string) ([]store.DerivedS3CopyCount, error) {
 	return nil, nil
 }
 
-func (s transferRegistrationStore) ClearObsoleteMediaAssetTransferAttempts(context.Context, []byte, []string, string) error {
+func (s transferRegistrationStore) ClearObsoleteMediaAssetTransferAttempts(context.Context) error {
 	return s.reconcileErr
 }
 
@@ -41,7 +41,7 @@ func (s transferRegistrationStore) ListAbandonedTransferUploads(context.Context,
 	return nil, nil
 }
 
-func (s transferRegistrationStore) PrepareMediaAssetTransfer(context.Context, int64, string, []byte, []string, []string, []string, string, int32) (store.MediaAssetTransfer, bool, error) {
+func (s transferRegistrationStore) PrepareMediaAssetTransfer(context.Context, int64, string, []string, []string, []string, int32) (store.MediaAssetTransfer, bool, error) {
 	return store.MediaAssetTransfer{}, false, s.transferErr
 }
 

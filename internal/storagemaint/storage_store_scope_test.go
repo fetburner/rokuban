@@ -14,6 +14,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/objstore"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -165,7 +166,7 @@ func seedStoreScopedOriginalForAudit(t *testing.T, pool *pgxpool.Pool, storeName
 // 派生物の置き場（DerivedObjects）は持たせない。
 func scopedToStore(pool *pgxpool.Pool, storeName, root string) func(*DeleteReconcileWorker) {
 	return func(w *DeleteReconcileWorker) {
-		media := pgstore.NewMedia(pool, storeName, "")
+		media := pgstore.NewMediaWithPolicy(pool, storeName, store.NewStoragePolicy(nil, nil, ""))
 		w.MediaDelete, w.Storage = media, media
 		w.RecordingPurge = pgstore.NewRecordings(pool, storeName)
 		w.MediaStoreName = storeName

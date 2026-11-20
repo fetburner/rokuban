@@ -304,10 +304,19 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 
 遷移の時点で削除条件を再確認するのは 2 つのメソッドだけである。`MarkUntilEncodedDeleting` は、同じ録画への削除方針と作り直し要求の書き込みと直列化してから再確認する。候補を列挙した後に作り直し要求が commit されうるからである。`RevertToActive` も適用時に再確認し、`deleted` の行は戻さない。ごみ箱の猶予の cutoff は呼び出し側から受け取る（[時刻](#時刻) の例外）。
 
+原本の規則・FS 置き場・派生物の置き場は、server の起動時に `StoragePolicy` にし、store の構築時に束ねる。設定で決まる値をメソッドの引数で渡すと、構築時に束ねた方針と異なる方針を渡せてしまう。JSON にするのは pgstore である。
+
+`PrepareMediaAssetTransfer` の `fsStores` は、パスごとにマーカーを検査して決まる実行時のマウント集合なので引数に残す。設定にある FS 置き場をすべて渡すと、マウントしていない置き場の派生物コピーを転送元に選べてしまう。
+
+配置削除は転送先が 2 つ以上あるときだけ有効にする。無効なら `PlacementPolicy` はゼロ値を返し、desired から外れたコピーも削除候補にならない。
+
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.MediaDelete`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
+- マウント集合の固定: `TestPrepareMediaAssetTransferKeepsDerivedSourcesMounted`
+- 配置削除が無効なとき: `TestStorageTransferDeletionSkipsWhenPlacementArmIsDisabled`
+- 配置削除が有効なとき: `TestStorageTransferDeletionWiresOverlapCutoff`
 - 作り直し要求との直列化と再確認: `TestMediaDeleteStoreContract` の `until-encoded transition waits for and rechecks recording writes`
 - deleted の行を戻さないこと: `TestMediaDeleteStoreContract` の `revert does not restore a deleted asset`
 - 外した encoded の削除要求が deleted 確定と同時に消えること: `TestMediaDeleteStoreContract` の `mark deleted clears the removal request`

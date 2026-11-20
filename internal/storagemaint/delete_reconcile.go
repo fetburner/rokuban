@@ -82,13 +82,12 @@ type DeleteReconcileWorker struct {
 	MediaDelete store.MediaDelete
 	// MediaPendingReclaim は MediaStoreName と DerivedObjectStoreName が同じ FS の
 	// pending 派生物を回収する。S3 の独立 pass は DerivedObjectDeleteStores に束ねた契約を使う。
-	MediaPendingReclaim   store.PendingCopyReclaim
-	StorageTransfer       store.StorageTransfer
-	StorageTransferPolicy config.StorageConfig
-	RecordingPurge        store.RecordingPurge
-	Breakers              store.Breakers
-	MediaDir              string
-	MediaStoreName        string
+	MediaPendingReclaim store.PendingCopyReclaim
+	StorageTransfer     store.StorageTransfer
+	RecordingPurge      store.RecordingPurge
+	Breakers            store.Breakers
+	MediaDir            string
+	MediaStoreName      string
 
 	// 派生物の置き場が original と別スコープのときに設定する（object_delete.go）。DerivedObjectStoreName は
 	// 削除ブレーカーの範囲にも使い、FS の置き場（MediaStoreName）の件数とは合算しない。
@@ -182,22 +181,7 @@ func (w *DeleteReconcileWorker) workObjectStore(ctx context.Context, cfg deleteS
 // placementArm は desired の置き場から外れた配置の腕（media_asset_copy_prunable）へ渡す値である。
 // 腕の入口（active の候補）と、deleting の拾い直し・否定形が同じ規則と cutoff を参照する。
 type placementArm struct {
-	rules         []byte
-	derived       string
 	overlapCutoff time.Time
-}
-
-// placementPolicy は配置の腕に渡す規則と派生物の置き場を返す。転送の宛先の置き場（TransferDestinationStoreNames）が
-// 2 つ未満のとき、この腕は移す先を持たないので、常に偽になる空の規則と空の置き場（enabled=false）を返す。
-func (w *DeleteReconcileWorker) placementPolicy() (rules []byte, derived string, enabled bool, err error) {
-	if len(w.StorageTransferPolicy.TransferDestinationStoreNames()) < 2 {
-		return nil, "", false, nil
-	}
-	rules, err = w.StorageTransferPolicy.OriginalRulesJSON()
-	if err != nil {
-		return nil, "", false, fmt.Errorf("encoding storage placement policy: %w", err)
-	}
-	return rules, w.StorageTransferPolicy.Derived, true, nil
 }
 
 // workFilesystem は FS の置き場の削除 reconcile を 1 パス実行する。
@@ -217,24 +201,16 @@ func (w *DeleteReconcileWorker) workFilesystem(ctx context.Context, cfg deleteSe
 	// pending 経路の再評価（後述）もこの値を使う。
 	trashCutoff := time.Now().Add(-trashRetention)
 	overlapCutoff := time.Now().Add(-transferOverlap)
-	placementRules, placementDerived, placementEnabled, err := w.placementPolicy()
-	if err != nil {
-		return err
-	}
 	var obsoletePendingTransferCandidates []store.MediaAssetCopyDeleteCandidate
 	if w.StorageTransfer != nil {
-		rules, err := w.StorageTransferPolicy.OriginalRulesJSON()
-		if err != nil {
-			return fmt.Errorf("encoding storage placement policy: %w", err)
-		}
 		obsoletePendingTransferCandidates, err = w.StorageTransfer.ListObsoletePendingMediaAssetTransferCopies(
-			ctx, rules, w.StorageTransferPolicy.FSStoreNames(), w.StorageTransferPolicy.Derived, deleteReconcileRowLimit,
+			ctx, deleteReconcileRowLimit,
 		)
 		if err != nil {
 			return fmt.Errorf("listing obsolete pending transfer copies: %w", err)
 		}
 	}
-	if err := w.restoreUnqualifiedDeletingAssets(ctx, trashCutoff, overlapCutoff, placementRules, placementDerived); err != nil {
+	if err := w.restoreUnqualifiedDeletingAssets(ctx, trashCutoff, overlapCutoff); err != nil {
 		return err
 	}
 	// 前パスで deleting のまま止まった行のうち、まだ trash / until_encoded の
@@ -244,7 +220,7 @@ func (w *DeleteReconcileWorker) workFilesystem(ctx context.Context, cfg deleteSe
 	// restoreUnqualifiedDeletingAssets で該当しなくなった行は既に active か
 	// deleted に決着しているので、ここに現れるのは常に判定を再確認できた
 	// ものだけ。
-	pending, err := w.MediaDelete.ListPendingDeleteAssets(ctx, trashCutoff, overlapCutoff, placementRules, placementDerived, deleteReconcileRowLimit)
+	pending, err := w.MediaDelete.ListPendingDeleteAssets(ctx, trashCutoff, overlapCutoff, deleteReconcileRowLimit)
 	if err != nil {
 		return err
 	}
@@ -279,10 +255,10 @@ func (w *DeleteReconcileWorker) workFilesystem(ctx context.Context, cfg deleteSe
 		}
 	}
 	candidates.obsoletePendingTransfer = obsoletePendingTransferCandidates
-	if w.StorageTransfer != nil && placementEnabled {
-		candidates.placementArm = placementArm{rules: placementRules, derived: placementDerived, overlapCutoff: overlapCutoff}
+	if w.StorageTransfer != nil {
+		candidates.placementArm = placementArm{overlapCutoff: overlapCutoff}
 		candidates.placement, err = w.StorageTransfer.ListMediaAssetCopiesToDelete(
-			ctx, placementRules, placementDerived, overlapCutoff, deleteReconcileRowLimit,
+			ctx, overlapCutoff, deleteReconcileRowLimit,
 		)
 		if err != nil {
 			return fmt.Errorf("listing stale placement copies: %w", err)

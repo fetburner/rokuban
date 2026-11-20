@@ -14,7 +14,7 @@ import (
 // pool の外の別接続で pg_try_advisory_lock を試す。
 func TestTransferBandwidthLeaseHijacksOnUnlockFailure(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	lease, acquired, err := media.AcquireTransferSourceBandwidth(context.Background(), "test-store")
 	if err != nil || !acquired {
 		t.Fatalf("AcquireTransferSourceBandwidth = (acquired=%t, %v), want acquired", acquired, err)

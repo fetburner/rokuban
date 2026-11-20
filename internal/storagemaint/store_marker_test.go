@@ -21,10 +21,10 @@ type markerTestMediaDelete struct {
 	revertCalls       int
 }
 
-func (*markerTestMediaDelete) ListPendingDeleteAssets(context.Context, time.Time, time.Time, []byte, string, int32) ([]store.MediaDeleteAsset, error) {
+func (*markerTestMediaDelete) ListPendingDeleteAssets(context.Context, time.Time, time.Time, int32) ([]store.MediaDeleteAsset, error) {
 	return nil, nil
 }
-func (*markerTestMediaDelete) ListUnqualifiedDeletingAssets(context.Context, time.Time, time.Time, []byte, string, int32) ([]store.MediaDeleteRevertCandidate, error) {
+func (*markerTestMediaDelete) ListUnqualifiedDeletingAssets(context.Context, time.Time, time.Time, int32) ([]store.MediaDeleteRevertCandidate, error) {
 	return nil, nil
 }
 func (*markerTestMediaDelete) ListOldGenerationMediaAssetCopiesToDelete(context.Context, time.Time, int32) ([]store.MediaDeleteAsset, error) {
@@ -50,7 +50,7 @@ func (s *markerTestMediaDelete) MarkDeleted(context.Context, int64) error {
 	s.markDeletedCalls++
 	return nil
 }
-func (s *markerTestMediaDelete) RevertToActive(context.Context, int64, time.Time, time.Time, []byte, string) (bool, error) {
+func (s *markerTestMediaDelete) RevertToActive(context.Context, int64, time.Time, time.Time) (bool, error) {
 	s.revertCalls++
 	return false, nil
 }
@@ -364,7 +364,7 @@ func TestResolveDeletingAssetWithholdsDecisionWhenMarkerDisappearsAfterStat(t *t
 				metricBefore := promtestutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
 
 				worker.resolveUnqualifiedDeletingAsset(context.Background(),
-					store.MediaDeleteRevertCandidate{ID: 45, RecordingID: 7, RelPath: relPath, Kind: store.AssetKindOriginal}, time.Now(), time.Time{}, nil, "")
+					store.MediaDeleteRevertCandidate{ID: 45, RecordingID: 7, RelPath: relPath, Kind: store.AssetKindOriginal}, time.Now(), time.Time{})
 
 				if mediaDelete.markDeletedCalls != 0 || mediaDelete.revertCalls != 0 {
 					t.Errorf("DB calls = MarkDeleted:%d RevertToActive:%d, want 0:0", mediaDelete.markDeletedCalls, mediaDelete.revertCalls)

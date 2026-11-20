@@ -50,7 +50,7 @@ func TestRecordingHLSTargetPreservesCommittedGeneration(t *testing.T) {
 		t.Fatalf("setting committed ingest generation: %v", err)
 	}
 
-	target, err := NewMedia(pool, dbtest.StoreName, "").GetRecordingHLSTarget(context.Background(), recordingID)
+	target, err := testMedia(pool, dbtest.StoreName, "").GetRecordingHLSTarget(context.Background(), recordingID)
 	if err != nil {
 		t.Fatalf("GetRecordingHLSTarget(%d): %v", recordingID, err)
 	}
@@ -60,7 +60,7 @@ func TestRecordingHLSTargetPreservesCommittedGeneration(t *testing.T) {
 	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = $2`, assetID, dbtest.StoreName); err != nil {
 		t.Fatalf("deleting selected-store copy: %v", err)
 	}
-	if _, err := NewMedia(pool, dbtest.StoreName, "").GetRecordingHLSTarget(context.Background(), recordingID); !errors.Is(err, store.ErrNotFound) {
+	if _, err := testMedia(pool, dbtest.StoreName, "").GetRecordingHLSTarget(context.Background(), recordingID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetRecordingHLSTarget(without selected-store active copy) error = %v, want ErrNotFound", err)
 
 	}
@@ -71,7 +71,7 @@ func TestRecordingHLSTargetPreservesCommittedGeneration(t *testing.T) {
 		p.Status = "recording"
 	})
 	unfinishedAssetID := dbtest.MediaAsset(t, pool, unfinishedID)
-	unfinished, err := NewMedia(pool, dbtest.StoreName, "").GetRecordingHLSTarget(context.Background(), unfinishedID)
+	unfinished, err := testMedia(pool, dbtest.StoreName, "").GetRecordingHLSTarget(context.Background(), unfinishedID)
 	if err != nil {
 		t.Fatalf("GetRecordingHLSTarget(original committed before the watcher wrote finished): %v", err)
 	}
@@ -82,7 +82,7 @@ func TestRecordingHLSTargetPreservesCommittedGeneration(t *testing.T) {
 
 func TestIngestTempGenerationIsStoredAndCommitted(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "tokyo", "")
+	media := testMedia(pool, "tokyo", "")
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
 	tempRelPath := fmt.Sprintf("sites/%s/test/.rokuban-ingest-generation-test", store.DefaultSite)
@@ -171,15 +171,15 @@ WHERE a.recording_id = $1 AND a.kind = 'original'`, recordingID,
 func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 	pool := testutil.SetupDB(t)
 	fixture := contracttest.MediaFixture{
-		Serving:   NewMedia(pool, "tokyo", ""),
-		Reconcile: NewMedia(pool, "tokyo", ""),
-		Precheck:  NewMedia(pool, "tokyo", ""),
-		Storage:   NewMedia(pool, "tokyo", ""),
-		Reader:    NewMedia(pool, "tokyo", ""),
+		Serving:   testMedia(pool, "tokyo", ""),
+		Reconcile: testMedia(pool, "tokyo", ""),
+		Precheck:  testMedia(pool, "tokyo", ""),
+		Storage:   testMedia(pool, "tokyo", ""),
+		Reader:    testMedia(pool, "tokyo", ""),
 		Query:     NewRecordings(pool, "tokyo"),
 		Catalog:   NewCatalog(pool, []string{store.DefaultSite}, "tokyo"),
-		Publisher: NewMedia(pool, "tokyo", ""),
-		Progress:  NewMedia(pool, "tokyo", ""),
+		Publisher: testMedia(pool, "tokyo", ""),
+		Progress:  testMedia(pool, "tokyo", ""),
 		Chapters:  NewAnalysis(pool, dbtest.StoreName),
 		Site:      store.DefaultSite,
 		NewRecording: func(t *testing.T) int64 {

@@ -79,7 +79,7 @@ func TestStoreRouteRejectsAnEmptyStore(t *testing.T) {
 
 type fixedStoreChooser struct{ name string }
 
-func (c fixedStoreChooser) DesiredOriginalStoreAtIngest(context.Context, []byte, string, string) (string, error) {
+func (c fixedStoreChooser) DesiredOriginalStoreAtIngest(context.Context, string) (string, error) {
 	return c.name, nil
 }
 
@@ -204,7 +204,7 @@ func TestIngestRouteChoosesTheMountedStoreTheRulesSelect(t *testing.T) {
 
 type failingStoreChooser struct{}
 
-func (failingStoreChooser) DesiredOriginalStoreAtIngest(context.Context, []byte, string, string) (string, error) {
+func (failingStoreChooser) DesiredOriginalStoreAtIngest(context.Context, string) (string, error) {
 	return "", errors.New("rules query failed")
 }
 

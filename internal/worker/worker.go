@@ -407,7 +407,6 @@ func newDeleteReconcileWorker(deps *Deps, scoped *StoreDeps) *storagemaint.Delet
 		MediaDelete:               scoped.MediaDelete,
 		MediaPendingReclaim:       scoped.MediaPendingReclaim,
 		StorageTransfer:           scoped.StorageTransfer,
-		StorageTransferPolicy:     deps.StorageTransferPolicy,
 		RecordingPurge:            scoped.RecordingPurge,
 		Breakers:                  deps.Breakers,
 		Storage:                   scoped.StorageObservation,

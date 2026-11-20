@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 const validStoragePolicy = `
@@ -336,18 +337,21 @@ func TestStoragePolicyOverlapIsStrictlyGreaterThanMissingAgePlusTwoDeletePasses(
 	}
 }
 
-func TestStoragePolicyOlderThanJSONNormalizesDuration(t *testing.T) {
+func TestStorePolicyNormalizesOriginalRuleDuration(t *testing.T) {
 	storage := StorageConfig{Originals: []OriginalStoreRule{
 		{Match: &OriginalStoreMatch{Site: "default", OlderThan: "30d"}, Store: "archive"},
 		{Store: "main"},
 	}}
-	got, err := storage.OriginalRulesJSON()
+	got, err := storage.BuildStorePolicy()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `[{"match":{"site":"default","older_than_us":2592000000000},"store":"archive"},{"store":"main"}]`
-	if string(got) != want {
-		t.Fatalf("rules JSON = %s, want %s", got, want)
+	rules := got.OriginalRules()
+	if len(rules) != 2 || rules[0].Site != "default" || rules[0].OlderThan != 30*24*time.Hour || rules[0].Store != "archive" {
+		t.Fatalf("first store rule = %+v, want site default, age 30 days and store archive", rules)
+	}
+	if rules[1] != (store.OriginalStoreRule{Store: "main"}) {
+		t.Fatalf("unconditional store rule = %+v, want store main", rules[1])
 	}
 }
 
@@ -408,8 +412,8 @@ func TestStoragePolicyFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(want) != 64 {
-		t.Fatalf("sha256 hex length = %d, want 64", len(want))
+	if want != "edf0ade7597ef1e988820121b3f2b1d6b59c96279067033dca579c8ccc8c2311" {
+		t.Fatalf("policy fingerprint = %s, want baseline edf0ade7597ef1e988820121b3f2b1d6b59c96279067033dca579c8ccc8c2311", want)
 	}
 
 	changedBucket := newStorage()

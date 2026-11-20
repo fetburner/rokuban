@@ -16,7 +16,7 @@ import (
 func TestAdoptUnassignedStoreRowsAssignsLegacyDeleteReconcileBreaker(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	media := NewMedia(pool, "tokyo", "")
+	media := testMedia(pool, "tokyo", "")
 	trippedAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	if _, err := pool.Exec(ctx, `
 INSERT INTO circuit_breakers (scope, name, tripped_at, pending, threshold, detail) VALUES
@@ -71,7 +71,7 @@ INSERT INTO circuit_breakers (scope, name, tripped_at, pending, threshold, detai
 func TestAdoptUnassignedStoreRowsKeepsExistingStoreBreaker(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	media := NewMedia(pool, "tokyo", "")
+	media := testMedia(pool, "tokyo", "")
 	if _, err := pool.Exec(ctx, `
 INSERT INTO circuit_breakers (scope, name, pending, threshold, detail) VALUES
   ('', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb),

@@ -143,7 +143,7 @@ type TransferBacklogReader interface {
 type StorageTransfer interface {
 	TransferBacklogReader
 	// ListActiveDerivedCopiesInNonDerivedS3 は、設定済み S3 置き場にある current-generation の active 派生コピーを、現在の derived 以外について返す。
-	ListActiveDerivedCopiesInNonDerivedS3(ctx context.Context, s3Stores []string, derivedStore string) ([]DerivedS3CopyCount, error)
+	ListActiveDerivedCopiesInNonDerivedS3(ctx context.Context, s3Stores []string) ([]DerivedS3CopyCount, error)
 	// DatabaseClock は DB の時計の現在時刻を返す。RecordTransferBacklog の countedAt の出所は、
 	// プロセスごとに違う時計ではなく、この 1 つにする。
 	DatabaseClock(ctx context.Context) (time.Time, error)
@@ -154,16 +154,16 @@ type StorageTransfer interface {
 	// 呼び出し側は、前の状態と今の件数の比較で状態の変化を 1 度だけ検出できる。
 	RecordTransferBacklog(ctx context.Context, counts map[string]int64, countedAt time.Time) (written map[string]TransferBacklogWrite, err error)
 	// ListMediaAssetTransferCandidates は active で desired store にコピーが無い資産を返す。
-	ListMediaAssetTransferCandidates(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string, attemptLimit, limit int32) ([]MediaAssetTransferCandidate, error)
+	ListMediaAssetTransferCandidates(ctx context.Context, attemptLimit, limit int32) ([]MediaAssetTransferCandidate, error)
 	// CountMediaAssetTransferCandidates は現在の転送待ちの件数とバイト数を返す。
-	CountMediaAssetTransferCandidates(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string, attemptLimit int32) (assetCount, byteCount int64, err error)
+	CountMediaAssetTransferCandidates(ctx context.Context, attemptLimit int32) (assetCount, byteCount int64, err error)
 	// CountMediaAssetTransferBacklogBySourceStore は、sourceStores のうち転送元のアクティブなコピーを持つ置き場ごとに、
 	// 転送待ちの論理資産の件数を返す。件数の無い置き場は含まない。
-	CountMediaAssetTransferBacklogBySourceStore(ctx context.Context, originalRules []byte, fsStores, sourceStores []string, derivedStore string, attemptLimit int32) (map[string]int64, error)
+	CountMediaAssetTransferBacklogBySourceStore(ctx context.Context, sourceStores []string, attemptLimit int32) (map[string]int64, error)
 	// CountMediaAssetTransferExhausted は失敗上限に達して reconcile から外れている件数を返す。
-	CountMediaAssetTransferExhausted(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string, attemptLimit int32) (int64, error)
+	CountMediaAssetTransferExhausted(ctx context.Context, attemptLimit int32) (int64, error)
 	// ClearObsoleteMediaAssetTransferAttempts は現在の desired / generation から外れた失敗行を消す。
-	ClearObsoleteMediaAssetTransferAttempts(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string) error
+	ClearObsoleteMediaAssetTransferAttempts(ctx context.Context) error
 	// AcquireTransferSourceBandwidth は転送元置き場ごとの advisory lock を取る。
 	AcquireTransferSourceBandwidth(ctx context.Context, sourceStore string) (lease TransferBandwidthLease, acquired bool, err error)
 	// AcquireMediaAssetTransferProgress は pending コピーの進捗の lease を owner として取る。
@@ -197,13 +197,14 @@ type StorageTransfer interface {
 	// GetMediaAssetTransferProgressWriterGeneration は、コピーの転送進捗に記録された書き手の世代を返す。行が無ければ ok=false。
 	GetMediaAssetTransferProgressWriterGeneration(ctx context.Context, copyID int64) (generation int64, ok bool, err error)
 	// PrepareMediaAssetTransfer は行をロックし、現在も desired な宛先コピーを pending にする。
-	// sourceStores は転送元にできる置き場（マウント済み ∪ internal_url を持つ置き場）、fsStores はマウント済みの FS 置き場。
-	// 派生物の転送元は fsStores に限る。mountedStores は、この worker がマウントしている置き場で、転送元の優先に使う。
-	PrepareMediaAssetTransfer(ctx context.Context, mediaAssetID int64, targetStore string, originalRules []byte, fsStores, sourceStores, mountedStores []string, derivedStore string, attemptLimit int32) (MediaAssetTransfer, bool, error)
+	// sourceStores は転送元にできる置き場（マウント済み ∪ internal_url を持つ置き場）。
+	// fsStores はこの Work でマーカー検査を通ったマウント済み FS 置き場で、派生物の転送元を絞る。
+	// mountedStores は、この worker がマウントしている置き場で、転送元の優先に使う。
+	PrepareMediaAssetTransfer(ctx context.Context, mediaAssetID int64, targetStore string, fsStores, sourceStores, mountedStores []string, attemptLimit int32) (MediaAssetTransfer, bool, error)
 	// CompleteMediaAssetTransfer は SHA-256 を観測し、destination copy が active になったかを返す。
 	// 同じ copy を別 worker が先に active にした場合も active=true を返す。
 	// active=true のときは、同じトランザクションで LoopStorageTransfer の印を進める（失敗すれば active 化も取り消す）。
-	CompleteMediaAssetTransfer(ctx context.Context, transfer MediaAssetTransfer, targetStore, derivedStore string, originalRules, sha256 []byte) (active bool, rejection string, err error)
+	CompleteMediaAssetTransfer(ctx context.Context, transfer MediaAssetTransfer, targetStore string, sha256 []byte) (active bool, rejection string, err error)
 	// RecordMediaAssetTransferFailure は転送失敗を記録する。
 	RecordMediaAssetTransferFailure(ctx context.Context, copyID int64, message string) error
 	// MarkMediaAssetTransferObjectOwned は、pending 転送が新規作成した destination key を記録する。
@@ -220,15 +221,15 @@ type StorageTransfer interface {
 	// DiscardPendingMediaAssetCopy は失敗した転送先コピーを deleted にする。
 	DiscardPendingMediaAssetCopy(ctx context.Context, copyID int64) error
 	// ListObsoletePendingMediaAssetTransferCopies は trash・generation・placement により不要になった pending コピーを返す。
-	ListObsoletePendingMediaAssetTransferCopies(ctx context.Context, originalRules []byte, fsStores []string, derivedStore string, limit int32) ([]MediaAssetCopyDeleteCandidate, error)
+	ListObsoletePendingMediaAssetTransferCopies(ctx context.Context, limit int32) ([]MediaAssetCopyDeleteCandidate, error)
 	// ReclaimObsoletePendingMediaAssetTransferCopy は行をロックして pending の obsolete 条件を再評価し、物理削除して deleted にする。
-	ReclaimObsoletePendingMediaAssetTransferCopy(ctx context.Context, candidate MediaAssetCopyDeleteCandidate, originalRules []byte, fsStores []string, derivedStore string, deleteFile func(ownedRelPaths []string) error) (reclaimed bool, err error)
+	ReclaimObsoletePendingMediaAssetTransferCopy(ctx context.Context, candidate MediaAssetCopyDeleteCandidate, deleteFile func(ownedRelPaths []string) error) (reclaimed bool, err error)
 	// ListMediaAssetCopiesToDelete は、現行 policy の desired copy を確認できる active の stale copy を返す。
-	ListMediaAssetCopiesToDelete(ctx context.Context, originalRules []byte, derivedStore string, overlapCutoff time.Time, limit int32) ([]MediaAssetCopyDeleteCandidate, error)
+	ListMediaAssetCopiesToDelete(ctx context.Context, overlapCutoff time.Time, limit int32) ([]MediaAssetCopyDeleteCandidate, error)
 	// GetMediaAssetCopyForDeletion はジョブ引数の copy ID から現在のパスを返す。
 	GetMediaAssetCopyForDeletion(ctx context.Context, candidate MediaAssetCopyDeleteCandidate) (MediaAssetCopyDeleteCandidate, bool, error)
 	// MarkMediaAssetCopyDeleting は media_assets をロックし直し、削除条件を再評価して path を返す。
-	MarkMediaAssetCopyDeleting(ctx context.Context, candidate MediaAssetCopyDeleteCandidate, originalRules []byte, derivedStore string, overlapCutoff time.Time) (relPath string, marked bool, err error)
+	MarkMediaAssetCopyDeleting(ctx context.Context, candidate MediaAssetCopyDeleteCandidate, overlapCutoff time.Time) (relPath string, marked bool, err error)
 	// MarkMediaAssetCopyDeleted は unlink 済みの deleting copy を deleted にする。
 	MarkMediaAssetCopyDeleted(ctx context.Context, candidate MediaAssetCopyDeleteCandidate) (bool, error)
 }

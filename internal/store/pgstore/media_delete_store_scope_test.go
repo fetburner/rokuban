@@ -30,7 +30,7 @@ type storeScopeEnv struct {
 func newStoreScopeEnv(t *testing.T) storeScopeEnv {
 	t.Helper()
 	pool := testutil.SetupDB(t)
-	return storeScopeEnv{pool: pool, media: NewMedia(pool, dbtest.StoreName, dbtest.StoreName)}
+	return storeScopeEnv{pool: pool, media: testMedia(pool, dbtest.StoreName, dbtest.StoreName)}
 }
 
 func (e storeScopeEnv) recording(t *testing.T) int64 {
@@ -338,7 +338,7 @@ VALUES ($1, 'always', '{}', false)`, rec); err != nil {
 			env.moveCopy(t, id, copyStore)
 			env.setCopyState(t, id, copyStore, "deleting")
 			env.trash(t, rec)
-			rows, err := env.media.ListPendingDeleteAssets(ctx, cutoff, time.Time{}, nil, "", 10)
+			rows, err := env.media.ListPendingDeleteAssets(ctx, cutoff, time.Time{}, 10)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -348,7 +348,7 @@ VALUES ($1, 'always', '{}', false)`, rec); err != nil {
 			id := env.asset(t, env.recording(t), store.AssetKindOriginal, nil)
 			env.moveCopy(t, id, copyStore)
 			env.setCopyState(t, id, copyStore, "deleting")
-			rows, err := env.media.ListUnqualifiedDeletingAssets(ctx, cutoff, time.Time{}, nil, "", 10)
+			rows, err := env.media.ListUnqualifiedDeletingAssets(ctx, cutoff, time.Time{}, 10)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -399,7 +399,7 @@ func TestMediaDeleteTransitionsIgnoreOtherStoreCopies(t *testing.T) {
 			env.moveCopy(t, id, copyStore)
 			env.setCopyState(t, id, copyStore, "deleting")
 			copyID := dbtest.MediaAssetCopyID(t, env.pool, id, copyStore)
-			reverted, err := env.media.RevertToActive(ctx, copyID, cutoff, time.Time{}, nil, "")
+			reverted, err := env.media.RevertToActive(ctx, copyID, cutoff, time.Time{})
 			if err != nil {
 				t.Fatalf("RevertToActive: %v", err)
 			}
@@ -416,7 +416,7 @@ func TestMediaDeleteTransitionsIgnoreOtherStoreCopies(t *testing.T) {
 		id := env.asset(t, env.recording(t), store.AssetKindOriginal, nil)
 		copyID := dbtest.MediaAssetCopyID(t, env.pool, id, dbtest.StoreName)
 		env.setCopyState(t, id, dbtest.StoreName, "deleted")
-		reverted, err := env.media.RevertToActive(ctx, copyID, cutoff, time.Time{}, nil, "")
+		reverted, err := env.media.RevertToActive(ctx, copyID, cutoff, time.Time{})
 		if err != nil {
 			t.Fatalf("RevertToActive for deleted copy: %v", err)
 		}
@@ -591,7 +591,7 @@ func TestMediaReadersPickActiveCopyDeterministically(t *testing.T) {
 	if n != 1 || first != "b-store" {
 		t.Fatalf("preferred_active_media_asset_copy returned %d rows (first store %q), want exactly the b-store copy", n, first)
 	}
-	api := NewMedia(env.pool, "", "")
+	api := testMedia(env.pool, "", "")
 	readers := map[string]func(*Media) (store.MediaAsset, error){
 		"original":      func(m *Media) (store.MediaAsset, error) { return m.GetOriginalMediaAssetForServing(ctx, rec) },
 		"active origin": func(m *Media) (store.MediaAsset, error) { return m.GetActiveOriginalMediaAsset(ctx, rec) },
@@ -607,7 +607,7 @@ func TestMediaReadersPickActiveCopyDeterministically(t *testing.T) {
 		if got.Store != "b-store" {
 			t.Errorf("%s without a configured store picked %q, want b-store (first active copy by store name; a-store is deleting)", name, got.Store)
 		}
-		got, err = read(NewMedia(env.pool, "z-store", ""))
+		got, err = read(testMedia(env.pool, "z-store", ""))
 		if err != nil || got.Store != "z-store" {
 			t.Errorf("%s with z-store = (%+v, %v), want the z-store copy", name, got, err)
 		}
@@ -622,13 +622,13 @@ func TestServingReadableStoresNilMeansAllAndEmptyMeansNone(t *testing.T) {
 	rec := env.recording(t)
 	env.asset(t, rec, store.AssetKindThumbnail, nil)
 
-	got, err := NewMedia(env.pool, "", "").GetThumbnailMediaAssetForServing(ctx, rec)
+	got, err := testMedia(env.pool, "", "").GetThumbnailMediaAssetForServing(ctx, rec)
 	if err != nil || got.Store != dbtest.StoreName {
 		t.Fatalf("all stores readable (nil) = (%+v, %v), want the %s copy", got, err, dbtest.StoreName)
 	}
 	for name, m := range map[string]*Media{
-		"empty readable":     NewMediaForStreamer(env.pool, "", []string{}),
-		"unrelated readable": NewMediaForStreamer(env.pool, "", []string{otherStoreName}),
+		"empty readable":     NewMediaForStreamerWithPolicy(env.pool, store.StoragePolicy{}, []string{}),
+		"unrelated readable": NewMediaForStreamerWithPolicy(env.pool, store.StoragePolicy{}, []string{otherStoreName}),
 	} {
 		if _, err := m.GetThumbnailMediaAssetForServing(ctx, rec); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("%s: err = %v, want ErrNotFound (the only copy is in %s, not readable here)", name, err, dbtest.StoreName)
@@ -676,7 +676,7 @@ func TestUntilEncodedUsesDerivedStoreNotWorkerStore(t *testing.T) {
 			for _, id := range derived {
 				env.moveCopy(t, id, tc.derivedCopy)
 			}
-			media := NewMedia(env.pool, dbtest.StoreName, tc.derivedStore)
+			media := testMedia(env.pool, dbtest.StoreName, tc.derivedStore)
 			rows, err := media.ListUntilEncodedOriginalsToDelete(ctx, 10)
 			if err != nil {
 				t.Fatal(err)

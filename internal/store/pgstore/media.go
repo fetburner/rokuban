@@ -24,37 +24,32 @@ type Media struct {
 	pool          *pgxpool.Pool
 	storeName     string
 	originalStore string
-	// derivedStore は派生物の desired 置き場。until_encoded の原本を消してよいかの判定に使い、
-	// 配信では読めるコピーのうち優先する置き場になる。空なら規則が無く、原本は消さない。
-	// コピーを読み書きする置き場（storeName）とは別の値で、storeName を代わりに使ってはならない。
-	derivedStore string
+	policy        store.StoragePolicy
 	// servingStores が非 nil なら、派生物の配信で読める置き場をこの一覧に絞る。
-	// nil のときは derivedStore（無ければ storeName）の置き場だけを読める扱いにする。
-	// derivedStore と storeName が両方空なら読める置き場は絞らず、全置き場が対象になる。
+	// nil のときは policy の derived store（無ければ storeName）の置き場だけを読める扱いにする。
+	// derived store と storeName が両方空なら読める置き場は絞らず、全置き場が対象になる。
 	servingStores []string
 }
 
-// NewMedia は PostgreSQL を使う Media を作る。storeName はこのプロセスが書く置き場の名前。
-// 読み取り先の置き場を固定しないロールは "" を明示する。
-// derivedStore は storage.derived。until_encoded の原本を消してよいかの判定に使い、派生物の配信では
-// その置き場だけを読める扱いにする。derivedStore が空なら storeName の置き場だけになり、
-// derivedStore と storeName が両方空なら全置き場が対象になる。
-// 削除の判定をしない呼び出し元は "" を渡す。"" は規則が無い扱いで、原本は消えない。
-func NewMedia(pool *pgxpool.Pool, storeName, derivedStore string) *Media {
-	return NewMediaWithStores(pool, storeName, storeName, derivedStore)
+// NewMediaWithPolicy は指定した方針を束ねた PostgreSQL Media を作る。
+// storeName はこのプロセスが書く置き場で、空なら置き場に束縛しない。
+// ゼロ方針は原本規則が無く、配置削除も無効である
+// （TestStorageTransferDeletionKeepsCopiesWhenPolicyHasNoDesiredStore）。
+func NewMediaWithPolicy(pool *pgxpool.Pool, storeName string, policy store.StoragePolicy) *Media {
+	return NewMediaWithStoresAndPolicy(pool, storeName, storeName, policy)
 }
 
-// NewMediaWithStores builds a Media implementation with distinct stores for source and derived assets.
-func NewMediaWithStores(pool *pgxpool.Pool, storeName, originalStore, derivedStore string) *Media {
-	return &Media{pool: pool, storeName: storeName, originalStore: originalStore, derivedStore: derivedStore}
+// NewMediaWithStoresAndPolicy は方針と別の原本・コピー置き場を持つ Media を作る。
+// storeName はこのプロセスが書く置き場で、originalStore は原本の読み取り先を束縛する。
+func NewMediaWithStoresAndPolicy(pool *pgxpool.Pool, storeName, originalStore string, policy store.StoragePolicy) *Media {
+	return &Media{pool: pool, storeName: storeName, originalStore: originalStore, policy: policy}
 }
 
-// NewMediaForStreamer は streamer が読める置き場だけから派生物のコピーを選ぶ Media を作る。
-// readableStores が空なら、配信できる派生物コピーは無い。
-func NewMediaForStreamer(pool *pgxpool.Pool, preferredDerivedStore string, readableStores []string) *Media {
+// NewMediaForStreamerWithPolicy は配置方針から derived store を選び、読める置き場だけを配信候補にする Media を作る。
+func NewMediaForStreamerWithPolicy(pool *pgxpool.Pool, policy store.StoragePolicy, readableStores []string) *Media {
 	stores := make([]string, len(readableStores))
 	copy(stores, readableStores)
-	return &Media{pool: pool, derivedStore: preferredDerivedStore, servingStores: stores}
+	return &Media{pool: pool, policy: policy, servingStores: stores}
 }
 
 func (s *Media) originalStoreName() string {
@@ -65,20 +60,20 @@ func (s *Media) originalStoreName() string {
 }
 
 func (s *Media) derivedStoreName() string {
-	if s.derivedStore != "" {
-		return s.derivedStore
+	if s.policy.DerivedStore() != "" {
+		return s.policy.DerivedStore()
 	}
 	return s.storeName
 }
 
 // servingSelection は派生物の配信で選ぶコピーの置き場を、SQL の preferred_readable_media_asset_copy
-// に渡す値にする。readable が nil なら全置き場が読める扱い（NULL）で、NewMedia で derivedStore と
+// に渡す値にする。readable が nil なら全置き場が読める扱い（NULL）で、NewMediaWithPolicy で derivedStore と
 // storeName が両方空の読み手がこれに当たる。
 // streamer は読めると設定された置き場を readable に、derivedStore を preferred に渡す。
 // それ以外の読み手は derivedStoreName() の置き場だけを読める扱いにして、従来の絞り込みを保つ。
 func (s *Media) servingSelection() (preferred *string, readable []string) {
 	if s.servingStores != nil {
-		return mediaStoreNameArg(s.derivedStore), s.servingStores
+		return mediaStoreNameArg(s.policy.DerivedStore()), s.servingStores
 	}
 	name := s.derivedStoreName()
 	return mediaStoreNameArg(name), mediaReadableArg(name)
@@ -258,9 +253,13 @@ func (s *Media) OriginalStores(ctx context.Context, recordingIDs []int64) (map[i
 
 // DesiredOriginalStoreAtIngest は規則を年齢 0 で評価した原本の置き場を返す。評価は SQL 関数
 // desired_media_store に任せる。
-func (s *Media) DesiredOriginalStoreAtIngest(ctx context.Context, originalRules []byte, derivedStore, site string) (string, error) {
+func (s *Media) DesiredOriginalStoreAtIngest(ctx context.Context, site string) (string, error) {
+	policyArgs, err := encodeStoragePolicy(s.policy)
+	if err != nil {
+		return "", fmt.Errorf("encoding original placement policy: %w", err)
+	}
 	name, err := sqlcgen.New(s.pool).GetDesiredOriginalStoreAtIngest(ctx, sqlcgen.GetDesiredOriginalStoreAtIngestParams{
-		OriginalRules: originalRules, DerivedStore: derivedStore, RecordingSite: site,
+		OriginalRules: policyArgs.originalRules, DerivedStore: policyArgs.derivedStore, RecordingSite: site,
 	})
 	if err != nil {
 		return "", fmt.Errorf("evaluating the original store rules for site %q: %w", site, err)

@@ -688,7 +688,7 @@ func TestDeleteReconcileWorker_UnqualifiedDerivedCopyAfterStoreSwitchChecksFiles
 	assetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, relPath, []byte("encoded"))
 	testutil.MustExec(t, pool, "marking filesystem copy deleting", `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1`, assetID)
 
-	mediaDelete := pgstore.NewMediaWithStores(pool, dbtest.StoreName, dbtest.StoreName, objectStoreName)
+	mediaDelete := pgstore.NewMediaWithStoresAndPolicy(pool, dbtest.StoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName))
 	worker := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.MediaDelete = mediaDelete
 		w.StorageObjects = testStorageObjects(t, dbtest.StoreName, mediaDir)
@@ -696,7 +696,7 @@ func TestDeleteReconcileWorker_UnqualifiedDerivedCopyAfterStoreSwitchChecksFiles
 		w.DerivedObjects = testFilesystemObjectStore(t, t.TempDir())
 		w.DerivedObjectStoreName = objectStoreName
 	})
-	testutil.RequireNoError(t, worker.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), nil, objectStoreName), "restoring unqualified deleting copies")
+	testutil.RequireNoError(t, worker.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now()), "restoring unqualified deleting copies")
 
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Fatalf("filesystem derived copy state = %q, want active", got)

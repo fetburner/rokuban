@@ -94,7 +94,7 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("creating conformance S3 copy: %w", err)
 	}
 
-	media := pgstore.NewMediaWithStores(pool, storeName, storeName, storeName)
+	media := pgstore.NewMediaWithStoresAndPolicy(pool, storeName, storeName, store.NewStoragePolicy(nil, nil, storeName))
 	router := chi.NewRouter()
 	router.Get("/__health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

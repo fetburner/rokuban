@@ -40,7 +40,7 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 			return id
 		}
 		return contracttest.MediaDeleteFixture{
-			Store: NewMedia(pool, dbtest.StoreName, dbtest.StoreName), Serving: NewMedia(pool, dbtest.StoreName, ""), Catalog: NewCatalog(pool, []string{store.DefaultSite}, dbtest.StoreName),
+			Store: testMedia(pool, dbtest.StoreName, dbtest.StoreName), Serving: testMedia(pool, dbtest.StoreName, ""), Catalog: NewCatalog(pool, []string{store.DefaultSite}, dbtest.StoreName),
 			CopyID: func(t *testing.T, assetID int64) int64 {
 				t.Helper()
 				var copyID int64

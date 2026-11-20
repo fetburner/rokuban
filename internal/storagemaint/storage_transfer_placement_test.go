@@ -20,10 +20,11 @@ import (
 )
 
 // placementDeleteWorker は 1 つの置き場に束縛した削除 reconcile worker を返す。
-func placementDeleteWorker(pool *pgxpool.Pool, cfg config.StorageConfig, roots map[string]string, storeName string) *DeleteReconcileWorker {
-	media := pgstore.NewMedia(pool, storeName, "")
+func placementDeleteWorker(t *testing.T, pool *pgxpool.Pool, cfg config.StorageConfig, roots map[string]string, storeName string) *DeleteReconcileWorker {
+	t.Helper()
+	media := pgstore.NewMediaWithPolicy(pool, storeName, mustStoragePolicy(t, cfg))
 	return &DeleteReconcileWorker{
-		MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: cfg,
+		MediaDelete: media, Storage: media, StorageTransfer: media,
 		RecordingPurge: pgstore.NewRecordings(pool, storeName), Breakers: pgstore.NewBreakers(pool),
 		MediaDir: roots[storeName], StorageObjects: map[string]objstore.Store{storeName: testFSObjectStore(roots[storeName])}, MediaStoreName: storeName, TransferOverlap: time.Nanosecond,
 	}
@@ -60,7 +61,7 @@ func TestDeleteReconcilePendingPathFinishesPlacementDeleting(t *testing.T) {
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	assetID, sourcePath := placementDeletingFixture(t, pool, roots)
 
-	testutil.RequireNoError(t, placementDeleteWorker(pool, cfg, roots, "test-store").Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
+	testutil.RequireNoError(t, placementDeleteWorker(t, pool, cfg, roots, "test-store").Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
 	if got := copyStateIn(t, pool, assetID, "test-store"); got != "deleted" {
 		t.Errorf("deleting placement copy state after one pass = %q, want deleted", got)
 	}
@@ -84,7 +85,7 @@ SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive
 		assetID, sourcePath := placementDeletingFixture(t, pool, roots)
 		setMissing(t, pool, assetID)
 
-		testutil.RequireNoError(t, placementDeleteWorker(pool, cfg, roots, "test-store").Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
+		testutil.RequireNoError(t, placementDeleteWorker(t, pool, cfg, roots, "test-store").Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
 		if got := copyStateIn(t, pool, assetID, "test-store"); got != "active" {
 			t.Errorf("deleting copy state after its desired copy was marked missing = %q, want active", got)
 		}
@@ -98,8 +99,8 @@ SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive
 		roots := transferTestRoots(t, "test-store", "archive")
 		cfg := transferTestConfig("archive", "archive", "test-store")
 		placementDeletingFixture(t, pool, roots)
-		rows, err := pgstore.NewMedia(pool, "test-store", "").ListUnqualifiedDeletingAssets(
-			context.Background(), time.Now().Add(-time.Hour), time.Now(), mustOriginalRules(t, cfg), "archive", 10)
+		rows, err := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)).ListUnqualifiedDeletingAssets(
+			context.Background(), time.Now().Add(-time.Hour), time.Now(), 10)
 		if err != nil || len(rows) != 0 {
 			t.Fatalf("unqualified deleting rows = %+v, %v; want none while the desired copy is present", rows, err)
 		}
@@ -111,16 +112,15 @@ SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive
 		cfg := transferTestConfig("archive", "archive", "test-store")
 		assetID, _ := placementDeletingFixture(t, pool, roots)
 		setMissing(t, pool, assetID)
-		media := pgstore.NewMedia(pool, "test-store", "")
-		rules := mustOriginalRules(t, cfg)
+		media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
 		grace, overlap := time.Now().Add(-time.Hour), time.Now()
 
-		rows, err := media.ListUnqualifiedDeletingAssets(context.Background(), grace, overlap, rules, "archive", 10)
+		rows, err := media.ListUnqualifiedDeletingAssets(context.Background(), grace, overlap, 10)
 		if err != nil || len(rows) != 1 {
 			t.Fatalf("unqualified deleting rows = %+v, %v; want the placement copy", rows, err)
 		}
 		testutil.MustExec(t, pool, "clearing missing_media_assets", `DELETE FROM missing_media_assets`)
-		reverted, err := media.RevertToActive(context.Background(), rows[0].ID, grace, overlap, rules, "archive")
+		reverted, err := media.RevertToActive(context.Background(), rows[0].ID, grace, overlap)
 		testutil.RequireNoError(t, err, "RevertToActive")
 		if reverted {
 			t.Error("RevertToActive returned true although the desired copy is present again")
@@ -140,8 +140,6 @@ func TestStorageTransferPolicyRoundTripConverges(t *testing.T) {
 	relPath := "sites/default/roundtrip/source.ts"
 	recordingID := dbtest.Recording(t, pool)
 	assetID := seedOriginalAsset(t, pool, roots["test-store"], recordingID, relPath, []byte("round trip bytes"))
-	media := pgstore.NewMedia(pool, "test-store", "")
-
 	assertPresent := func(t *testing.T, step string) {
 		t.Helper()
 		rows, err := pool.Query(context.Background(), `SELECT store, rel_path FROM media_asset_copies WHERE media_asset_id = $1 AND state = 'active'`, assetID)
@@ -162,11 +160,12 @@ func TestStorageTransferPolicyRoundTripConverges(t *testing.T) {
 	}
 	for i, desired := range []string{"archive", "test-store", "archive"} {
 		cfg := transferTestConfig(desired, "archive", "test-store")
+		media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
 		fingerprint, err := cfg.PolicyFingerprint()
 		testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
 		transfer := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 		deleters := []*DeleteReconcileWorker{
-			placementDeleteWorker(pool, cfg, roots, "test-store"), placementDeleteWorker(pool, cfg, roots, "archive"),
+			placementDeleteWorker(t, pool, cfg, roots, "test-store"), placementDeleteWorker(t, pool, cfg, roots, "archive"),
 		}
 		for pass := 0; pass < 3; pass++ {
 			step := "stage " + desired
@@ -218,9 +217,8 @@ func TestCompleteMediaAssetTransferRejectsChangedSHA(t *testing.T) {
 	roots := transferTestRoots(t, "test-store", "archive")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], []byte("sha guarded bytes"))
 	cfg := transferTestConfig("archive", "archive", "test-store")
-	rules := mustOriginalRules(t, cfg)
-	media := pgstore.NewMedia(pool, "test-store", "")
-	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", rules, cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, store.MediaAssetTransferAttemptLimit)
+	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("PrepareMediaAssetTransfer = (%+v, %t, %v)", transfer, ok, err)
 	}
@@ -228,7 +226,7 @@ func TestCompleteMediaAssetTransferRejectsChangedSHA(t *testing.T) {
 	observed := []byte("fedcba9876543210fedcba9876543210")
 	testutil.MustExec(t, pool, "recording the expected sha256", `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, recorded, assetID)
 
-	active, outcome, err := media.CompleteMediaAssetTransfer(context.Background(), transfer, "archive", cfg.Derived, rules, observed)
+	active, outcome, err := media.CompleteMediaAssetTransfer(context.Background(), transfer, "archive", observed)
 	testutil.RequireNoError(t, err, "CompleteMediaAssetTransfer")
 	if active || outcome != "sha_mismatch" {
 		t.Errorf("CompleteMediaAssetTransfer = (active=%t, %q), want (false, sha_mismatch)", active, outcome)
@@ -321,7 +319,7 @@ FOR EACH ROW EXECUTE FUNCTION public.gate_storage_copy_delete_for_test()`)
 			}
 			defer release()
 
-			media := pgstore.NewMedia(pool, "test-store", "test-store")
+			media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, transferTestConfig("test-store", "test-store")))
 			type result struct {
 				marked bool
 				err    error
