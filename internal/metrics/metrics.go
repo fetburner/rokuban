@@ -148,9 +148,12 @@ var (
 	//
 	// プロセス再起動でゲージは失われるので、各パスの先頭で DB の真実に
 	// 合わせ直す（各呼び出し側が breaker.ObserveState を使う）。
+	//
+	// breaker の値は internal/breaker の定数（RulerDeletes / ReconcileTotalLoss /
+	// DeleteReconcile、文字列は ruler_deletes / reconcile_total_loss / delete_reconcile）。
 	CircuitBreakerTripped = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_circuit_breaker_tripped",
-		Help: "1 while a bulk-delete circuit breaker is latched and withholding deletes until manually resumed.",
+		Help: "1 while a bulk-delete circuit breaker is latched and withholding deletes until manually resumed, by breaker: ruler_deletes, reconcile_total_loss, or delete_reconcile.",
 	}, []string{"site", "breaker"})
 )
 
@@ -180,16 +183,19 @@ var (
 	//     ユーザー操作でアラートが鳴る。こちらは非ゼロが正常でありうる
 	ReconcilePendingDiff = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_reconcile_pending_diff",
-		Help: "Differences between desired reservations and observed mirakc schedules found in the most recent pass. Converges to zero when healthy.",
+		Help: "Differences between desired reservations and observed mirakc schedules found in the most recent pass, by action: create, delete, delete_deferred, update, or update_deferred.",
 	}, []string{"action"})
 
-	// ReconcileSchedules は mirakc schedule に対する操作の件数。
-	// 実際に差分を消した量。action="recreated" は予約オプション（priority /
-	// tag）の差分反映のための DELETE→POST 再作成が成功した件数
-	// （docs/recording.md §3.2、issue #19）。
+	// ReconcileSchedules は reconciler が mirakc schedule に対して成功させた書き込みの件数。
+	//
+	// action:
+	//   - "created": POST が成功した作成
+	//   - "deleted": DELETE が成功した削除
+	//   - "recreated": 予約オプション（priority / tag）の差分反映のための
+	//     DELETE→POST 再作成が成功した件数（docs/recording.md §3.2、issue #19）
 	ReconcileSchedules = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_reconcile_schedules_total",
-		Help: "mirakc recording schedules created, deleted, or recreated by the reconciler.",
+		Help: "mirakc recording schedule writes by the reconciler, by action: created, deleted, or recreated. recreated counts a DELETE followed by a successful POST.",
 	}, []string{"action"})
 
 	// ReconcileCircuitBreakerTrips は reconciler のブレーカーが作動した回数。
@@ -208,7 +214,7 @@ var (
 	// docs/recording.md §3.2「大量削除サーキットブレーカー」参照）。
 	ReconcileCircuitBreakerTrips = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "rokuban_reconcile_circuit_breaker_trips_total",
-		Help: "Times the bulk-delete circuit breaker stopped a reconcile pass.",
+		Help: "Times the reconcile circuit breaker tripped on a total-loss signature: no desired reservations while schedules the reconciler owns would be deleted.",
 	})
 
 	// ReconcileScheduleLost は予約オプションの差分反映（再作成）で DELETE には
@@ -246,7 +252,7 @@ var (
 	//   - "error": 観測し直しが失敗した（5xx・締切切れ等）
 	ReconcileWriteWithheld = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_reconcile_write_withheld_total",
-		Help: "Schedule DELETEs and recreates the reconciler withheld after re-observing the schedule just before the write, by action and reason.",
+		Help: "Schedule DELETEs and recreates withheld after re-observing the schedule just before the write, by action (delete or recreate) and reason (gone, state, converged, or error).",
 	}, []string{"action", "reason"})
 
 	// ReconcileStartDelayed は開始遅延検出器（issue #24 M2-7、docs/recording.md
