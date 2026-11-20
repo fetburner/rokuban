@@ -35,7 +35,7 @@ func TestOriginalStoresReturnsTheStoreHoldingTheActiveCopy(t *testing.T) {
           SELECT media_asset_id, 'osaka', 'osaka/b.m2ts', generation, 'active' FROM media_asset_copies WHERE media_asset_id = $1`, assets[both])
 	exec(`UPDATE media_asset_copies SET store = 'tokyo', state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, assets[gone])
 
-	for _, media := range []*Media{NewMedia(pool, "", ""), NewMedia(pool, "tokyo", "")} {
+	for _, media := range []*Media{testMedia(pool, "", ""), testMedia(pool, "tokyo", "")} {
 		got, err := media.OriginalStores(ctx, []int64{onlyTakamatsu, both, gone})
 		if err != nil {
 			t.Fatalf("OriginalStores: %v", err)
@@ -50,7 +50,7 @@ func TestOriginalStoresReturnsTheStoreHoldingTheActiveCopy(t *testing.T) {
 			t.Fatalf("OriginalStore for a recording without an active copy: error = %v, want ErrNotFound", err)
 		}
 	}
-	if got, err := NewMedia(pool, "", "").OriginalStores(ctx, nil); err != nil || len(got) != 0 {
+	if got, err := testMedia(pool, "", "").OriginalStores(ctx, nil); err != nil || len(got) != 0 {
 		t.Fatalf("OriginalStores(nil) = %v, %v; want an empty map", got, err)
 	}
 }
@@ -64,7 +64,7 @@ func TestOriginalServingInStoreRequiresACopyInThatStore(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 'takamatsu' WHERE media_asset_id = $1`, assetID); err != nil {
 		t.Fatal(err)
 	}
-	media := NewMedia(pool, "", "")
+	media := testMedia(pool, "", "")
 	got, err := media.GetOriginalMediaAssetForServingInStore(ctx, id, "takamatsu")
 	if err != nil || got.Store != "takamatsu" || got.RelPath != "tk/x.m2ts" {
 		t.Fatalf("serving from takamatsu = %+v, %v; want the takamatsu copy", got, err)
@@ -88,18 +88,18 @@ func TestDesiredOriginalStoreAtIngestEvaluatesRulesAtAgeZero(t *testing.T) {
 		},
 		Derived: "tokyo",
 	}
-	policy, err := storage.StoragePolicy()
+	policy, err := storage.BuildStorePolicy()
 	if err != nil {
 		t.Fatal(err)
 	}
-	media := NewMedia(pool, "", "")
+	media := NewMediaWithPolicy(pool, "", policy)
 	for site, want := range map[string]string{"takamatsu": "takamatsu", "home": "tokyo"} {
-		got, err := media.DesiredOriginalStoreAtIngest(ctx, policy, site)
+		got, err := media.DesiredOriginalStoreAtIngest(ctx, site)
 		if err != nil || got != want {
 			t.Errorf("site %q: store = %q, %v; want literal %q", site, got, err, want)
 		}
 	}
-	if got, err := media.DesiredOriginalStoreAtIngest(ctx, store.StoragePolicy{Derived: "tokyo"}, "home"); err != nil || got != "" {
+	if got, err := testMedia(pool, "", "").DesiredOriginalStoreAtIngest(ctx, "home"); err != nil || got != "" {
 		t.Errorf("no rules: store = %q, %v; want empty", got, err)
 	}
 }

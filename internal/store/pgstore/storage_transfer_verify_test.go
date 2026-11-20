@@ -26,7 +26,7 @@ func verifyingFlag(t *testing.T, media *Media, copyID int64) bool {
 // 世代が一致する論理資産にだけ書かれ、値のある行や世代の違う行には書かれないことを確かめる。
 func TestRecordObservedMediaAssetSHA256WritesOnlyUnknownCurrentGeneration(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	ctx := context.Background()
 	var assetID int64
@@ -68,7 +68,7 @@ func TestRecordObservedMediaAssetSHA256WritesOnlyUnknownCurrentGeneration(t *tes
 // 拒まれた呼び出しが行を変えないことを確かめる。
 func TestTransferSourceVerificationRequiresLiveLease(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	ctx := context.Background()
 	owner := uuid.New()
@@ -130,7 +130,7 @@ func TestTransferSourceVerificationRequiresLiveLease(t *testing.T) {
 // きれいでない引き継ぎでは位置と状態を 0 / nil に戻して、どちらも照合中のまま返ることを確かめる。
 func TestTransferSourceVerificationSurvivesHandoffs(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	ctx := context.Background()
 	first := uuid.New()
@@ -175,7 +175,7 @@ func TestTransferSourceVerificationSurvivesHandoffs(t *testing.T) {
 // TestTransferSourceVerificationExcludesUploadState は、照合中の行に派生物の送信状態が同居しないことを、CHECK が止めることを確かめる。
 func TestTransferSourceVerificationExcludesUploadState(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	owner := uuid.New()
 	acquireLive(t, media, copyID, owner)

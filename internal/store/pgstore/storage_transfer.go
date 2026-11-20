@@ -19,9 +19,9 @@ import (
 )
 
 // ListActiveDerivedCopiesInNonDerivedS3 は、現在の派生物置き場以外に残る current-generation の active 派生コピーを返す。
-func (s *Media) ListActiveDerivedCopiesInNonDerivedS3(ctx context.Context, s3Stores []string, derivedStore string) ([]store.DerivedS3CopyCount, error) {
+func (s *Media) ListActiveDerivedCopiesInNonDerivedS3(ctx context.Context, s3Stores []string) ([]store.DerivedS3CopyCount, error) {
 	rows, err := sqlcgen.New(s.pool).ListActiveDerivedCopiesInNonDerivedS3(ctx, sqlcgen.ListActiveDerivedCopiesInNonDerivedS3Params{
-		S3Stores: s3Stores, DerivedStore: derivedStore,
+		S3Stores: s3Stores, DerivedStore: s.policy.DerivedStore(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing active derived copies in non-derived S3 stores: %w", err)
@@ -34,13 +34,13 @@ func (s *Media) ListActiveDerivedCopiesInNonDerivedS3(ctx context.Context, s3Sto
 }
 
 // ListMediaAssetTransferCandidates は desired store にコピーが無い論理資産を列挙する。
-func (s *Media) ListMediaAssetTransferCandidates(ctx context.Context, policy store.StoragePolicy, attemptLimit, limit int32) ([]store.MediaAssetTransferCandidate, error) {
-	rules, err := originalRulesJSON(policy)
+func (s *Media) ListMediaAssetTransferCandidates(ctx context.Context, attemptLimit, limit int32) ([]store.MediaAssetTransferCandidate, error) {
+	policyArgs, err := encodeStoragePolicy(s.policy)
 	if err != nil {
-		return nil, fmt.Errorf("encoding original rules: %w", err)
+		return nil, fmt.Errorf("encoding media asset transfer policy: %w", err)
 	}
 	rows, err := sqlcgen.New(s.pool).ListMediaAssetTransferCandidates(ctx, sqlcgen.ListMediaAssetTransferCandidatesParams{
-		OriginalRules: rules, FsStores: policy.FSStores, DerivedStore: policy.Derived, AttemptLimit: int64(attemptLimit), RowLimit: limit,
+		OriginalRules: policyArgs.originalRules, FsStores: policyArgs.fsStores, DerivedStore: policyArgs.derivedStore, AttemptLimit: int64(attemptLimit), RowLimit: limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing media asset transfer candidates: %w", err)
@@ -53,13 +53,13 @@ func (s *Media) ListMediaAssetTransferCandidates(ctx context.Context, policy sto
 }
 
 // CountMediaAssetTransferCandidates は転送待ちの件数とバイト数を返す。
-func (s *Media) CountMediaAssetTransferCandidates(ctx context.Context, policy store.StoragePolicy, attemptLimit int32) (int64, int64, error) {
-	rules, err := originalRulesJSON(policy)
+func (s *Media) CountMediaAssetTransferCandidates(ctx context.Context, attemptLimit int32) (int64, int64, error) {
+	policyArgs, err := encodeStoragePolicy(s.policy)
 	if err != nil {
-		return 0, 0, fmt.Errorf("encoding original rules: %w", err)
+		return 0, 0, fmt.Errorf("encoding media asset transfer policy: %w", err)
 	}
 	row, err := sqlcgen.New(s.pool).CountMediaAssetTransferCandidates(ctx, sqlcgen.CountMediaAssetTransferCandidatesParams{
-		OriginalRules: rules, FsStores: policy.FSStores, DerivedStore: policy.Derived, AttemptLimit: int64(attemptLimit),
+		OriginalRules: policyArgs.originalRules, FsStores: policyArgs.fsStores, DerivedStore: policyArgs.derivedStore, AttemptLimit: int64(attemptLimit),
 	})
 	if err != nil {
 		return 0, 0, fmt.Errorf("counting media asset transfer candidates: %w", err)
@@ -69,13 +69,13 @@ func (s *Media) CountMediaAssetTransferCandidates(ctx context.Context, policy st
 
 // CountMediaAssetTransferBacklogBySourceStore は、転送元の置き場ごとの転送待ちの件数を返す。
 // 判定は CountMediaAssetTransferCandidates と同じ SQL 述語を使う。
-func (s *Media) CountMediaAssetTransferBacklogBySourceStore(ctx context.Context, policy store.StoragePolicy, sourceStores []string, attemptLimit int32) (map[string]int64, error) {
-	rules, err := originalRulesJSON(policy)
+func (s *Media) CountMediaAssetTransferBacklogBySourceStore(ctx context.Context, sourceStores []string, attemptLimit int32) (map[string]int64, error) {
+	policyArgs, err := encodeStoragePolicy(s.policy)
 	if err != nil {
-		return nil, fmt.Errorf("encoding original rules: %w", err)
+		return nil, fmt.Errorf("encoding media asset transfer policy: %w", err)
 	}
 	rows, err := sqlcgen.New(s.pool).CountMediaAssetTransferBacklogBySourceStore(ctx, sqlcgen.CountMediaAssetTransferBacklogBySourceStoreParams{
-		SourceStores: sourceStores, OriginalRules: rules, FsStores: policy.FSStores, DerivedStore: policy.Derived, AttemptLimit: int64(attemptLimit),
+		SourceStores: sourceStores, OriginalRules: policyArgs.originalRules, FsStores: policyArgs.fsStores, DerivedStore: policyArgs.derivedStore, AttemptLimit: int64(attemptLimit),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("counting media asset transfer backlog by source store: %w", err)
@@ -88,13 +88,13 @@ func (s *Media) CountMediaAssetTransferBacklogBySourceStore(ctx context.Context,
 }
 
 // CountMediaAssetTransferExhausted は失敗上限に達した転送候補を数える。
-func (s *Media) CountMediaAssetTransferExhausted(ctx context.Context, policy store.StoragePolicy, attemptLimit int32) (int64, error) {
-	rules, err := originalRulesJSON(policy)
+func (s *Media) CountMediaAssetTransferExhausted(ctx context.Context, attemptLimit int32) (int64, error) {
+	policyArgs, err := encodeStoragePolicy(s.policy)
 	if err != nil {
-		return 0, fmt.Errorf("encoding original rules: %w", err)
+		return 0, fmt.Errorf("encoding media asset transfer policy: %w", err)
 	}
 	count, err := sqlcgen.New(s.pool).CountMediaAssetTransferExhausted(ctx, sqlcgen.CountMediaAssetTransferExhaustedParams{
-		OriginalRules: rules, FsStores: policy.FSStores, DerivedStore: policy.Derived, AttemptLimit: int64(attemptLimit),
+		OriginalRules: policyArgs.originalRules, FsStores: policyArgs.fsStores, DerivedStore: policyArgs.derivedStore, AttemptLimit: int64(attemptLimit),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("counting exhausted media asset transfers: %w", err)
@@ -103,13 +103,13 @@ func (s *Media) CountMediaAssetTransferExhausted(ctx context.Context, policy sto
 }
 
 // ClearObsoleteMediaAssetTransferAttempts は現行 desired でない失敗行を削除する。
-func (s *Media) ClearObsoleteMediaAssetTransferAttempts(ctx context.Context, policy store.StoragePolicy) error {
-	rules, err := originalRulesJSON(policy)
+func (s *Media) ClearObsoleteMediaAssetTransferAttempts(ctx context.Context) error {
+	policyArgs, err := encodeStoragePolicy(s.policy)
 	if err != nil {
-		return fmt.Errorf("encoding original rules: %w", err)
+		return fmt.Errorf("encoding media asset transfer policy: %w", err)
 	}
 	if err := sqlcgen.New(s.pool).ClearObsoleteMediaAssetTransferAttempts(ctx, sqlcgen.ClearObsoleteMediaAssetTransferAttemptsParams{
-		OriginalRules: rules, FsStores: policy.FSStores, DerivedStore: policy.Derived,
+		OriginalRules: policyArgs.originalRules, FsStores: policyArgs.fsStores, DerivedStore: policyArgs.derivedStore,
 	}); err != nil {
 		return fmt.Errorf("clearing obsolete media asset transfer attempts: %w", err)
 	}
@@ -162,10 +162,10 @@ func (l *transferBandwidthLease) Release(ctx context.Context) error {
 var _ store.TransferBandwidthLease = (*transferBandwidthLease)(nil)
 
 // PrepareMediaAssetTransfer は現在も必要なコピーだけを pending に予約して返す。
-func (s *Media) PrepareMediaAssetTransfer(ctx context.Context, mediaAssetID int64, targetStore string, policy store.StoragePolicy, sourceStores, mountedFSStores, mountedStores []string, attemptLimit int32) (store.MediaAssetTransfer, bool, error) {
-	rules, err := originalRulesJSON(policy)
+func (s *Media) PrepareMediaAssetTransfer(ctx context.Context, mediaAssetID int64, targetStore string, fsStores, sourceStores, mountedStores []string, attemptLimit int32) (store.MediaAssetTransfer, bool, error) {
+	policyArgs, err := encodeStoragePolicy(s.policy)
 	if err != nil {
-		return store.MediaAssetTransfer{}, false, fmt.Errorf("encoding original rules: %w", err)
+		return store.MediaAssetTransfer{}, false, fmt.Errorf("encoding media asset transfer policy: %w", err)
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -179,8 +179,8 @@ func (s *Media) PrepareMediaAssetTransfer(ctx context.Context, mediaAssetID int6
 		return store.MediaAssetTransfer{}, false, fmt.Errorf("locking media asset %d before transfer reservation: %w", mediaAssetID, err)
 	}
 	row, err := q.PrepareMediaAssetTransfer(ctx, sqlcgen.PrepareMediaAssetTransferParams{
-		MediaAssetID: mediaAssetID, TargetStore: targetStore, OriginalRules: rules, FsStores: mountedFSStores,
-		SourceStores: sourceStores, MountedStores: mountedStores, DerivedStore: policy.Derived, AttemptLimit: attemptLimit,
+		MediaAssetID: mediaAssetID, TargetStore: targetStore, OriginalRules: policyArgs.originalRules, FsStores: fsStores,
+		SourceStores: sourceStores, MountedStores: mountedStores, DerivedStore: policyArgs.derivedStore, AttemptLimit: attemptLimit,
 		CopyToken: uuid.NewString(),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -201,10 +201,10 @@ func (s *Media) PrepareMediaAssetTransfer(ctx context.Context, mediaAssetID int6
 }
 
 // CompleteMediaAssetTransfer はファイル公開後に desired policy を再評価してコピーを active にする。
-func (s *Media) CompleteMediaAssetTransfer(ctx context.Context, transfer store.MediaAssetTransfer, targetStore string, policy store.StoragePolicy, sha256 []byte) (bool, string, error) {
-	rules, err := originalRulesJSON(policy)
+func (s *Media) CompleteMediaAssetTransfer(ctx context.Context, transfer store.MediaAssetTransfer, targetStore string, sha256 []byte) (bool, string, error) {
+	policyArgs, err := encodeStoragePolicy(s.policy)
 	if err != nil {
-		return false, "", fmt.Errorf("encoding original rules: %w", err)
+		return false, "", fmt.Errorf("encoding media asset transfer policy: %w", err)
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -213,8 +213,8 @@ func (s *Media) CompleteMediaAssetTransfer(ctx context.Context, transfer store.M
 	defer rollback(tx)
 	generation := transfer.Generation
 	outcome, err := sqlcgen.New(tx).CompleteMediaAssetTransfer(ctx, sqlcgen.CompleteMediaAssetTransferParams{
-		Sha256: sha256, MediaAssetID: transfer.MediaAssetID, OriginalRules: rules,
-		DerivedStore: policy.Derived, TargetStore: targetStore, SizeBytes: transfer.SizeBytes,
+		Sha256: sha256, MediaAssetID: transfer.MediaAssetID, OriginalRules: policyArgs.originalRules,
+		DerivedStore: policyArgs.derivedStore, TargetStore: targetStore, SizeBytes: transfer.SizeBytes,
 		Generation: generation, CopyID: transfer.CopyID,
 	})
 	if err != nil {
@@ -376,13 +376,13 @@ func (s *Media) DiscardPendingMediaAssetCopy(ctx context.Context, copyID int64) 
 }
 
 // ListObsoletePendingMediaAssetTransferCopies は、現在の policy から外れた pending 転送コピーを列挙する。
-func (s *Media) ListObsoletePendingMediaAssetTransferCopies(ctx context.Context, policy store.StoragePolicy, limit int32) ([]store.MediaAssetCopyDeleteCandidate, error) {
-	rules, err := originalRulesJSON(policy)
+func (s *Media) ListObsoletePendingMediaAssetTransferCopies(ctx context.Context, limit int32) ([]store.MediaAssetCopyDeleteCandidate, error) {
+	policyArgs, err := encodeStoragePolicy(s.policy)
 	if err != nil {
-		return nil, fmt.Errorf("encoding original rules: %w", err)
+		return nil, fmt.Errorf("encoding media asset transfer policy: %w", err)
 	}
 	rows, err := sqlcgen.New(s.pool).ListObsoletePendingMediaAssetTransferCopies(ctx, sqlcgen.ListObsoletePendingMediaAssetTransferCopiesParams{
-		StoreName: s.storeName, OriginalRules: rules, FsStores: policy.FSStores, DerivedStore: policy.Derived, RowLimit: limit,
+		StoreName: s.storeName, OriginalRules: policyArgs.originalRules, FsStores: policyArgs.fsStores, DerivedStore: policyArgs.derivedStore, RowLimit: limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing obsolete pending transfer copies: %w", err)
@@ -401,15 +401,14 @@ func (s *Media) ListObsoletePendingMediaAssetTransferCopies(ctx context.Context,
 func (s *Media) ReclaimObsoletePendingMediaAssetTransferCopy(
 	ctx context.Context,
 	candidate store.MediaAssetCopyDeleteCandidate,
-	policy store.StoragePolicy,
 	deleteFile func(ownedRelPaths []string) error,
 ) (bool, error) {
-	rules, err := originalRulesJSON(policy)
-	if err != nil {
-		return false, fmt.Errorf("encoding original rules: %w", err)
-	}
 	if deleteFile == nil {
 		return false, errors.New("reclaiming obsolete pending transfer copy: deleter is nil")
+	}
+	policyArgs, err := encodeStoragePolicy(s.policy)
+	if err != nil {
+		return false, fmt.Errorf("encoding media asset transfer policy: %w", err)
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -427,7 +426,7 @@ func (s *Media) ReclaimObsoletePendingMediaAssetTransferCopy(
 		return false, fmt.Errorf("locking pending transfer copy %d: %w", candidate.CopyID, mapDatabaseError(err))
 	}
 	obsolete, err := q.IsPendingMediaAssetTransferCopyObsolete(ctx, sqlcgen.IsPendingMediaAssetTransferCopyObsoleteParams{
-		CopyID: candidate.CopyID, OriginalRules: rules, FsStores: policy.FSStores, DerivedStore: policy.Derived,
+		CopyID: candidate.CopyID, OriginalRules: policyArgs.originalRules, FsStores: policyArgs.fsStores, DerivedStore: policyArgs.derivedStore,
 	})
 	if err != nil {
 		return false, fmt.Errorf("rechecking pending transfer copy %d policy: %w", candidate.CopyID, mapDatabaseError(err))
@@ -446,7 +445,7 @@ func (s *Media) ReclaimObsoletePendingMediaAssetTransferCopy(
 	}
 	updated, err := q.MarkObsoletePendingMediaAssetTransferCopyDeleted(ctx, sqlcgen.MarkObsoletePendingMediaAssetTransferCopyDeletedParams{
 		CopyID: candidate.CopyID, StoreName: s.storeName,
-		OriginalRules: rules, FsStores: policy.FSStores, DerivedStore: policy.Derived,
+		OriginalRules: policyArgs.originalRules, FsStores: policyArgs.fsStores, DerivedStore: policyArgs.derivedStore,
 	})
 	if err != nil {
 		return false, fmt.Errorf("marking obsolete pending transfer copy %d deleted: %w", candidate.CopyID, mapDatabaseError(err))
@@ -470,13 +469,13 @@ func (s *Media) ReclaimObsoletePendingMediaAssetTransferCopy(
 }
 
 // ListMediaAssetCopiesToDelete は overlap を過ぎ、現行 policy で削除可能なコピーを列挙する。
-func (s *Media) ListMediaAssetCopiesToDelete(ctx context.Context, policy store.StoragePolicy, overlapCutoff time.Time, limit int32) ([]store.MediaAssetCopyDeleteCandidate, error) {
-	rules, err := originalRulesJSON(policy)
+func (s *Media) ListMediaAssetCopiesToDelete(ctx context.Context, overlapCutoff time.Time, limit int32) ([]store.MediaAssetCopyDeleteCandidate, error) {
+	policyArgs, err := encodeStoragePolicy(s.policy.PlacementPolicy())
 	if err != nil {
-		return nil, fmt.Errorf("encoding original rules: %w", err)
+		return nil, fmt.Errorf("encoding media placement policy: %w", err)
 	}
 	rows, err := sqlcgen.New(s.pool).ListMediaAssetCopiesToDelete(ctx, sqlcgen.ListMediaAssetCopiesToDeleteParams{
-		StoreName: s.storeName, OriginalRules: rules, DerivedStore: policy.Derived, OverlapCutoff: overlapCutoff, RowLimit: limit,
+		StoreName: s.storeName, OriginalRules: policyArgs.originalRules, DerivedStore: policyArgs.derivedStore, OverlapCutoff: overlapCutoff, RowLimit: limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing stale media asset copies: %w", err)
@@ -509,10 +508,10 @@ func (s *Media) GetMediaAssetCopyForDeletion(ctx context.Context, candidate stor
 }
 
 // MarkMediaAssetCopyDeleting は論理行を先にロックし、その後の SQL 文で削除条件を再評価する。
-func (s *Media) MarkMediaAssetCopyDeleting(ctx context.Context, candidate store.MediaAssetCopyDeleteCandidate, policy store.StoragePolicy, overlapCutoff time.Time) (string, bool, error) {
-	rules, err := originalRulesJSON(policy)
+func (s *Media) MarkMediaAssetCopyDeleting(ctx context.Context, candidate store.MediaAssetCopyDeleteCandidate, overlapCutoff time.Time) (string, bool, error) {
+	policyArgs, err := encodeStoragePolicy(s.policy.PlacementPolicy())
 	if err != nil {
-		return "", false, fmt.Errorf("encoding original rules: %w", err)
+		return "", false, fmt.Errorf("encoding media placement policy: %w", err)
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -528,7 +527,7 @@ func (s *Media) MarkMediaAssetCopyDeleting(ctx context.Context, candidate store.
 	}
 	path, err := q.MarkMediaAssetCopyDeleting(ctx, sqlcgen.MarkMediaAssetCopyDeletingParams{
 		CopyID: candidate.CopyID, MediaAssetID: candidate.MediaAssetID, Store: candidate.Store,
-		OriginalRules: rules, DerivedStore: policy.Derived, OverlapCutoff: overlapCutoff,
+		OriginalRules: policyArgs.originalRules, DerivedStore: policyArgs.derivedStore, OverlapCutoff: overlapCutoff,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil

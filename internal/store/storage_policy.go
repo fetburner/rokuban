@@ -2,25 +2,63 @@ package store
 
 import "time"
 
-// StoragePolicy は置き場の方針の値である。原本の置き場の規則、FS 置き場の集合、派生物の置き場の 3 つからなる。
-//
-// 零値は「方針なし」である。規則が空なので原本の置き場はどれも決まらず、どのコピーにも望ましい置き場が無い。
-// そのため零値を渡された削除の判定は何も削除しない。削除の判定をしない呼び出しも、規則が無い扱いで零値を渡せる。
-type StoragePolicy struct {
-	// Originals は原本の置き場を先勝ちで選ぶ規則である。条件の無い規則（Site も OlderThan も空）は最後に置く。
-	Originals []OriginalRule
-	// FSStores は設定の FS 置き場の名前の集合である。マウントの有無は含まない（マウントは worker ごとの事実で、引数で渡す）。
-	FSStores []string
-	// Derived は派生物の望ましい置き場である。空なら派生物の置き場は決まらない。
-	Derived string
+// OriginalStoreRule は条件に一致した原本の宛先を表す。
+// Site と OlderThan がどちらも空なら無条件で一致する。
+type OriginalStoreRule struct {
+	Site      string
+	OlderThan time.Duration
+	Store     string
 }
 
-// OriginalRule は原本の置き場を選ぶ 1 規則である。
-type OriginalRule struct {
-	// Site が空なら、どの放送局の録画にも一致する。
-	Site string
-	// OlderThan が 0 なら、経過時間の条件は無い。0 より大きいときは、放送終了から現在までがこの時間以上なら一致する。
-	OlderThan time.Duration
-	// Store は一致したときに原本を置く FS 置き場の名前である。
-	Store string
+// StoragePolicy は原本と派生物の配置に使う設定値をまとめる。
+// ゼロ値は規則も置き場も無い方針であり、原本の削除資格を作らない。
+type StoragePolicy struct {
+	originalRules    []OriginalStoreRule
+	fsStores         []string
+	derivedStore     string
+	placementEnabled bool
+}
+
+// NewStoragePolicy は配置規則と置き場のスナップショットを作る。配置削除は既定で無効にする。
+func NewStoragePolicy(originalRules []OriginalStoreRule, fsStores []string, derivedStore string) StoragePolicy {
+	rules := append([]OriginalStoreRule(nil), originalRules...)
+	return StoragePolicy{
+		originalRules: rules,
+		fsStores:      append([]string(nil), fsStores...),
+		derivedStore:  derivedStore,
+	}
+}
+
+// WithPlacementEnabled は配置削除の判定を有効または無効にした方針を返す。
+func (p StoragePolicy) WithPlacementEnabled(enabled bool) StoragePolicy {
+	p.placementEnabled = enabled
+	return p
+}
+
+// PlacementPolicy は配置削除で使う方針を返す。無効な場合はゼロ値になる。
+func (p StoragePolicy) PlacementPolicy() StoragePolicy {
+	if !p.placementEnabled {
+		return StoragePolicy{}
+	}
+	return p
+}
+
+// PlacementEnabled は配置削除の判定が有効かを返す。
+func (p StoragePolicy) PlacementEnabled() bool {
+	return p.placementEnabled
+}
+
+// OriginalRules は原本の配置規則を返す。
+func (p StoragePolicy) OriginalRules() []OriginalStoreRule {
+	return append([]OriginalStoreRule(nil), p.originalRules...)
+}
+
+// FSStores はファイルシステム置き場の名前を返す。
+func (p StoragePolicy) FSStores() []string {
+	return append([]string(nil), p.fsStores...)
+}
+
+// DerivedStore は派生物の置き場の名前を返す。
+func (p StoragePolicy) DerivedStore() string {
+	return p.derivedStore
 }

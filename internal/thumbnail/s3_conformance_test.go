@@ -38,7 +38,7 @@ func TestThumbnailReselectionReadsEncodedInputFromS3(t *testing.T) {
 	testutil.RequireNoError(t, err, "creating S3 object store")
 	pool := testutil.SetupDB(t)
 	const objectStoreName = "s3main"
-	media := pgstore.NewMediaWithStores(pool, objectStoreName, dbtest.StoreName, objectStoreName)
+	media := pgstore.NewMediaWithStoresAndPolicy(pool, objectStoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName))
 	prefix := fmt.Sprintf("thumbnails/s3-conformance-%d", time.Now().UnixNano())
 	thumbnailInputKey := fmt.Sprintf("encoded/s3-conformance-%d-thumbnail-source.mp4", time.Now().UnixNano())
 	t.Cleanup(func() {

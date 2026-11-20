@@ -60,12 +60,11 @@ func (w *DeleteReconcileWorker) objectStorePass(
 	if err := w.reconcileObjectOrphans(ctx, orphanMTimeGrace, orphanAge); err != nil {
 		return err
 	}
-	placement, _ := w.placementPolicy()
-	if err := w.restoreUnqualifiedObjectCopies(ctx, trashCutoff, overlapCutoff, placement); err != nil {
+	if err := w.restoreUnqualifiedObjectCopies(ctx, trashCutoff, overlapCutoff); err != nil {
 		return err
 	}
 	// 前パスで deleting のまま止まった行の再開は、既に決めた削除の再実行なのでブレーカーの対象外にする。
-	pending, err := derivedMediaDelete.ListPendingDeleteAssets(ctx, trashCutoff, overlapCutoff, placement, deleteReconcileRowLimit)
+	pending, err := derivedMediaDelete.ListPendingDeleteAssets(ctx, trashCutoff, overlapCutoff, deleteReconcileRowLimit)
 	if err != nil {
 		return fmt.Errorf("listing pending object copy deletes: %w", err)
 	}
@@ -184,9 +183,9 @@ func (w *DeleteReconcileWorker) reconcileObjectOrphans(ctx context.Context, orph
 
 // restoreUnqualifiedObjectCopies は削除条件から外れた deleting のコピーを、key の現存を確かめてから
 // active に戻すか deleted を確定する。FS の resolveUnqualifiedDeletingAsset と同じ判断で、stat が Head になる。
-func (w *DeleteReconcileWorker) restoreUnqualifiedObjectCopies(ctx context.Context, graceCutoff, overlapCutoff time.Time, placement store.StoragePolicy) error {
+func (w *DeleteReconcileWorker) restoreUnqualifiedObjectCopies(ctx context.Context, graceCutoff, overlapCutoff time.Time) error {
 	derivedMediaDelete := w.DerivedObjectDeleteStores.MediaDelete()
-	rows, err := derivedMediaDelete.ListUnqualifiedDeletingAssets(ctx, graceCutoff, overlapCutoff, placement, deleteReconcileRowLimit)
+	rows, err := derivedMediaDelete.ListUnqualifiedDeletingAssets(ctx, graceCutoff, overlapCutoff, deleteReconcileRowLimit)
 	if err != nil {
 		return fmt.Errorf("listing unqualified deleting object copies: %w", err)
 	}
@@ -202,7 +201,7 @@ func (w *DeleteReconcileWorker) restoreUnqualifiedObjectCopies(ctx context.Conte
 			objstore.RecordError("head", headErr)
 			return fmt.Errorf("checking deleting object %q before revert: %w", row.RelPath, headErr)
 		}
-		if _, err := derivedMediaDelete.RevertToActive(ctx, row.ID, graceCutoff, overlapCutoff, placement); err != nil {
+		if _, err := derivedMediaDelete.RevertToActive(ctx, row.ID, graceCutoff, overlapCutoff); err != nil {
 			return fmt.Errorf("reverting deleting object copy %d: %w", row.ID, err)
 		}
 	}

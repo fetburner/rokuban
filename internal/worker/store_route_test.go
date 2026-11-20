@@ -14,7 +14,6 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
-	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -80,7 +79,7 @@ func TestStoreRouteRejectsAnEmptyStore(t *testing.T) {
 
 type fixedStoreChooser struct{ name string }
 
-func (c fixedStoreChooser) DesiredOriginalStoreAtIngest(context.Context, store.StoragePolicy, string) (string, error) {
+func (c fixedStoreChooser) DesiredOriginalStoreAtIngest(context.Context, string) (string, error) {
 	return c.name, nil
 }
 
@@ -143,7 +142,7 @@ func TestIngestRouteLogsFallbackDestination(t *testing.T) {
 				PerStore:              perStore,
 				MountedStores:         tt.mounted,
 				IngestStores:          fixedStoreChooser{tt.chosen},
-				StorageTransferPolicy: policy, StoragePolicy: policyOf(policy),
+				StorageTransferPolicy: policy,
 			}
 			route := newIngestRoute(deps, func(_ *Deps, d *StoreDeps) jobq.Worker[jobs.IngestJobArgs] {
 				return ingestRecorder{store: d.MediaStoreName, calls: &calls}
@@ -191,7 +190,7 @@ func TestIngestRouteChoosesTheMountedStoreTheRulesSelect(t *testing.T) {
 			for _, name := range tc.mounted {
 				perStore[name] = &StoreDeps{MediaStoreName: name}
 			}
-			deps := &Deps{PerStore: perStore, MountedStores: tc.mounted, IngestStores: fixedStoreChooser{tc.chosen}, StorageTransferPolicy: policy, StoragePolicy: policyOf(policy)}
+			deps := &Deps{PerStore: perStore, MountedStores: tc.mounted, IngestStores: fixedStoreChooser{tc.chosen}, StorageTransferPolicy: policy}
 			route := newIngestRoute(deps, func(_ *Deps, d *StoreDeps) jobq.Worker[jobs.IngestJobArgs] {
 				return ingestRecorder{store: d.MediaStoreName, calls: &calls}
 			})
@@ -205,7 +204,7 @@ func TestIngestRouteChoosesTheMountedStoreTheRulesSelect(t *testing.T) {
 
 type failingStoreChooser struct{}
 
-func (failingStoreChooser) DesiredOriginalStoreAtIngest(context.Context, store.StoragePolicy, string) (string, error) {
+func (failingStoreChooser) DesiredOriginalStoreAtIngest(context.Context, string) (string, error) {
 	return "", errors.New("rules query failed")
 }
 
@@ -220,7 +219,7 @@ func TestIngestRouteFallsBackToTheFirstMountedStoreWhenTheRulesFail(t *testing.T
 	}
 	var calls []string
 	perStore := map[string]*StoreDeps{"tokyo": {MediaStoreName: "tokyo"}, "takamatsu": {MediaStoreName: "takamatsu"}}
-	deps := &Deps{PerStore: perStore, MountedStores: []string{"tokyo", "takamatsu"}, IngestStores: failingStoreChooser{}, StorageTransferPolicy: policy, StoragePolicy: policyOf(policy)}
+	deps := &Deps{PerStore: perStore, MountedStores: []string{"tokyo", "takamatsu"}, IngestStores: failingStoreChooser{}, StorageTransferPolicy: policy}
 	route := newIngestRoute(deps, func(_ *Deps, d *StoreDeps) jobq.Worker[jobs.IngestJobArgs] {
 		return ingestRecorder{store: d.MediaStoreName, calls: &calls}
 	})
@@ -230,13 +229,4 @@ func TestIngestRouteFallsBackToTheFirstMountedStoreWhenTheRulesFail(t *testing.T
 	if got, want := strings.Join(calls, ","), "tokyo"; got != want {
 		t.Fatalf("ingest wrote to %s, want literal %s (the first mounted store in --stores order)", got, want)
 	}
-}
-
-// policyOf は設定から置き場の方針を作る。設定が不正なテストの前提は作れないので、失敗は panic にする。
-func policyOf(cfg config.StorageConfig) store.StoragePolicy {
-	policy, err := cfg.StoragePolicy()
-	if err != nil {
-		panic(err)
-	}
-	return policy
 }

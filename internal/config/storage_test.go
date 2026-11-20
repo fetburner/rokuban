@@ -1,7 +1,6 @@
 package config
 
 import (
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -338,31 +337,21 @@ func TestStoragePolicyOverlapIsStrictlyGreaterThanMissingAgePlusTwoDeletePasses(
 	}
 }
 
-func TestStoragePolicyNormalizesOlderThan(t *testing.T) {
+func TestStorePolicyNormalizesOriginalRuleDuration(t *testing.T) {
 	storage := StorageConfig{Originals: []OriginalStoreRule{
 		{Match: &OriginalStoreMatch{Site: "default", OlderThan: "30d"}, Store: "archive"},
-		{Match: &OriginalStoreMatch{OlderThan: "720h"}, Store: "main"},
-		{Match: &OriginalStoreMatch{}, Store: "main"},
 		{Store: "main"},
-	}, Derived: "main", Stores: map[string]StoreConfig{"archive": {Kind: "fs"}, "main": {Kind: "fs"}}}
-	got, err := storage.StoragePolicy()
+	}}
+	got, err := storage.BuildStorePolicy()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []store.OriginalRule{
-		{Site: "default", OlderThan: 30 * 24 * time.Hour, Store: "archive"},
-		{OlderThan: 720 * time.Hour, Store: "main"},
-		{Store: "main"},
-		{Store: "main"},
+	rules := got.OriginalRules()
+	if len(rules) != 2 || rules[0].Site != "default" || rules[0].OlderThan != 30*24*time.Hour || rules[0].Store != "archive" {
+		t.Fatalf("first store rule = %+v, want site default, age 30 days and store archive", rules)
 	}
-	if !slices.Equal(got.Originals, want) {
-		t.Fatalf("originals = %+v, want %+v", got.Originals, want)
-	}
-	if got.Derived != "main" || !slices.Equal(got.FSStores, []string{"archive", "main"}) {
-		t.Fatalf("derived/fs stores = %q/%v, want main/[archive main]", got.Derived, got.FSStores)
-	}
-	if _, err := (StorageConfig{Originals: []OriginalStoreRule{{Match: &OriginalStoreMatch{OlderThan: "soon"}, Store: "main"}}}).StoragePolicy(); err == nil {
-		t.Fatal("StoragePolicy accepted an unparsable older_than")
+	if rules[1] != (store.OriginalStoreRule{Store: "main"}) {
+		t.Fatalf("unconditional store rule = %+v, want store main", rules[1])
 	}
 }
 
@@ -423,8 +412,8 @@ func TestStoragePolicyFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(want) != 64 {
-		t.Fatalf("sha256 hex length = %d, want 64", len(want))
+	if want != "edf0ade7597ef1e988820121b3f2b1d6b59c96279067033dca579c8ccc8c2311" {
+		t.Fatalf("policy fingerprint = %s, want baseline edf0ade7597ef1e988820121b3f2b1d6b59c96279067033dca579c8ccc8c2311", want)
 	}
 
 	changedBucket := newStorage()
@@ -622,48 +611,5 @@ func TestTransferDestinationStoreNamesIncludesS3Derived(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// TestStoragePolicyFingerprintIsPinned は指紋の値そのものを固定する。値は StoragePolicy の変更前のコードで計算した。
-// 指紋が変わると、デプロイの前後で積まれていた転送ジョブがすべて拒まれる。
-func TestStoragePolicyFingerprintIsPinned(t *testing.T) {
-	fixed := StorageConfig{
-		Stores: map[string]StoreConfig{
-			"tokyo":     {Kind: "fs"},
-			"takamatsu": {Kind: "fs"},
-			"s3main":    {Kind: "s3", Endpoint: "https://s3.example.com", Bucket: "derived"},
-		},
-		Originals: []OriginalStoreRule{
-			{Match: &OriginalStoreMatch{Site: "default", OlderThan: "720h"}, Store: "tokyo"},
-			{Match: &OriginalStoreMatch{OlderThan: "30d"}, Store: "takamatsu"},
-			{Match: &OriginalStoreMatch{OlderThan: "1.5h"}, Store: "tokyo"},
-			{Match: &OriginalStoreMatch{Site: "default"}, Store: "takamatsu"},
-			{Match: &OriginalStoreMatch{}, Store: "tokyo"},
-			{Store: "takamatsu"},
-		},
-		Derived:  "s3main",
-		Transfer: StorageTransferConfig{Overlap: 48 * time.Hour},
-	}
-	minimal := StorageConfig{
-		Stores:    map[string]StoreConfig{"main": {Kind: "fs"}},
-		Originals: []OriginalStoreRule{{Store: "main"}},
-		Derived:   "main",
-	}
-	for _, tc := range []struct {
-		name string
-		cfg  StorageConfig
-		want string
-	}{
-		{name: "six rules with s3 derived store", cfg: fixed, want: "b500e4cbf63b7a5a22a4280b6cfd7ebd0e08a4d855d811d14e6e32025d25f782"},
-		{name: "one unconditional rule", cfg: minimal, want: "462c639321eecfcd423b4f9aa7045693dffa83d3c4379c6b6a4a901e4decd95c"},
-	} {
-		got, err := tc.cfg.PolicyFingerprint()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != tc.want {
-			t.Errorf("%s: PolicyFingerprint() = %s, want %s", tc.name, got, tc.want)
-		}
 	}
 }

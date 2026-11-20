@@ -113,7 +113,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyIsDeletedThroughItsFile
 	markRecordingTrashed(t, pool, recordingID)
 
 	recorder := &callRecordingStore{Store: testFilesystemObjectStore(t, mediaDir)}
-	media := pgstore.NewMediaWithStores(pool, dbtest.StoreName, dbtest.StoreName, objectStoreName)
+	media := pgstore.NewMediaWithStoresAndPolicy(pool, dbtest.StoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName))
 	w := derivedS3SwitchedWorker(t, mediaDir, recorder, media, media)
 	w.RecordingPurge = pgstoretest.Recordings(pool)
 	w.Breakers = pgstoretest.Breakers(pool)
@@ -145,7 +145,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFile
 	assetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, relPath, []byte("encoded"))
 
 	recorder := &callRecordingStore{Store: testFilesystemObjectStore(t, mediaDir)}
-	media := pgstore.NewMediaWithStores(pool, dbtest.StoreName, dbtest.StoreName, objectStoreName)
+	media := pgstore.NewMediaWithStoresAndPolicy(pool, dbtest.StoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName))
 	w := derivedS3SwitchedWorker(t, mediaDir, recorder, media, media)
 
 	// 実体無しの監査: 走査結果（seenOnDisk）が空でも、Head で見つかるので欠落にならない。
@@ -164,7 +164,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFile
 	recorder.reset()
 	// 巻き戻し判定: deleting にして条件から外れた行は、FS の置き場の Head で現存を確かめて active に戻る。
 	testutil.MustExec(t, pool, "setting the copy to deleting", `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1`, assetID)
-	testutil.RequireNoError(t, w.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), store.StoragePolicy{Derived: objectStoreName}), "restoreUnqualifiedDeletingAssets")
+	testutil.RequireNoError(t, w.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now()), "restoreUnqualifiedDeletingAssets")
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("copy state after revert = %q, want active", got)
 	}
@@ -175,7 +175,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFile
 	// FS の置き場から実体が消えていれば、巻き戻しではなく deleted に確定する（Head の ErrNotFound を不在として扱う）。
 	testutil.MustExec(t, pool, "setting the copy to deleting", `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1`, assetID)
 	testutil.RequireNoError(t, os.Remove(filepath.Join(mediaDir, filepath.FromSlash(relPath))), "os.Remove")
-	testutil.RequireNoError(t, w.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), store.StoragePolicy{Derived: objectStoreName}), "restoreUnqualifiedDeletingAssets (absent)")
+	testutil.RequireNoError(t, w.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now()), "restoreUnqualifiedDeletingAssets (absent)")
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Errorf("copy state after revert with the key absent = %q, want deleted", got)
 	}
@@ -194,7 +194,7 @@ func TestDeleteReconcileWorker_FilesystemStagingOrphanIsRemovedWithoutAskingTheD
 	old := time.Now().Add(-30 * 24 * time.Hour)
 	testutil.RequireNoError(t, os.Chtimes(full, old, old), "os.Chtimes")
 	testutil.MustExec(t, pool, "inserting the orphan_files row", "INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ($1, $2, $3)", dbtest.StoreName, relPath, old)
-	media := pgstore.NewMediaWithStores(pool, dbtest.StoreName, dbtest.StoreName, objectStoreName)
+	media := pgstore.NewMediaWithStoresAndPolicy(pool, dbtest.StoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName))
 	w := derivedS3SwitchedWorker(t, mediaDir, testFilesystemObjectStore(t, mediaDir), media, media)
 	w.RecordingPurge = pgstoretest.Recordings(pool)
 	w.Breakers = pgstoretest.Breakers(pool)

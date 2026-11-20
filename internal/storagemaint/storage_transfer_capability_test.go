@@ -45,7 +45,7 @@ func TestStorageTransferWorkerRejectsDerivedDestinationWithoutResumableSupport(t
 	target := &storeWithoutResumable{Store: objects["archive"]}
 	objects["archive"] = target
 	worker := StorageTransferWorker{
-		Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Policy: policyOf(cfg), Roots: roots,
+		Storage: pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots,
 		ObjectStores: objects, ScratchDir: t.TempDir(),
 	}
 
@@ -94,7 +94,7 @@ func TestStorageTransferWorkerRejectsDerivedSourceWithoutRangeSupport(t *testing
 	objects := transferTestObjectStores(t, roots)
 	objects["test-store"] = &storeWithoutRangeReader{Store: objects["test-store"]}
 	worker := StorageTransferWorker{
-		Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Policy: policyOf(cfg), Roots: roots,
+		Storage: pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots,
 		ObjectStores: objects, ScratchDir: t.TempDir(),
 	}
 

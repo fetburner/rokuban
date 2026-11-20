@@ -33,7 +33,7 @@ func requireCurrentScan(t *testing.T, pool *pgxpool.Pool, id int64, want bool) {
 func TestInPlaceOriginalInvalidatesTSScan(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := t.Context()
-	media := NewMedia(pool, dbtest.StoreName, "")
+	media := testMedia(pool, dbtest.StoreName, "")
 	input := scanOriginalInput("original/first.ts")
 	result, err := media.RegisterInPlace(ctx, input)
 	if err != nil {
@@ -97,7 +97,7 @@ func TestTSScanRejectsInFlightInPlaceReplacement(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			pool := testutil.SetupDB(t)
 			ctx := t.Context()
-			media := NewMedia(pool, dbtest.StoreName, "")
+			media := testMedia(pool, dbtest.StoreName, "")
 			input := scanOriginalInput("original/first.ts")
 			result, err := media.RegisterInPlace(ctx, input)
 			if err != nil {
@@ -109,7 +109,7 @@ func TestTSScanRejectsInFlightInPlaceReplacement(t *testing.T) {
 			}
 			writer := media
 			if otherStore {
-				writer = NewMedia(pool, "other-store", "")
+				writer = testMedia(pool, "other-store", "")
 			} else {
 				dbtest.SetMediaAssetState(t, pool, source.ID, "deleted")
 			}
@@ -147,7 +147,7 @@ func TestTSScanRejectsInFlightInPlaceReplacement(t *testing.T) {
 func TestCatalogRestoresCurrentContentScan(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	media := NewMedia(pool, dbtest.StoreName, "")
+	media := testMedia(pool, dbtest.StoreName, "")
 	result, err := media.RegisterInPlace(ctx, scanOriginalInput("original/catalog.ts"))
 	if err != nil {
 		t.Fatal(err)
@@ -183,7 +183,7 @@ func TestCatalogRestoresCurrentContentScan(t *testing.T) {
 func TestCatalogExportExcludesStaleContentScan(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := t.Context()
-	media := NewMedia(pool, dbtest.StoreName, "")
+	media := testMedia(pool, dbtest.StoreName, "")
 	input := scanOriginalInput("original/export-first.ts")
 	result, err := media.RegisterInPlace(ctx, input)
 	if err != nil {
@@ -229,7 +229,7 @@ func TestCatalogExportExcludesStaleContentScan(t *testing.T) {
 func TestTSScanRejectsInFlightCatalogRestore(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := t.Context()
-	media := NewMedia(pool, dbtest.StoreName, "")
+	media := testMedia(pool, dbtest.StoreName, "")
 	result, err := media.RegisterInPlace(ctx, scanOriginalInput("original/restore-during-scan.ts"))
 	if err != nil {
 		t.Fatal(err)
@@ -271,7 +271,7 @@ func TestTSScanRejectsInFlightCatalogRestore(t *testing.T) {
 func TestCatalogRestoreRemovesAbsentTSScan(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := t.Context()
-	media := NewMedia(pool, dbtest.StoreName, "")
+	media := testMedia(pool, dbtest.StoreName, "")
 	result, err := media.RegisterInPlace(ctx, scanOriginalInput("original/restore-without-scan.ts"))
 	if err != nil {
 		t.Fatal(err)

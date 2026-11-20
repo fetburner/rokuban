@@ -2,34 +2,60 @@ package pgstore
 
 import (
 	"encoding/json"
+	"fmt"
+	"time"
 
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// sqlOriginalRule は SQL 関数 desired_media_store が読む原本規則の 1 要素である。
-// 形を変えると既存の SQL 関数が規則を読めなくなる。時間はマイクロ秒の older_than_us で表す。
-type sqlOriginalRule struct {
-	Match *sqlOriginalMatch `json:"match,omitempty"`
-	Store string            `json:"store"`
+type originalStoreRuleValue struct {
+	Match *originalStoreMatchValue `json:"match,omitempty"`
+	Store string                   `json:"store"`
 }
 
-type sqlOriginalMatch struct {
+type originalStoreMatchValue struct {
 	Site            string `json:"site,omitempty"`
 	OlderThanMicros int64  `json:"older_than_us,omitempty"`
 }
 
-// originalRulesJSON は policy の原本規則を、SQL の jsonb 引数の JSON にする。
-// 条件が無い規則は match を省き、site が空なら site を省く。規則が無いときは空の配列になる。
-// SQL 側は NULL を空の配列として読むので、零値の方針も空の配列で渡す。
-func originalRulesJSON(policy store.StoragePolicy) (json.RawMessage, error) {
-	rules := make([]sqlOriginalRule, 0, len(policy.Originals))
-	for _, rule := range policy.Originals {
-		converted := sqlOriginalRule{Store: rule.Store}
-		micros := rule.OlderThan.Microseconds()
-		if rule.Site != "" || micros != 0 {
-			converted.Match = &sqlOriginalMatch{Site: rule.Site, OlderThanMicros: micros}
-		}
-		rules = append(rules, converted)
+type encodedStoragePolicy struct {
+	originalRules []byte
+	fsStores      []string
+	derivedStore  string
+}
+
+func encodeStoragePolicy(policy store.StoragePolicy) (encodedStoragePolicy, error) {
+	rules, err := originalRulesJSON(policy)
+	if err != nil {
+		return encodedStoragePolicy{}, err
 	}
-	return json.Marshal(rules)
+	return encodedStoragePolicy{
+		originalRules: rules,
+		fsStores:      policy.FSStores(),
+		derivedStore:  policy.DerivedStore(),
+	}, nil
+}
+
+func originalRulesJSON(policy store.StoragePolicy) ([]byte, error) {
+	rules := policy.OriginalRules()
+	encodedRules := make([]originalStoreRuleValue, 0, len(rules))
+	for i, rule := range rules {
+		if rule.OlderThan < 0 || rule.OlderThan%time.Microsecond != 0 {
+			return nil, fmt.Errorf("original rule %d older-than duration must have microsecond precision", i)
+		}
+		converted := originalStoreRuleValue{Store: rule.Store}
+		if rule.Site != "" || rule.OlderThan != 0 {
+			match := &originalStoreMatchValue{Site: rule.Site}
+			if rule.OlderThan != 0 {
+				match.OlderThanMicros = rule.OlderThan.Microseconds()
+			}
+			converted.Match = match
+		}
+		encodedRules = append(encodedRules, converted)
+	}
+	encoded, err := json.Marshal(encodedRules)
+	if err != nil {
+		return nil, fmt.Errorf("encoding original store rules: %w", err)
+	}
+	return encoded, nil
 }

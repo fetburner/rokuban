@@ -42,7 +42,7 @@ UPDATE media_asset_copy_transfer_progress SET lease_expires_at = now() - interva
 
 func TestTransferProgressFreshRowStartsGenerationOne(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	got, acquired, err := media.AcquireMediaAssetTransferProgress(context.Background(), copyID, uuid.New(), time.Minute)
 	if err != nil || !acquired {
@@ -55,7 +55,7 @@ func TestTransferProgressFreshRowStartsGenerationOne(t *testing.T) {
 
 func TestTransferProgressLiveLeaseBlocksOtherOwner(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	ctx := context.Background()
 	if _, acquired, err := media.AcquireMediaAssetTransferProgress(ctx, copyID, uuid.New(), time.Minute); err != nil || !acquired {
@@ -68,7 +68,7 @@ func TestTransferProgressLiveLeaseBlocksOtherOwner(t *testing.T) {
 
 func TestTransferProgressCleanHandoffResumesSavedState(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	ctx := context.Background()
 	first := uuid.New()
@@ -90,7 +90,7 @@ func TestTransferProgressCleanHandoffResumesSavedState(t *testing.T) {
 
 func TestTransferProgressExpiredLeaseStartsNewGeneration(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	ctx := context.Background()
 	if _, acquired, err := media.AcquireMediaAssetTransferProgress(ctx, copyID, uuid.New(), time.Minute); err != nil || !acquired {
@@ -108,7 +108,7 @@ func TestTransferProgressExpiredLeaseStartsNewGeneration(t *testing.T) {
 
 func TestTransferProgressZombieSaveIsRejected(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	ctx := context.Background()
 	zombie := uuid.New()
@@ -126,7 +126,7 @@ func TestTransferProgressZombieSaveIsRejected(t *testing.T) {
 
 func TestTransferProgressRowIsDeletedWithPendingCopy(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	ctx := context.Background()
 	if _, acquired, err := media.AcquireMediaAssetTransferProgress(ctx, copyID, uuid.New(), time.Minute); err != nil || !acquired {
@@ -147,7 +147,7 @@ func TestTransferProgressRowIsDeletedWithPendingCopy(t *testing.T) {
 // 引き継ぎの後のゾンビは owner の照合で落ちるので、この期限の照合はそれとは別に効く。
 func TestTransferProgressSaveAfterOwnLeaseExpiryIsRejected(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	ctx := context.Background()
 	owner := uuid.New()
@@ -164,7 +164,7 @@ func TestTransferProgressSaveAfterOwnLeaseExpiryIsRejected(t *testing.T) {
 // 待たずに古いスナップショットで作ると、pending でないコピーに行が残り、その世代の temp が GC で消えなくなる。
 func TestTransferProgressAcquireWaitsForConcurrentCopyRetirement(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	ctx := context.Background()
 
@@ -260,7 +260,7 @@ func acquireLive(t *testing.T, media *Media, copyID int64, owner uuid.UUID) stor
 // offset・SHA-256 の状態・handed_off を初期化することを確かめる。最初の置き換えは掃除待ちを作らない。
 func TestTransferUploadReplaceAbandonsPreviousState(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	ctx := context.Background()
 	owner := uuid.New()
@@ -296,7 +296,7 @@ func TestTransferUploadReplaceAbandonsPreviousState(t *testing.T) {
 // 行も掃除待ちも変えないことを確かめる。
 func TestTransferUploadReplaceRequiresLiveLease(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	ctx := context.Background()
 	owner := uuid.New()
@@ -326,7 +326,7 @@ func TestTransferUploadReplaceRequiresLiveLease(t *testing.T) {
 // きれいでない引き継ぎでは返らず行に残ることを確かめる。
 func TestTransferUploadSavedStateReturnsOnlyOnCleanHandoff(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	ctx := context.Background()
 
 	clean := progressTestCopy(t, pool)
@@ -367,7 +367,7 @@ func TestTransferUploadSavedStateReturnsOnlyOnCleanHandoff(t *testing.T) {
 // コピーの CASCADE 削除）に送信状態が掃除待ちに移り、送信状態の無い行では増えないことを確かめる。
 func TestTransferUploadRowDeletionAbandonsState(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	ctx := context.Background()
 
 	discarded := progressTestCopy(t, pool)
@@ -410,7 +410,7 @@ func TestTransferUploadRowDeletionAbandonsState(t *testing.T) {
 // 削除で消えることを確かめる。
 func TestTransferUploadAbandonedListFiltersByStoreInIDOrder(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	ctx := context.Background()
 	owner := uuid.New()
@@ -447,7 +447,7 @@ func TestTransferUploadAbandonedListFiltersByStoreInIDOrder(t *testing.T) {
 // TestTransferUploadPairCheckRejectsHalfState は、送信置き場と送信状態の片方だけを持つ行を CHECK が拒むことを確かめる。
 func TestTransferUploadPairCheckRejectsHalfState(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	media := NewMedia(pool, "test-store", "")
+	media := testMedia(pool, "test-store", "")
 	copyID := progressTestCopy(t, pool)
 	acquireLive(t, media, copyID, uuid.New())
 	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copy_transfer_progress SET upload_store = 'archive' WHERE copy_id = $1`, copyID); err == nil {
