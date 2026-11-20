@@ -77,6 +77,33 @@ linters:
               desc: api role must not execute external processes
             - pkg: github.com/riverqueue/river
               desc: api role enqueues through jobq.Enqueuer, not River
+        jobs-contract-leaf:
+          # jobs は共有のジョブ契約。mirakc と store に依存すると、契約を import する api まで届く（不変条件 1）。
+          list-mode: lax
+          files:
+            - "${config-path}/internal/jobs/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/fetburner/rokuban/internal/mirakc
+              desc: jobs is a shared contract; it must not depend on the mirakc client
+            - pkg: github.com/fetburner/rokuban/internal/store
+              desc: jobs is a shared contract; site defaults live in internal/sitename
+        metrics-instruments-leaf:
+          # 計器の定義だけを持つ。DB を引く collector は internal/metrics/dbcollector にあり、
+          # 計器を使うだけのパッケージに store・mirakc などを依存させない。
+          list-mode: lax
+          files:
+            - "${config-path}/internal/metrics/*.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/fetburner/rokuban/internal/store
+              desc: instruments stay leaf; DB-reading collectors live in internal/metrics/dbcollector
+            - pkg: github.com/fetburner/rokuban/internal/mirakc
+              desc: instruments stay leaf; DB-reading collectors live in internal/metrics/dbcollector
+            - pkg: github.com/fetburner/rokuban/internal/objstore
+              desc: instruments stay leaf; object-store error classification lives in internal/objstore
+            - pkg: github.com/fetburner/rokuban/internal/schedulesync
+              desc: instruments stay leaf; DB-reading collectors live in internal/metrics/dbcollector
         pgstore-composition-root:
           # PostgreSQL 実装の組み立ては cmd/rokuban に置く。この規則はテストと pgstore 自身を検査しない。
           list-mode: lax
@@ -164,6 +191,7 @@ linters:
             - "!${config-path}/internal/capacity/*"
             - "!${config-path}/internal/catalog/*"
             - "!${config-path}/internal/metrics/*"
+            - "!${config-path}/internal/metrics/dbcollector/*"
             - "!${config-path}/internal/notifier/*"
             - "!${config-path}/internal/ruler/*"
             - "!${config-path}/internal/tsscan/*"

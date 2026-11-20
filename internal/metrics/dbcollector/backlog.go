@@ -1,4 +1,10 @@
-package metrics
+// Package dbcollector は、scrape のたびに DB から値を取り直す Prometheus collector を置く。
+//
+// internal/metrics は計器（カウンタ・ヒストグラム・ゲージの定義）だけを持つ。計器を
+// 使うだけのパッケージ（breaker・ingest など）が、collector の読む store・mirakc・
+// schedulesync まで依存に引き込まないためにこちらへ分けた。collector は値を作る側
+// （cmd/rokuban）が metrics.NewRegistry に渡して登録する。
+package dbcollector
 
 import (
 	"context"

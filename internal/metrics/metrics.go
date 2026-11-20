@@ -10,17 +10,15 @@
 //     滞留量など「今どうなっているか」を表すもの。プロセス内で積み上げないので、
 //     どのロールが scrape されても同じ値が出る（分散構成で worker のメトリクスを
 //     取りこぼさない）。「イベントはヒント、真実はテーブル再読」と同じ考え方。
+//     定義は internal/metrics/dbcollector にある。このパッケージは計器だけを持ち、
+//     store・mirakc などに依存しない。計器を使うだけのパッケージがそれらを引き込まないため。
 //
 // 命名は Prometheus の規約に従う（rokuban_ 接頭辞、基本単位、カウンタは _total）。
 package metrics
 
 import (
-	"errors"
-
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
-
-	"github.com/fetburner/rokuban/internal/objstore"
 )
 
 // ingest（M1-5-2）のメトリクス。
@@ -836,13 +834,4 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		reg.MustRegister(collector)
 	}
 	return reg
-}
-
-// RecordObjectStoreError は object store の操作の失敗を数える。
-// 資格情報の失効・取得失敗は rokuban_object_store_credential_errors_total にも数え、権限や接続の失敗と区別する。
-func RecordObjectStoreError(operation string, err error) {
-	ObjectStoreErrors.WithLabelValues(operation).Inc()
-	if errors.Is(err, objstore.ErrCredentials) {
-		ObjectStoreCredentialErrors.Inc()
-	}
 }

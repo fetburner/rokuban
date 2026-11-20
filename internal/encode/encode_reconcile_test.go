@@ -26,6 +26,7 @@ import (
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/metrics/dbcollector"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -236,7 +237,7 @@ func scrapeBacklogGauges(t *testing.T, pool *pgxpool.Pool, policy config.Storage
 		limits[name] = policy.TransferBacklogLimit(name)
 	}
 	reg := prometheus.NewPedanticRegistry()
-	reg.MustRegister(metrics.NewTransferBacklogCollector(pgstoretest.Media(pool), limits))
+	reg.MustRegister(dbcollector.NewTransferBacklogCollector(pgstoretest.Media(pool), limits))
 	families, err := reg.Gather()
 	testutil.RequireNoError(t, err, "gathering backlog gauges")
 	out := make(map[string]float64)

@@ -28,7 +28,7 @@ Prometheus の text exposition format で返す。**ロールに関わらずす�
 
 <details><summary>根拠</summary>
 
-- メトリクスの実装の置き場: `internal/metrics`
+- 計器（カウンタ・ヒストグラム・プロセス内ゲージ）の置き場: `internal/metrics`。DB を引くゲージ（collector）の置き場: `internal/metrics/dbcollector`。計器だけを使うパッケージに store と mirakc の依存を運ばないため、分けてある
 
 </details>
 
@@ -64,7 +64,7 @@ PID 別のドロップ内訳はメトリクスにしない。PID × 録画数で
 
 エンコード・サムネイル・シークタイルは、ジョブの結果別件数と、reconcile の最終完走時刻で見る。
 
-名前・型・意味は `internal/metrics` の定義（`Name` と `Help`）を引く。`/metrics` の出力は一覧の代わりにならない。ラベル付きの系列は、値を 1 度も観測していないプロセスでは現れないためである。
+名前・型・意味は `internal/metrics` と `internal/metrics/dbcollector` の定義（`Name` と `Help`）を引く。`/metrics` の出力は一覧の代わりにならない。ラベル付きの系列は、値を 1 度も観測していないプロセスでは現れないためである。
 
 ジョブの結果別件数の `replan` は、計画が古く snooze で再計画した件数であり、失敗ではない。
 

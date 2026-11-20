@@ -239,7 +239,7 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 			if headErr == nil {
 				present = true
 			} else if !errors.Is(headErr, objstore.ErrNotFound) {
-				metrics.RecordObjectStoreError("head", headErr)
+				objstore.RecordError("head", headErr)
 				return false, fmt.Errorf("checking derived media asset copy %d: %w", a.ID, headErr)
 			}
 		} else {

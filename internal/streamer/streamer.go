@@ -21,7 +21,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/fetburner/rokuban/internal/mediapath"
-	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 )
@@ -353,7 +352,7 @@ func (s *Streamer) serveLocalObjectAsset(w http.ResponseWriter, r *http.Request,
 			http.NotFound(w, r)
 			return
 		}
-		metrics.RecordObjectStoreError("open", err)
+		objstore.RecordError("open", err)
 		slog.Error("streamer: opening derived object", "recording_id", recordingID, "store", asset.store,
 			"rel_path", asset.relPath, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -388,7 +387,7 @@ func (s *Streamer) serveSignedAsset(w http.ResponseWriter, r *http.Request, reco
 			http.NotFound(w, r)
 			return
 		}
-		metrics.RecordObjectStoreError("head", err)
+		objstore.RecordError("head", err)
 		slog.Error("streamer: checking derived object", "recording_id", recordingID, "store", asset.store,
 			"rel_path", asset.relPath, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -411,7 +410,7 @@ func (s *Streamer) serveSignedAsset(w http.ResponseWriter, r *http.Request, reco
 	}
 	target, err := signer.Presign(r.Context(), asset.relPath, r.Method, expires, asset.contentType, "")
 	if err != nil {
-		metrics.RecordObjectStoreError("presign", err)
+		objstore.RecordError("presign", err)
 		slog.Error("streamer: creating signed object URL", "recording_id", recordingID, "store", asset.store,
 			"rel_path", asset.relPath, "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 )
@@ -170,7 +169,7 @@ func deleteUnpublishedGeneratedObjects(ctx context.Context, objects objstore.Sto
 	// Companion subtitles are adjacent to the encoded object, so remove them first.
 	for i := len(keys) - 1; i >= 0; i-- {
 		if err := objects.Delete(cleanupCtx, keys[i]); err != nil {
-			metrics.RecordObjectStoreError("delete", err)
+			objstore.RecordError("delete", err)
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("deleting generated object %q: %w", keys[i], err))
 		}
 	}
@@ -187,7 +186,7 @@ func RequireGeneratedObjectKeyAvailable(ctx context.Context, objects objstore.St
 	if errors.Is(err, objstore.ErrNotFound) {
 		return nil
 	}
-	metrics.RecordObjectStoreError("head", err)
+	objstore.RecordError("head", err)
 	return fmt.Errorf("checking generated object key %q: %w", key, err)
 }
 
@@ -245,7 +244,7 @@ func uploadObjectFileTracked(ctx context.Context, objects objstore.Store, key, p
 	putErr := objects.Put(ctx, key, f, size, checksum, contentType)
 	closeErr := f.Close()
 	if putErr != nil {
-		metrics.RecordObjectStoreError("put", putErr)
+		objstore.RecordError("put", putErr)
 		return false, fmt.Errorf("putting generated object %q: %w", key, putErr)
 	}
 	if closeErr != nil {
