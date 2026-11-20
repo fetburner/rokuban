@@ -180,9 +180,6 @@ linters:
             - "!${config-path}/internal/store/pgstore/**"
             - "!${config-path}/internal/db/**"
             - "!${config-path}/internal/testutil/**"
-            # 移行中
-            - "!${config-path}/internal/metrics/*"
-            - "!${config-path}/internal/metrics/dbcollector/*"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/db/sqlcgen
               desc: tests build state through store contracts or internal/db/dbtest
