@@ -58,16 +58,17 @@ func newObjectEnvWith(t *testing.T, objects objstore.Store) objectEnv {
 	}
 }
 
-func (e objectEnv) deleter(maxPerPass int) *DeleteReconcileWorker {
+func (e objectEnv) deleter(t *testing.T, maxPerPass int) *DeleteReconcileWorker {
+	t.Helper()
+	derivedDeleteStores, err := store.NewDerivedObjectDeleteStores(e.media, e.media, e.media)
+	testutil.RequireNoError(t, err, "creating derived object delete stores")
 	return &DeleteReconcileWorker{
-		Breakers:               pgstore.NewBreakers(e.pool),
-		MediaStoreName:         dbtest.StoreName,
-		DerivedObjects:         e.objects,
-		DerivedObjectStoreName: objectStoreName,
-		DerivedMediaDelete:     e.media,
-		DerivedPendingReclaim:  e.media,
-		DerivedStorage:         e.media,
-		MaxDeletesPerPass:      maxPerPass,
+		Breakers:                  pgstore.NewBreakers(e.pool),
+		MediaStoreName:            dbtest.StoreName,
+		DerivedObjects:            e.objects,
+		DerivedObjectStoreName:    objectStoreName,
+		DerivedObjectDeleteStores: derivedDeleteStores,
+		MaxDeletesPerPass:         maxPerPass,
 	}
 }
 
@@ -159,7 +160,7 @@ func TestObjectPublishKeepsPreviousGenerationUntilOverlapElapses(t *testing.T) {
 		t.Fatal("previous generation object was removed by publication, want it kept for the overlap")
 	}
 
-	worker := env.deleter(100)
+	worker := env.deleter(t, 100)
 	worker.TransferOverlap = 48 * time.Hour
 	testutil.RequireNoError(t, worker.workObjectStore(ctx, worker.settings()), "delete reconcile inside the overlap")
 	if !env.objectExists(t, oldKey) || env.copyState(t, oldKey) != "active" {
@@ -208,7 +209,7 @@ func TestObjectDeleteBreakerIsScopedToTheDerivedStore(t *testing.T) {
 			oldKeys = append(oldKeys, oldKey)
 		}
 		ageAll(env)
-		worker := env.deleter(2)
+		worker := env.deleter(t, 2)
 		worker.TransferOverlap = 48 * time.Hour
 		testutil.RequireNoError(t, worker.workObjectStore(ctx, worker.settings()), "delete reconcile over the limit")
 		if got := scopes(env); len(got) != 1 || got[0] != objectStoreName {
@@ -226,7 +227,7 @@ func TestObjectDeleteBreakerIsScopedToTheDerivedStore(t *testing.T) {
 		oldKey, _ := env.replaceThumbnail(t)
 		ageAll(env)
 		testutil.RequireNoError(t, breaker.Trip(ctx, pgstore.NewBreakers(env.pool), dbtest.StoreName, breaker.DeleteReconcile, 1, breaker.Sample{Total: 2}), "tripping the filesystem scope")
-		worker := env.deleter(100)
+		worker := env.deleter(t, 100)
 		worker.TransferOverlap = 48 * time.Hour
 		testutil.RequireNoError(t, worker.workObjectStore(ctx, worker.settings()), "delete reconcile")
 		if env.objectExists(t, oldKey) {
@@ -239,7 +240,7 @@ func TestObjectDeleteBreakerIsScopedToTheDerivedStore(t *testing.T) {
 		oldKey, _ := env.replaceThumbnail(t)
 		ageAll(env)
 		testutil.RequireNoError(t, breaker.Trip(ctx, pgstore.NewBreakers(env.pool), objectStoreName, breaker.DeleteReconcile, 1, breaker.Sample{Total: 2}), "tripping the derived store scope")
-		worker := env.deleter(100)
+		worker := env.deleter(t, 100)
 		worker.TransferOverlap = 48 * time.Hour
 		testutil.RequireNoError(t, worker.workObjectStore(ctx, worker.settings()), "delete reconcile")
 		if !env.objectExists(t, oldKey) {
@@ -265,7 +266,7 @@ func TestObjectPendingReclaimCountsTowardTheBreaker(t *testing.T) {
 	}
 	testutil.MustExec(t, env.pool, "aging pending copies", `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE store = $1`, objectStoreName)
 
-	worker := env.deleter(1)
+	worker := env.deleter(t, 1)
 	testutil.RequireNoError(t, worker.workObjectStore(ctx, worker.settings()), "delete reconcile")
 	for _, key := range keys {
 		if !env.objectExists(t, key) {
@@ -274,7 +275,7 @@ func TestObjectPendingReclaimCountsTowardTheBreaker(t *testing.T) {
 	}
 
 	testutil.MustExec(t, env.pool, "resuming the breaker", `DELETE FROM circuit_breakers`)
-	worker = env.deleter(100)
+	worker = env.deleter(t, 100)
 	testutil.RequireNoError(t, worker.workObjectStore(ctx, worker.settings()), "delete reconcile after resume")
 	for _, key := range keys {
 		if env.objectExists(t, key) || env.copyState(t, key) != "deleted" {

@@ -81,7 +81,7 @@ type DeleteReconcileWorker struct {
 	Storage     store.StorageObservation
 	MediaDelete store.MediaDelete
 	// MediaPendingReclaim は MediaStoreName と DerivedObjectStoreName が同じ FS の
-	// pending 派生物を回収する。S3 の独立 pass は DerivedPendingReclaim を使う。
+	// pending 派生物を回収する。S3 の独立 pass は DerivedObjectDeleteStores に束ねた契約を使う。
 	MediaPendingReclaim   store.PendingCopyReclaim
 	StorageTransfer       store.StorageTransfer
 	StorageTransferPolicy config.StorageConfig
@@ -92,12 +92,10 @@ type DeleteReconcileWorker struct {
 
 	// 派生物の置き場が original と別スコープのときに設定する（object_delete.go）。DerivedObjectStoreName は
 	// 削除ブレーカーの範囲にも使い、FS の置き場（MediaStoreName）の件数とは合算しない。
-	// DerivedMediaDelete と DerivedStorage は、その置き場に束ねた store を渡す。
-	DerivedObjects         objstore.Store
-	DerivedObjectStoreName string
-	DerivedMediaDelete     store.MediaDelete
-	DerivedPendingReclaim  store.PendingCopyReclaim
-	DerivedStorage         store.StorageObservation
+	// DerivedObjectDeleteStores は、その置き場に束ねた削除パスの store 契約である。nil なら独立パスは無い。
+	DerivedObjects            objstore.Store
+	DerivedObjectStoreName    string
+	DerivedObjectDeleteStores *store.DerivedObjectDeleteStores
 	// StorageObjects は置き場の名前ごとの objstore.Store。派生物のコピーは、そのコピーの置き場の
 	// Store で消す・確かめる。派生物の置き場を S3 に切り替えた後も、FS の置き場に残る旧いコピーは
 	// その FS の置き場の Store を通る。
