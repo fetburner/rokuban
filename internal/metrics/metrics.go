@@ -629,7 +629,9 @@ var (
 
 	// LiveSessionStartFailures はライブセッションの開始に失敗した回数の理由別件数。
 	//
-	// reason の値は internal/streamer/session.go の各 LiveSessionStartFailures.WithLabelValues が文字列リテラルで書き、1 か所に閉じていないので Help には列挙しない。下は各値の意味である。
+	// reason の値は internal/streamer/session.go の各
+	// LiveSessionStartFailures.WithLabelValues が文字列リテラルで書き、1 か所に
+	// 閉じていないので Help には列挙しない。下は各値の意味である。
 	//
 	// reason:
 	//   - "session_limit": このプロセスの同時セッション上限（live.max_sessions、
