@@ -99,10 +99,10 @@ var (
 		Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200},
 	})
 
-	// EncodeJobs は encode ジョブの結果別の件数。
+	// EncodeJobs は encode ジョブの結果別の件数。result は success / failure / replan の 3 値。
 	EncodeJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_encode_jobs_total",
-		Help: "Encode jobs by result.",
+		Help: "Encode jobs by result: success, failure, or replan.",
 	}, []string{"result"})
 )
 
@@ -115,10 +115,10 @@ var (
 		Buckets: []float64{0.1, 0.5, 1, 2, 5, 15, 30, 60, 120},
 	})
 
-	// ThumbnailJobs は thumbnail ジョブの結果別の件数。
+	// ThumbnailJobs は thumbnail ジョブの結果別の件数。result は success / failure の 2 値。
 	ThumbnailJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_thumbnail_jobs_total",
-		Help: "Thumbnail jobs by result.",
+		Help: "Thumbnail jobs by result: success or failure.",
 	}, []string{"result"})
 
 	// SeekTilesDuration は seek_tiles 1 件の所要（抽出 + 合成 + コピー + DB コミット）。
@@ -128,10 +128,10 @@ var (
 		Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 900},
 	})
 
-	// SeekTilesJobs は seek_tiles ジョブの結果別の件数。
+	// SeekTilesJobs は seek_tiles ジョブの結果別の件数。result は success / failure の 2 値。
 	SeekTilesJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_seek_tiles_jobs_total",
-		Help: "Seek tile jobs by result.",
+		Help: "Seek tile jobs by result: success or failure.",
 	}, []string{"result"})
 )
 
@@ -473,7 +473,7 @@ var (
 // その 2 通りの黙り方に 1 対 1 で対応する。
 var (
 	// EncodeReconcileCandidates は直近の encode reconcile ページが見た候補件数
-	// （desired なのに active な encoded が無い録画）。
+	// （desired なのに active な encoded が無い録画と、満たされていない作り直し要求がある録画）。
 	//
 	// 値が上限（encodeReconcileRowLimit）なら、そのページは最後の recording_id を
 	// 持つ継続ジョブの投入を試みる（TestEncodeReconcileWorker_RowLimitCapsWorkPerPass）。
@@ -484,7 +484,7 @@ var (
 	// 0 でないこと自体は異常ではない。
 	EncodeReconcileCandidates = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_encode_reconcile_candidates",
-		Help: "Recordings seen by the last encode-reconcile page that still lack an active encoded asset. A full page attempts to enqueue a continuation job after the last recording ID. The reference setup does not scrape --once job Pods, so observe continuation with the page-full log instead.",
+		Help: "Recordings seen by the last encode-reconcile page that still lack an active encoded asset for a desired profile or have an unsatisfied rebuild request. A full page attempts to enqueue a continuation job after the last recording ID. The reference setup does not scrape --once job Pods, so observe continuation with the page-full log instead.",
 	})
 
 	// EncodeReconcileUnsatisfiable は「凍結済みの desired が現在の
@@ -516,14 +516,18 @@ var (
 	}, []string{"profile"})
 )
 
-// thumbnail の desired−observed 定期 reconcile（internal/worker/thumbnail_reconcile.go）
+// thumbnail の desired−observed 定期 reconcile（internal/thumbnail/thumbnail_reconcile.go）
 // のメトリクス。
 var (
-	// ThumbnailReconcileCandidates は直近のパスが見た候補件数。上限に張り付く
-	// ときは後続候補が窓の先に残っている可能性がある。
+	// ThumbnailReconcileCandidates は、対象録画を指定しない reconcile の直近ページにおける候補数の合計である。
+	// 候補は active thumbnail が無い録画と、選び直しが要るかを確かめる録画であり、seek tiles は含まない。
+	// 本番の worker は RowLimit を設定せず、各窓の上限には thumbnail.thumbnailReconcileRowLimit（既定）を使う。
+	// 値はその上限の 2 倍まで取る。前ページで尽きた窓は、このページでは 0 件を加える。
+	// 参照構成では --once のジョブ Pod を scrape しないので、このプロセス内ゲージは
+	// 常駐 Pod から読めない。
 	ThumbnailReconcileCandidates = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_thumbnail_reconcile_candidates",
-		Help: "Recordings seen by the last thumbnail-reconcile pass that still lack an active thumbnail. Sitting at the pass row limit means the backlog is at least that large; the window resumes from where the previous pass stopped.",
+		Help: "Sum of recordings returned by the window of recordings without an active thumbnail and the window of recordings checked for thumbnail reselection on the last page of a full (non-targeted) thumbnail-reconcile pass; seek tiles are excluded. A window exhausted on an earlier page contributes zero. Both windows use the same row limit, so values range from zero to twice that limit. The reference setup does not scrape --once job Pods, so this process-local gauge is not visible from resident Pods.",
 	})
 )
 

@@ -64,25 +64,32 @@ PID 別のドロップ内訳はメトリクスにしない。PID × 録画数で
 
 エンコード・サムネイル・シークタイルは、ジョブの結果別件数と、reconcile の最終完走時刻で見る。
 
-| メトリクス | 型 | 意味 |
-|---|---|---|
-| `rokuban_encode_duration_seconds` | Histogram | encode 1 件の所要時間 |
-| `rokuban_encode_jobs_total{result}` | Counter | encode の成功・失敗・再計画の件数 |
-| `rokuban_thumbnail_duration_seconds` | Histogram | thumbnail 1 件の所要時間 |
-| `rokuban_thumbnail_jobs_total{result}` | Counter | thumbnail の成功・失敗件数 |
-| `rokuban_seek_tiles_duration_seconds` | Histogram | シークプレビュー用タイル 1 件の所要時間 |
-| `rokuban_seek_tiles_jobs_total{result}` | Counter | シークタイルの成功・失敗件数 |
-| `rokuban_thumbnail_reconcile_last_success_timestamp_seconds` | Gauge | thumbnail / シークタイルの全件パスの完走時刻を DB から読んだ値（0 は未完走）。ScaledJob でも使える |
-| `rokuban_thumbnail_reconcile_candidates` | Gauge | 直近の thumbnail reconcile が見た不足録画数 |
-| `rokuban_encode_reconcile_last_success_timestamp_seconds` | Gauge | encode reconcile の全件パスの完走時刻を DB から読んだ値（0 は未完走）。ScaledJob でも使える |
-| `rokuban_encode_reconcile_candidates` | Gauge | 直近パスの候補窓に入った、不足プロファイルか満たされていない作り直しがある録画数 |
-| `rokuban_encode_reconcile_unsatisfiable{profile}` | Gauge | 録画単位の現在の desired が現在のプロファイルに無い録画数 |
+名前・型・意味は `internal/metrics` の定義（`Name` と `Help`）を引く。`/metrics` の出力は一覧の代わりにならない。ラベル付きの系列は、値を 1 度も観測していないプロセスでは現れないためである。
 
-`replan` は、計画が古く snooze で再計画した件数であり、失敗ではない。thumbnail reconcile の最終完走時刻は、投入停止を `time() -` で検出するために使う。不足録画数が数えるのは poster のぶんだけである。シークタイルは別の窓で数えるが、同じパスが埋めるので、鮮度はこの 1 本で足りる。不足録画数が行上限に張り付くときは、バックログが上限以上ある。
+ジョブの結果別件数の `replan` は、計画が古く snooze で再計画した件数であり、失敗ではない。
+
+最終完走時刻の 2 本は、DB に保存した時刻を scrape のたびに読み直して出す値である。パスが ScaledJob の `--once` で動いても、常駐 Pod の scrape から見える。
+
+thumbnail 側の最終完走時刻は、投入停止を `time() -` で検出するために使う。シークタイルは候補を別の窓で数えるが、同じパスが埋めるので、鮮度はこの 1 本で足りる。
+
+thumbnail reconcile の候補数からは、窓が埋まって継続ジョブを積んだかを判定できない。active な thumbnail が無い録画の窓と、選び直しが要るかを確かめる録画の窓がそれぞれ行上限で切られ、その件数の和が出るためである。継続ジョブを積んだかはログで見る。
 
 encode reconcile のパスは、ヒントを落とした録画を拾うバックストップである。止まっても症状が目立たないので、最終完走時刻を見る（[ingest](../recording/ingest-followup.md) §5.5）。
 
 録画単位の現在の desired が現在の `encode.profiles` に無い録画が非ゼロなら、プロファイルの改名や削除で、その名前の過去録画が永久にエンコードされない。投入しても `unknown encode profile` で弾かれるので、パスは投入せず数えるだけにしている。
+
+<details><summary>根拠</summary>
+
+- 未観測のラベル付き系列が出ないこと: CounterVec などのベクタは、すべてのラベル値を指定した系列を一度作るまで collect しない（client_golang の [`DescribeByCollect`](https://pkg.go.dev/github.com/prometheus/client_golang/prometheus#DescribeByCollect) の doc）
+- `replan` は失敗ではない: `rokuban_encode_jobs_total`
+- thumbnail の完走時刻は scrape ごとに DB から読み、投入停止とシークタイルの鮮度に使う: `rokuban_thumbnail_reconcile_last_success_timestamp_seconds`
+- encode の完走時刻は scrape ごとに DB から読み、reconcile の停止を監視する: `rokuban_encode_reconcile_last_success_timestamp_seconds`
+- thumbnail 候補数から窓の充足は分からず、継続はログで見る: `rokuban_thumbnail_reconcile_candidates`
+- 改名や削除で、現在の設定に無い desired を持つ録画の数が非ゼロになる: `rokuban_encode_reconcile_unsatisfiable`
+- thumbnail 候補の和と各窓の上限: `ThumbnailReconcileWorker.Work` (`internal/thumbnail/thumbnail_reconcile.go`)
+- 継続ジョブを積んだときのログ: `candidate windows are full; continuation enqueued` (`internal/thumbnail/thumbnail_reconcile.go`)
+
+</details>
 
 #### 予約同期のメトリクス
 
