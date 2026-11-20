@@ -92,7 +92,7 @@ func TestDesiredOriginalStoreAtIngestEvaluatesRulesAtAgeZero(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	media := NewMediaWithPolicy(pool, "", policy)
+	media := NewMediaUnboundWithPolicy(pool, policy)
 	for site, want := range map[string]string{"takamatsu": "takamatsu", "home": "tokyo"} {
 		got, err := media.DesiredOriginalStoreAtIngest(ctx, site)
 		if err != nil || got != want {

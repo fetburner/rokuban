@@ -30,7 +30,7 @@ func (s *Media) AppendProfiles(ctx context.Context, recordingID int64, names []s
 		return fmt.Errorf("loading recording %d: %w", recordingID, err)
 	}
 	if _, err := q.GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.originalStoreName()),
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.originalStore),
 	}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("recording %d: %w", recordingID, store.ErrOriginalUnavailable)
@@ -146,7 +146,7 @@ func (s *Media) RequestCutRebuild(ctx context.Context, recordingID int64, profil
 		return err
 	}
 	if _, err := q.GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.originalStoreName()),
+		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.originalStore),
 	}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("recording %d: %w", recordingID, store.ErrOriginalUnavailable)

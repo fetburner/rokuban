@@ -98,7 +98,7 @@ func TestCountMediaAssetTransferBacklogBySourceStoreMatchesCandidates(t *testing
 		{Site: "tiered", Store: "archive"},
 		{Site: "remote", Store: "remote"},
 	}, fsStores, "derived")
-	media := NewMediaWithStoresAndPolicy(pool, "test-store", "edge", policy)
+	media := NewMediaForDerivedStore(pool, "test-store", "edge", policy)
 	const attemptLimit int32 = 10
 
 	assetOfKindWithSource := func(kind, site, sourceStore string) (int64, int64) {

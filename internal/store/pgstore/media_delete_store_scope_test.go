@@ -627,8 +627,8 @@ func TestServingReadableStoresNilMeansAllAndEmptyMeansNone(t *testing.T) {
 		t.Fatalf("all stores readable (nil) = (%+v, %v), want the %s copy", got, err, dbtest.StoreName)
 	}
 	for name, m := range map[string]*Media{
-		"empty readable":     NewMediaForStreamerWithPolicy(env.pool, store.StoragePolicy{}, []string{}),
-		"unrelated readable": NewMediaForStreamerWithPolicy(env.pool, store.StoragePolicy{}, []string{otherStoreName}),
+		"empty readable":     NewMediaForStreamer(env.pool, store.StoragePolicy{}, []string{}),
+		"unrelated readable": NewMediaForStreamer(env.pool, store.StoragePolicy{}, []string{otherStoreName}),
 	} {
 		if _, err := m.GetThumbnailMediaAssetForServing(ctx, rec); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("%s: err = %v, want ErrNotFound (the only copy is in %s, not readable here)", name, err, dbtest.StoreName)

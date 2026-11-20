@@ -410,8 +410,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// River の defer が先に実行される。
 	defer pool.Close()
 
-	// 起動時の検査だけに使う。置き場に束ねず、削除の判定もしない。
-	mediaStore := pgstore.NewMediaWithStoresAndPolicy(pool, "", "", store.NewStoragePolicy(nil, nil, ""))
+	// 起動時の検査だけに使う。
+	mediaStore := pgstore.NewMediaUnbound(pool)
 	if slices.Contains(roles, "worker") {
 		if err := mediaStore.RequireAdoptedStoreRows(ctx); err != nil {
 			return fmt.Errorf("validating media store assignment: %w", err)
@@ -579,8 +579,7 @@ func liveProfileSummaries(profiles []config.LiveProfile) []api.LiveProfileSummar
 // error return がすべて `eg.Go` より前にあるのでこの形にはならない。
 func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy store.StoragePolicy, roles []string, bound []config.MirakcSite, roots map[string]string, pool *pgxpool.Pool, eg *errgroup.Group, noRecordingHLS bool) (*http.Server, error) {
 	// api と streamer は置き場に束ねない。置き場は URL（原本）か DB の行（派生物）が決める。
-	// 削除の判定はしないので derived は渡さない。
-	mediaStore := pgstore.NewMediaWithStoresAndPolicy(pool, "", "", store.NewStoragePolicy(nil, nil, ""))
+	mediaStore := pgstore.NewMediaUnbound(pool)
 	metricCollectors := newBoundBacklogCollectors(pool, bound)
 	metricCollectors = append(metricCollectors, newConfiguredPresyncCollectors(pool, cfg.Registry())...)
 	metricCollectors = append(metricCollectors, newConfiguredLoopPassCollectors(pool, cfg.Registry())...)
@@ -678,7 +677,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy st
 			readableStores = append(readableStores, name)
 		}
 		slices.Sort(readableStores)
-		streamerMedia := pgstore.NewMediaForStreamerWithPolicy(pool, storagePolicy, readableStores)
+		streamerMedia := pgstore.NewMediaForStreamer(pool, storagePolicy, readableStores)
 		mounters = append(mounters, streamer.New(streamerMedia, streamer.Config{
 			MediaRoots:    roots,
 			AccelLocation: cfg.Storage.AccelLocation,
@@ -717,7 +716,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy st
 			if err := liveTools.ValidateTools(); err != nil {
 				return nil, err
 			}
-			recordingHLS, err := streamer.NewRecordingHLS(pgstore.NewMediaWithStoresAndPolicy(pool, hlsStore, hlsStore, store.NewStoragePolicy(nil, nil, "")), streamer.RecordingHLSConfig{
+			recordingHLS, err := streamer.NewRecordingHLS(pgstore.NewMediaInStoreWithoutPolicy(pool, hlsStore), streamer.RecordingHLSConfig{
 				StoreName:       hlsStore,
 				MediaDir:        roots[hlsStore],
 				SegmentDir:      cfg.RecordingHLS.SegmentDir,
@@ -784,9 +783,8 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 // newWorkerDeps は worker ロール用の worker.Deps と、adapter を後から差し込む Enqueuer を組み立てる。
 // サイトごとの mirakc クライアントをここで作る。
 func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.StoragePolicy, bound []config.MirakcSite, mounted []string, roots map[string]string, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*worker.Deps, *jobq.Deferred, error) {
-	// 置き場に束ねない store。DB だけを触る reconcile と、置き場をまたぐ転送が使う。
 	// until_encoded の原本の削除判定は storage.derived を使う。
-	mediaStore := pgstore.NewMediaWithPolicy(pool, "", storagePolicy)
+	mediaStore := pgstore.NewMediaUnboundWithPolicy(pool, storagePolicy)
 	storageObjects := make(map[string]objstore.Store)
 	for _, name := range sortedKeys(roots) {
 		objects, err := fsstore.New(roots[name])
@@ -944,7 +942,7 @@ func newDerivedObjects(ctx context.Context, storage config.StorageConfig, mounte
 // newStoreScopedDeps は、置き場 name に束ねた worker.StoreDeps を新しく組み立てる。
 // 置き場で修飾するキューのワーカーと ingest がこの値を使う。
 func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy store.StoragePolicy, name, root string, derivedObjects objstore.Store) (*worker.StoreDeps, error) {
-	mediaStore := pgstore.NewMediaWithStoresAndPolicy(pool, name, name, storagePolicy)
+	mediaStore := pgstore.NewMediaInStore(pool, name, storagePolicy)
 	analysisStore := pgstore.NewAnalysis(pool, name)
 	recordingStore := pgstore.NewRecordings(pool, name)
 	scoped := &worker.StoreDeps{
@@ -967,7 +965,7 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy st
 		Catalog:             pgstore.NewCatalog(pool, registryNames(cfg.Registry()), name),
 	}
 	if derivedObjects != nil {
-		derivedMedia := pgstore.NewMediaWithStoresAndPolicy(pool, cfg.Storage.Derived, name, storagePolicy)
+		derivedMedia := pgstore.NewMediaForDerivedStore(pool, cfg.Storage.Derived, name, storagePolicy)
 		scoped.DerivedMediaPublish = derivedMedia
 		// この置き場が派生物の置き場と同じ FS なら、既存の削除・監査の経路を共有する。
 		// S3 の独立パスは名前順で最初の FS 置き場だけに載せ、複数の original キューから同じ S3 を

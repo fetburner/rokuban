@@ -12,7 +12,6 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics/dbcollector"
-	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -209,7 +208,7 @@ func newTransferBacklogCollector(pool *pgxpool.Pool, storage config.StorageConfi
 			limits[name] = limit
 		}
 	}
-	return dbcollector.NewTransferBacklogCollector(pgstore.NewMediaWithStoresAndPolicy(pool, "", "", store.NewStoragePolicy(nil, nil, "")), limits)
+	return dbcollector.NewTransferBacklogCollector(pgstore.NewMediaUnbound(pool), limits)
 }
 
 // newSyncMarkerCollector は EPG 同期・チューナー同期・物理転送の確定時刻を出す collector を作る。
@@ -228,7 +227,7 @@ func newSyncMarkerCollector(pool *pgxpool.Pool, registry []config.MirakcSite) pr
 // 読むのは DB の表だけなので、api を含むどのロールでも scrape できる。
 func newReconcileMarkerCollector(pool *pgxpool.Pool, storage config.StorageConfig) prometheus.Collector {
 	markers := pgstore.NewReservations(pool)
-	return dbcollector.NewReconcileMarkerCollector(markers, pgstore.NewMediaWithStoresAndPolicy(pool, "", "", store.NewStoragePolicy(nil, nil, "")), storage.FSStoreNames(), storage.TransferDestinationStoreNames())
+	return dbcollector.NewReconcileMarkerCollector(markers, pgstore.NewMediaUnbound(pool), storage.FSStoreNames(), storage.TransferDestinationStoreNames())
 }
 
 // resolveSiteFlag は `--site` フラグとレジストリから対象サイト名を決める。

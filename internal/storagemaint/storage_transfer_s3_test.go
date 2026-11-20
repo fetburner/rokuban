@@ -91,7 +91,7 @@ func newS3DerivedFixture(t *testing.T) s3DerivedFixture {
 	return s3DerivedFixture{
 		pool: pool, root: roots["test-store"], cloudRoot: cloudRoot, cfg: cfg,
 		worker: StorageTransferWorker{
-			Storage: pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: map[string]string{"test-store": roots["test-store"]},
+			Storage: pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: map[string]string{"test-store": roots["test-store"]},
 			ObjectStores: objects, ScratchDir: t.TempDir(),
 		},
 		args:    jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "cloud", SourceStore: "test-store", PolicyFingerprint: fingerprint},
@@ -180,7 +180,7 @@ func TestStorageTransferReconcileRoutesS3CopiesToSourceQueue(t *testing.T) {
 	cfg.Stores["archive"] = config.StoreConfig{Kind: "fs"}
 	cfg.Originals = []config.OriginalStoreRule{{Store: "archive"}}
 	enqueuer := &jobqfaketest.RecordingEnqueuer{}
-	reconcile := StorageTransferReconcileWorker{Enqueuer: enqueuer, Storage: pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg}
+	reconcile := StorageTransferReconcileWorker{Enqueuer: enqueuer, Storage: pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg}
 	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "reconcile Work")
 	var fsJobs, s3Jobs []jobs.StorageTransferArgs
 	for _, a := range enqueuer.CallsOfKind("storage_transfer") {
@@ -217,7 +217,7 @@ func TestStorageTransferS3PendingReservationIsNotObsolete(t *testing.T) {
 		p.RelPath = fmt.Sprintf("%d.mp4", f.assetID)
 		p.State = "pending"
 	})
-	cloud := pgstore.NewMediaWithPolicy(f.pool, "cloud", mustStoragePolicy(t, f.cfg))
+	cloud := pgstore.NewMediaInStore(f.pool, "cloud", mustStoragePolicy(t, f.cfg))
 	obsolete, err := cloud.ListObsoletePendingMediaAssetTransferCopies(context.Background(), 10)
 	testutil.RequireNoError(t, err, "listing obsolete pending copies")
 	if len(obsolete) != 0 {
@@ -294,7 +294,7 @@ func TestStorageTransferS3CopyLetsDeleteReconcileRetireFSCopy(t *testing.T) {
 	f := newS3DerivedFixture(t)
 	f.worker.Config.Transfer.Bandwidth = nil
 	enqueuer := &jobqfaketest.RecordingEnqueuer{}
-	reconcile := StorageTransferReconcileWorker{Enqueuer: enqueuer, Storage: pgstore.NewMediaWithPolicy(f.pool, "test-store", mustStoragePolicy(t, f.cfg)), Config: f.cfg}
+	reconcile := StorageTransferReconcileWorker{Enqueuer: enqueuer, Storage: pgstore.NewMediaInStore(f.pool, "test-store", mustStoragePolicy(t, f.cfg)), Config: f.cfg}
 	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "reconcile Work")
 	queued := enqueuer.CallsOfKind("storage_transfer")
 	if len(queued) != 1 {
@@ -309,7 +309,7 @@ func TestStorageTransferS3CopyLetsDeleteReconcileRetireFSCopy(t *testing.T) {
 
 	// S3 のコピーが overlap の期間を過ぎてから、FS の旧いコピーの配置の削除を走らせる。
 	testutil.MustExec(t, f.pool, "aging the cloud copy past the overlap", `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'cloud'`, f.assetID)
-	media := pgstore.NewMediaWithPolicy(f.pool, "test-store", mustStoragePolicy(t, f.cfg))
+	media := pgstore.NewMediaInStore(f.pool, "test-store", mustStoragePolicy(t, f.cfg))
 	deleter := DeleteReconcileWorker{
 		MediaDelete: media, Storage: media, StorageTransfer: media,
 		RecordingPurge: pgstore.NewRecordings(f.pool, "test-store"), Breakers: pgstore.NewBreakers(f.pool),

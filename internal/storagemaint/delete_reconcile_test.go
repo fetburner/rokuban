@@ -688,7 +688,7 @@ func TestDeleteReconcileWorker_UnqualifiedDerivedCopyAfterStoreSwitchChecksFiles
 	assetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, relPath, []byte("encoded"))
 	testutil.MustExec(t, pool, "marking filesystem copy deleting", `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1`, assetID)
 
-	mediaDelete := pgstore.NewMediaWithStoresAndPolicy(pool, dbtest.StoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName))
+	mediaDelete := pgstore.NewMediaInStore(pool, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName))
 	worker := buildDeleteReconcileWorker(t, pool, mediaDir, func(w *DeleteReconcileWorker) {
 		w.MediaDelete = mediaDelete
 		w.StorageObjects = testStorageObjects(t, dbtest.StoreName, mediaDir)

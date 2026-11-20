@@ -126,7 +126,7 @@ func newAdoptVerifyFixture(t *testing.T, source, destination []byte, expected [s
 	testutil.MustExec(t, pool, "setting logical checksum", `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, expected[:], assetID)
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing adoptable transfer = (%+v, %t, %v)", transfer, ok, err)
@@ -249,7 +249,7 @@ func TestStorageTransferWorkerMeasuresUnknownSourceAcrossSlicesBeforeAdopting(t 
 	assetID := transferTestOriginal(t, pool, roots["test-store"], content)
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing adoptable transfer = (%+v, %t, %v)", transfer, ok, err)

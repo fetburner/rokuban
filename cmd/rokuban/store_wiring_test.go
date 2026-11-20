@@ -61,7 +61,7 @@ func TestPeriodicThumbnailReconcileEnqueuesWithUnboundMedia(t *testing.T) {
 		p.SizeBytes = 1
 	})
 
-	media := pgstore.NewMediaWithPolicy(pool, "", store.NewStoragePolicy(nil, nil, dbtest.StoreName))
+	media := pgstore.NewMediaUnboundWithPolicy(pool, store.NewStoragePolicy(nil, nil, dbtest.StoreName))
 	enq := &enqueueRecorder{}
 	registry := worker.NewWorkers(&worker.Deps{UnscopedMediaReconcile: media, Enqueuer: enq})
 	if err := registry.Work(context.Background(), jobs.ThumbnailReconcileArgs{}); err != nil {
@@ -146,7 +146,7 @@ FROM media_assets a WHERE a.id = $1`, assetID, relPath); err != nil {
 		Breakers:                pgstore.NewBreakers(pool),
 		StorageObjects:          objects,
 		StorageRoots:            roots,
-		UnscopedStorageTransfer: pgstore.NewMediaWithPolicy(pool, "", policy),
+		UnscopedStorageTransfer: pgstore.NewMediaUnboundWithPolicy(pool, policy),
 		StorageTransferPolicy:   cfg.Storage,
 		TransferOverlap:         cfg.Storage.Transfer.Overlap,
 		Cleanup:                 config.CleanupConfig{MaxDeletesPerPass: 100},
@@ -228,7 +228,7 @@ FROM media_assets a WHERE a.id = $1`, assetID, copy.name, copy.relPath); err != 
 	}
 
 	// The store-scoped SQL can identify s3-a as prunable once s3-b is active and the overlap has elapsed.
-	oldStoreMedia := pgstore.NewMediaWithStoresAndPolicy(pool, "s3-a", "test-store", newPolicy)
+	oldStoreMedia := pgstore.NewMediaForDerivedStore(pool, "s3-a", "test-store", newPolicy)
 	candidates, err := oldStoreMedia.ListMediaAssetCopiesToDelete(ctx, time.Now().Add(-time.Hour), 10)
 	if err != nil {
 		t.Fatalf("listing s3-a placement candidates: %v", err)
@@ -258,7 +258,7 @@ FROM media_assets a WHERE a.id = $1`, assetID, copy.name, copy.relPath); err != 
 		t.Fatalf("writing old S3 object: %v", err)
 	}
 
-	media := pgstore.NewMediaWithPolicy(pool, "", newPolicy)
+	media := pgstore.NewMediaUnboundWithPolicy(pool, newPolicy)
 	base := &worker.Deps{
 		Breakers:                pgstore.NewBreakers(pool),
 		DerivedObjects:          derivedObjects,

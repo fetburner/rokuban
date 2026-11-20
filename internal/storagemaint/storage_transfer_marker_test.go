@@ -55,7 +55,7 @@ func seedTransferWork(t *testing.T, pool *pgxpool.Pool, kind string) (StorageTra
 		t.Fatalf("unknown kind %q", kind)
 	}
 	worker := StorageTransferWorker{
-		Storage: pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots,
+		Storage: pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg, Roots: roots,
 		ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir(),
 	}
 	return worker, jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}
@@ -154,7 +154,7 @@ func TestCompleteMediaAssetTransferAlreadyActiveAdvancesMarker(t *testing.T) {
 	content := []byte("already active bytes")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], content)
 	cfg := transferTestConfig("archive", "archive", "test-store")
-	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
+	media := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg))
 	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("PrepareMediaAssetTransfer = (%+v, %t, %v)", transfer, ok, err)

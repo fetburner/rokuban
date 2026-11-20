@@ -54,7 +54,7 @@ func newObjectEnvWith(t *testing.T, objects objstore.Store) objectEnv {
 	pool := testutil.SetupDB(t)
 	return objectEnv{
 		pool: pool, objects: objects,
-		media: pgstore.NewMediaWithStoresAndPolicy(pool, objectStoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName)),
+		media: pgstore.NewMediaForDerivedStore(pool, objectStoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, objectStoreName)),
 	}
 }
 
@@ -296,7 +296,7 @@ func TestFilesystemDerivedPendingReclaimAfterPutFailure(t *testing.T) {
 	mediaDir := t.TempDir()
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 	objects := testFSObjectStore(mediaDir)
-	media := pgstore.NewMediaWithStoresAndPolicy(pool, dbtest.StoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, dbtest.StoreName))
+	media := pgstore.NewMediaInStore(pool, dbtest.StoreName, store.NewStoragePolicy(nil, nil, dbtest.StoreName))
 	keys := make([]string, 0, 2)
 	for _, key := range []string{"thumbnails/first.jpg", "thumbnails/second.jpg"} {
 		recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
@@ -406,7 +406,7 @@ func TestFilesystemDerivedPendingReclaimKeepsMainUntilSubtitleRemovalSucceeds(t 
 	mediaDir := t.TempDir()
 	testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, dbtest.StoreName), "writing media store marker")
 	objects := testFilesystemObjectStore(t, mediaDir)
-	media := pgstore.NewMediaWithStoresAndPolicy(pool, dbtest.StoreName, dbtest.StoreName, store.NewStoragePolicy(nil, nil, dbtest.StoreName))
+	media := pgstore.NewMediaInStore(pool, dbtest.StoreName, store.NewStoragePolicy(nil, nil, dbtest.StoreName))
 	recordingID := dbtest.Recording(t, pool)
 	profile := "h264"
 	relPath := "pending/sidecar-retry.mp4"
