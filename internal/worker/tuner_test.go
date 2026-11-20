@@ -10,10 +10,10 @@ import (
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -55,10 +55,10 @@ func runTunerSync(t *testing.T, w *TunerSyncWorker) {
 	testutil.RequireNoError(t, runWorkerViaJobQFake(context.Background(), w, job), "Work() error")
 }
 
-func allTuners(t *testing.T, pool *pgxpool.Pool) []sqlcgen.TunerSync {
+func allTuners(t *testing.T, pool *pgxpool.Pool) []store.Tuner {
 	t.Helper()
-	rows, err := sqlcgen.New(pool).ListTunerSync(context.Background(), testSite)
-	testutil.RequireNoError(t, err, "ListTunerSync")
+	rows, err := pgstoretest.Tuners(pool).List(context.Background(), testSite)
+	testutil.RequireNoError(t, err, "listing tuners")
 	return rows
 }
 
@@ -78,7 +78,7 @@ func TestTunerSyncWorker_FullSync(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("tuner_sync rows = %+v, want 2", rows)
 	}
-	if rows[0].TunerIndex != 0 || rows[0].Name != "PX-S1UD_T1" {
+	if rows[0].Index != 0 || rows[0].Name != "PX-S1UD_T1" {
 		t.Errorf("row[0] = %+v, want index 0 / PX-S1UD_T1", rows[0])
 	}
 	if !reflect.DeepEqual(rows[1].Types, []string{"BS", "CS"}) {
@@ -152,8 +152,8 @@ func TestTunerSyncWorker_SkipsTunerWithUnknownChannelType(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("tuner_sync rows = %+v, want 1 (未知の種別を含む 1 本だけを捨てる)", rows)
 	}
-	if rows[0].TunerIndex != 0 {
-		t.Errorf("projected tuner index = %d, want 0", rows[0].TunerIndex)
+	if rows[0].Index != 0 {
+		t.Errorf("projected tuner index = %d, want 0", rows[0].Index)
 	}
 }
 
@@ -204,7 +204,7 @@ func TestTunerSyncWorker_SkipsSweepOnEmptyResponse(t *testing.T) {
 	})
 	runTunerSync(t, w)
 	rows := allTuners(t, pool)
-	if len(rows) != 1 || rows[0].TunerIndex != 9 {
+	if len(rows) != 1 || rows[0].Index != 9 {
 		t.Errorf("tuner_sync rows = %+v, want only index 9 after a non-empty pass", rows)
 	}
 }
@@ -313,8 +313,8 @@ func TestTunerSyncWorker_SiteMatch(t *testing.T) {
 		t.Fatalf("Work() error = %v, want nil for matching site", err)
 	}
 
-	rows, err := sqlcgen.New(pool).ListTunerSync(context.Background(), "site-a")
-	testutil.RequireNoError(t, err, "ListTunerSync")
+	rows, err := pgstoretest.Tuners(pool).List(context.Background(), "site-a")
+	testutil.RequireNoError(t, err, "listing tuners")
 	if len(rows) != 1 {
 		t.Errorf("tuner_sync rows for site-a = %d, want 1", len(rows))
 	}

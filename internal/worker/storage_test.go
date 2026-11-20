@@ -12,7 +12,6 @@ import (
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -30,14 +29,15 @@ func runStorageSyncForStore(t *testing.T, w *StorageSyncWorker, storeName string
 	return runWorkerViaJobQFake(context.Background(), w, job)
 }
 
-func allStorageSync(t *testing.T, pool *pgxpool.Pool) []sqlcgen.StorageSync {
+// allStorageSync は pgstoretest.Media が結び付く置き場（dbtest.StoreName）の観測行を返す。
+func allStorageSync(t *testing.T, pool *pgxpool.Pool) []store.StorageSync {
 	t.Helper()
-	rows, err := sqlcgen.New(pool).ListStorageSync(context.Background(), dbtest.StoreName)
+	rows, err := pgstoretest.Media(pool).ListStorageSync(context.Background())
 	testutil.RequireNoError(t, err, "ListStorageSync")
 	return rows
 }
 
-func storageSyncByRoot(t *testing.T, pool *pgxpool.Pool, root string) sqlcgen.StorageSync {
+func storageSyncByRoot(t *testing.T, pool *pgxpool.Pool, root string) store.StorageSync {
 	t.Helper()
 	for _, r := range allStorageSync(t, pool) {
 		if r.Root == root {
@@ -45,7 +45,7 @@ func storageSyncByRoot(t *testing.T, pool *pgxpool.Pool, root string) sqlcgen.St
 		}
 	}
 	t.Fatalf("no storage_sync row for root %q", root)
-	return sqlcgen.StorageSync{}
+	return store.StorageSync{}
 }
 
 // media/scratch の両方を実ディレクトリに向けた 1 パスで、2 行が正しく投影されること。
