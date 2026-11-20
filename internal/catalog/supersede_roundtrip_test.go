@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -21,7 +20,6 @@ import (
 func TestExportRescue_PreservesSupersededAt(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 	start := time.Date(2026, 8, 1, 16, 0, 0, 0, time.UTC)
 
 	newRec := func(eventID int32, status string) int64 {
@@ -40,12 +38,8 @@ func TestExportRescue_PreservesSupersededAt(t *testing.T) {
 	}
 
 	failedID := newRec(200, "failed")
-	n, err := q.SupersedeFailedRecording(ctx, sqlcgen.SupersedeFailedRecordingParams{
-		Site: "default", NetworkID: 32736, ServiceID: 1024, EventID: 200,
-		ProgramStartAt: start,
-	})
-	if err != nil || n != 1 {
-		t.Fatalf("SupersedeFailedRecording: rows=%d err=%v", n, err)
+	if n := dbtest.SupersedeFailedRecording(t, pool, failedID); n != 1 {
+		t.Fatalf("SupersedeFailedRecording: rows=%d, want 1", n)
 	}
 	okID := newRec(200, "finished") // 枠が空いたので入る
 

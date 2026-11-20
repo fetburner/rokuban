@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -23,7 +22,7 @@ import (
 func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
+	labelRules := pgstoretest.LabelRules(pool)
 	mediaDir := newTestMediaDir(t)
 
 	recID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
@@ -33,15 +32,11 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 	})
 
 	// 値に空白を含む（棚キーは最初の空白で切れる）ルールと、優先度が違うルール。
-	low, err := q.CreateLabelRule(ctx, sqlcgen.CreateLabelRuleParams{
-		Key: "series", Value: "数学", Keyword: "数学", Priority: 1,
-	})
+	low, err := labelRules.Create(ctx, "series", "数学", "数学", 1)
 	if err != nil {
 		t.Fatalf("CreateLabelRule low: %v", err)
 	}
-	high, err := q.CreateLabelRule(ctx, sqlcgen.CreateLabelRuleParams{
-		Key: "series", Value: "高校数学 I", Keyword: "数学I", Priority: 7,
-	})
+	high, err := labelRules.Create(ctx, "series", "高校数学 I", "数学I", 7)
 	if err != nil {
 		t.Fatalf("CreateLabelRule high: %v", err)
 	}
@@ -74,16 +69,16 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 		t.Fatalf("rescued label rules = %d, want 2", result.LabelRules)
 	}
 
-	rows, err := q.ListLabelRules(ctx)
+	rows, err := labelRules.List(ctx)
 	if err != nil {
-		t.Fatalf("ListLabelRules: %v", err)
+		t.Fatalf("LabelRules.List: %v", err)
 	}
 	if len(rows) != 2 {
 		t.Fatalf("restored rules = %d, want 2", len(rows))
 	}
 	// priority DESC の順（high が先）。id・値・優先度が保たれ、生成列は作り直される。
 	if rows[0].ID != high.ID || rows[0].Value != "高校数学 I" || rows[0].Priority != 7 ||
-		rows[0].ValueKey == nil || *rows[0].ValueKey != "高校数学" {
+		rows[0].ValueKey != "高校数学" {
 		t.Errorf("restored high rule = %+v, want id %d value %q priority 7 value_key 高校数学", rows[0], high.ID, "高校数学 I")
 	}
 	if rows[1].ID != low.ID || rows[1].Keyword != "数学" || rows[1].Priority != 1 {
@@ -104,9 +99,7 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 	}
 
 	// IDENTITY は max(id) に揃う（次の作成が復元した id と衝突しない）。
-	next, err := q.CreateLabelRule(ctx, sqlcgen.CreateLabelRuleParams{
-		Key: "series", Value: "次", Keyword: "次",
-	})
+	next, err := labelRules.Create(ctx, "series", "次", "次", 0)
 	if err != nil {
 		t.Fatalf("creating a rule after rescue: %v", err)
 	}
@@ -131,8 +124,7 @@ func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
 		fixtureParams.Title = "ロック位置"
 		fixtureParams.ProgramDurationMs = 60000
 	})
-	createRule := sqlcgen.CreateLabelRuleParams{Key: "series", Value: "ロック", Keyword: "ロック"}
-	if _, err := sqlcgen.New(pool).CreateLabelRule(ctx, createRule); err != nil {
+	if _, err := pgstoretest.LabelRules(pool).Create(ctx, "series", "ロック", "ロック", 0); err != nil {
 		t.Fatalf("CreateLabelRule: %v", err)
 	}
 	doc, err := pgstoretest.Catalog(pool, []string{"default"}...).Export(ctx)
@@ -148,7 +140,9 @@ func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 	defer func() { _ = holder.Rollback(ctx) }()
-	if err := sqlcgen.New(holder).LockLabelRuleReevaluation(ctx); err != nil {
+	// 再評価のロックを保持する契約は無い（ReevaluateAll は取った直後に適用して commit する）。
+	// ロックのキーは label_rules.sql の LockLabelRuleReevaluation にあり、そこと一致させる。
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('rokuban:label-rule-reconcile', 0))`); err != nil {
 		t.Fatalf("holding the lock: %v", err)
 	}
 
