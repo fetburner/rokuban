@@ -93,5 +93,3 @@ func (r *webhookRecorder) reset() {
 	defer r.mu.Unlock()
 	r.events = nil
 }
-
-func stringPtr(s string) *string { return &s }

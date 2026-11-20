@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapublish"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 	"github.com/fetburner/rokuban/internal/store"
@@ -143,18 +142,13 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 	prior := []byte("committed by another attempt")
 	testutil.RequireNoError(t, os.WriteFile(canonicalPath, prior, 0o644), "os.WriteFile")
 	generation := int64(0)
-	assetID, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(context.Background(), sqlcgen.UpsertDerivedMediaAssetParams{Kind: "thumbnail",
-		RecordingID: id, SizeBytes: int64(len(prior)),
-		DerivedGeneration: generation,
+	assetID := dbtest.DerivedMediaAsset(t, pool, id, "thumbnail", func(p *dbtest.DerivedMediaAssetParams) {
+		p.SizeBytes = int64(len(prior))
+		p.Generation = generation
 	})
-	testutil.RequireNoError(t, err, "seeding active thumbnail asset")
-	_, err = sqlcgen.New(pool).UpsertMediaAssetCopy(context.Background(), sqlcgen.UpsertMediaAssetCopyParams{
-		MediaAssetID: assetID,
-		Store:        dbtest.StoreName,
-		RelPath:      relPath,
-		State:        "active",
+	dbtest.MediaAssetCopy(t, pool, assetID, func(p *dbtest.MediaAssetCopyParams) {
+		p.RelPath = relPath
 	})
-	testutil.RequireNoError(t, err, "seeding active thumbnail copy")
 
 	size, published, err := publishThumbnailForTest(pool, mediaDir, id, writeScratchForTest(t, []byte("late attempt bytes")))
 	testutil.RequireNoError(t, err, "publishThumbnailForTest")

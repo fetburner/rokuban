@@ -16,12 +16,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapublish"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -247,9 +248,7 @@ func TestObjectPublishWritesSHA256InTheCommitTransaction(t *testing.T) {
 	originalID := dbtest.MediaAsset(t, env.pool, recordingID)
 	profile := "h264"
 	dbtest.ProcessingPolicy(t, env.pool, recordingID, func(p *dbtest.ProcessingPolicyParams) { p.EncodeProfiles = []string{profile} })
-	if _, err := sqlcgen.New(env.pool).CreateRecordingEncodeAttemptRunning(ctx, sqlcgen.CreateRecordingEncodeAttemptRunningParams{
-		RecordingID: recordingID, Profile: profile,
-	}); err != nil {
+	if _, err := pgstoretest.Media(env.pool).Begin(ctx, recordingID, profile, jobs.EncodeAttemptLimit); err != nil {
 		t.Fatalf("seeding running encode attempt: %v", err)
 	}
 

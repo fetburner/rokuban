@@ -181,7 +181,6 @@ linters:
             - "!${config-path}/internal/db/**"
             - "!${config-path}/internal/testutil/**"
             # 移行中
-            - "!${config-path}/cmd/rokuban/*"
             - "!${config-path}/internal/api/*"
             - "!${config-path}/internal/catalog/*"
             - "!${config-path}/internal/metrics/*"
@@ -197,19 +196,10 @@ linters:
             - "!${config-path}/internal/cmdetect/cm_detect_work_test.go"
             - "!${config-path}/internal/cmdetect/cm_logo_candidate_test.go"
             # worker から移した既存の派生物公開・thumbnail のテスト。
-            - "!${config-path}/internal/mediapublish/object_store_test.go"
-            - "!${config-path}/internal/mediapublish/publication_test.go"
             - "!${config-path}/internal/thumbnail/s3_conformance_test.go"
             - "!${config-path}/internal/thumbnail/seek_tiles_test.go"
             - "!${config-path}/internal/thumbnail/thumbnail_reconcile_test.go"
             - "!${config-path}/internal/thumbnail/thumbnail_test.go"
-            # worker から移した既存の encode のテスト。
-            - "!${config-path}/internal/encode/encode_attempts_test.go"
-            - "!${config-path}/internal/encode/encode_cut_test.go"
-            - "!${config-path}/internal/encode/encode_preflight_test.go"
-            - "!${config-path}/internal/encode/encode_publish_test.go"
-            - "!${config-path}/internal/encode/encode_publish_desired_test.go"
-            - "!${config-path}/internal/encode/encode_reconcile_test.go"
             # worker から移した既存の ingest のテスト。
             - "!${config-path}/internal/ingest/fixtures_test.go"
             - "!${config-path}/internal/ingest/ingest_cut_policy_test.go"
