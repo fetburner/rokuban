@@ -181,7 +181,7 @@ API のレスポンス状態は `recordingFromListFields` で毎回導出する�
 
 ### 録画ルールと予約の意図
 
-予約の表を書くのは ruler と、ルールの削除だけである。利用者の録画意図・上書きを確定する契約は予約の表を書かず、それ自身の tx で確定する。ルールの作成・更新・削除と EPGStation からの取り込みも、それぞれ 1 つの tx で確定する。
+予約の表を書くのは ruler とルールの削除だけである。利用者の録画意図・上書きを確定する契約は予約の表を書かず、自分の tx で確定する。ルールの作成・更新・削除と EPGStation からの取り込みも、それぞれ 1 つの tx で確定する。
 
 ルールの削除が予約の表も書くのは、意図の無い予約の削除とルールの削除を別の tx にすると、間で切れたときにルールの無い予約が残るからである。
 
@@ -429,7 +429,7 @@ mirakc から得た予定と欠測の観測は、書き手である reconciler �
 
 reconciler は、観測全量の置き換え、同期評価の候補、開始済みイベントの読み取りを `ScheduleSync` から使う。presync collector は、marker・観測一覧・同期評価の候補を `ScheduleSyncReader` から読み、marker が無いときだけ時刻を 0 として出す。実装は `pgstore.ScheduleSync` が両方を持つ。
 
-古い行の削除は、ruler の GC が同じ契約 `NeverScheduledEvents` を呼んで行う。実装は `pgstore.NeverScheduledEvents` が持つ。
+欠測の古い行の削除は、ruler の GC が同じ契約 `NeverScheduledEvents` を呼んで行う。実装は `pgstore.NeverScheduledEvents` が持つ。
 
 削除は幅（horizon）だけを受け取り、基準時刻は受け取らない。`observed_at` は DB の時計で記録されるので、呼び出し側の時計で基準時刻を渡すと、比べる 2 つの時計がずれる。
 
