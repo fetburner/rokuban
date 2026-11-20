@@ -89,9 +89,9 @@ type ProcessResult struct {
 // RecordObservations は watcher が録画観測と失敗イベントを永続化する契約である。
 // 書き込みメソッドは自身のトランザクションを commit してから返す。
 // 録画の由来は、同じ tx で読んだ予約と意図から導出する。
-// 検査: TestRecordObservationsContract の「record source」、「failed event source follows intent」、「failed schedule source follows intent」。
+// 検査: contracttest.RunRecordObservations の「record source」、「failed event source follows intent」、「failed schedule source follows intent」。
 // 品質イベントの時刻は DB の時計で付け、呼び出し側は時刻を渡さない。
-// 検査: TestRecordObservationsContract の「quality events carry a readable time」。
+// 検査: contracttest.RunRecordObservations の「quality events carry a readable time」。
 // 録画を作る書き込み（ProcessRecord・ProcessFailedSchedule・RecordFailedRecording）は、録画の作成と同じ tx で、title に対する分類ルールの当たりも決める（契約テストでは未検証）。
 type RecordObservations interface {
 	// HasReservation は、放送イベントの予約が現在存在するかを返す。
@@ -105,25 +105,25 @@ type RecordObservations interface {
 	// 同じ放送イベントに生きた失敗録画があれば、成功の録画を作る前にそれを superseded にして残す（削除しない）。
 	// その失敗録画の原本 asset は、失敗録画のまま残る。
 	// 同じ観測を重ねても EnqueueIngest と IngestPriority は毎回同じ判定を返す。
-	// 検査: TestRecordObservationsContract の「same record observations serialize」、「record sync rolls back with recording conflict」、「success supersedes failed recording」、「ingest hint follows the recording status」。
+	// 検査: contracttest.RunRecordObservations の「same record observations serialize」、「record sync rolls back with recording conflict」、「success supersedes failed recording」、「ingest hint follows the recording status」。
 	ProcessRecord(ctx context.Context, observation RecordObservation) (ProcessResult, error)
 	// ProcessFailedSchedule は予約のある失敗 schedule を再構成し、同じ event/reason は 1 度だけ記録する。
 	// 同じ放送イベントを RecordFailedRecording が並行して観測しても、生きた失敗の録画は 1 つに収束する。
-	// 検査: TestRecordObservationsContract の「failed schedule and failed event converge on one live recording」。
+	// 検査: contracttest.RunRecordObservations の「failed schedule and failed event converge on one live recording」。
 	// 同じ放送イベントに生きた失敗でない録画があるときは、それへ失敗を追記せず FailedRecordingSkipped を返す。
 	// 予約が無ければ何もしない。
 	ProcessFailedSchedule(ctx context.Context, observation FailedScheduleObservation) (ProcessResult, error)
 	// RecordFailedRecording は recording.failed の観測を記録し、対象の録画 ID を返す。
 	// 予約が消えていたときは何も記録せず recorded=false を返す。
 	// 同じ放送イベントを ProcessFailedSchedule が並行して観測しても、生きた失敗の録画は 1 つに収束する。
-	// 検査: TestRecordObservationsContract の「failed schedule and failed event converge on one live recording」。
+	// 検査: contracttest.RunRecordObservations の「failed schedule and failed event converge on one live recording」。
 	RecordFailedRecording(ctx context.Context, observation FailedRecordingObservation) (recordingID int64, recorded bool, err error)
 	// AppendRecordBrokenEvent は record に紐づく録画があれば破損イベントを追記する。
 	AppendRecordBrokenEvent(ctx context.Context, site, recordID, reason string) (bool, error)
 	// DeleteStaleRecordSyncs は全量観測に無い record 同期行を削除する。
 	// 観測時刻ではなく、呼び出し側が渡した生きている record の ID の集合で判定する。
 	// 渡した ID の行は観測時刻によらず残し、渡していない行だけを消す。
-	// 検査: TestRecordObservationsContract の「stale record syncs are decided by the live id set」。
+	// 検査: contracttest.RunRecordObservations の「stale record syncs are decided by the live id set」。
 	DeleteStaleRecordSyncs(ctx context.Context, site string, liveRecordIDs []string) (int64, error)
 }
 
@@ -137,7 +137,7 @@ type RecordIngestTarget struct {
 type IngestTarget interface {
 	// GetRecordSyncIngestTarget は (site, record_id) の転送先と観測済み長さを返す。
 	// 録画に紐づかない record・観測長の無い record では、該当する値を nil のまま返す。行が無ければ ErrNotFound を返す。
-	// 検査: TestRecordObservationsContract の「ingest target preserves nullable fields」。
+	// 検査: contracttest.RunRecordObservations の「ingest target preserves nullable fields」。
 	GetRecordSyncIngestTarget(ctx context.Context, site, recordID string) (RecordIngestTarget, error)
 }
 
@@ -153,6 +153,6 @@ type RecordBacklog interface {
 	// 数えるのは、終了（finished）していて、録画に紐づき、原本の asset 行が状態を問わず 1 つも無い record である。
 	// 録画中の record、録画に紐づかない record、他 site の record、原本の asset 行がある record（削除済み・消去中を含む）は数えない。
 	// 件数には観測長が NULL の record も入り、サイズはその record を 0 として足す。
-	// 検査: TestRecordObservationsContract の「ingest backlog filters records and bytes」。
+	// 検査: contracttest.RunRecordObservations の「ingest backlog filters records and bytes」。
 	GetUningestedRecordBacklog(ctx context.Context, site string) (RecordBacklogSnapshot, error)
 }

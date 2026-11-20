@@ -78,7 +78,7 @@ type TunerSync interface {
 	SweepMark(ctx context.Context) (time.Time, error)
 	// Upsert は site のチューナー一覧を 1 バッチで原子的に反映する。
 	// 1 件でも失敗したら全件を反映しない。空の一覧では何もしない（契約テストでは未検証）。
-	// 検査: TestTunersContract の「upsert batch is atomic」。
+	// 検査: contracttest.RunTuners の「upsert batch is atomic」。
 	Upsert(ctx context.Context, site string, tuners []TunerInput) error
 	// DeleteStale は observedBefore より古い site の行を削除し、削除件数を返す。
 	// observedBefore には、Upsert より前に SweepMark が返した値を渡す。呼び出し側の
@@ -99,7 +99,7 @@ type Capacity interface {
 	// ReadAllSites は全 site の需要とチューナーを返す。需要の base・overrides・意図は解決せずに返す（契約テストでは未検証）。
 	ReadAllSites(ctx context.Context) (CapacityInput, error)
 	// PreviewRule は保存前プレビューの対象ルールの状態を返す。
-	// 対象が無ければ ErrNotFound を返す。検査: TestTunersContract の「preview rule」。
+	// 対象が無ければ ErrNotFound を返す。検査: contracttest.RunTuners の「preview rule」。
 	PreviewRule(ctx context.Context, ruleID int64) (CapacityPreviewRule, error)
 	// PreviewCandidates は refs のうち、容量需要になりうる候補を返す。
 	// ruleID は編集中のルールで、そのルールが今持つ予約は除外の対象に数えない。
