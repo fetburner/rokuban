@@ -120,7 +120,7 @@ open のエピックは `gh issue list --label epic --state open` で引く。�
 
 すべての実装タスクで遵守する。
 
-1. **api ロールは mirakc に問い合わせない**。ファイルシステムにも依存しない（go:embed は可）。import 境界は `.golangci.yml` の `depguard` が判定する
+1. **api ロールは mirakc に問い合わせない**。ファイルシステムにも依存しない（go:embed は可）。直接の import 境界は `.golangci.yml` の `depguard` の `api-role` が判定する。推移的な import は `go test ./scripts/apideps/` が `go list -deps` で判定する（禁止先の一覧は `api-role` の deny から読む）
 2. **mirakc とのやりとりは常に API**、自身のストレージでは、原本は常にファイル I/O、派生物は置き場のインターフェース越し（FS 実装か S3 API 実装）で扱う
 3. **コミット = DB 行**。ファイルの存在はコミットではない
 4. **ffmpeg/ffprobe の exec は worker / cmdetect / encode / streamer パッケージと、共用の実行補助 `internal/mediaexec` のみ**。本番コードで mediaexec を import できるのは worker・cmdetect・thumbnail・encode・streamer だけ。cmdetect と thumbnail を import できるのは worker だけ。encode を import できるのは worker と起動時に検査する cmd/rokuban だけ。ingest を import できるのは worker と cmd/rokuban だけ。import 境界は `.golangci.yml` の `depguard` が判定する

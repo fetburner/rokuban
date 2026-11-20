@@ -23,6 +23,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mediaexec"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/storagename"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -115,7 +116,7 @@ func NewRecordingHLS(media recordingHLSStore, cfg RecordingHLSConfig) (*Recordin
 	if media == nil {
 		return nil, errors.New("recording HLS media store is nil")
 	}
-	if !mediapath.ValidStoreName(cfg.StoreName) {
+	if !storagename.ValidStoreName(cfg.StoreName) {
 		return nil, errors.New("recording HLS store name is invalid")
 	}
 	if cfg.MediaDir == "" || cfg.SegmentDir == "" {

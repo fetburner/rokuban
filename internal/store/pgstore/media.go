@@ -14,7 +14,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/storagename"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -107,7 +107,7 @@ func mediaStoreNameArg(storeName string) *string {
 // AdoptUnassignedStoreRows は範囲が空の delete_reconcile ブレーカーをこの置き場へ割り当てる
 // （TestAdoptUnassignedStoreRowsAssignsLegacyDeleteReconcileBreaker）。コピー行は作らない。
 func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
-	if !mediapath.ValidStoreName(s.storeName) {
+	if !storagename.ValidStoreName(s.storeName) {
 		return fmt.Errorf("invalid media store name %q", s.storeName)
 	}
 	tx, err := s.pool.Begin(ctx)

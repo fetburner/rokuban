@@ -61,7 +61,7 @@ type Server struct {
 
 	// cutProfiles は `cut: true` のプロファイル名の集合。encodeProfiles と同じ
 	// く空（未注入）なら「cut の規則を検査しない」。cut だけの選択を拒否する
-	// 判定（config.ValidateCutSelection）と、`awaiting_review` の導出に使う。
+	// 判定（cutselect.ValidateCutSelection）と、`awaiting_review` の導出に使う。
 	cutProfiles map[string]struct{}
 
 	// encodeProfileNames は定義順の名前一覧（GET /api/encode-profiles 用。issue #68）。

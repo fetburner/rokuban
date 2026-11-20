@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/hostname"
 )
 
 const maxJSONBodyBytes int64 = 1 << 20
@@ -241,8 +241,8 @@ func AllowedHosts(allowedHosts []string, trustForwardedHost bool) func(http.Hand
 	}
 }
 
-// normalizeHost は config.NormalizeHost に委ねる。internal_url の検証と同じ正規化を使うため。
-func normalizeHost(host string) string { return config.NormalizeHost(host) }
+// normalizeHost は hostname.NormalizeHost に委ねる。internal_url の検証と同じ正規化を使うため。
+func normalizeHost(host string) string { return hostname.NormalizeHost(host) }
 
 // forwardedHost は `X-Forwarded-Host` ヘッダーから Host allowlist 検証に
 // 使う値を取り出す。ヘッダーが無ければ ("", false) を返す。

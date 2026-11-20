@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/cutselect"
 	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -1285,7 +1286,7 @@ func (w *IngestWorker) resolveEncodePolicy(in store.EncodePolicyInputs) (store.E
 	// このクランプを下の until_encoded クランプより先に置く。落とした結果 desired が空になった場合
 	// （cut だけのルール）は、下のクランプが keepOriginal を安全側へ倒す。
 	// ここで別の分岐を書くと、「cut を落とした後だけ効く規則」がもう 1 つ増える。
-	if err := config.ValidateCutSelection(encodeProfiles, w.CutProfiles, w.RecordingHLSEnabled); err != nil {
+	if err := cutselect.ValidateCutSelection(encodeProfiles, w.CutProfiles, w.RecordingHLSEnabled); err != nil {
 		slog.Warn("encode policy: frozen profile selection is cut-only; dropping cut profiles",
 			"recording_id", recordingID, "encode_profiles", encodeProfiles)
 		kept := make([]string, 0, len(encodeProfiles))

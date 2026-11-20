@@ -11,6 +11,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/storagename"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -42,7 +43,7 @@ func newStorageAdoptCmd() *cobra.Command {
 				return err
 			}
 			name := args[0]
-			if !mediapath.ValidStoreName(name) {
+			if !storagename.ValidStoreName(name) {
 				return fmt.Errorf("invalid store name %q: use lowercase ASCII letters, digits, and hyphens", name)
 			}
 			storeCfg, ok := cfg.Storage.Stores[name]
