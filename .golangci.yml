@@ -188,10 +188,6 @@ linters:
             - "!${config-path}/internal/thumbnail/seek_tiles_test.go"
             - "!${config-path}/internal/thumbnail/thumbnail_reconcile_test.go"
             - "!${config-path}/internal/thumbnail/thumbnail_test.go"
-            # worker から移した既存の ingest のテスト。
-            - "!${config-path}/internal/ingest/fixtures_test.go"
-            - "!${config-path}/internal/ingest/ingest_cut_policy_test.go"
-            - "!${config-path}/internal/ingest/ingest_test.go"
             # worker から移した既存の転送・削除のテスト。
             - "!${config-path}/internal/storagemaint/delete_reconcile_test.go"
             - "!${config-path}/internal/storagemaint/delete_reconcile_removed_encoded_test.go"

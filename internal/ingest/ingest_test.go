@@ -28,7 +28,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -2404,15 +2403,7 @@ func assertRecordSyncProgramMatchesRecording(t *testing.T, pool *pgxpool.Pool, h
 // ので t.Fatalf する。対応させたい場合は insertTestRecordSyncForSite を使うこと。
 func insertTestRecordSync(t *testing.T, pool *pgxpool.Pool, recordingID int64, recordID string) {
 	t.Helper()
-	q := sqlcgen.New(pool)
-	testutil.RequireNoError(t, q.UpsertRecordSync(context.Background(), sqlcgen.UpsertRecordSyncParams{
-		Site:        "default",
-		RecordID:    recordID,
-		RecordingID: &recordingID,
-		ProgramID:   noProgramRecordSyncProgramID,
-		Status:      "finished",
-		Tags:        []string{},
-	}), "inserting test record_sync")
+	dbtest.RecordSync(t, pool, recordingID, recordID)
 
 	assertRecordSyncProgramMatchesRecording(t, pool, "insertTestRecordSync", "default", recordingID, noProgramRecordSyncProgramID)
 }
@@ -2426,17 +2417,10 @@ func insertTestRecordSync(t *testing.T, pool *pgxpool.Pool, recordingID int64, r
 // 後者で通る）。
 func insertTestRecordSyncForSite(t *testing.T, pool *pgxpool.Pool, site string, recordingID int64, recordID string, programID int64) {
 	t.Helper()
-	q := sqlcgen.New(pool)
-	if err := q.UpsertRecordSync(context.Background(), sqlcgen.UpsertRecordSyncParams{
-		Site:        site,
-		RecordID:    recordID,
-		RecordingID: &recordingID,
-		ProgramID:   programID,
-		Status:      "finished",
-		Tags:        []string{},
-	}); err != nil {
-		t.Fatalf("inserting test record_sync (site=%s): %v", site, err)
-	}
+	dbtest.RecordSync(t, pool, recordingID, recordID, func(p *dbtest.RecordSyncParams) {
+		p.Site = site
+		p.ProgramID = programID
+	})
 
 	assertRecordSyncProgramMatchesRecording(t, pool, "insertTestRecordSyncForSite", site, recordingID, programID)
 }
@@ -2954,33 +2938,17 @@ func newLateHashIngestFake(t *testing.T, recordID string, tsData []byte, content
 // base の無い手動予約を作る。base だけは setReservationBase で後から模す
 // （reservations の実運用上の書き手は ruler の 1 パス UPSERT だけで、
 // internal/ruler 内の unexported 関数はテストから直接呼べないため）。
-func insertProgramSnapshotAndReservation(t *testing.T, pool *pgxpool.Pool, programID int64, title string) sqlcgen.Reservation {
+func insertProgramSnapshotAndReservation(t *testing.T, pool *pgxpool.Pool, programID int64, title string) {
 	t.Helper()
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
-	testutil.RequireNoError(t, q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site:        "default",
-		ProgramID:   programID,
-		Title:       title,
-		StartAt:     time.Now(),
-		DurationMs:  1800000,
-		NetworkID:   32736,
-		ServiceID:   1024,
-		ChannelType: "GR",
-		Channel:     "27",
-		EventID:     int32(programID % 100000),
-		ServiceName: "テスト局",
-	}), "upserting program snapshot")
-	res, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site:      "default",
-		ProgramID: programID,
+	dbtest.ProgramSnapshot(t, pool, programID, func(p *dbtest.ProgramSnapshotParams) {
+		p.Title = title
+		p.StartAt = time.Now()
 	})
-	testutil.RequireNoError(t, err, "creating reservation")
+	dbtest.ManualReservation(t, pool, programID)
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(),
 			"DELETE FROM program_snapshots WHERE site = $1 AND program_id = $2", "default", programID)
 	})
-	return res
 }
 
 // setReservationBase は ruler が書く reservations.base を模したテスト用フィクスチャ。
@@ -3089,7 +3057,7 @@ func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
 	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "already-committed/stale-cut.g1.mp4")
 	frozen, _, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
 	testutil.RequireNoError(t, err, "deriving initial keep ranges")
-	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, frozen), "seeding frozen ranges")
+	dbtest.SetMediaAssetCuts(t, pool, assetID, frozen)
 	dbtest.ChapterSpan(t, pool, recordingID, func(p *dbtest.ChapterSpanParams) {
 		p.StartMs = 1200000
 		p.EndMs = 1300000
@@ -3189,8 +3157,8 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	}
 
 	programID := int64(900000000000001)
-	res := insertProgramSnapshotAndReservation(t, pool, programID, "ルール予約番組")
-	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
+	insertProgramSnapshotAndReservation(t, pool, programID, "ルール予約番組")
+	setReservationBase(t, pool, programID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
 	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
@@ -3248,12 +3216,10 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 	if pool == nil {
 		return
 	}
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	programID := int64(900000000000002)
-	res := insertProgramSnapshotAndReservation(t, pool, programID, "上書き予約番組")
-	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"always","encodeProfiles":["h264"]}`)
+	insertProgramSnapshotAndReservation(t, pool, programID, "上書き予約番組")
+	setReservationBase(t, pool, programID, `{"keepOriginal":"always","encodeProfiles":["h264"]}`)
 
 	overrides, err := json.Marshal(map[string]any{
 		"keepOriginal":   "until_encoded",
@@ -3262,13 +3228,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site:      "default",
-		ProgramID: programID,
-		Overrides: overrides,
-	}); err != nil {
-		t.Fatalf("setting override: %v", err)
-	}
+	dbtest.ProgramOverrides(t, pool, programID, func(p *dbtest.ProgramOverridesParams) { p.Overrides = overrides })
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(),
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
@@ -3337,12 +3297,10 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 	if pool == nil {
 		return
 	}
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	programID := int64(900000000000003)
-	res := insertProgramSnapshotAndReservation(t, pool, programID, "ドリフト予約番組")
-	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"always","encodeProfiles":["h264"]}`)
+	insertProgramSnapshotAndReservation(t, pool, programID, "ドリフト予約番組")
+	setReservationBase(t, pool, programID, `{"keepOriginal":"always","encodeProfiles":["h264"]}`)
 
 	overrides, err := json.Marshal(map[string]any{
 		"keepOriginal":   "until_encoded",
@@ -3351,13 +3309,7 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site:      "default",
-		ProgramID: programID,
-		Overrides: overrides,
-	}); err != nil {
-		t.Fatalf("setting override: %v", err)
-	}
+	dbtest.ProgramOverrides(t, pool, programID, func(p *dbtest.ProgramOverridesParams) { p.Overrides = overrides })
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(),
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
@@ -3468,7 +3420,7 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 // このテストは「そうなる」ことを固定する ---
 // TestIngestWorker_NoReservation_LeavesEncodePolicyDefault が「予約が最初から
 // 無い」を模すのに対し、こちらは**予約と意図が確かに存在したうえで GC に刈られた**
-// 経路を、実際の GC クエリ（DeleteEndedProgramSnapshots）を通して模す。
+// 経路を、ruler の GC の契約（RulerPass.PruneEndedSnapshots）を通して模す。
 //
 // **record_sync の program_id を programID に一致させるのが要点。** GC を未 ingest の
 // record_sync と連動させる案（issue #214 の案 1）は、record_sync が持つ唯一の
@@ -3480,7 +3432,7 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 // 使い、案 1 の鍵付けを実際に成立させる。
 //
 // 案 1 を (site, program_id) で実装すると、このテストは
-// 「DeleteEndedProgramSnapshots deleted 0 rows, want 1」で落ちる（確認済み）。
+// 「PruneEndedSnapshots deleted 0 rows, want 1」で落ちる（確認済み）。
 // 決定を変えるならこのテストも一緒に変える。
 func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 	t.Parallel()
@@ -3489,11 +3441,10 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 		return
 	}
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	programID := int64(900000000000010)
-	res := insertProgramSnapshotAndReservation(t, pool, programID, "滞留番組")
-	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
+	insertProgramSnapshotAndReservation(t, pool, programID, "滞留番組")
+	setReservationBase(t, pool, programID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
 	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
@@ -3508,12 +3459,12 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 		"default", programID,
 	)
 
-	// ruler の GC 本体（internal/ruler.runGC が呼ぶのと同じクエリ）。FK CASCADE で
+	// ruler の GC 本体（internal/ruler.runGC が呼ぶ RulerPass.PruneEndedSnapshots と同じ契約）。FK CASCADE で
 	// reservations / program_intents / program_overrides も一緒に落ちる。
-	deleted, err := q.DeleteEndedProgramSnapshots(ctx, time.Now().Add(-24*time.Hour))
+	deleted, err := pgstoretest.Reservations(pool).PruneEndedSnapshots(ctx, time.Now().Add(-24*time.Hour))
 	testutil.RequireNoError(t, err, "running GC")
 	if deleted != 1 {
-		t.Fatalf("DeleteEndedProgramSnapshots deleted %d rows, want 1 "+
+		t.Fatalf("PruneEndedSnapshots deleted %d rows, want 1 "+
 			"（未 ingest の record_sync（program_id=%d）があるスナップショットも刈るのが issue #214 の決定。"+
 			"GC を record_sync と連動させる案 1 を実装したならここで落ちる —— 決定を変えるならこのテストも変える）",
 			deleted, programID)
@@ -3587,11 +3538,10 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 		return
 	}
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	programID := int64(900000000000004)
-	res := insertProgramSnapshotAndReservation(t, pool, programID, "再実体化予約番組")
-	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
+	insertProgramSnapshotAndReservation(t, pool, programID, "再実体化予約番組")
+	setReservationBase(t, pool, programID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
 	// watcher.createRecording が録画開始時に放送イベントキーを焼いた状態を模す。
 	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
@@ -3601,16 +3551,13 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 
 	// ruler の導出削除 → 再実体化を模す（同じキーで DELETE → 再 INSERT する。
 	// 理由はこの関数の doc コメント）。
-	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, res.Site, res.ProgramID); err != nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, "default", programID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
-	res2, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{
-		Site: "default", ProgramID: programID,
-	})
-	testutil.RequireNoError(t, err, "re-materializing reservation")
+	dbtest.ManualReservation(t, pool, programID)
 	// ruler は再実体化のたびに射影から base を書き直す。テストではその 1 パスを
 	// 模して同じ base を新しい行に立て直す（setReservationBase 参照）。
-	setReservationBase(t, pool, res2.ProgramID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
+	setReservationBase(t, pool, programID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
 	tsData := makeTSData(20)
 	fake := newFullTransferFake(t, "rec-policy-rematerialized", tsData, "test/policy-rematerialized.m2ts")
@@ -3666,7 +3613,7 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 	ctx := context.Background()
 
 	programID := int64(900000000000005)
-	res := insertProgramSnapshotAndReservation(t, pool, programID, "恒久削除予約番組")
+	insertProgramSnapshotAndReservation(t, pool, programID, "恒久削除予約番組")
 	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
 	})
@@ -3678,7 +3625,7 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 	// JOIN 失敗の 3 つ目の原因（GC は設計どおり走ったが ingest が猶予を跨いで
 	// 遅れた。issue #214）は TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults
 	// が別に持つ —— そちらは異常系ではなく設計が許容するシナリオ。
-	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, res.Site, res.ProgramID); err != nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, "default", programID); err != nil {
 		t.Fatalf("deleting reservation: %v", err)
 	}
 
@@ -3821,15 +3768,10 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 		return
 	}
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	programID := int64(900000000000011)
 	insertProgramSnapshotAndReservation(t, pool, programID, "手動意図の GC 番組")
-	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: "default", ProgramID: programID, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatalf("creating record intent: %v", err)
-	}
+	dbtest.ProgramIntent(t, pool, programID, func(p *dbtest.ProgramIntentParams) { p.Action = reservation.IntentRecord })
 	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
 	})
@@ -3952,8 +3894,7 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 			job := jobs.IngestJobArgs{Site: "tokyo", RecordID: recordID}
 			testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "Work() error")
 
-			q := sqlcgen.New(pool)
-			asset, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingID})
+			asset, err := pgstoretest.Media(pool).GetActiveOriginalMediaAsset(context.Background(), recordingID)
 			testutil.RequireNoError(t, err, "GetActiveOriginalMediaAsset")
 			assertIngestRelPath(t, asset.RelPath, "tokyo", tc.wantName)
 			fullPath := filepath.Join(mediaDir, filepath.FromSlash(asset.RelPath))
@@ -4088,10 +4029,9 @@ func TestIngestWorker_SameContentFilenameGetsUniquePaths(t *testing.T) {
 		t.Fatalf("second Work() error: %v (same filename %q must get a fresh path)", err, filepath.Base(sharedContentPath))
 	}
 
-	q := sqlcgen.New(pool)
-	assetA, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingIDA})
+	assetA, err := pgstoretest.Media(pool).GetActiveOriginalMediaAsset(context.Background(), recordingIDA)
 	testutil.RequireNoError(t, err, "GetActiveOriginalMediaAsset(first recording)")
-	assetB, err := q.GetActiveOriginalMediaAsset(context.Background(), sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: recordingIDB})
+	assetB, err := pgstoretest.Media(pool).GetActiveOriginalMediaAsset(context.Background(), recordingIDB)
 	testutil.RequireNoError(t, err, "GetActiveOriginalMediaAsset(second recording)")
 	if assetA.RelPath == assetB.RelPath {
 		t.Fatalf("both recordings committed the same rel_path %q", assetA.RelPath)
@@ -4244,7 +4184,6 @@ func TestIngestWorker_UsesFreshPathWhenFilenameHasTombstone(t *testing.T) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 311
 	})
 	const reusedRelPath = "sites/default/shared/reused.m2ts"
-	q := sqlcgen.New(pool)
 	deletedAssetID := dbtest.MediaAsset(t, pool, deletedRecordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = reusedRelPath
 		fixtureParams.SizeBytes = 9
@@ -4279,7 +4218,7 @@ func TestIngestWorker_UsesFreshPathWhenFilenameHasTombstone(t *testing.T) {
 		t.Fatalf("Work() error = %v, want nil", err)
 	}
 
-	asset, err := q.GetActiveOriginalMediaAsset(ctx, sqlcgen.GetActiveOriginalMediaAssetParams{RecordingID: newRecordingID})
+	asset, err := pgstoretest.Media(pool).GetActiveOriginalMediaAsset(ctx, newRecordingID)
 	testutil.RequireNoError(t, err, "GetActiveOriginalMediaAsset")
 	if asset.RelPath == reusedRelPath {
 		t.Fatalf("new media_asset reused tombstoned rel_path %q", reusedRelPath)

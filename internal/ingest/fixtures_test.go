@@ -13,10 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
@@ -25,7 +23,6 @@ import (
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -151,7 +148,6 @@ func cutFFmpegProfile() config.EncodeProfile {
 // 世代は relPath の stem から読む。
 func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile, relPath string) int64 {
 	t.Helper()
-	ctx := context.Background()
 	profileName := profile
 	stem := strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
 	var generation int64
@@ -160,36 +156,17 @@ func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profi
 	} else if _, g, ok := config.SplitUncutGeneration(stem); ok {
 		generation = int64(g)
 	}
-	assetID, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "encoded",
-		RecordingID:       recordingID,
-		Profile:           &profileName,
-		SizeBytes:         1,
-		DerivedGeneration: generation,
+	assetID := dbtest.DerivedMediaAsset(t, pool, recordingID, "encoded", func(p *dbtest.DerivedMediaAssetParams) {
+		p.Profile = &profileName
+		p.SizeBytes = 1
+		p.Generation = generation
 	})
-	testutil.RequireNoError(t, err, "seeding encoded media_asset")
-	_, err = sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: relPath,
-		Generation: generation, State: "active",
+	dbtest.MediaAssetCopy(t, pool, assetID, func(p *dbtest.MediaAssetCopyParams) {
+		p.RelPath = relPath
+		p.Generation = generation
+		p.State = "active"
 	})
-	testutil.RequireNoError(t, err, "seeding encoded media_asset copy")
 	return assetID
-}
-
-// setFrozenCuts は media_asset_cuts を直接書く（テストが前状態を作るために使う）。
-func setFrozenCuts(t *testing.T, pool *pgxpool.Pool, assetID int64, keep []chapters.Range) error {
-	t.Helper()
-	ranges, err := pgstore.KeepRangesParam(keep)
-	if err != nil {
-		return err
-	}
-	q := sqlcgen.New(pool)
-	if err := q.DeleteMediaAssetCuts(context.Background(), assetID); err != nil {
-		return err
-	}
-	return q.InsertMediaAssetCuts(context.Background(), sqlcgen.InsertMediaAssetCutsParams{
-		MediaAssetID: assetID,
-		KeepRanges:   ranges,
-	})
 }
 
 // runEncodeReconcilePass は引数なしの reconcile を 1 回走らせる。

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -28,22 +27,17 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 	if pool == nil {
 		return
 	}
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	programID := int64(900000000000007)
-	res := insertProgramSnapshotAndReservation(t, pool, programID, "cut だけになる予約番組")
-	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"always","encodeProfiles":["cut","h264"]}`)
+	insertProgramSnapshotAndReservation(t, pool, programID, "cut だけになる予約番組")
+	setReservationBase(t, pool, programID, `{"keepOriginal":"always","encodeProfiles":["cut","h264"]}`)
 
 	overrides, err := json.Marshal(map[string]any{
 		// h264 を明示的に打ち消す → 実効値は cut だけ。
 		"encodeProfiles": []string{"cut"},
 	})
 	testutil.RequireNoError(t, err, "json.Marshal")
-	_, err = q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: "default", ProgramID: programID, Overrides: overrides,
-	})
-	testutil.RequireNoError(t, err, "setting override")
+	dbtest.ProgramOverrides(t, pool, programID, func(p *dbtest.ProgramOverridesParams) { p.Overrides = overrides })
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(),
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
@@ -98,19 +92,14 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 	if pool == nil {
 		return
 	}
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	programID := int64(900000000000008)
-	res := insertProgramSnapshotAndReservation(t, pool, programID, "live 有効で cut だけになる予約番組")
-	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"always","encodeProfiles":["cut","h264"]}`)
+	insertProgramSnapshotAndReservation(t, pool, programID, "live 有効で cut だけになる予約番組")
+	setReservationBase(t, pool, programID, `{"keepOriginal":"always","encodeProfiles":["cut","h264"]}`)
 
 	overrides, err := json.Marshal(map[string]any{"encodeProfiles": []string{"cut"}})
 	testutil.RequireNoError(t, err, "json.Marshal")
-	_, err = q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: "default", ProgramID: programID, Overrides: overrides,
-	})
-	testutil.RequireNoError(t, err, "setting override")
+	dbtest.ProgramOverrides(t, pool, programID, func(p *dbtest.ProgramOverridesParams) { p.Overrides = overrides })
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(),
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
