@@ -829,7 +829,6 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 	tunerStore := pgstore.NewTuners(pool)
 	analysisStore := pgstore.NewAnalysis(pool, "")
 	recordingStore := pgstore.NewRecordings(pool, "")
-	catalogStore := pgstore.NewCatalog(pool, registryNames(cfg.Registry()), "")
 	base := &worker.Deps{
 		Enqueuer:                 deferred,
 		EPGSync:                  pgstore.NewEPG(pool),
@@ -842,30 +841,19 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		NeverScheduled:           neverScheduledStore,
 		ScheduleSync:             scheduleSyncStore,
 		RecordObservations:       recordingStore,
-		IngestTarget:             recordingStore,
-		Catalog:                  catalogStore,
-		CMStationStore:           analysisStore,
-		CMDetectionStore:         analysisStore,
+		UnscopedCMDetectionStore: analysisStore,
 		TunerStore:               tunerStore,
 		CapacityStore:            tunerStore,
-		RecordingPurge:           recordingStore,
 		LabelRuleReevaluation:    pgstore.NewLabelRules(pool),
-		MediaReconcile:           mediaStore,
-		MediaPublish:             mediaStore,
+		UnscopedMediaReconcile:   mediaStore,
 		DerivedObjects:           derivedObjects,
 		DerivedObjectStoreName:   cfg.Storage.Derived,
 		StorageObjects:           storageObjects,
-		IngestPrecheck:           mediaStore,
-		EncodeProgress:           mediaStore,
-		MediaDelete:              mediaStore,
-		MediaPendingReclaim:      mediaStore,
-		StorageTransfer:          mediaStore,
+		UnscopedStorageTransfer:  mediaStore,
 		StorageTransferPolicy:    cfg.Storage,
 		StorageRoots:             roots,
 		MountedStores:            mounted,
-		TSScan:                   mediaStore,
-		EncodeAttempts:           mediaStore,
-		StorageObservation:       mediaStore,
+		UnscopedTSScan:           mediaStore,
 		OriginalLocator:          mediaStore,
 		IngestStores:             mediaStore,
 		TransferOverlap:          cfg.Storage.Transfer.Overlap,
@@ -884,7 +872,7 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 		Webhook:                  webhookClient,
 		Cleanup:                  cfg.Cleanup,
 	}
-	base.PerStore = newPerStoreWorkerDeps(pool, cfg, base, roots, derivedObjects)
+	base.PerStore = newPerStoreWorkerDeps(pool, cfg, roots, derivedObjects)
 	workers := worker.NewWorkers(base)
 	adapter, err := riveradapter.NewAdapter(pool, workers, jobs.PhysicalQueueFor, clientCfg)
 	if err != nil {
@@ -894,11 +882,11 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, bound []config.
 	return adapter, nil
 }
 
-// newPerStoreWorkerDeps は、サーバーがマウントした FS 置き場ごとに worker.Deps を作る。
-func newPerStoreWorkerDeps(pool *pgxpool.Pool, cfg *config.Config, base *worker.Deps, roots map[string]string, derivedObjects objstore.Store) map[string]*worker.Deps {
-	perStore := make(map[string]*worker.Deps, len(roots))
+// newPerStoreWorkerDeps は、サーバーがマウントした FS 置き場ごとに worker.StoreDeps を作る。
+func newPerStoreWorkerDeps(pool *pgxpool.Pool, cfg *config.Config, roots map[string]string, derivedObjects objstore.Store) map[string]*worker.StoreDeps {
+	perStore := make(map[string]*worker.StoreDeps, len(roots))
 	for _, name := range sortedKeys(roots) {
-		perStore[name] = newStoreScopedDeps(pool, cfg, base, name, roots[name], derivedObjects)
+		perStore[name] = newStoreScopedDeps(pool, cfg, name, roots[name], derivedObjects)
 	}
 	return perStore
 }
@@ -926,38 +914,31 @@ func newDerivedObjects(ctx context.Context, storage config.StorageConfig, mounte
 	}
 }
 
-// newStoreScopedDeps は、置き場 name に束ねた worker.Deps を base から作る。
-// 置き場で修飾するキューのワーカーと ingest がこの Deps を使う。置き場に束ねた store・root・名前だけを
-// 差し替え、それ以外は base と同じ値を持つ。
-func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, base *worker.Deps, name, root string, derivedObjects objstore.Store) *worker.Deps {
-	scoped := *base
-	scoped.PerStore = nil
+// newStoreScopedDeps は、置き場 name に束ねた worker.StoreDeps を新しく組み立てる。
+// 置き場で修飾するキューのワーカーと ingest がこの値を使う。
+func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, name, root string, derivedObjects objstore.Store) *worker.StoreDeps {
 	mediaStore := pgstore.NewMediaWithStores(pool, name, name, cfg.Storage.Derived)
 	analysisStore := pgstore.NewAnalysis(pool, name)
 	recordingStore := pgstore.NewRecordings(pool, name)
-	scoped.MediaDir = root
-	scoped.MediaStoreName = name
-	scoped.MediaReconcile = mediaStore
-	scoped.MediaPublish = mediaStore
-	scoped.IngestPrecheck = mediaStore
-	scoped.EncodeProgress = mediaStore
-	scoped.MediaDelete = mediaStore
-	scoped.MediaPendingReclaim = mediaStore
-	scoped.StorageTransfer = mediaStore
-	scoped.TSScan = mediaStore
-	scoped.EncodeAttempts = mediaStore
-	scoped.StorageObservation = mediaStore
-	scoped.CMStationStore = analysisStore
-	scoped.CMDetectionStore = analysisStore
-	scoped.IngestTarget = recordingStore
-	scoped.RecordingPurge = recordingStore
-	scoped.Catalog = pgstore.NewCatalog(pool, registryNames(cfg.Registry()), name)
-	scoped.DerivedMediaPublish = nil
-	scoped.DerivedMediaDelete = nil
-	scoped.DerivedStorage = nil
-	scoped.DerivedPendingReclaim = nil
-	scoped.DerivedObjects = derivedObjects
-	scoped.DerivedObjectStoreName = cfg.Storage.Derived
+	scoped := &worker.StoreDeps{
+		MediaDir:            root,
+		MediaStoreName:      name,
+		MediaReconcile:      mediaStore,
+		MediaPublish:        mediaStore,
+		IngestPrecheck:      mediaStore,
+		EncodeProgress:      mediaStore,
+		MediaDelete:         mediaStore,
+		MediaPendingReclaim: mediaStore,
+		StorageTransfer:     mediaStore,
+		TSScan:              mediaStore,
+		EncodeAttempts:      mediaStore,
+		StorageObservation:  mediaStore,
+		CMStationStore:      analysisStore,
+		CMDetectionStore:    analysisStore,
+		IngestTarget:        recordingStore,
+		RecordingPurge:      recordingStore,
+		Catalog:             pgstore.NewCatalog(pool, registryNames(cfg.Registry()), name),
+	}
 	if derivedObjects != nil {
 		derivedMedia := pgstore.NewMediaWithStores(pool, cfg.Storage.Derived, name, cfg.Storage.Derived)
 		scoped.DerivedMediaPublish = derivedMedia
@@ -974,7 +955,7 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, base *worker.Dep
 			scoped.DerivedPendingReclaim = derivedMedia
 		}
 	}
-	return &scoped
+	return scoped
 }
 
 // superviseOnceMode は once モードの完了を待ち、プロセス停止を開始する。

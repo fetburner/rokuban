@@ -16,11 +16,11 @@ import (
 
 type deleteRouteBreakers struct {
 	store.Breakers
-	err error
+	errs map[string]error
 }
 
-func (b deleteRouteBreakers) IsTripped(context.Context, string, string) (bool, error) {
-	return false, b.err
+func (b deleteRouteBreakers) IsTripped(_ context.Context, scope, _ string) (bool, error) {
+	return false, b.errs[scope]
 }
 
 type transferRegistrationStore struct {
@@ -63,14 +63,15 @@ func TestNewWorkersRegistersStorageMaintenanceJobs(t *testing.T) {
 	fingerprint, err := policy.PolicyFingerprint()
 	testutil.RequireNoError(t, err, "fingerprinting storage policy")
 	registry := NewWorkers(&Deps{
-		Enqueuer:              &jobqfaketest.RecordingEnqueuer{},
-		StorageTransfer:       transferRegistrationStore{reconcileErr: reconcileErr, transferErr: transferErr},
-		StorageTransferPolicy: policy,
-		StorageRoots:          map[string]string{"tokyo": tokyoRoot, "nagoya": nagoyaRoot},
-		PerStore: map[string]*Deps{
-			"tokyo":   {MediaDir: tokyoRoot, MediaStoreName: "tokyo", Breakers: deleteRouteBreakers{err: tokyoErr}},
-			"nagoya":  {MediaDir: nagoyaRoot, MediaStoreName: "nagoya", Breakers: deleteRouteBreakers{err: nagoyaErr}},
-			"swapped": {MediaDir: tokyoRoot, MediaStoreName: "swapped", Breakers: deleteRouteBreakers{err: tokyoErr}},
+		Enqueuer:                &jobqfaketest.RecordingEnqueuer{},
+		Breakers:                deleteRouteBreakers{errs: map[string]error{"tokyo": tokyoErr, "nagoya": nagoyaErr}},
+		UnscopedStorageTransfer: transferRegistrationStore{reconcileErr: reconcileErr, transferErr: transferErr},
+		StorageTransferPolicy:   policy,
+		StorageRoots:            map[string]string{"tokyo": tokyoRoot, "nagoya": nagoyaRoot},
+		PerStore: map[string]*StoreDeps{
+			"tokyo":   {MediaDir: tokyoRoot, MediaStoreName: "tokyo"},
+			"nagoya":  {MediaDir: nagoyaRoot, MediaStoreName: "nagoya"},
+			"swapped": {MediaDir: tokyoRoot, MediaStoreName: "swapped"},
 		},
 	})
 
