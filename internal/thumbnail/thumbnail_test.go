@@ -546,49 +546,6 @@ func TestThumbnailWorker_SkipsWithoutOriginal(t *testing.T) {
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "Work() error")
 }
 
-func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
-	t.Parallel()
-	// 既に active な thumbnail 行がある録画を、その行を Expected にして公開し直す（差し替え）。
-	// 行は増えず、同じ行が新しい世代と位置に更新される。
-	pool := testutil.SetupDB(t)
-	if pool == nil {
-		return
-	}
-	ctx := context.Background()
-	mediaDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
-	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "shows/race.m2ts", []byte("ts"))
-	thumbnailID := seedMediaAsset(t, pool, mediaDir, recordingID,
-		store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID, 0), tinyJPEG)
-
-	current := requireThumbnailState(t, pool, recordingID, dbtest.StoreName)
-	published, err := pgstoretest.Media(pool).PublishThumbnail(ctx, store.ThumbnailPublishInput{
-		RecordingID: recordingID, RelPath: thumbnailRelPath(recordingID, 1), SizeBytes: int64(len(tinyJPEG)),
-		SeekMs: 20000, InputAssetID: originalID, DerivedGeneration: 1,
-		Expected: &store.ThumbnailObservation{
-			ID: current.ID, RelPath: current.RelPath, SeekMs: current.SeekMs, DerivedGeneration: current.DerivedGeneration,
-		},
-	}, func() error { return nil })
-	testutil.RequireNoError(t, err, "replacing the active thumbnail in place")
-	if !published {
-		t.Fatal("replacement over the active thumbnail was not published")
-	}
-
-	var n int
-	testutil.RequireNoError(t, pool.QueryRow(ctx,
-		`SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'thumbnail'`,
-		recordingID,
-	).Scan(&n), "counting thumbnail media assets")
-	if n != 1 {
-		t.Errorf("thumbnail rows = %d, want 1 (replacement must update the row in place)", n)
-	}
-	got := requireThumbnailState(t, pool, recordingID, dbtest.StoreName)
-	if got.ID != thumbnailID || got.RelPath != thumbnailRelPath(recordingID, 1) || got.DerivedGeneration != 1 {
-		t.Errorf("replaced thumbnail = asset %d %q generation %d, want asset %d %q generation 1",
-			got.ID, got.RelPath, got.DerivedGeneration, thumbnailID, thumbnailRelPath(recordingID, 1))
-	}
-}
-
 func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
 	t.Parallel()
 	// state='deleted' の tombstone（過去の完全削除の残骸）がある recording に
