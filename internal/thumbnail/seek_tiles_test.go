@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -20,11 +21,6 @@ import (
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
-
-func testStoreNameArg() *string {
-	name := dbtest.StoreName
-	return &name
-}
 
 // TestSeekTileCount は枚数の決定を実装の定数ではなくリテラルで固定する。
 //
@@ -201,7 +197,7 @@ func (c *countingRunCmd) run(_ context.Context, name string, args ...string) ([]
 	return nil, os.WriteFile(out, content, 0o644)
 }
 
-func seedOriginalForSeekTiles(t *testing.T, db sqlcgen.DBTX, mediaDir string, recordingID int64, rel string) {
+func seedOriginalForSeekTiles(t *testing.T, db *pgxpool.Pool, mediaDir string, recordingID int64, rel string) {
 	const content = "fake-ts"
 	t.Helper()
 	full := filepath.Join(mediaDir, filepath.FromSlash(rel))
@@ -322,7 +318,7 @@ func TestSeekTilesWorker_CreatesAsset(t *testing.T) {
 		t.Errorf("ffmpeg calls = %d, want 11 (10 tiles + 1 compose)", cmd.calls)
 	}
 
-	row, err := sqlcgen.New(pool).GetSeekTilesMediaAssetForServing(context.Background(), sqlcgen.GetSeekTilesMediaAssetForServingParams{RecordingID: recordingID})
+	row, err := pgstoretest.Media(pool).GetSeekTilesMediaAssetForServing(context.Background(), recordingID)
 	testutil.RequireNoError(t, err, "seek_tiles asset missing")
 	if row.RelPath != "thumbnails/1_tiles.jpg" && row.RelPath != fmt.Sprintf("thumbnails/%d_tiles.jpg", recordingID) {
 		t.Errorf("rel_path = %q, want thumbnails/%d_tiles.jpg", row.RelPath, recordingID)
@@ -410,7 +406,7 @@ func TestSeekTilesWorker_RecreatesAtUnusedGeneration(t *testing.T) {
 
 	cmd.outputContent = []byte("replacement tile sheet")
 	testutil.RequireNoError(t, runSeekTilesJob(t, w, recordingID), "recreating seek_tiles")
-	row, err := sqlcgen.New(pool).GetSeekTilesMediaAssetForServing(ctx, sqlcgen.GetSeekTilesMediaAssetForServingParams{RecordingID: recordingID})
+	row, err := pgstoretest.Media(pool).GetSeekTilesMediaAssetForServing(ctx, recordingID)
 	testutil.RequireNoError(t, err, "loading recreated seek_tiles")
 	if want := seekTilesRelPath(recordingID, 2); row.RelPath != want {
 		t.Errorf("recreated rel_path = %q, want %q", row.RelPath, want)
@@ -485,9 +481,9 @@ func TestSeekTilesWorker_CommitsNothingOnFailure(t *testing.T) {
 			if err := runSeekTilesJob(t, w, recordingID); err == nil {
 				t.Fatal("Work() succeeded, want an error")
 			}
-			if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
-				RecordingID: recordingID, StoreName: testStoreNameArg(),
-			}); err == nil {
+			if has, err := pgstoretest.Media(pool).HasActiveSeekTilesMediaAsset(context.Background(), recordingID); err != nil {
+				t.Fatalf("checking seek_tiles row: %v", err)
+			} else if has {
 				t.Error("seek_tiles row was committed even though the run failed")
 			}
 			if _, err := os.Stat(filepath.Join(mediaDir, "thumbnails", fmt.Sprintf("%d_tiles.jpg", recordingID))); err == nil {
@@ -547,10 +543,8 @@ func TestSeekTilesWorker_LastTileStaysBeforeVideoEnd(t *testing.T) {
 	if want := []string{"0.000", "10.000", "20.000", "29.020"}; !slices.Equal(cmd.seeks, want) {
 		t.Errorf("seeks = %v, want %v", cmd.seeks, want)
 	}
-	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
-		RecordingID: recordingID, StoreName: testStoreNameArg(),
-	}); err != nil {
-		t.Errorf("seek_tiles row was not committed: %v", err)
+	if has, err := pgstoretest.Media(pool).HasActiveSeekTilesMediaAsset(context.Background(), recordingID); err != nil || !has {
+		t.Errorf("seek_tiles row was not committed: present %v, err %v", has, err)
 	}
 }
 
@@ -575,10 +569,8 @@ func TestSeekTilesWorker_LastTileFallsBackToPrevious(t *testing.T) {
 	if want := []string{"0.000", "10.000", "20.000", "30.000", "39.007"}; !slices.Equal(cmd.seeks, want) {
 		t.Errorf("seeks = %v, want %v", cmd.seeks, want)
 	}
-	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
-		RecordingID: recordingID, StoreName: testStoreNameArg(),
-	}); err != nil {
-		t.Errorf("seek_tiles row was not committed: %v", err)
+	if has, err := pgstoretest.Media(pool).HasActiveSeekTilesMediaAsset(context.Background(), recordingID); err != nil || !has {
+		t.Errorf("seek_tiles row was not committed: present %v, err %v", has, err)
 	}
 }
 
@@ -602,9 +594,7 @@ func TestSeekTilesWorker_UsesVideoStreamDuration(t *testing.T) {
 	if want := []string{"0.000", "10.000"}; !slices.Equal(cmd.seeks, want) {
 		t.Errorf("seeks = %v, want %v", cmd.seeks, want)
 	}
-	if _, err := sqlcgen.New(pool).GetActiveSeekTilesMediaAssetID(context.Background(), sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
-		RecordingID: recordingID, StoreName: testStoreNameArg(),
-	}); err != nil {
-		t.Errorf("seek_tiles row was not committed: %v", err)
+	if has, err := pgstoretest.Media(pool).HasActiveSeekTilesMediaAsset(context.Background(), recordingID); err != nil || !has {
+		t.Errorf("seek_tiles row was not committed: present %v, err %v", has, err)
 	}
 }

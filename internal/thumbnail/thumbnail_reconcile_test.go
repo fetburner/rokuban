@@ -11,8 +11,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -59,7 +59,6 @@ func TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAl
 	if pool == nil {
 		return
 	}
-	ctx := context.Background()
 	mediaDir := t.TempDir()
 	first := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 981
@@ -83,22 +82,10 @@ func TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAl
 		store.AssetKindThumbnail, nil, thumbnailRelPath(target, 0), []byte("old-thumbnail"))
 	thirdThumbnailID := seedMediaAsset(t, pool, mediaDir, third,
 		store.AssetKindThumbnail, nil, thumbnailRelPath(third, 0), []byte("old-thumbnail"))
-	testutil.RequireNoError(t, sqlcgen.New(pool).SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
-		RecordingID: target,
-		CmRanges:    "{[0,60000)}",
-	}), "seeding CM ranges")
-	testutil.RequireNoError(t, sqlcgen.New(pool).SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
-		RecordingID: third,
-		CmRanges:    "{[0,60000)}",
-	}), "seeding unrelated CM ranges")
-	testutil.RequireNoError(t, sqlcgen.New(pool).UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
-		MediaAssetID: thumbnailID,
-		SeekMs:       30000,
-	}), "seeding thumbnail seek")
-	testutil.RequireNoError(t, sqlcgen.New(pool).UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
-		MediaAssetID: thirdThumbnailID,
-		SeekMs:       30000,
-	}), "seeding unrelated thumbnail seek")
+	seedCMRanges(t, pool, target, []chapters.Range{{StartMs: 0, EndMs: 60000}})
+	seedCMRanges(t, pool, third, []chapters.Range{{StartMs: 0, EndMs: 60000}})
+	setThumbnailSeek(t, pool, thumbnailID, 30000)
+	setThumbnailSeek(t, pool, thirdThumbnailID, 30000)
 
 	metrics.ThumbnailReconcileCandidates.Set(19)
 	t.Cleanup(func() {
@@ -270,10 +257,11 @@ func TestThumbnailReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testi
 	}
 	job := jobs.ThumbnailJobArgs{RecordingID: recordingID}
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), thumbnailWorker, job), "ThumbnailWorker.Work")
-	_, err := sqlcgen.New(pool).GetActiveThumbnailMediaAssetID(context.Background(), sqlcgen.GetActiveThumbnailMediaAssetIDParams{
-		RecordingID: recordingID, StoreName: testStoreNameArg(),
-	})
-	testutil.RequireNoError(t, err, "thumbnail was not born after periodic recovery")
+	has, err := pgstoretest.Media(pool).HasActiveThumbnailMediaAsset(context.Background(), recordingID)
+	testutil.RequireNoError(t, err, "checking recovered thumbnail")
+	if !has {
+		t.Fatal("thumbnail was not born after periodic recovery")
+	}
 }
 
 func TestThumbnailReconcile_EnqueuesOnlyWhenRecordedThumbnailIsInCM(t *testing.T) {
@@ -283,7 +271,6 @@ func TestThumbnailReconcile_EnqueuesOnlyWhenRecordedThumbnailIsInCM(t *testing.T
 		return
 	}
 
-	ctx := context.Background()
 	mediaDir := t.TempDir()
 	inCM := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 941
@@ -291,24 +278,17 @@ func TestThumbnailReconcile_EnqueuesOnlyWhenRecordedThumbnailIsInCM(t *testing.T
 	inKeep := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 942
 	})
-	q := sqlcgen.New(pool)
 	for _, recordingID := range []int64{inCM, inKeep} {
 		seedOriginalAsset(t, pool, mediaDir, recordingID,
 			fmt.Sprintf("reselect/%d.ts", recordingID), []byte("fake-ts"))
 		thumbID := seedMediaAsset(t, pool, mediaDir, recordingID,
 			store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID, 0), []byte("old-thumbnail"))
-		testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
-			RecordingID: recordingID,
-			CmRanges:    "{[0,60000)}",
-		}), fmt.Sprintf("seeding CM ranges for %d", recordingID))
+		seedCMRanges(t, pool, recordingID, []chapters.Range{{StartMs: 0, EndMs: 60000}})
 		seek := int64(30000)
 		if recordingID == inKeep {
 			seek = 60000
 		}
-		testutil.RequireNoError(t, q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
-			MediaAssetID: thumbID,
-			SeekMs:       seek,
-		}), fmt.Sprintf("seeding thumbnail seek for %d", recordingID))
+		setThumbnailSeek(t, pool, thumbID, seek)
 	}
 
 	w := &ThumbnailReconcileWorker{Media: pgstoretest.Media(pool), Enqueuer: jobqfaketest.NewRecordingEnqueuer()}
@@ -328,9 +308,7 @@ func TestThumbnailReconcile_ReselectionWindowContinuesWithoutEnqueueing(t *testi
 		return
 	}
 
-	ctx := context.Background()
 	mediaDir := t.TempDir()
-	q := sqlcgen.New(pool)
 	ids := make([]int64, 0, 2)
 	for eventID := int32(15161); eventID <= 15162; eventID++ {
 		recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
@@ -343,14 +321,8 @@ func TestThumbnailReconcile_ReselectionWindowContinuesWithoutEnqueueing(t *testi
 			store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID, 0), []byte("old-thumbnail"))
 		seedSeekTilesAsset(t, pool, mediaDir, recordingID,
 			fmt.Sprintf("reselect-full-window/%d-tiles.jpg", eventID))
-		testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
-			RecordingID: recordingID,
-			CmRanges:    "{[60000,120000)}",
-		}), fmt.Sprintf("seeding CM ranges for %d", recordingID))
-		testutil.RequireNoError(t, q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
-			MediaAssetID: thumbnailID,
-			SeekMs:       30000,
-		}), fmt.Sprintf("seeding thumbnail seek for %d", recordingID))
+		seedCMRanges(t, pool, recordingID, []chapters.Range{{StartMs: 60000, EndMs: 120000}})
+		setThumbnailSeek(t, pool, thumbnailID, 30000)
 	}
 
 	enqueuer := jobqfaketest.NewRecordingEnqueuer()
@@ -384,13 +356,11 @@ func TestThumbnailReconcile_ReselectCursorIsIndependent(t *testing.T) {
 		return
 	}
 
-	ctx := context.Background()
 	mediaDir := t.TempDir()
 	ids := make([]int64, 0, 5)
 	for eventID := int32(1); eventID <= 5; eventID++ {
 		ids = append(ids, dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = eventID }))
 	}
-	q := sqlcgen.New(pool)
 	for i, recordingID := range ids {
 		seedOriginalAsset(t, pool, mediaDir, recordingID,
 			fmt.Sprintf("reselect-cursor/%d.ts", i+1), []byte("fake-ts"))
@@ -399,18 +369,12 @@ func TestThumbnailReconcile_ReselectCursorIsIndependent(t *testing.T) {
 		}
 		thumbnailID := seedMediaAsset(t, pool, mediaDir, recordingID,
 			store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID, 0), []byte("old-thumbnail"))
-		testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
-			RecordingID: recordingID,
-			CmRanges:    "{[0,60000)}",
-		}), fmt.Sprintf("seeding CM ranges for %d", recordingID))
+		seedCMRanges(t, pool, recordingID, []chapters.Range{{StartMs: 0, EndMs: 60000}})
 		seek := int64(60000) // 3・4 は keep 内なので再選択しない。
 		if i == 4 {
 			seek = 30000 // 5 は CM 内なので再選択ジョブが必要。
 		}
-		testutil.RequireNoError(t, q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
-			MediaAssetID: thumbnailID,
-			SeekMs:       seek,
-		}), fmt.Sprintf("seeding thumbnail seek for %d", recordingID))
+		setThumbnailSeek(t, pool, thumbnailID, seek)
 	}
 
 	enqueuer := jobqfaketest.NewRecordingEnqueuer()
@@ -435,9 +399,7 @@ func TestThumbnailReconcile_DoesNotRepeatUnactionableReselections(t *testing.T) 
 		return
 	}
 
-	ctx := context.Background()
 	mediaDir := t.TempDir()
-	q := sqlcgen.New(pool)
 	allCutID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 61 })
 	seedOriginalAsset(t, pool, mediaDir, allCutID, "reselect-noop/all-cut.ts", []byte("fake-ts"))
 	allCutThumbnailID := seedMediaAsset(t, pool, mediaDir, allCutID,
@@ -457,14 +419,8 @@ func TestThumbnailReconcile_DoesNotRepeatUnactionableReselections(t *testing.T) 
 	}
 	dbtest.ChapterSpan(t, pool, allCutID, func(p *dbtest.ChapterSpanParams) { p.StartMs, p.EndMs = 0, 1800000 })
 	dbtest.ChapterSpan(t, pool, cutOnlyID, func(p *dbtest.ChapterSpanParams) { p.StartMs, p.EndMs = 25000, 35000 })
-	testutil.RequireNoError(t, q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
-		MediaAssetID: allCutThumbnailID,
-		SeekMs:       30000,
-	}), "seeding all-cut thumbnail seek")
-	testutil.RequireNoError(t, q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
-		MediaAssetID: cutThumbnailID,
-		SeekMs:       30000,
-	}), "seeding cut-only thumbnail seek")
+	setThumbnailSeek(t, pool, allCutThumbnailID, 30000)
+	setThumbnailSeek(t, pool, cutThumbnailID, 30000)
 
 	w := &ThumbnailReconcileWorker{Media: pgstoretest.Media(pool)}
 	runThumbnailReconcilePass(t, w)
@@ -485,13 +441,12 @@ func TestThumbnailReconcile_SkipsKnownMissingOriginalUntilRestored(t *testing.T)
 	}
 
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 	mediaDir := t.TempDir()
 	recordingID := dbtest.Recording(t, pool)
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "missing/original.m2ts", []byte("fake-ts"))
 	testutil.RequireNoError(t, os.Remove(filepath.Join(mediaDir, "missing", "original.m2ts")), "removing original fixture")
 	copyID := dbtest.MediaAssetCopyID(t, pool, originalID, dbtest.StoreName)
-	testutil.RequireNoError(t, q.UpsertMissingMediaAsset(ctx, copyID), "marking original missing")
+	testutil.RequireNoError(t, pgstoretest.Media(pool).UpsertMissingMediaAsset(ctx, copyID), "marking original missing")
 
 	w := &ThumbnailReconcileWorker{Media: pgstoretest.Media(pool), Enqueuer: jobqfaketest.NewRecordingEnqueuer()}
 	runThumbnailReconcilePass(t, w)
@@ -505,7 +460,7 @@ func TestThumbnailReconcile_SkipsKnownMissingOriginalUntilRestored(t *testing.T)
 		t.Fatalf("thumbnail reconcile candidates for known-missing original = %v, want 0", got)
 	}
 
-	testutil.RequireNoError(t, q.DeleteMissingMediaAsset(ctx, copyID), "clearing restored original marker")
+	testutil.RequireNoError(t, pgstoretest.Media(pool).DeleteMissingMediaAsset(ctx, copyID), "clearing restored original marker")
 	runThumbnailReconcilePass(t, w)
 	if got := countThumbnailJobs(t, w.Enqueuer.(*jobqfaketest.RecordingEnqueuer), recordingID); got != 1 {
 		t.Fatalf("thumbnail jobs after clearing restored marker = %d, want 1", got)
@@ -565,13 +520,11 @@ func TestThumbnailReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 		return
 	}
 
-	ctx := context.Background()
 	mediaDir := t.TempDir()
 	ids := make([]int64, 0, 6)
 	for eventID := int32(14101); eventID <= 14106; eventID++ {
 		ids = append(ids, dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = eventID }))
 	}
-	q := sqlcgen.New(pool)
 	for i, recordingID := range ids {
 		seedOriginalAsset(t, pool, mediaDir, recordingID,
 			fmt.Sprintf("continuation/%d.ts", i+1), []byte("fake-ts"))
@@ -584,14 +537,8 @@ func TestThumbnailReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 			thumbnailID := seedMediaAsset(t, pool, mediaDir, recordingID,
 				store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID, 0), []byte("old-thumbnail"))
 			seedSeekTilesAsset(t, pool, mediaDir, recordingID, fmt.Sprintf("continuation/%d-tiles.jpg", i+1))
-			testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
-				RecordingID: recordingID,
-				CmRanges:    "{[0,60000)}",
-			}), fmt.Sprintf("seeding CM ranges for %d", recordingID))
-			testutil.RequireNoError(t, q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
-				MediaAssetID: thumbnailID,
-				SeekMs:       30000,
-			}), fmt.Sprintf("seeding thumbnail seek for %d", recordingID))
+			seedCMRanges(t, pool, recordingID, []chapters.Range{{StartMs: 0, EndMs: 60000}})
+			setThumbnailSeek(t, pool, thumbnailID, 30000)
 		case 4, 5:
 			// These need seek_tiles only; an existing thumbnail keeps them out of the
 			// missing-poster window and the absent chapter/CM state keeps them out of reselection.
@@ -676,7 +623,6 @@ func TestThumbnailReconcile_ExhaustedWindowNotRestarted(t *testing.T) {
 	for eventID := int32(15121); eventID <= 15125; eventID++ {
 		ids = append(ids, dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = eventID }))
 	}
-	q := sqlcgen.New(pool)
 	for index, recordingID := range ids {
 		seedOriginalAsset(t, pool, mediaDir, recordingID,
 			fmt.Sprintf("unequal-windows/%d.ts", index+1), []byte("fake-ts"))
@@ -686,14 +632,8 @@ func TestThumbnailReconcile_ExhaustedWindowNotRestarted(t *testing.T) {
 		thumbnailID := seedMediaAsset(t, pool, mediaDir, recordingID,
 			store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID, 0), []byte("old-thumbnail"))
 		seedSeekTilesAsset(t, pool, mediaDir, recordingID, fmt.Sprintf("unequal-windows/%d-tiles.jpg", index+1))
-		testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
-			RecordingID: recordingID,
-			CmRanges:    "{[0,60000)}",
-		}), fmt.Sprintf("seeding CM ranges for %d", recordingID))
-		testutil.RequireNoError(t, q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
-			MediaAssetID: thumbnailID,
-			SeekMs:       30000,
-		}), fmt.Sprintf("seeding thumbnail seek for %d", recordingID))
+		seedCMRanges(t, pool, recordingID, []chapters.Range{{StartMs: 0, EndMs: 60000}})
+		setThumbnailSeek(t, pool, thumbnailID, 30000)
 	}
 	for _, index := range []int{1, 2} {
 		seedSeekTilesAsset(t, pool, mediaDir, ids[index], fmt.Sprintf("unequal-windows/%d-tiles.jpg", index+1))
@@ -752,7 +692,6 @@ func TestThumbnailReconcile_ShortWindowsStayDoneWhileLongerWindowContinues(t *te
 	for eventID := int32(15131); eventID <= 15136; eventID++ {
 		ids = append(ids, dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = eventID }))
 	}
-	q := sqlcgen.New(pool)
 	for index, recordingID := range ids {
 		seedOriginalAsset(t, pool, mediaDir, recordingID,
 			fmt.Sprintf("short-first/%d.ts", index+1), []byte("fake-ts"))
@@ -765,12 +704,8 @@ func TestThumbnailReconcile_ShortWindowsStayDoneWhileLongerWindowContinues(t *te
 			thumbnailID := seedMediaAsset(t, pool, mediaDir, recordingID,
 				store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID, 0), []byte("old-thumbnail"))
 			seedSeekTilesAsset(t, pool, mediaDir, recordingID, fmt.Sprintf("short-first/%d-tiles.jpg", index+1))
-			testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
-				RecordingID: recordingID, CmRanges: "{[0,60000)}",
-			}), fmt.Sprintf("seeding CM ranges for %d", recordingID))
-			testutil.RequireNoError(t, q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
-				MediaAssetID: thumbnailID, SeekMs: 30000,
-			}), fmt.Sprintf("seeding thumbnail seek for %d", recordingID))
+			seedCMRanges(t, pool, recordingID, []chapters.Range{{StartMs: 0, EndMs: 60000}})
+			setThumbnailSeek(t, pool, thumbnailID, 30000)
 		default:
 			// seek_tiles のみ。
 			seedMediaAsset(t, pool, mediaDir, recordingID,
@@ -928,7 +863,6 @@ func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing
 	}
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	q := sqlcgen.New(pool)
 	seed := func(site int32) int64 {
 		id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 			fixtureParams.Site, fixtureParams.EventID = "default", site
@@ -940,9 +874,7 @@ func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing
 	}
 	noChapters := seed(951)
 	detected := seed(952)
-	testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
-		RecordingID: detected, CmRanges: "{[0,60000)}",
-	}), "q.SaveCMDetection")
+	seedCMRanges(t, pool, detected, []chapters.Range{{StartMs: 0, EndMs: 60000}})
 
 	reconcileWorker := &ThumbnailReconcileWorker{Media: pgstoretest.Media(pool), Enqueuer: jobqfaketest.NewRecordingEnqueuer()}
 	runThumbnailReconcilePass(t, reconcileWorker)
@@ -961,8 +893,7 @@ func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing
 	}
 	job := jobs.ThumbnailJobArgs{RecordingID: noChapters}
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, job), "Work() error")
-	cur, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: noChapters, StoreName: dbtest.StoreName})
-	testutil.RequireNoError(t, err, "q.LockActiveThumbnailMediaAsset")
+	cur := requireThumbnailState(t, pool, noChapters, dbtest.StoreName)
 	if cur.RelPath != thumbnailRelPath(noChapters, 0) {
 		t.Errorf("rel_path = %q, want unchanged", cur.RelPath)
 	}
@@ -978,19 +909,14 @@ func TestThumbnailWorker_NoUsableInputKeepsThumbnailWithoutError(t *testing.T) {
 	}
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	q := sqlcgen.New(pool)
 	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 961
 	})
 	originalID := seedOriginalAsset(t, pool, mediaDir, id, "noinput/original.ts", []byte("fake-ts"))
 	thumbID := seedMediaAsset(t, pool, mediaDir, id, store.AssetKindThumbnail, nil,
 		thumbnailRelPath(id, 0), []byte("old-thumbnail"))
-	testutil.RequireNoError(t, q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
-		MediaAssetID: thumbID, SeekMs: 30000,
-	}), "q.UpsertMediaAssetThumbnailSeek")
-	testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
-		RecordingID: id, CmRanges: "{[0,60000)}",
-	}), "q.SaveCMDetection")
+	setThumbnailSeek(t, pool, thumbID, 30000)
+	seedCMRanges(t, pool, id, []chapters.Range{{StartMs: 0, EndMs: 60000}})
 	testutil.MustExec(t, pool, "marking original as missing", `INSERT INTO missing_media_assets (media_asset_copy_id) SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'test-store'`, originalID)
 
 	w := &ThumbnailWorker{
@@ -1004,8 +930,7 @@ func TestThumbnailWorker_NoUsableInputKeepsThumbnailWithoutError(t *testing.T) {
 	}
 	job := jobs.ThumbnailJobArgs{RecordingID: id}
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, job), "Work() error")
-	cur, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{RecordingID: id, StoreName: dbtest.StoreName})
-	testutil.RequireNoError(t, err, "q.LockActiveThumbnailMediaAsset")
+	cur := requireThumbnailState(t, pool, id, dbtest.StoreName)
 	if cur.RelPath != thumbnailRelPath(id, 0) || cur.SeekMs == nil || *cur.SeekMs != 30000 {
 		t.Errorf("thumbnail = %q seek %v, want unchanged %q / 30000", cur.RelPath, cur.SeekMs, thumbnailRelPath(id, 0))
 	}
