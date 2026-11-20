@@ -18,7 +18,7 @@ type TSScan interface {
 	// 原本の削除・内容変更と直列化してから、原本が active のままか、内容のリビジョンとサイズが読み出し時と同じかを再確認する。
 	// 対象が無効か読み出し時から変わっていれば false, nil を返し、何も書かない。
 	// 途中の書き込みが失敗したら、以前の計測値と計測サイズが残る。
-	// 検査: TestTSScanStoreContract の「replaces statistics and marker together」（サイズ変化で置き換えない）、
+	// 検査: contracttest.RunTSScan の「replaces statistics and marker together」（サイズ変化で置き換えない）、
 	// 「rechecks active state after waiting for the asset lock」、「rolls back statistics and marker after a failed replacement」。
 	// 内容変更との直列化とリビジョンの再確認は、契約テストでは未検証。
 	ReplaceScan(ctx context.Context, source TSScanSource, scannedSizeBytes int64, stats []RecordingDropStat, positions []RecordingDropPosition) (bool, error)

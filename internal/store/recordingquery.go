@@ -154,6 +154,6 @@ type RecordingQuery interface {
 	// Shelves は生きている録画を実効シリーズごとに集計する。
 	// フィルタは一覧と共有する検索軸（status を含む）に適用する。
 	// trash・seriesOf・EncodeRecordingIDs・ページング・続きから見る条件は使わない。
-	// 検査: TestRecordingQueryContract の「shelves share filtered population with list」。
+	// 検査: contracttest.RunRecordingQuery の「shelves share filtered population with list」。
 	Shelves(ctx context.Context, filter RecordingFilter) ([]RecordingShelf, error)
 }
