@@ -88,10 +88,12 @@ type Deps struct {
 	// StoreDeps.StorageTransfer と build 内で取り違えないよう、置き場に束ねないことを名前で示す。
 	UnscopedStorageTransfer store.StorageTransfer
 	StorageTransferPolicy   config.StorageConfig
-	StorageRoots            map[string]string
-	// TSScan は置き場に束ねない TS scan reconcile の永続化契約。
+	// StoragePolicy は起動時に StorageTransferPolicy から一度だけ作った置き場の方針である。
+	StoragePolicy store.StoragePolicy
+	StorageRoots  map[string]string
+	// UnscopedTSScan は置き場に束ねない TS scan reconcile の永続化契約。
 	// 型が StoreDeps.TSScan（tsscan.ScanStores）と違うので、build 内で取り違えるとコンパイルが落ちる。
-	TSScan tsscan.ReconcileStores
+	UnscopedTSScan tsscan.ReconcileStores
 	// PerStore は、マウントした FS 置き場ごとに束ねた StoreDeps（置き場の名前から）。
 	// root・名前と置き場に束ねた store（MediaReconcile など）を置き場ごとに持つ。
 	// 空なら置き場で修飾したワーカーは登録されず、その kind のジョブは置き場の不一致で失敗する。
@@ -227,6 +229,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		// 転送待ちが backlog_limit に達した置き場への encode 投入を止める（背圧）。
 		Transfers:     deps.UnscopedStorageTransfer,
 		StoragePolicy: deps.StorageTransferPolicy,
+		Policy:        deps.StoragePolicy,
 		// desired の絞り込みにプロファイル名だけを使う（EncodeWorker と同じ
 		// 設定を読む。EncodeReconcileArgs.Spec のコメント参照）。
 		Profiles: deps.Encode,
@@ -288,15 +291,17 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Enqueuer: deps.Enqueuer,
 		Storage:  deps.UnscopedStorageTransfer,
 		Config:   deps.StorageTransferPolicy,
+		Policy:   deps.StoragePolicy,
 	})
 	riveradapter.Register(workers, &storagemaint.StorageTransferWorker{
 		Storage:      deps.UnscopedStorageTransfer,
 		Config:       deps.StorageTransferPolicy,
+		Policy:       deps.StoragePolicy,
 		Roots:        deps.StorageRoots,
 		ObjectStores: deps.StorageObjects,
 		ScratchDir:   deps.ScratchDir,
 	})
-	riveradapter.Register(workers, &tsscan.ReconcileWorker{ReconcileStores: deps.TSScan, Enqueuer: deps.Enqueuer, Locator: deps.OriginalLocator, Markers: deps.LoopMarkers})
+	riveradapter.Register(workers, &tsscan.ReconcileWorker{ReconcileStores: deps.UnscopedTSScan, Enqueuer: deps.Enqueuer, Locator: deps.OriginalLocator, Markers: deps.LoopMarkers})
 	return workers
 }
 
@@ -413,6 +418,7 @@ func newDeleteReconcileWorker(deps *Deps, scoped *StoreDeps) *storagemaint.Delet
 		MediaPendingReclaim:       scoped.MediaPendingReclaim,
 		StorageTransfer:           scoped.StorageTransfer,
 		StorageTransferPolicy:     deps.StorageTransferPolicy,
+		Policy:                    deps.StoragePolicy,
 		RecordingPurge:            scoped.RecordingPurge,
 		Breakers:                  deps.Breakers,
 		Storage:                   scoped.StorageObservation,

@@ -144,6 +144,7 @@ FROM media_assets a WHERE a.id = $1`, assetID, relPath); err != nil {
 		StorageRoots:            roots,
 		UnscopedStorageTransfer: pgstore.NewMediaWithStores(pool, "", "", cfg.Storage.Derived),
 		StorageTransferPolicy:   cfg.Storage,
+		StoragePolicy:           policyOf(cfg.Storage),
 		TransferOverlap:         cfg.Storage.Transfer.Overlap,
 		Cleanup:                 config.CleanupConfig{MaxDeletesPerPass: 100},
 	}
@@ -220,12 +221,12 @@ FROM media_assets a WHERE a.id = $1`, assetID, copy.name, copy.relPath); err != 
 	}
 
 	// The store-scoped SQL can identify s3-a as prunable once s3-b is active and the overlap has elapsed.
-	rules, err := cfg.Storage.OriginalRulesJSON()
+	policy, err := cfg.Storage.StoragePolicy()
 	if err != nil {
-		t.Fatalf("encoding storage rules: %v", err)
+		t.Fatalf("reading storage policy: %v", err)
 	}
 	oldStoreMedia := pgstore.NewMediaWithStores(pool, "s3-a", "test-store", "s3-b")
-	candidates, err := oldStoreMedia.ListMediaAssetCopiesToDelete(ctx, rules, "s3-b", time.Now().Add(-time.Hour), 10)
+	candidates, err := oldStoreMedia.ListMediaAssetCopiesToDelete(ctx, policy, time.Now().Add(-time.Hour), 10)
 	if err != nil {
 		t.Fatalf("listing s3-a placement candidates: %v", err)
 	}
@@ -263,6 +264,7 @@ FROM media_assets a WHERE a.id = $1`, assetID, copy.name, copy.relPath); err != 
 		StorageRoots:            map[string]string{"test-store": fsRoot},
 		UnscopedStorageTransfer: media,
 		StorageTransferPolicy:   cfg.Storage,
+		StoragePolicy:           policyOf(cfg.Storage),
 		TransferOverlap:         cfg.Storage.Transfer.Overlap,
 		Cleanup:                 config.CleanupConfig{MaxDeletesPerPass: 100},
 	}
@@ -467,4 +469,13 @@ func TestStoreScopedS3DeleteMarkersOnlyOwner(t *testing.T) {
 			t.Fatal("non-owner advanced S3 marker")
 		}
 	}
+}
+
+// policyOf は設定から置き場の方針を作る。設定が不正なテストの前提は作れないので、失敗は panic にする。
+func policyOf(cfg config.StorageConfig) store.StoragePolicy {
+	policy, err := cfg.StoragePolicy()
+	if err != nil {
+		panic(err)
+	}
+	return policy
 }

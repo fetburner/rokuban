@@ -60,15 +60,12 @@ func (w *DeleteReconcileWorker) objectStorePass(
 	if err := w.reconcileObjectOrphans(ctx, orphanMTimeGrace, orphanAge); err != nil {
 		return err
 	}
-	placementRules, placementDerived, _, err := w.placementPolicy()
-	if err != nil {
-		return err
-	}
-	if err := w.restoreUnqualifiedObjectCopies(ctx, trashCutoff, overlapCutoff, placementRules, placementDerived); err != nil {
+	placement, _ := w.placementPolicy()
+	if err := w.restoreUnqualifiedObjectCopies(ctx, trashCutoff, overlapCutoff, placement); err != nil {
 		return err
 	}
 	// 前パスで deleting のまま止まった行の再開は、既に決めた削除の再実行なのでブレーカーの対象外にする。
-	pending, err := derivedMediaDelete.ListPendingDeleteAssets(ctx, trashCutoff, overlapCutoff, placementRules, placementDerived, deleteReconcileRowLimit)
+	pending, err := derivedMediaDelete.ListPendingDeleteAssets(ctx, trashCutoff, overlapCutoff, placement, deleteReconcileRowLimit)
 	if err != nil {
 		return fmt.Errorf("listing pending object copy deletes: %w", err)
 	}
@@ -118,7 +115,7 @@ func (w *DeleteReconcileWorker) reconcileObjectOrphans(ctx context.Context, orph
 	derivedStorage := w.DerivedObjectDeleteStores.StorageObservation()
 	objects, err := w.DerivedObjects.List(ctx, "")
 	if err != nil {
-		metrics.RecordObjectStoreError("list", err)
+		objstore.RecordError("list", err)
 		return fmt.Errorf("listing derived object store: %w", err)
 	}
 	known, err := derivedStorage.ListAllMediaAssetRelPaths(ctx)
@@ -157,7 +154,7 @@ func (w *DeleteReconcileWorker) reconcileObjectOrphans(ctx context.Context, orph
 				return fmt.Errorf("clearing absent object orphan %q: %w", old.RelPath, err)
 			}
 		} else if headErr != nil {
-			metrics.RecordObjectStoreError("head", headErr)
+			objstore.RecordError("head", headErr)
 			return fmt.Errorf("checking observed object orphan %q: %w", old.RelPath, headErr)
 		}
 	}
@@ -187,9 +184,9 @@ func (w *DeleteReconcileWorker) reconcileObjectOrphans(ctx context.Context, orph
 
 // restoreUnqualifiedObjectCopies は削除条件から外れた deleting のコピーを、key の現存を確かめてから
 // active に戻すか deleted を確定する。FS の resolveUnqualifiedDeletingAsset と同じ判断で、stat が Head になる。
-func (w *DeleteReconcileWorker) restoreUnqualifiedObjectCopies(ctx context.Context, graceCutoff, overlapCutoff time.Time, placementRules []byte, placementDerived string) error {
+func (w *DeleteReconcileWorker) restoreUnqualifiedObjectCopies(ctx context.Context, graceCutoff, overlapCutoff time.Time, placement store.StoragePolicy) error {
 	derivedMediaDelete := w.DerivedObjectDeleteStores.MediaDelete()
-	rows, err := derivedMediaDelete.ListUnqualifiedDeletingAssets(ctx, graceCutoff, overlapCutoff, placementRules, placementDerived, deleteReconcileRowLimit)
+	rows, err := derivedMediaDelete.ListUnqualifiedDeletingAssets(ctx, graceCutoff, overlapCutoff, placement, deleteReconcileRowLimit)
 	if err != nil {
 		return fmt.Errorf("listing unqualified deleting object copies: %w", err)
 	}
@@ -202,10 +199,10 @@ func (w *DeleteReconcileWorker) restoreUnqualifiedObjectCopies(ctx context.Conte
 			continue
 		}
 		if headErr != nil {
-			metrics.RecordObjectStoreError("head", headErr)
+			objstore.RecordError("head", headErr)
 			return fmt.Errorf("checking deleting object %q before revert: %w", row.RelPath, headErr)
 		}
-		if _, err := derivedMediaDelete.RevertToActive(ctx, row.ID, graceCutoff, overlapCutoff, placementRules, placementDerived); err != nil {
+		if _, err := derivedMediaDelete.RevertToActive(ctx, row.ID, graceCutoff, overlapCutoff, placement); err != nil {
 			return fmt.Errorf("reverting deleting object copy %d: %w", row.ID, err)
 		}
 	}
@@ -285,7 +282,7 @@ func (w *DeleteReconcileWorker) reclaimPendingObjectCopy(ctx context.Context, t 
 // deleteObjectKey は key と、encoded に隣接する字幕の sidecar を消す。object の削除は冪等である。
 func deleteObjectKey(ctx context.Context, objects objstore.Store, key, kind string) error {
 	if err := objects.Delete(ctx, key); err != nil {
-		metrics.RecordObjectStoreError("delete", err)
+		objstore.RecordError("delete", err)
 		return fmt.Errorf("deleting derived object %q: %w", key, err)
 	}
 	if kind == store.AssetKindEncoded && canHaveSubtitleSidecar(key) {
@@ -295,7 +292,7 @@ func deleteObjectKey(ctx context.Context, objects objstore.Store, key, kind stri
 			return nil
 		}
 		if err := objects.Delete(ctx, sidecar); err != nil {
-			metrics.RecordObjectStoreError("delete", err)
+			objstore.RecordError("delete", err)
 			slog.Warn("delete_reconcile: deleting subtitle sidecar; continuing", "key", sidecar, "err", err)
 		}
 	}
@@ -310,12 +307,12 @@ func deletePendingObjectKey(ctx context.Context, objects objstore.Store, key, ki
 			return fmt.Errorf("building pending subtitle object key for %q: %w", key, err)
 		}
 		if err := objects.Delete(ctx, sidecar); err != nil {
-			metrics.RecordObjectStoreError("delete", err)
+			objstore.RecordError("delete", err)
 			return fmt.Errorf("deleting pending subtitle object %q: %w", sidecar, err)
 		}
 	}
 	if err := objects.Delete(ctx, key); err != nil {
-		metrics.RecordObjectStoreError("delete", err)
+		objstore.RecordError("delete", err)
 		return fmt.Errorf("deleting pending derived object %q: %w", key, err)
 	}
 	return nil

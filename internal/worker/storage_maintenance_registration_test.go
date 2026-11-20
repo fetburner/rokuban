@@ -33,7 +33,7 @@ func (s transferRegistrationStore) ListActiveDerivedCopiesInNonDerivedS3(context
 	return nil, nil
 }
 
-func (s transferRegistrationStore) ClearObsoleteMediaAssetTransferAttempts(context.Context, []byte, []string, string) error {
+func (s transferRegistrationStore) ClearObsoleteMediaAssetTransferAttempts(context.Context, store.StoragePolicy) error {
 	return s.reconcileErr
 }
 
@@ -41,7 +41,7 @@ func (s transferRegistrationStore) ListAbandonedTransferUploads(context.Context,
 	return nil, nil
 }
 
-func (s transferRegistrationStore) PrepareMediaAssetTransfer(context.Context, int64, string, []byte, []string, []string, []string, string, int32) (store.MediaAssetTransfer, bool, error) {
+func (s transferRegistrationStore) PrepareMediaAssetTransfer(context.Context, int64, string, store.StoragePolicy, []string, []string, []string, int32) (store.MediaAssetTransfer, bool, error) {
 	return store.MediaAssetTransfer{}, false, s.transferErr
 }
 
@@ -67,6 +67,7 @@ func TestNewWorkersRegistersStorageMaintenanceJobs(t *testing.T) {
 		Breakers:                deleteRouteBreakers{errs: map[string]error{"tokyo": tokyoErr, "nagoya": nagoyaErr}},
 		UnscopedStorageTransfer: transferRegistrationStore{reconcileErr: reconcileErr, transferErr: transferErr},
 		StorageTransferPolicy:   policy,
+		StoragePolicy:           policyOf(policy),
 		StorageRoots:            map[string]string{"tokyo": tokyoRoot, "nagoya": nagoyaRoot},
 		PerStore: map[string]*StoreDeps{
 			"tokyo":   {MediaDir: tokyoRoot, MediaStoreName: "tokyo"},

@@ -120,7 +120,7 @@ func (w *TunerSyncWorker) Work(ctx context.Context, args jobs.TunerSyncArgs) err
 		// 射影の同期そのものは成功しているので、ここでジョブを失敗させて
 		// リトライさせる意味はない（次のパスが入れ直す）。ゲージも更新しない
 		// （0 を入れると「超過なし」と区別できず、判定を黙って無効化してしまう。
-		// metrics.BacklogCollector が失敗時に 0 を報告しないのと同じ理由）。
+		// dbcollector.BacklogCollector が失敗時に 0 を報告しないのと同じ理由）。
 		log.Warn("tuner sync: computing capacity overages failed", "err", err)
 	} else {
 		overages = len(list)

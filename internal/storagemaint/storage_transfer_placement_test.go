@@ -23,7 +23,7 @@ import (
 func placementDeleteWorker(pool *pgxpool.Pool, cfg config.StorageConfig, roots map[string]string, storeName string) *DeleteReconcileWorker {
 	media := pgstore.NewMedia(pool, storeName, "")
 	return &DeleteReconcileWorker{
-		MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: cfg,
+		MediaDelete: media, Storage: media, StorageTransfer: media, StorageTransferPolicy: cfg, Policy: policyOf(cfg),
 		RecordingPurge: pgstore.NewRecordings(pool, storeName), Breakers: pgstore.NewBreakers(pool),
 		MediaDir: roots[storeName], StorageObjects: map[string]objstore.Store{storeName: testFSObjectStore(roots[storeName])}, MediaStoreName: storeName, TransferOverlap: time.Nanosecond,
 	}
@@ -99,7 +99,7 @@ SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive
 		cfg := transferTestConfig("archive", "archive", "test-store")
 		placementDeletingFixture(t, pool, roots)
 		rows, err := pgstore.NewMedia(pool, "test-store", "").ListUnqualifiedDeletingAssets(
-			context.Background(), time.Now().Add(-time.Hour), time.Now(), mustOriginalRules(t, cfg), "archive", 10)
+			context.Background(), time.Now().Add(-time.Hour), time.Now(), withDerived(mustStoragePolicy(t, cfg), "archive"), 10)
 		if err != nil || len(rows) != 0 {
 			t.Fatalf("unqualified deleting rows = %+v, %v; want none while the desired copy is present", rows, err)
 		}
@@ -112,15 +112,15 @@ SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'archive
 		assetID, _ := placementDeletingFixture(t, pool, roots)
 		setMissing(t, pool, assetID)
 		media := pgstore.NewMedia(pool, "test-store", "")
-		rules := mustOriginalRules(t, cfg)
+		rules := mustStoragePolicy(t, cfg)
 		grace, overlap := time.Now().Add(-time.Hour), time.Now()
 
-		rows, err := media.ListUnqualifiedDeletingAssets(context.Background(), grace, overlap, rules, "archive", 10)
+		rows, err := media.ListUnqualifiedDeletingAssets(context.Background(), grace, overlap, withDerived(rules, "archive"), 10)
 		if err != nil || len(rows) != 1 {
 			t.Fatalf("unqualified deleting rows = %+v, %v; want the placement copy", rows, err)
 		}
 		testutil.MustExec(t, pool, "clearing missing_media_assets", `DELETE FROM missing_media_assets`)
-		reverted, err := media.RevertToActive(context.Background(), rows[0].ID, grace, overlap, rules, "archive")
+		reverted, err := media.RevertToActive(context.Background(), rows[0].ID, grace, overlap, withDerived(rules, "archive"))
 		testutil.RequireNoError(t, err, "RevertToActive")
 		if reverted {
 			t.Error("RevertToActive returned true although the desired copy is present again")
@@ -164,7 +164,7 @@ func TestStorageTransferPolicyRoundTripConverges(t *testing.T) {
 		cfg := transferTestConfig(desired, "archive", "test-store")
 		fingerprint, err := cfg.PolicyFingerprint()
 		testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
-		transfer := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
+		transfer := StorageTransferWorker{Storage: media, Config: cfg, Policy: policyOf(cfg), Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 		deleters := []*DeleteReconcileWorker{
 			placementDeleteWorker(pool, cfg, roots, "test-store"), placementDeleteWorker(pool, cfg, roots, "archive"),
 		}
@@ -218,9 +218,9 @@ func TestCompleteMediaAssetTransferRejectsChangedSHA(t *testing.T) {
 	roots := transferTestRoots(t, "test-store", "archive")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], []byte("sha guarded bytes"))
 	cfg := transferTestConfig("archive", "archive", "test-store")
-	rules := mustOriginalRules(t, cfg)
+	rules := mustStoragePolicy(t, cfg)
 	media := pgstore.NewMedia(pool, "test-store", "")
-	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", rules, cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, store.MediaAssetTransferAttemptLimit)
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", rules, cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("PrepareMediaAssetTransfer = (%+v, %t, %v)", transfer, ok, err)
 	}
@@ -228,7 +228,7 @@ func TestCompleteMediaAssetTransferRejectsChangedSHA(t *testing.T) {
 	observed := []byte("fedcba9876543210fedcba9876543210")
 	testutil.MustExec(t, pool, "recording the expected sha256", `UPDATE media_assets SET sha256 = $1 WHERE id = $2`, recorded, assetID)
 
-	active, outcome, err := media.CompleteMediaAssetTransfer(context.Background(), transfer, "archive", cfg.Derived, rules, observed)
+	active, outcome, err := media.CompleteMediaAssetTransfer(context.Background(), transfer, "archive", rules, observed)
 	testutil.RequireNoError(t, err, "CompleteMediaAssetTransfer")
 	if active || outcome != "sha_mismatch" {
 		t.Errorf("CompleteMediaAssetTransfer = (active=%t, %q), want (false, sha_mismatch)", active, outcome)

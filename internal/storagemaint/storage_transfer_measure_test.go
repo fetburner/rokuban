@@ -127,7 +127,7 @@ func newAdoptVerifyFixture(t *testing.T, source, destination []byte, expected [s
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
 	media := pgstore.NewMedia(pool, "test-store", "")
-	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, store.MediaAssetTransferAttemptLimit)
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustStoragePolicy(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing adoptable transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
@@ -141,7 +141,7 @@ func newAdoptVerifyFixture(t *testing.T, source, destination []byte, expected [s
 	t.Cleanup(func() { storageTransferSlice = restore })
 	return adoptVerifyFixture{
 		pool: pool, roots: roots, media: media, cfg: cfg, assetID: assetID,
-		worker: StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()},
+		worker: StorageTransferWorker{Storage: media, Config: cfg, Policy: policyOf(cfg), Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()},
 		args:   jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint},
 	}
 }
@@ -222,7 +222,7 @@ func TestStorageTransferWorkerCountsVerifiedFailureAtAttemptLimitEdge(t *testing
 	expected := sha256.Sum256(content)
 	f := newAdoptVerifyFixture(t, content, other, expected)
 	ctx := context.Background()
-	transfer, ok, err := f.media.PrepareMediaAssetTransfer(ctx, f.assetID, "archive", mustOriginalRules(t, f.cfg), f.cfg.FSStoreNames(), f.cfg.FSStoreNames(), f.cfg.FSStoreNames(), f.cfg.Derived, store.MediaAssetTransferAttemptLimit)
+	transfer, ok, err := f.media.PrepareMediaAssetTransfer(ctx, f.assetID, "archive", mustStoragePolicy(t, f.cfg), f.cfg.FSStoreNames(), f.cfg.FSStoreNames(), f.cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
@@ -250,7 +250,7 @@ func TestStorageTransferWorkerMeasuresUnknownSourceAcrossSlicesBeforeAdopting(t 
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	cfg.Transfer.Bandwidth = map[string]string{"test-store": "64KiBps"}
 	media := pgstore.NewMedia(pool, "test-store", "")
-	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustOriginalRules(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, store.MediaAssetTransferAttemptLimit)
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", mustStoragePolicy(t, cfg), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("preparing adoptable transfer = (%+v, %t, %v)", transfer, ok, err)
 	}
@@ -262,7 +262,7 @@ func TestStorageTransferWorkerMeasuresUnknownSourceAcrossSlicesBeforeAdopting(t 
 	restore := storageTransferSlice
 	storageTransferSlice = 150 * time.Millisecond
 	t.Cleanup(func() { storageTransferSlice = restore })
-	worker := StorageTransferWorker{Storage: media, Config: cfg, Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
+	worker := StorageTransferWorker{Storage: media, Config: cfg, Policy: policyOf(cfg), Roots: roots, ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir()}
 	args := jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}
 
 	measuredSlices := 0

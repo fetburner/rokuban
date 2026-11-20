@@ -1,4 +1,4 @@
-package metrics
+package dbcollector
 
 import (
 	"context"
@@ -14,8 +14,9 @@ import (
 // reconcileMarkersQueryTimeout は reconcile marker collector が scrape を占有する上限。
 const reconcileMarkersQueryTimeout = 5 * time.Second
 
-// 読み取りの失敗を数える source の値。読めなかった表の系列だけを落とし、
-// その系列を 0 に置き換えないので、どの表が読めなかったかをこのラベルで分ける。
+// 読み取りの失敗を数える source の値（reconcile_pass / delete_reconcile / storage_sync）。
+// 読めなかった表の系列だけを落とし、その系列を 0 に置き換えないので、
+// どの表が読めなかったかをこのラベルで分ける。
 const (
 	reconcileMarkerSourcePass    = "reconcile_pass"
 	reconcileMarkerSourceDelete  = "delete_reconcile"
@@ -51,12 +52,14 @@ type ReconcileMarkerCollector struct {
 
 // NewReconcileMarkerCollector は全件パスの完走時刻と FS の置き場の観測時刻を出す collector を作る。
 // stores は FS の置き場、deleteStores は削除パスを書く worker がある置き場の名前。
+// deleteStores の値（rokuban_delete_reconcile_last_success_timestamp_seconds の store ラベル）は、
+// FS の置き場と、派生物の置き場が S3 のときはその名前。
 func NewReconcileMarkerCollector(markers store.LoopMarkers, storage store.StorageSyncReader, stores []string, deleteStores []string) *ReconcileMarkerCollector {
 	names := slices.Clone(stores)
 	slices.Sort(names)
 	readErrors := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_reconcile_marker_scrape_errors_total",
-		Help: "Failures while reading the saved reconcile pass markers or storage sync observations during a scrape, by source. The series of the table that could not be read is omitted for that scrape.",
+		Help: "Failures while reading the saved reconcile pass markers or storage sync observations during a scrape, by source: reconcile_pass, delete_reconcile, or storage_sync. The series of the table that could not be read is omitted for that scrape.",
 	}, []string{"source"})
 	// CounterVec は系列を初めて使うまで出ないので、起動直後から 0 で見えるようにする。
 	for _, source := range []string{reconcileMarkerSourcePass, reconcileMarkerSourceDelete, reconcileMarkerSourceStorage} {
@@ -84,7 +87,7 @@ func NewReconcileMarkerCollector(markers store.LoopMarkers, storage store.Storag
 		),
 		deleteDesc: prometheus.NewDesc(
 			"rokuban_delete_reconcile_last_success_timestamp_seconds",
-			"Unix time (database clock) of the last delete reconcile pass for the store that completed, including a pass that the bulk-delete circuit breaker stopped. Zero means no pass has completed for the store yet.",
+			"Unix time (database clock) of the last delete reconcile pass for the store that completed, including a pass that the bulk-delete circuit breaker stopped. Zero means no pass has completed for the store yet. Store label values are the filesystem stores and, when the derived store is S3, that store.",
 			[]string{"store"}, nil,
 		),
 		storageDsc: prometheus.NewDesc(

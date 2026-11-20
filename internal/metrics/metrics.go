@@ -10,17 +10,15 @@
 //     滞留量など「今どうなっているか」を表すもの。プロセス内で積み上げないので、
 //     どのロールが scrape されても同じ値が出る（分散構成で worker のメトリクスを
 //     取りこぼさない）。「イベントはヒント、真実はテーブル再読」と同じ考え方。
+//     定義は internal/metrics/dbcollector にある。このパッケージは計器だけを持ち、
+//     store・mirakc などに依存しない。計器を使うだけのパッケージがそれらを引き込まないため。
 //
 // 命名は Prometheus の規約に従う（rokuban_ 接頭辞、基本単位、カウンタは _total）。
 package metrics
 
 import (
-	"errors"
-
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
-
-	"github.com/fetburner/rokuban/internal/objstore"
 )
 
 // ingest（M1-5-2）のメトリクス。
@@ -32,20 +30,21 @@ var (
 	})
 
 	// IngestDuration は ingest 1 件の所要。転送は録画長と回線速度で決まるため
-	// バケットは秒〜十数分をカバーする。中断（River の soft stop）は含まない。
+	// バケットは秒〜十数分をカバーする。observe は IngestJobs の Inc と同じ条件でだけ
+	// 行い、中断（River の soft stop）と snooze（区切り・SHA-256 待ち）は含まない。
 	IngestDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "rokuban_ingest_duration_seconds",
-		Help:    "Duration of ingest jobs.",
+		Help:    "Duration of ingest job attempts counted in rokuban_ingest_jobs_total; interrupted attempts and snoozes are excluded.",
 		Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800},
 	})
 
 	// IngestJobs は ingest ジョブの結果別の件数。result は success / failure /
 	// canceled の 3 値で、増やさない。River の soft stop はどれにも数えない。
-	// 各値の意味と分母の違いは docs/operations/monitoring.md、判定と既知の窓は
-	// internal/ingest/ingest.go の Work。
+	// 各値の意味と分母の違いは docs/operations/monitoring.md の §ingest「結果の 3 値の数え方」、
+	// 判定と既知の窓は internal/ingest/ingest.go の Work。
 	IngestJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_ingest_jobs_total",
-		Help: "Ingest jobs by result.",
+		Help: "Ingest jobs by result: success, failure, or canceled.",
 	}, []string{"result"})
 
 	// IngestHashMismatches は mirakc の content.sha256 と転送内容の不一致。
@@ -71,14 +70,17 @@ var (
 		Name: "rokuban_ts_scan_scrambled_packets_total",
 		Help: "Total TS packets still scrambled during original scans.",
 	})
+	// TSScanDuration は 1 回の scan job（失敗を含む）の所要。読み出しから統計の置き換えまで。
 	TSScanDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "rokuban_ts_scan_duration_seconds",
-		Help:    "Duration of original TS scan jobs.",
+		Help:    "Duration of every original TS scan job attempt, from loading the active original to replacing its statistics.",
 		Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200},
 	})
+	// TSScanJobs は scan job の結果別の件数。result は success / failure の 2 値。
+	// 原本が active でなくなっていた job は success に数える（tsscan.ScanWorker.Work）。
 	TSScanJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_ts_scan_jobs_total",
-		Help: "TS scan jobs by result.",
+		Help: "TS scan jobs by result: success or failure.",
 	}, []string{"result"})
 )
 
@@ -150,9 +152,12 @@ var (
 	//
 	// プロセス再起動でゲージは失われるので、各パスの先頭で DB の真実に
 	// 合わせ直す（各呼び出し側が breaker.ObserveState を使う）。
+	//
+	// breaker の値は internal/breaker の定数（RulerDeletes / ReconcileTotalLoss /
+	// DeleteReconcile、文字列は ruler_deletes / reconcile_total_loss / delete_reconcile）。
 	CircuitBreakerTripped = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_circuit_breaker_tripped",
-		Help: "1 while a bulk-delete circuit breaker is latched and withholding deletes until manually resumed.",
+		Help: "1 while a bulk-delete circuit breaker is latched and withholding deletes until manually resumed, by breaker: ruler_deletes, reconcile_total_loss, or delete_reconcile.",
 	}, []string{"site", "breaker"})
 )
 
@@ -182,16 +187,19 @@ var (
 	//     ユーザー操作でアラートが鳴る。こちらは非ゼロが正常でありうる
 	ReconcilePendingDiff = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_reconcile_pending_diff",
-		Help: "Differences between desired reservations and observed mirakc schedules found in the most recent pass. Converges to zero when healthy.",
+		Help: "Differences between desired reservations and observed mirakc schedules found in the most recent pass, by action: create, delete, delete_deferred, update, or update_deferred.",
 	}, []string{"action"})
 
-	// ReconcileSchedules は mirakc schedule に対する操作の件数。
-	// 実際に差分を消した量。action="recreated" は予約オプション（priority /
-	// tag）の差分反映のための DELETE→POST 再作成が成功した件数
-	// （docs/recording.md §3.2、issue #19）。
+	// ReconcileSchedules は reconciler が mirakc schedule に対して成功させた書き込みの件数。
+	//
+	// action:
+	//   - "created": POST が成功した作成
+	//   - "deleted": DELETE が成功した削除
+	//   - "recreated": 予約オプション（priority / tag）の差分反映のための
+	//     DELETE→POST 再作成が成功した件数（docs/recording.md §3.2、issue #19）
 	ReconcileSchedules = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_reconcile_schedules_total",
-		Help: "mirakc recording schedules created, deleted, or recreated by the reconciler.",
+		Help: "mirakc recording schedule writes by the reconciler, by action: created, deleted, or recreated. recreated counts a DELETE followed by a successful POST.",
 	}, []string{"action"})
 
 	// ReconcileCircuitBreakerTrips は reconciler のブレーカーが作動した回数。
@@ -210,7 +218,7 @@ var (
 	// docs/recording.md §3.2「大量削除サーキットブレーカー」参照）。
 	ReconcileCircuitBreakerTrips = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "rokuban_reconcile_circuit_breaker_trips_total",
-		Help: "Times the bulk-delete circuit breaker stopped a reconcile pass.",
+		Help: "Times the reconcile circuit breaker tripped on a total-loss signature: no desired reservations while schedules the reconciler owns would be deleted.",
 	})
 
 	// ReconcileScheduleLost は予約オプションの差分反映（再作成）で DELETE には
@@ -248,7 +256,7 @@ var (
 	//   - "error": 観測し直しが失敗した（5xx・締切切れ等）
 	ReconcileWriteWithheld = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_reconcile_write_withheld_total",
-		Help: "Schedule DELETEs and recreates the reconciler withheld after re-observing the schedule just before the write, by action and reason.",
+		Help: "Schedule DELETEs and recreates withheld after re-observing the schedule just before the write, by action (delete or recreate) and reason (gone, state, converged, or error).",
 	}, []string{"action", "reason"})
 
 	// ReconcileStartDelayed は開始遅延検出器（issue #24 M2-7、docs/recording.md
@@ -289,34 +297,33 @@ var (
 	})
 
 	// RulerReservations は ruler が作成/更新/削除した予約の件数。
-	// action は created / updated / deleted / released / gc の 5 値。
+	// action は created / updated / deleted / released / fulfilled / gc の 6 値。
 	// created/updated は差分書き込みで実際に行が変わった件数のみを数える
 	// （変化のない行は IS DISTINCT FROM に弾かれ、ここにも計上されない）。
 	// deleted は大量削除サーキットブレーカーを通った導出削除、released は
 	// ブレーカーを通っていない削除（ユーザーが投資を手放す書き込みをしない限り
 	// 起きないもの。docs/recording.md §3.2）で、混ぜると「閾値を下回る導出削除が
 	// 素通りしていないか」を deleted の増え方で見る運用が汚れる。gc は番組終了後の
-	// GC（ブレーカーの対象外）。
+	// GC（ブレーカーの対象外）。fulfilled は録画・ingest 完了（原本あり）による削除で、
+	// ブレーカーを通らない。
 	//
 	// `ruler.retract_grace`（issue #428）で削除を見送った件数はここに含めない ---
-	// 他の 5 値と違い「行が 1 回寄与するエッジ」ではなく、猶予で残っている間は
+	// 他の action の値と違い「行が 1 回寄与するエッジ」ではなく、猶予で残っている間は
 	// 毎パス（既定 10 分）再計上される「水準」なので、カウンタの increase() に
 	// 乗せると値がパス頻度に比例してしまい録れた予約の数を意味しない。ブレーカーの
 	// ラッチと見分ける目的は internal/ruler の `ruler: pass complete` ログの
 	// grace_protected フィールドが果たす。
 	RulerReservations = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_ruler_reservations_total",
-		Help: "Reservations created, updated, or deleted by the ruler. " +
-			"action: created / updated / deleted (derived deletes that passed the bulk-delete circuit breaker) / " +
-			"released (deletes outside the breaker; they require an explicit write that drops the user's investment) / gc.",
+		Help: "Reservations written by the ruler by action: created, updated, deleted, released, fulfilled, or gc.",
 	}, []string{"action"})
 
-	// RulerProgramIDReuses は、終了済み snapshot と射影の開始時刻が 24 時間超
-	// ずれている program_id の検出件数。検出は読み取り専用で、同じ不一致が
+	// RulerProgramIDReuses は、終了済み snapshot の開始時刻より射影の開始時刻が
+	// 24 時間超後にずれている program_id の検出件数。検出は読み取り専用で、同じ不一致が
 	// snapshot の更新まで複数パスにわたって観測される可能性がある。
 	RulerProgramIDReuses = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "rokuban_ruler_program_id_reuse_total",
-		Help: "Possible program_id reuse events observed by the ruler.",
+		Help: "Ended program snapshots whose EPG projection starts more than 24 hours after the snapshot start, counted on each ruler pass.",
 	})
 
 	// RulerCircuitBreakerTrips は大量削除サーキットブレーカーが**発動に遷移した**
@@ -336,18 +343,20 @@ var (
 // watcher（M1-3）のメトリクス。
 var (
 	// RecordingsFailed は録画失敗の理由別件数。
-	// reason は mirakc の FailedReason.type（need-rescheduling / io-error 等）で
-	// 値域は有界なのでラベルに使える。
+	// reason は mirakc の FailedReason.type（need-rescheduling / io-error 等）で、
+	// 空なら unknown（internal/watcher の failureReason）。値域は mirakc が決め、
+	// 有界なのでラベルに使える。
 	RecordingsFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_recordings_failed_total",
-		Help: "Failed recordings by mirakc failure reason.",
+		Help: "Failed recordings by mirakc FailedReason.type; unknown when empty.",
 	}, []string{"reason"})
 
 	// RecordsBroken は録画中の異常（record-broken）の理由別件数。
-	// 同じ録画で複数回発生しうる。
+	// 同じ録画で複数回発生しうる。reason は mirakc の値で、空なら unknown
+	// （internal/watcher の brokenReason）。
 	RecordsBroken = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_records_broken_total",
-		Help: "mirakc record-broken events by reason.",
+		Help: "mirakc record-broken events by reason; unknown when empty.",
 	}, []string{"reason"})
 )
 
@@ -403,20 +412,23 @@ var (
 // 削除 reconcile（M3-8、docs/storage.md §7）のメトリクス。
 var (
 	// DeleteReconcileDeleted は物理削除したアセット件数。source は
-	// trash / until_encoded / removed_encoded / orphan / pending（前パスの deleting 再開）。
+	// trash / until_encoded / removed_encoded / old_generation / pending（前パスの deleting 再開）/
+	// pending_reclaim / placement / pending_transfer_reclaim / orphan。
 	DeleteReconcileDeleted = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_delete_reconcile_deleted_total",
-		Help: "Physically deleted assets by source.",
+		Help: "Physically deleted assets by source: trash, until_encoded, removed_encoded, old_generation, pending, pending_reclaim, placement, pending_transfer_reclaim, or orphan.",
 	}, []string{"source"})
 
-	// DeleteReconcileBytes は物理削除で解放したバイト数。
+	// DeleteReconcileBytes は物理削除で解放したバイト数。source は
+	// trash / until_encoded / removed_encoded / old_generation / pending / placement / orphan。
+	// pending_reclaim と pending_transfer_reclaim はバイト数を足さず、件数だけを DeleteReconcileDeleted で数える。
 	DeleteReconcileBytes = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_delete_reconcile_bytes_total",
-		Help: "Bytes freed by physical deletion, by source.",
+		Help: "Bytes freed by physical deletion, by source: trash, until_encoded, removed_encoded, old_generation, pending, placement, or orphan.",
 	}, []string{"source"})
 
 	// MediaAssetsMissing は state='active' なのに実体ファイルが無いと確認できた
-	// media_asset の件数（kind 別。issue #343）。「確認できた」は
+	// media_asset の件数（kind 別: original / encoded / thumbnail。issue #343）。「確認できた」は
 	// missing_media_assets の first_seen が MissingAssetAge を超えて連続して
 	// いること --- 単発の観測揺れでは増減しない。**ゼロは「大丈夫」の証明では
 	// ない** --- ファイルシステムの走査が 1 件もファイルを観測しなかったパス
@@ -429,7 +441,7 @@ var (
 	// kind はラベルの系列自体が消える（0 を出さない）。
 	MediaAssetsMissing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_media_assets_missing",
-		Help: "Active media_assets rows confirmed to have no file on disk, by kind. Not a deletion candidate list — file-missing is necessary but not sufficient for deletion.",
+		Help: "Active media_assets rows confirmed to have no file on disk, by kind: original, encoded, or thumbnail. Not a deletion candidate list — file-missing is necessary but not sufficient for deletion.",
 	}, []string{"kind"})
 
 	// OrphanFilesUnresolved は aging 後も残っている canonical 名の孤児数。
@@ -438,9 +450,11 @@ var (
 		Name: "rokuban_orphan_files_unresolved",
 		Help: "Aged canonical orphan files that require review. Files without a media_assets row are not automatically deleted unless their reserved name proves they never reached publication.",
 	})
+	// ObjectStoreErrors は S3 の置き場の操作の失敗を operation 別に数える。
+	// 値は objstore.RecordError の呼び出し元（put / head / get / list / delete / presign / open）。
 	ObjectStoreErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_object_store_errors_total",
-		Help: "Object store operation failures by operation.",
+		Help: "Object store operation failures by operation: put, head, get, list, delete, presign, or open.",
 	}, []string{"operation"})
 	ObjectStoreCredentialErrors = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "rokuban_object_store_credential_errors_total",
@@ -461,7 +475,7 @@ var (
 	// で実測）。
 	MissingAssetScanSuspectedStorageFailure = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "rokuban_missing_asset_scan_suspected_storage_failure_total",
-		Help: "Times the missing-asset scan saw zero files on disk while active media_assets rows exist, and skipped reporting for that pass (suspected mount failure or empty mount).",
+		Help: "Times the missing-asset scan saw zero files on disk while active media_assets rows exist and the delete reconcile worker has no store name, and skipped reporting for that pass (suspected mount failure or empty mount).",
 	})
 )
 
@@ -547,19 +561,24 @@ var (
 		Help: "Total media-store operations withheld because the configured store marker could not be verified.",
 	}, []string{"store"})
 
-	// StorageTransferWaitingAssets and StorageTransferWaitingBytes report the current
-	// desired-minus-observed transfer backlog from the database.
+	// StorageTransferWaitingAssets は、転送 reconcile の 1 パスが DB を数えた転送待ちの論理資産数を出す。
+	// 数えるのは、FS 置き場に転送元のコピーがあり、desired の置き場にコピーが無く、試行回数が転送の試行上限に届いていない資産。
+	// 削除してよい原本（until_encoded の規則で派生物が揃ったもの）は数えない。
+	// 値は、そのパスを走らせたプロセスの中にだけある。scrape のたびに DB を読み直さないので、出すのは走らせた Pod だけである。
 	StorageTransferWaitingAssets = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_storage_transfer_waiting_assets",
-		Help: "Number of logical media assets that still need a desired-store copy.",
+		Help: "Number of logical media assets with a copy in an FS store that still need a desired-store copy and have not reached the transfer attempt limit. Originals that can already be deleted because their encoded copies exist are excluded.",
 	})
+	// StorageTransferWaitingBytes は、StorageTransferWaitingAssets が数える資産のバイト数の合計を出す。値の持ち方は同じ。
 	StorageTransferWaitingBytes = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_storage_transfer_waiting_bytes",
-		Help: "Bytes represented by logical media assets that still need a desired-store copy.",
+		Help: "Bytes of the logical media assets counted by rokuban_storage_transfer_waiting_assets.",
 	})
+	// StorageTransferExhaustedAssets は、FS 置き場に転送元のコピーがあり desired の置き場にコピーが無いが、
+	// 試行回数が上限に達して reconcile から外れた資産数を出す。削除してよい原本は数えない。値の持ち方は StorageTransferWaitingAssets と同じ。
 	StorageTransferExhaustedAssets = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_storage_transfer_exhausted_assets",
-		Help: "Number of desired-store copies that stopped retrying after the transfer attempt limit.",
+		Help: "Number of logical media assets with a copy in an FS store whose desired-store copy stopped retrying after reaching the transfer attempt limit. Originals that can already be deleted because their encoded copies exist are excluded.",
 	})
 	StorageDerivedCopiesOutsideDerivedS3 = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_storage_derived_copies_outside_derived_s3",
@@ -579,9 +598,12 @@ var (
 		Name: "rokuban_store_route_mismatch_total",
 		Help: "Total store-bound jobs failed because the worker does not mount the job's store.",
 	}, []string{"kind", "store"})
+	// StorageTransferMountMismatches は、転送に要る置き場をこの worker で使えないために転送を見送った回数を、使えなかった置き場のラベルで出す。
+	// 宛先のラベルになるのは、FS の宛先のルートが未設定か目印（.rokuban-store）が一致しないときと、宛先の objstore が再開できないとき。
+	// 転送元のラベルになるのは、転送元が範囲読み取りできないときと、宛先が S3 で転送元の FS 置き場をマウントしていないとき。
 	StorageTransferMountMismatches = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_storage_transfer_mount_mismatch_total",
-		Help: "Total transfer jobs withheld because the target root is not mounted or its store marker does not match.",
+		Help: "Total transfer jobs withheld because a store the transfer needs is not usable on this worker (root not set, store marker mismatch, or object store cannot resume or range-read), by that store.",
 	}, []string{"store"})
 
 	// StorageRootTotalBytes / StorageRootUsedBytes / StorageRootAvailableBytes は
@@ -607,7 +629,7 @@ var (
 func newLiveActiveSessions() *prometheus.GaugeVec {
 	g := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_live_active_sessions",
-		Help: "Live-viewing sessions (ffmpeg processes) currently held by this process. Per-process; sum across replicas in Prometheus for the whole picture.",
+		Help: "Live-viewing sessions (ffmpeg processes) currently held by this process, by kind: live.",
 	}, []string{"kind"})
 	// GaugeVec は WithLabelValues が呼ばれるまで系列を exposition しない。live
 	// streamer を持たない api / worker ロールでも、起動直後の 0 を観測できるよう
@@ -624,9 +646,16 @@ var (
 	// であり、この値を全体像として読む UI を作らない（docs/operations.md §5
 	// 「既定を 1 にする根拠と、増やす判定基準」）。全体を見たいときは Prometheus 側で
 	// sum する。
+	//
+	// ラベル kind の値は常に "live"（newLiveActiveSessions と streamer のセッション数の
+	// 更新が書く）。
 	LiveActiveSessions = newLiveActiveSessions()
 
 	// LiveSessionStartFailures はライブセッションの開始に失敗した回数の理由別件数。
+	//
+	// reason の値は internal/streamer/session.go の各
+	// LiveSessionStartFailures.WithLabelValues が文字列リテラルで書き、1 か所に
+	// 閉じていないので Help には列挙しない。下は各値の意味である。
 	//
 	// reason:
 	//   - "session_limit": このプロセスの同時セッション上限（live.max_sessions、
@@ -635,7 +664,7 @@ var (
 	//   - "ffmpeg_error": ffmpeg の起動に失敗した
 	LiveSessionStartFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_live_session_start_failures_total",
-		Help: "Live-viewing session start failures by reason (session_limit, upstream_error, ffmpeg_error).",
+		Help: "Live-viewing session start failures by reason.",
 	}, []string{"reason"})
 
 	// LiveSessionEvictions は、起動失敗からの再試行のためにライブ
@@ -655,7 +684,7 @@ var (
 	//     いる」と誤診断する
 	LiveSessionEvictions = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_live_session_evictions_total",
-		Help: "Live-viewing sessions evicted to retry a failed start, by trigger reason and retry result.",
+		Help: "Live-viewing sessions evicted to retry a failed start, by reason (upstream or session_limit) and result (retry_succeeded, retry_failed, or retry_abandoned).",
 	}, []string{"reason", "result"})
 
 	// LiveIdleGCReclaimed は idle GC が回収した（クライアントが離れて ffmpeg を
@@ -695,7 +724,7 @@ var (
 	// idle GC の停止を検出する。
 	LiveIdleGCLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_live_idle_gc_last_pass_timestamp_seconds",
-		Help: "Unix time of the last completed live idle-GC pass. Use with time() to detect a stalled idle GC (which would leave tuners unreleased).",
+		Help: "Unix time of the last completed live idle-GC pass.",
 	})
 )
 
@@ -836,13 +865,4 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		reg.MustRegister(collector)
 	}
 	return reg
-}
-
-// RecordObjectStoreError は object store の操作の失敗を数える。
-// 資格情報の失効・取得失敗は rokuban_object_store_credential_errors_total にも数え、権限や接続の失敗と区別する。
-func RecordObjectStoreError(operation string, err error) {
-	ObjectStoreErrors.WithLabelValues(operation).Inc()
-	if errors.Is(err, objstore.ErrCredentials) {
-		ObjectStoreCredentialErrors.Inc()
-	}
 }

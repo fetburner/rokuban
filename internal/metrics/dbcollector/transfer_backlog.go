@@ -1,4 +1,4 @@
-package metrics
+package dbcollector
 
 import (
 	"context"
@@ -17,9 +17,9 @@ const transferBacklogQueryTimeout = 5 * time.Second
 // TransferBacklogCollector は、encode reconcile が保存した置き場ごとの転送待ちの件数を scrape ごとに
 // DB から読み直し、次の 2 本を出す。
 //
-//   - rokuban_storage_transfer_backlog_counted_timestamp_seconds{store}: 数え始めた時刻（DB の時計）。件数の鮮度
-//   - rokuban_storage_transfer_backlog_assets{store}: 直近に数えた転送待ちの論理資産数
-//   - rokuban_encode_backpressure{store}: 件数が上限に達していれば 1、そうでなければ 0
+//   - rokuban_storage_transfer_backlog_counted_timestamp_seconds{store}: 直近に件数を数え始めた時刻（DB の時計）
+//   - rokuban_storage_transfer_backlog_assets{store}: 直近に数えた転送待ちの論理資産数。rokuban_storage_transfer_waiting_assets と同じ判定を、転送元の置き場ごとに数える
+//   - rokuban_encode_backpressure{store}: 直近に数えた件数が上限に達していれば 1、そうでなければ 0
 //
 // cleanup キューは ScaledJob の --once で動くので、worker のプロセス内ゲージは scrape できない。
 // 保存した件数を読むだけで、scrape が件数を数え直す重い集計は走らせない。
@@ -42,17 +42,17 @@ func NewTransferBacklogCollector(reader store.TransferBacklogReader, limits map[
 		limits: limits,
 		countedAt: prometheus.NewDesc(
 			"rokuban_storage_transfer_backlog_counted_timestamp_seconds",
-			"Unix time (database clock) when encode reconcile started the last count of the transfer backlog for the store. Read this first: when it is far older than the full-pass period, the backlog and backpressure gauges are stale.",
+			"Unix time (database clock) when encode reconcile started the last count of the transfer backlog for the store.",
 			[]string{"store"}, nil,
 		),
 		backlog: prometheus.NewDesc(
 			"rokuban_storage_transfer_backlog_assets",
-			"Logical media assets waiting for a desired-store copy, by source FS store, for stores with storage.transfer.backlog_limit, as last counted by encode reconcile. An asset with copies in several source stores counts once per store.",
+			"Logical media assets counted as in rokuban_storage_transfer_waiting_assets, grouped by source FS store, for stores with a configured backlog limit, as last counted by encode reconcile. An asset with copies in several source stores counts once per store.",
 			[]string{"store"}, nil,
 		),
 		backpressure: prometheus.NewDesc(
 			"rokuban_encode_backpressure",
-			"1 while encode reconcile is not enqueuing encodes that read originals from the store because its last counted transfer backlog reached storage.transfer.backlog_limit, else 0.",
+			"1 while encode reconcile is not enqueuing encodes that read originals from the store because its last counted transfer backlog reached the configured backlog limit, else 0.",
 			[]string{"store"}, nil,
 		),
 		errors: prometheus.NewCounter(prometheus.CounterOpts{

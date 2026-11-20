@@ -1,4 +1,4 @@
-package metrics
+package dbcollector
 
 import (
 	"context"
@@ -48,7 +48,7 @@ func NewSyncMarkerCollector(markers store.LoopMarkers, sites []string) *SyncMark
 		sites:   slices.Clone(sites),
 		epg: prometheus.NewDesc(
 			"rokuban_epg_sync_last_success_timestamp_seconds",
-			"Unix time (database clock) of the last completed full EPG sync, taking the latest over the configured sites. Zero means no site has completed one yet. A flat value means the sync job has stopped; a read failure omits the series instead.",
+			"Unix time (database clock) of the last completed full EPG sync. The series has no labels and takes the latest over the configured sites. Zero means no site has completed one yet. A read failure omits the series instead.",
 			nil, nil,
 		),
 		tuner: prometheus.NewDesc(
@@ -58,7 +58,7 @@ func NewSyncMarkerCollector(markers store.LoopMarkers, sites []string) *SyncMark
 		),
 		transfer: prometheus.NewDesc(
 			"rokuban_storage_transfer_last_success_timestamp_seconds",
-			"Unix time (database clock) of the last physical copy that became active in any store. Zero means none has completed. It does not advance while the transfer queue is empty, so read it with the waiting-assets backlog. A read failure omits the series instead.",
+			"Unix time (database clock) of the last physical copy that became active in any store. Zero means none has completed. It does not advance while the transfer queue is empty. A read failure omits the series instead.",
 			nil, nil,
 		),
 		errors: readErrors,

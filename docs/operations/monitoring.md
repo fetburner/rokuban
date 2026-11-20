@@ -28,7 +28,7 @@ Prometheus の text exposition format で返す。**ロールに関わらずす�
 
 <details><summary>根拠</summary>
 
-- メトリクスの実装の置き場: `internal/metrics`
+- 計器（カウンタ・ヒストグラム・プロセス内ゲージ）の置き場: `internal/metrics`。DB を引くゲージ（collector）の置き場: `internal/metrics/dbcollector`。計器だけを使うパッケージに store と mirakc の依存を運ばないため、分けてある
 
 </details>
 
@@ -36,18 +36,9 @@ Prometheus の text exposition format で返す。**ロールに関わらずす�
 
 録画失敗は理由別のカウンタで、取り込みの滞留は DB を引くゲージで見る。
 
-| メトリクス | 型 | 意味 |
-|---|---|---|
-| `rokuban_recordings_failed_total{reason}` | Counter | `recording.failed` の理由別件数 |
-| `rokuban_records_broken_total{reason}` | Counter | `recording.record-broken` の理由別件数 |
-| `rokuban_ingest_bytes_total` | Counter | ingest バイト数 |
-| `rokuban_ingest_duration_seconds` | Histogram | ingest 所要時間。中断は含まない |
-| `rokuban_ingest_jobs_total{result}` | Counter | ingest の結果別件数 |
-| `rokuban_uningested_records{site}` | Gauge（DB） | 未 ingest record 総量（件数） |
-| `rokuban_uningested_record_bytes{site}` | Gauge（DB） | 未 ingest record 総量（バイト） |
-| `rokuban_uningested_backlog_scrape_errors_total{site}` | Counter | 上の 2 つの取得失敗回数 |
+名前・型・意味は `internal/metrics` と `internal/metrics/dbcollector` の定義（`Name` と `Help`）を引く。
 
-ingest の所要時間に中断を含めない理由と、結果別件数の数え方は ingest の節にある。未 ingest のゲージが数えるのは、終了したと観測済みのぶんだけである。
+ingest の結果別件数と所要時間が数えない試行と、未 ingest のゲージが含む範囲は、[ingest](#ingest) の節にある。
 
 録画失敗は観測した時点で数える。予約の照会や mirakc への問い合わせより後に置くと、それらが失敗したときに取りこぼす。物事がうまくいっていないときこそ数えたい。
 
@@ -55,8 +46,7 @@ PID 別のドロップ内訳はメトリクスにしない。PID × 録画数で
 
 <details><summary>根拠</summary>
 
-- 未 ingest のゲージが数える対象: `finished`
-- 所要時間が中断を含まない理由と対応する結果別件数: `ingest_jobs_total`
+- 失敗は観測した時点で数え、後続の照会の失敗で取りこぼさない: `rokuban_recordings_failed_total`
 
 </details>
 
@@ -64,7 +54,7 @@ PID 別のドロップ内訳はメトリクスにしない。PID × 録画数で
 
 エンコード・サムネイル・シークタイルは、ジョブの結果別件数と、reconcile の最終完走時刻で見る。
 
-名前・型・意味は `internal/metrics` の定義（`Name` と `Help`）を引く。`/metrics` の出力は一覧の代わりにならない。ラベル付きの系列は、値を 1 度も観測していないプロセスでは現れないためである。
+名前・型・意味は `internal/metrics` と `internal/metrics/dbcollector` の定義（`Name` と `Help`）を引く。`/metrics` の出力は一覧の代わりにならない。ラベル付きの系列は、値を 1 度も観測していないプロセスでは現れないためである。
 
 ジョブの結果別件数の `replan` は、計画が古く snooze で再計画した件数であり、失敗ではない。
 
@@ -97,21 +87,16 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 
 | メトリクス | 型 | 意味 |
 |---|---|---|
-| `rokuban_reconcile_pending_diff{action}` | Gauge | reconcile 差分数 |
-| `rokuban_reconcile_schedules_total{action}` | Counter | 実際に差分を消した量 |
-| `rokuban_reconcile_schedule_lost_total` | Counter | 再作成で DELETE 成功後に POST が失敗した回数 |
-| `rokuban_reconcile_write_withheld_total{action,reason}` | Counter | DELETE の直前の観測し直しで DELETE / POST を見送った回数（理由別） |
-| `rokuban_reconcile_circuit_breaker_trips_total` | Counter | 全損シグネチャでの発動回数 |
-| `rokuban_circuit_breaker_tripped{site,breaker}` | Gauge | いま止まっているか（1 = 発動中） |
-| `rokuban_reconcile_last_success_timestamp_seconds{site}` | Gauge（DB） | 予約同期（reconciler）のパスが site 単位で完走した最後の時刻（0 は未完走）。ScaledJob でもこの系列で停止を検出する |
-| `rokuban_reconcile_start_delayed{site}` | Gauge | 開始時刻を過ぎたのに録画が始まっていない予約数 |
-| `rokuban_reconcile_start_delay_errors_total{site}` | Counter | 開始遅延の検出に失敗した回数 |
 | `rokuban_presync_pending{site,reason}` | Gauge（DB） | 開始前から録画中の、未収束の予約数 |
 | `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` | Gauge（DB） | pending のうち最も開始が近い番組の開始時刻 |
 | `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` | Gauge（DB） | 予約状況の全量取り込みが最後に成功した時刻 |
 | `rokuban_presync_scrape_errors_total{site}` | Counter（DB） | presync の収集に失敗した回数 |
 
-差分ゲージは、収束すればゼロに戻る。アラートはこちらで取る。`rokuban_reconcile_schedule_lost_total` は 0 以外がアラート対象である。意味は reconcile の節にある。
+`rokuban_reconcile_pending_diff` の `create` / `delete` / `update` は、収束すればゼロに戻り、アラートはこの 3 つで取る。`delete_deferred` と `update_deferred` は録画中などでは非ゼロが正常なので、アラートしない。値ごとの読み方は差分ゲージの action の節にある。
+
+`rokuban_reconcile_schedule_lost_total` の意味は reconcile の節にある。
+
+`rokuban_reconcile_last_success_timestamp_seconds` は、DB に保存した時刻を scrape のたびに読み直して出す値である。パスが ScaledJob の `--once` で動いても、常駐 Pod の scrape から見える。
 
 `rokuban_reconcile_circuit_breaker_trips_total` が数えるのは、全損シグネチャでの発動である。件数の閾値ではない。意味が変わってもメトリクス名を据え置いたのは、既存のダッシュボードとアラートを壊さないためである。`rokuban_circuit_breaker_tripped` はラッチなので、アラートはこちらで取る。互換性のためラベル名は `site` のままだが、`breaker="delete_reconcile"` では値に置き場名が入る。
 
@@ -122,6 +107,10 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 <details><summary>根拠</summary>
 
 - スナップショットの全量取り込み: `schedule_sync`
+- create / delete / update は収束でゼロに戻り、deferred 系は非ゼロが正常でありうる: `rokuban_reconcile_pending_diff`
+- 全損シグネチャの発動は件数の閾値ではなく、名前は互換のため据え置き: `rokuban_reconcile_circuit_breaker_trips_total`
+- ラッチは解除まで発動中を示し、`delete_reconcile` では site に置き場名が入る: `rokuban_circuit_breaker_tripped`
+- DB を読み直すので、ScaledJob でも完走の停止を見られる: `rokuban_reconcile_last_success_timestamp_seconds`
 
 </details>
 
@@ -129,92 +118,79 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 
 ruler と record_sweep は、パスの所要時間と作成・削除の件数を見て、停止は最終成功時刻で検出する。
 
-| メトリクス | 型 | 意味 |
-|---|---|---|
-| `rokuban_ruler_pass_duration_seconds` | Histogram | ruler 1 パスの所要時間 |
-| `rokuban_ruler_reservations_total{action}` | Counter | ruler が作成・更新・削除した予約数 |
-| `rokuban_ruler_program_id_reuse_total` | Counter | 番組 ID の再利用を疑った観測件数 |
-| `rokuban_ruler_circuit_breaker_trips_total` | Counter | 大量削除ブレーカーの発動遷移回数 |
-| `rokuban_ruler_last_success_timestamp_seconds{site}` | Gauge（DB） | `ruler_pass` が site 単位で成功した最後の時刻 |
-| `rokuban_sweep_last_success_timestamp_seconds{site}` | Gauge（DB） | `record_sweep` が site 単位で成功した最後の時刻 |
-| `rokuban_loop_pass_marker_scrape_errors_total{site}` | Counter（DB） | ruler / record_sweep / reconciler の成功 marker を scrape できなかった回数 |
-
-DB を引く時刻は、marker 未確立なら 0 になる。`rokuban_ruler_program_id_reuse_total` が数えるのは、終了済み snapshot と EPG の開始時刻が 24 時間超ずれた `program_id` の観測件数である。再利用を検出しても挙動は変えない。
+名前・型・意味は `internal/metrics` と `internal/metrics/dbcollector` の定義（`Name` と `Help`）を引く。
 
 #### EPG とチューナーのメトリクス
 
 EPG とチューナーの射影は、投影件数で空になっていないことを、最終成功時刻で止まっていないことを見る。
 
-| メトリクス | 型 | 意味 |
-|---|---|---|
-| `rokuban_epg_sync_duration_seconds` | Histogram | EPG 全量同期の所要時間 |
-| `rokuban_epg_programs_projected` | Gauge | 直近パスの投影件数 |
-| `rokuban_epg_channels_without_programs` | Gauge | 番組を返さなかったチャンネル数 |
-| `rokuban_epg_sync_last_success_timestamp_seconds` | Gauge（DB） | 最後に成功した同期の時刻。設定された site の最新で、ラベルは無い。初回の同期が完了するまでは 0 |
-| `rokuban_tuners_projected{site}` | Gauge | 直近のチューナー同期で投影した本数 |
-| `rokuban_tuner_sync_last_success_timestamp_seconds{site}` | Gauge（DB） | 最後に成功したチューナー全量同期の時刻。site ごと。初回の同期が完了するまでは 0 |
-| `rokuban_capacity_overages{site}` | Gauge | チューナー不足区間の数 |
+名前・型・意味は `internal/metrics` の定義（`Name` と `Help`）を引く。
 
-これらの時刻は、同期を走らせるジョブが DB に保存した値を読む。どの Pod から scrape しても同じ値が出る。読み取りに失敗した scrape では系列が出ず、`rokuban_sync_marker_scrape_errors_total{source}` が増える（[ジョブ化されたループの監視](monitoring-scaled-jobs.md)）。
+EPG と各 site のチューナーの最終成功時刻は、同期を走らせるジョブが DB に保存した値を読む。どの Pod から scrape しても同じ値が出る。読み取りに失敗した scrape では系列が出ず、`rokuban_sync_marker_scrape_errors_total{source}` が増える（[ジョブ化されたループの監視](monitoring-scaled-jobs.md)）。
 
-チューナーの投影本数は、射影が空になっていないかを見るために出す。チューナー不足区間は、非ゼロは信頼できるが、ゼロは保証ではない（「警告が出ないことは保証ではない」）。
+`rokuban_tuners_projected` は、射影が空になっていないかを見るために出す。`rokuban_capacity_overages` は、非ゼロは信頼できるが、ゼロは保証ではない（「警告が出ないことは保証ではない」）。
+
+<details><summary>根拠</summary>
+
+- 投影本数は射影が空になっていないかを見るために出す: `rokuban_tuners_projected`
+- 非ゼロは信頼できるが、ゼロは保証ではない: `rokuban_capacity_overages`
+- DB に保存した時刻を読み、どの Pod から scrape しても同じ値が出る: `rokuban_epg_sync_last_success_timestamp_seconds`
+- DB に保存した時刻を読み、どの Pod から scrape しても同じ値が出る: `rokuban_tuner_sync_last_success_timestamp_seconds`
+
+</details>
 
 #### 削除とストレージのメトリクス
 
 物理削除の量は件数とバイト数で、ストレージの観測は root ごとの鮮度と容量で見る。
 
-| メトリクス | 型 | 意味 |
-|---|---|---|
-| `rokuban_delete_reconcile_deleted_total{source}` | Counter | 物理削除したアセット件数 |
-| `rokuban_delete_reconcile_bytes_total{source}` | Counter | 物理削除で解放したバイト数 |
-| `rokuban_delete_reconcile_last_success_timestamp_seconds{store}` | Gauge | 置き場ごとの削除 reconcile の完走時刻を DB から読んだ値（0 は未完走）。ブレーカーで止めたパスも含む。FS の置き場と派生物用の S3 の置き場が対象 |
-| `rokuban_media_assets_missing{kind}` | Gauge | 実体ファイルが無いと確認できた media_asset 数 |
-| `rokuban_orphan_files_unresolved` | Gauge | 登録されないまま残っている canonical file の数 |
-| `rokuban_object_store_errors_total{operation}` | Counter | S3 の置き場の操作（put / head / get / list / delete / presign）の失敗回数 |
-| `rokuban_object_store_credential_errors_total` | Counter | 上の失敗のうち、資格情報の取得失敗・失効・不明が原因のもの |
-| `rokuban_object_store_orphans_unresolved` | Gauge | DB にコピー行が無いまま残っている S3 のキーの数。報告だけで削除しない |
-| `rokuban_storage_derived_copies_outside_derived_s3` | Gauge | 設定中の S3 のうち、現在の `storage.derived` 以外にある active な現世代の派生コピー数 |
-| `rokuban_store_marker_mismatch_total{store}` | Counter | 置き場の目印を確認できず、操作を見送った回数 |
-| `rokuban_missing_asset_scan_suspected_storage_failure_total` | Counter | 置き場名が空の構成で、0 件走査を検出して記録を見送った回数 |
-| `rokuban_storage_root_observed_timestamp_seconds{store,root}` | Gauge | 置き場と root ごとの最後の観測時刻を `storage_sync` から DB で読んだ値。観測できていない置き場は `root="media"` が 0。ScaledJob でも使える |
-| `rokuban_reconcile_marker_scrape_errors_total{source}` | Counter | 完走時刻と観測時刻の読み取りに失敗した回数（`source` は `reconcile_pass` / `delete_reconcile` / `storage_sync`）。読めなかった表の系列は出さず、0 にも置き換えない |
-| `rokuban_storage_total_bytes{store,root}` / `rokuban_storage_used_bytes{store,root}` / `rokuban_storage_available_bytes{store,root}` | Gauge | 置き場と root ごとの直近観測バイト数 |
+名前・型・意味は `internal/metrics` と `internal/metrics/dbcollector` の定義（`Name` と `Help`）を引く。
 
 派生物の置き場が S3 のとき、その削除パスを走らせるのは、FS 置き場を名前順に並べた先頭の置き場（所有者）の worker だけである。所有者の worker が動いていない場合も、S3 のパスが失敗し続ける場合も、S3 の置き場名の系列は消えず、古い値のまま進まなくなる。完走時刻の行は DB に残り、collector は設定にある置き場ごとに系列を出すためである。初回の完走までは 0 が出る。式は [アラート式の集約と初回パス](monitoring-scaled-jobs.md#アラート式の集約と初回パス) を参照する。
+
+`rokuban_media_assets_missing` は、孤児回収の逆方向の検出である（[ストレージ](../storage/missing-assets.md)）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定する）。ゼロは大丈夫の証明ではない（「警告が出ないことは保証ではない」）。
+
+`rokuban_store_marker_mismatch_total{store}` は、起動時と操作ごとに増える。同じ障害中は再試行のたびに増える。
+
+`rokuban_storage_derived_copies_outside_derived_s3` は、storage transfer reconcile が DB のコピー行と設定中の S3 置き場を照合して更新する。非ゼロなら転送 reconcile の Warn に出る置き場名を調べる。storage transfer reconcile は起動を止めず、旧い S3 のコピーも自動削除しない。
+
+`rokuban_orphan_files_unresolved` が非ゼロなら調査が必要である。canonical file は自動削除しない。削除 reconcile は個別の Warn を上限 20 行まで出し、超過分を件数でまとめる。
+
+`rokuban_missing_asset_scan_suspected_storage_failure_total` が進むのは、置き場名が空の構成でだけである。進んだパスでは `rokuban_media_assets_missing` が前回値のまま凍結する（「警告が出ないことは保証ではない」）。
 
 <details><summary>根拠</summary>
 
 - `TestReconcileMarkerS3Series`: 保存済み時刻と未完走の 0、削除と storage の集合の分離
 - `TestNewReconcileMarkerCollectorS3Series`: 設定から削除系列を作る配線
 - `TestStoreScopedS3DeleteMarkersOnlyOwner`: 非所有者は S3 の完走時刻を進めない
+- 所有者の worker だけが S3 の系列を進める: `rokuban_delete_reconcile_last_success_timestamp_seconds`
+- 単発の走査揺れでは増減しない。ゼロは大丈夫の証明ではない: `rokuban_media_assets_missing`
+- 起動時と操作ごとに増える: `rokuban_store_marker_mismatch_total`
+- 旧い S3 のコピーは自動削除しない: `rokuban_storage_derived_copies_outside_derived_s3`
+- 非ゼロは調査が必要で、canonical file は自動削除しない: `rokuban_orphan_files_unresolved`
+- 進んだパスは欠損ゲージを更新しない: `rokuban_missing_asset_scan_suspected_storage_failure_total`
+- `TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge`: 上の凍結を実測
 
 </details>
-
-`rokuban_media_assets_missing` が数えるのは、有効（active）なのに実体ファイルが無いと確認できた media_asset である（孤児回収の逆方向。[ストレージ](../storage/missing-assets.md)）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定する）。ゼロは大丈夫の証明ではない（「警告が出ないことは保証ではない」）。
-
-`rokuban_store_marker_mismatch_total{store}` は、設定した置き場名と `.rokuban-store` が一致しない、または目印を読めないときに操作を見送った回数である。起動時と操作ごとに増えるため、同じ障害中は再試行のたびに増える。
-
-`rokuban_storage_derived_copies_outside_derived_s3` は、storage transfer reconcile が DB のコピー行と設定中の S3 置き場を照合して更新する。非ゼロなら転送 reconcile の Warn に出る置き場名を調べる。storage transfer reconcile は起動を止めず、旧い S3 のコピーも自動削除しない。
-
-`rokuban_orphan_files_unresolved` は、`media_assets` に登録されない canonical file のうち、`orphan_age` を超えて残っている数である。
-
-非ゼロは調査が必要である。canonical file は自動削除しない。削除 reconcile は個別の Warn を上限 20 行まで出し、超過分を件数でまとめる。
-
-`rokuban_missing_asset_scan_suspected_storage_failure_total` は、`storage.stores` に FS 置き場が無い構成でだけ進む。走査でファイルを 1 件も観測せず active 行がある場合に、欠損検出を見送った回数である（「警告が出ないことは保証ではない」）。
 
 #### 観測の鮮度と集約
 
 置き場の観測は、root ごとの鮮度と置き場ごとの容量で読む。
 
+鮮度は DB の `storage_sync` から読むので、`storage-sync` の CronJob が書いた観測も、どの Pod の scrape からも同じ値に見える。
+
 置き場の鮮度は、置き場の中で最も古い root の観測時刻で読む。1 つの root の観測が止まると、置き場の最小値も進まなくなる。式は `time() - min by (store) (rokuban_storage_root_observed_timestamp_seconds) > 閾値` である。式の詳細は [ジョブ化されたループの監視](monitoring-scaled-jobs.md)。どの root が止まっているかは、root ラベルの系列で確かめる。
 
 容量の 3 本は、`GET /api/storage` を経由せず Prometheus 側で置き場ごとの容量アラートを組むために出す。
+
+`rokuban_reconcile_marker_scrape_errors_total` が増えた scrape では、読めなかった表の系列が出ない。その系列を 0 と読んではならない。
 
 以上の storage ゲージはすべて `store` ラベルを持ち、置き場が 1 つの構成でも付く。`store` を指定しないセレクタ（`root="media"` など）は全置き場の系列に一致するので、そのまま動く。`root` だけで集約・結合している式（`by (root)` / `on (root)`）は置き場をまたいで合算・照合してしまうので、`store` を含めるよう直す。scratch はプロセスで共有するが、置き場の数だけ同じ値の系列が出るので、scratch の容量アラートは置き場の数だけ鳴る。
 
 <details><summary>根拠</summary>
 
 - 欠損ゲージが数える状態: `state='active'`
+- DB から読むので、どの Pod の scrape も同じ値: `rokuban_storage_root_observed_timestamp_seconds`
+- 読めなかった系列は出さず、0 にもしない: `rokuban_reconcile_marker_scrape_errors_total`
 
 </details>
 
@@ -226,22 +202,24 @@ FS 置き場間の転送のメトリクスと、その見方は [FS 置き場間
 
 ライブ視聴のセッション数と開始失敗・退避・回収は、プロセスごとのメトリクスで見る。
 
-| メトリクス | 型 | 意味 |
-|---|---|---|
-| `rokuban_live_active_sessions{kind}` | GaugeVec | ライブセッション数 |
-| `rokuban_live_session_start_failures_total{reason}` | Counter | ライブセッションの開始失敗数 |
-| `rokuban_live_session_evictions_total{reason,result}` | Counter | 起動失敗からの再試行のために退避したセッション数 |
-| `rokuban_live_idle_gc_reclaimed_total` | Counter | idle GC が回収したセッション数 |
-| `rokuban_live_leave_hints_total{result}` | Counter | 離脱ヒントの受信数 |
-| `rokuban_live_idle_gc_last_pass_timestamp_seconds` | Gauge | 最後に完走した idle GC パスの時刻 |
+名前・型・意味は `internal/metrics` の定義（`Name` と `Help`）を引く。
 
-セッション数のゲージは per-process なので、全体は Prometheus 側で sum する（[k8s 運用](k8s-streamer.md) §5「streamer のスケール」）。`kind` の値は `live` である。開始失敗の `reason` の値は、実装の呼び出し箇所が権威で、`session_limit` や `ffmpeg_error` などがある。`rokuban_live_session_evictions_total` の `reason` と `result` の値は、本書の「ライブ視聴」節にある。
+セッション数のゲージは per-process なので、全体は Prometheus 側で sum する（[k8s 運用](k8s-streamer.md) §5「streamer のスケール」）。
 
-離脱ヒントの `result` は `deadline_shortened` / `no_session` / `no_effect` の 3 値である。回収数と対で読む。ヒントは停止命令ではないので、回収数とは一致しない（差が開いていれば共有セッションが多い）。`no_effect` が定常的に出るなら、猶予が `live.idle_timeout` 以上で、ヒントが機能しない設定になっている。
+退避の `result` の読み方は本書の「ライブ視聴」節にある。
+
+離脱ヒントの受信数は回収数と対で読む。ヒントは idle 期限を詰めるだけで、他に視聴者がいれば次のセグメント要求が期限を戻すので、両者は一致しない。差が 0 に近ければ離脱がそのまま回収につながっており、開いていれば共有セッションが多い。
+
+`no_effect` が定常的に出るなら、猶予が `live.idle_timeout` 以上で、ヒントが効かない設定になっている。連打の 2 発目以降も `no_effect` になる。
+
+idle GC の最終完走時刻は、`time() -` で idle GC の停止を検出するために使う。セッション数のゲージはループが止まると直近の値のまま凍結し、0 になったのか回収が止まったのかを区別できないためである。
 
 <details><summary>根拠</summary>
 
-- 開始失敗の reason の値の権威: `internal/streamer/session.go` の `LiveSessionStartFailures`
+- 読み方: `rokuban_live_active_sessions`
+- 読み方: `rokuban_live_idle_gc_reclaimed_total`
+- 読み方: `rokuban_live_leave_hints_total`
+- 読み方: `rokuban_live_idle_gc_last_pass_timestamp_seconds`
 
 </details>
 
@@ -307,16 +285,29 @@ ruler の削除は、ルールに合わなくなったことによるものと�
 
 ruler の停止は最終成功時刻の系列で、書き込みの異常は予約数のカウンタで見る。
 
-| メトリクス | 説明 |
-|---|---|
-| `rokuban_ruler_pass_duration_seconds` | 1 パス（全ルール x 全射影番組）の所要時間。射影の件数に上限があるので伸び続けることはない |
-| `rokuban_ruler_reservations_total{action}` | ruler が書いた予約の action 別件数（値は下の節） |
-| `rokuban_ruler_program_id_reuse_total` | 終了済みの旧 snapshot と EPG 射影の開始時刻が 24 時間超ずれた行の観測件数（読み方は下の節） |
-| `rokuban_ruler_circuit_breaker_trips_total` | 大量削除で停止した回数。EPG の一時欠損を疑う入口 |
-| `rokuban_circuit_breaker_tripped{breaker="ruler_deletes"}` | 1 の間は導出削除が一切走らない（手動再開まで止まるラッチ）。いま止まっているかに答える |
-| `rokuban_ruler_last_success_timestamp_seconds{site}` | DB に確定した site 単位の最終成功時刻。ScaledJob ではこちらで停止を検出する |
+名前・型・意味は `internal/metrics` と `internal/metrics/dbcollector` の定義（`Name` と `Help`）を引く。
 
-最終成功時刻を使うのは、ゲージが凍る問題への対策である。ブレーカーのゲージは、カウンタと違って「いま止まっているか」に答える。
+1 パスの所要時間は伸び続けない。射影は剪定されるので、件数は EPG の窓に収まる。
+
+大量削除ブレーカーの発動回数が増えたら、EPG の一時欠損を疑う。
+
+`rokuban_circuit_breaker_tripped{breaker="ruler_deletes"}` が 1 の間は、導出削除が走らない。手動で再開するまで止まるラッチなので、いま止まっているかに答える。
+
+最終成功時刻は、DB に保存した時刻を scrape のたびに読み直して出す値である。パスが ScaledJob の `--once` で動いても、常駐 Pod の scrape から見える。ScaledJob ではこれで停止を検出する。
+
+<details><summary>根拠</summary>
+
+- 射影は剪定されるので、所要時間は伸び続けない: `rokuban_ruler_pass_duration_seconds`
+- 終了した番組の剪定: `PruneEpgPrograms` (`internal/db/queries/epg.sql`)
+- 収集で消えた番組の剪定: `DeleteStaleEpgProgramsForServices` (`internal/db/queries/epg.sql`)
+- 増えたら EPG の一時欠損を疑う: `rokuban_ruler_circuit_breaker_trips_total`
+- 発動への遷移だけを数える: `NewlyTripped` (`internal/store/pgstore/rulerpass.go`)
+- 1 の間は導出削除が走らず、いま止まっているかに答える: `rokuban_circuit_breaker_tripped`
+- ラッチの判定: `applyRulerDeleteGuard` (`internal/store/pgstore/rulerpass.go`)
+- DB に保存した時刻を読み直し、ScaledJob の停止もこれで検出する: `rokuban_ruler_last_success_timestamp_seconds`
+- scrape ごとの読み直し: `LoopPassCollector` (`internal/metrics/dbcollector/loop_pass.go`)
+
+</details>
 
 #### 予約の action の値
 
@@ -418,16 +409,18 @@ SHA-256 待ちは、同じ River job を snooze し、結果の 3 値と duratio
 
 ヒントを落とした scan は、定期 reconcile が再投入する。投入の停止は、定期 reconcile が最後に完走した時刻からの経過時間で検出する。
 
-| メトリクス | 説明 |
-|---|---|
-| `rokuban_ts_scan_jobs_total{result}` | scan ジョブの成功・失敗件数 |
-| `rokuban_ts_scan_duration_seconds` | 原本の全量読み出しと DB 更新にかかった秒数 |
-| `rokuban_ts_scan_dropped_packets_total` | scan 中に観測したドロップパケットの累計 |
-| `rokuban_ts_scan_error_packets_total` | scan 中に観測した transport error の累計 |
-| `rokuban_ts_scan_scrambled_packets_total` | scan 中に観測したスクランブルパケットの累計 |
-| `rokuban_ts_scan_reconcile_last_success_timestamp_seconds` | ts_scan reconcile の全件パスの完走時刻を DB から読んだ値（0 は未完走）。投入停止は `time() -` で検出。ScaledJob でも使える |
+名前・型・意味は `internal/metrics` の定義（`Name` と `Help`）を引く。
+
+完走時刻の系列は `rokuban_ts_scan_reconcile_last_success_timestamp_seconds` である。DB に保存した時刻を scrape のたびに読み直して出すので、パスが ScaledJob の `--once` で動いても、常駐 Pod の scrape から見える。
 
 各 scan の成否は、`rokuban_ts_scan_jobs_total` と River のジョブ状態で確認する。
+
+<details><summary>根拠</summary>
+
+- 完走時刻は scrape のたびに DB から読み、ScaledJob の `--once` でも常駐 Pod から見える: `rokuban_ts_scan_reconcile_last_success_timestamp_seconds`
+- 成否は件数と River のジョブ状態で確認する: `rokuban_ts_scan_jobs_total`
+
+</details>
 
 ### reconcile
 
@@ -449,15 +442,7 @@ flowchart TD
 
 差分ゲージはラベルで分かれ、アラートに使うものと使わないものがある。
 
-| メトリクス | 説明 |
-|---|---|
-| `rokuban_reconcile_pending_diff{action="create"\|"delete"}` | desired（reservations）と observed（schedule_sync）の存在の差分。通常はゼロ付近に収束する |
-| `rokuban_reconcile_pending_diff{action="delete_deferred"}` | desired にないが state allowlist で削除を見送った数 |
-| `rokuban_reconcile_pending_diff{action="update"}` | 予約オプション（priority / tag）の差分のうち、このパスで反映しようとした件数 |
-| `rokuban_reconcile_pending_diff{action="update_deferred"}` | 差分はあるが schedule の state が `scheduled` でないため、意図的に触らなかった件数 |
-| `rokuban_reconcile_schedules_total{action="recreated"}` | 予約オプションの差分反映で DELETE → POST の再作成が成功した件数 |
-| `rokuban_reconcile_schedule_lost_total` | 再作成で DELETE には成功したが POST が失敗した回数 |
-| `rokuban_reconcile_write_withheld_total{action="delete"\|"recreate",reason}` | DELETE の直前の観測し直しで見送った回数。並走や観測後の録画開始で非ゼロになりうる。カウンタなので収束は見ず、アラートにはしない |
+名前・型・意味は `internal/metrics` の定義（`Name` と `Help`）を引く。
 
 `delete` は、削除 allowlist の `scheduled` / `finished` / `failed` だけを数える。`delete_deferred` は、録画中・追従中または未知 state なら非ゼロが正常なので、アラートしない。
 
@@ -469,9 +454,14 @@ flowchart TD
 
 `pending_diff` の `update` と `update_deferred` を分けているのは、このゲージの読み方が「ゼロに戻らないまま続く = 収束できていない」だからである。意図的に見送った差分を混ぜると、正常なユーザー操作でアラートが鳴り、ゲージがアラート不能になる。
 
+`rokuban_reconcile_write_withheld_total` は、並走や観測後の録画開始で非ゼロになりうる。カウンタなので収束は見ず、アラートにはしない。
+
 <details><summary>根拠</summary>
 
 - 1 パスあたりの再作成上限: `MaxRecreatesPerPass`
+- action ごとに収束の読み方が違い、`update` と `update_deferred` を分ける: `rokuban_reconcile_pending_diff`
+- 0 以外はアラート対象で、次パスの再作成までに開始時刻を越えると取りこぼす: `rokuban_reconcile_schedule_lost_total`
+- 見送りは並走や録画開始で起きるので、収束を見ずアラートしない: `rokuban_reconcile_write_withheld_total`
 
 </details>
 

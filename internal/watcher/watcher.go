@@ -18,7 +18,7 @@ import (
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
-// DefaultSite はデフォルトの mirakc サイト名。定義は store.DefaultSite（唯一の出所）。
+// DefaultSite はデフォルトの mirakc サイト名。定義は sitename.Default（唯一の出所）で、store.DefaultSite はその別名。
 const DefaultSite = store.DefaultSite
 
 // Watcher は mirakc の SSE イベントを購読し、録画の状態変化を DB に反映する。
