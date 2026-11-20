@@ -286,6 +286,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Enqueuer: deps.Enqueuer,
 		Storage:  deps.UnscopedStorageTransfer,
 		Config:   deps.StorageTransferPolicy,
+		Policy:   deps.StoragePolicy,
 	})
 	riveradapter.Register(workers, &storagemaint.StorageTransferWorker{
 		Storage:      deps.UnscopedStorageTransfer,
