@@ -169,7 +169,7 @@ func TestMarkCMLogoCandidateFailureAcceptsSaveStage(t *testing.T) {
 	ctx := context.Background()
 	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(944)))
 	areaAt := seedTaughtArea(t, pool, 1180)
-	attemptedAt := insertRunningCandidate(t, pool, id, areaAt)
+	attemptedAt := insertRunningCandidate(t, pool, 1024, id, areaAt)
 	stage, message := "save", "saving failed"
 	ok, err := pgstoretest.Analysis(pool).MarkLogoCandidateFailed(ctx, store.CMStationRef{NetworkID: 32736, ServiceID: 1024}, areaAt, attemptedAt, &stage, message)
 	if err != nil || !ok {
@@ -217,40 +217,32 @@ func TestCMLogoCandidateWorkerCancellationClearsRunningRow(t *testing.T) {
 	}
 }
 
-// insertRunningCandidate は局 32736/1024 の running 候補を、契約の BeginLogoCandidate で作る。
-// 録画はこの局の原本付きのものを渡す。
-func insertRunningCandidate(t *testing.T, pool *pgxpool.Pool, recordingID int64, areaAt time.Time) time.Time {
+// seedCandidateRecording は局 32736/serviceID に原本付きの録画を作る。その局の候補の解析元になれる（desired の条件）。
+func seedCandidateRecording(t *testing.T, pool *pgxpool.Pool, serviceID int32) int64 {
 	t.Helper()
-	attemptedAt, started, err := pgstoretest.Analysis(pool).BeginLogoCandidate(context.Background(), store.CMStationRef{NetworkID: 32736, ServiceID: 1024}, recordingID, areaAt)
-	testutil.RequireNoError(t, err, "BeginLogoCandidate")
-	if !started {
-		t.Fatalf("BeginLogoCandidate(recording %d) did not start a running candidate", recordingID)
-	}
-	return attemptedAt
+	return seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.NetworkID = 32736
+		p.ServiceID = serviceID
+		p.EventID = serviceID
+	}))
 }
 
-// insertRunningCandidateForService は任意の局に running 候補を生 SQL で作る。
-// 別の局の録画 ID を候補に付けた状態（孤児の回収テスト）は、契約の BeginLogoCandidate では作れないので使う。
-func insertRunningCandidateForService(t *testing.T, pool *pgxpool.Pool, serviceID int32, recordingID int64, areaAt time.Time) {
+// insertRunningCandidate は局 32736/serviceID の running 候補を契約の BeginLogoCandidate で作り、試行時刻を返す。
+// areaAt はその局の現在の枠の版、recordingID はその局の原本付きの録画を渡す。
+func insertRunningCandidate(t *testing.T, pool *pgxpool.Pool, serviceID int32, recordingID int64, areaAt time.Time) time.Time {
 	t.Helper()
-	testutil.MustExec(t, pool, "inserting running candidate", `
-		INSERT INTO cm_logo_candidates (
-			network_id, service_id, state, x, y, w, h, coded_width, coded_height,
-			recording_id, observed_area_updated_at, attempted_at
-		)
-		SELECT network_id, service_id, 'running', x, y, w, h, coded_width, coded_height, $3, updated_at, clock_timestamp()
-		FROM cm_logo_areas WHERE network_id = 32736 AND service_id = $1 AND updated_at = $2`, serviceID, areaAt, recordingID)
+	attemptedAt, started, err := pgstoretest.Analysis(pool).BeginLogoCandidate(context.Background(), store.CMStationRef{NetworkID: 32736, ServiceID: serviceID}, recordingID, areaAt)
+	testutil.RequireNoError(t, err, "BeginLogoCandidate")
+	if !started {
+		t.Fatalf("BeginLogoCandidate(service %d, recording %d) did not start a running candidate", serviceID, recordingID)
+	}
+	return attemptedAt
 }
 
 func TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(948)))
-	testutil.MustExec(t, pool, "updating recordings", `
-		UPDATE recordings
-		SET started_at = '2025-01-01T00:00:00Z', ended_at = '2025-01-01T00:45:00Z'
-		WHERE id = $1`, id)
 	var dbNow time.Time
 	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&dbNow), "reading DB clock")
 	grace := 2 * time.Minute
@@ -264,8 +256,13 @@ func TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace(t *testing.T) {
 		1026: deadline - 15*time.Minute,
 	}
 	for serviceID, age := range ages {
+		id := seedCandidateRecording(t, pool, serviceID)
+		testutil.MustExec(t, pool, "updating recordings", `
+			UPDATE recordings
+			SET started_at = '2025-01-01T00:00:00Z', ended_at = '2025-01-01T00:45:00Z'
+			WHERE id = $1`, id)
 		areaAt := seedTaughtAreaForService(t, pool, serviceID, 1180)
-		insertRunningCandidateForService(t, pool, serviceID, id, areaAt)
+		insertRunningCandidate(t, pool, serviceID, id, areaAt)
 		testutil.MustExec(t, pool, "updating cm_logo_candidates", `
 			UPDATE cm_logo_candidates SET attempted_at = $3
 			WHERE network_id = 32736 AND service_id = $1 AND recording_id = $2`,
@@ -287,7 +284,6 @@ func TestFailOrphanCMLogoCandidatesWithoutRecordingUsesMinimumDeadline(t *testin
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(949)))
 	var dbNow time.Time
 	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&dbNow), "reading DB clock")
 	grace := 2 * time.Minute
@@ -297,8 +293,9 @@ func TestFailOrphanCMLogoCandidatesWithoutRecordingUsesMinimumDeadline(t *testin
 		1025: deadline + grace/2,
 	}
 	for serviceID, age := range ages {
+		id := seedCandidateRecording(t, pool, serviceID)
 		areaAt := seedTaughtAreaForService(t, pool, serviceID, 1180)
-		insertRunningCandidateForService(t, pool, serviceID, id, areaAt)
+		insertRunningCandidate(t, pool, serviceID, id, areaAt)
 		testutil.MustExec(t, pool, "updating cm_logo_candidates", `
 			UPDATE cm_logo_candidates SET recording_id = NULL, attempted_at = $2
 			WHERE network_id = 32736 AND service_id = $1`, serviceID, dbNow.Add(-age))
@@ -433,7 +430,7 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 		t.Errorf("candidate args = %#v, want station 32736, recording %d, and 2700000ms", candidateArgs, id)
 	}
 
-	attemptedAt := insertRunningCandidate(t, pool, id, areaAt)
+	attemptedAt := insertRunningCandidate(t, pool, 1024, id, areaAt)
 	stage, message := "logo", "failed"
 	if ok, err := pgstoretest.Analysis(pool).MarkLogoCandidateFailed(context.Background(), store.CMStationRef{NetworkID: 32736, ServiceID: 1024}, areaAt, attemptedAt, &stage, message); err != nil || !ok {
 		t.Fatalf("MarkLogoCandidateFailed = %v, %v", ok, err)

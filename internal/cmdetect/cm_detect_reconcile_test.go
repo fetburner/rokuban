@@ -137,7 +137,7 @@ func TestCMDetectReconcileCandidateRowMovesPastFirstStation(t *testing.T) {
 	}
 
 	// A running row is enough to remove the station from cm_logo_candidate_desired.
-	insertRunningCandidate(t, pool, firstID, firstAreaAt)
+	insertRunningCandidate(t, pool, 1024, firstID, firstAreaAt)
 
 	secondWorker := &CMDetectReconcileWorker{Enqueuer: enqueuer, Locator: pgstoretest.Media(pool), DetectionStore: detectionStore, RowLimit: 1}
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, secondWorker, jobs.CMDetectReconcileArgs{}), "second reconcile pass with a fresh worker")

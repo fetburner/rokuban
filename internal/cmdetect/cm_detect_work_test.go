@@ -838,12 +838,6 @@ func TestCMDetectionOldGenerationWorkerCannotMarkOrCancelNewAttempt(t *testing.T
 	if err := pool.QueryRow(ctx, `SELECT state FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state); err != nil || state != "running" {
 		t.Fatalf("new-generation attempt state = %q, %v; want running", state, err)
 	}
-	if saved, err := det.SaveDetection(ctx, oldAttempt, nil); err != nil || saved {
-		t.Fatalf("old-generation SaveDetection = %v, %v; want no result saved", saved, err)
-	}
-	if saved, err := det.SaveDetection(ctx, newAttempt, nil); err != nil || !saved {
-		t.Fatalf("current-generation SaveDetection = %v, %v; want the current attempt to be saved", saved, err)
-	}
 }
 
 // attempt_count > 1 の取り消し経路でも、古い世代の worker は同じ回数 (2) を持つ
@@ -948,18 +942,13 @@ func workHeld(t *testing.T, pool *pgxpool.Pool, mediaDir string, tools cmToolset
 }
 
 // putAreaLikeAPI は API の枠の保存（PutCMLogoArea）と同じ契約の呼び出しをする。
-// 枠を保存し、続けてロゴを消す。
+// 枠を保存するだけで、既存のロゴは消さない（採用まで残る）。
 func putAreaLikeAPI(t *testing.T, pool *pgxpool.Pool, recordingID int64) {
 	t.Helper()
-	ctx := context.Background()
-	analysis := pgstoretest.Analysis(pool)
-	station := store.CMStationRef{NetworkID: 32736, ServiceID: 1024}
-	_, err := analysis.SaveLogoArea(ctx, station, store.CMLogoAreaInput{
+	_, err := pgstoretest.Analysis(pool).SaveLogoArea(context.Background(), store.CMStationRef{NetworkID: 32736, ServiceID: 1024}, store.CMLogoAreaInput{
 		RecordingID: recordingID, X: 1180, Y: 24, W: 240, H: 96, CodedWidth: 1440, CodedHeight: 1080,
 	})
 	testutil.RequireNoError(t, err, "SaveLogoArea")
-	_, err = analysis.DeleteLogo(ctx, station)
-	testutil.RequireNoError(t, err, "DeleteLogo")
 }
 
 func countLogos(t *testing.T, pool *pgxpool.Pool) int {

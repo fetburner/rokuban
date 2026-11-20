@@ -11,7 +11,6 @@ type CMLogoParams struct {
 	NetworkID   int32
 	ServiceID   int32
 	LGD         []byte
-	PreviewPNG  []byte
 	LearnedFrom *int64
 	CodedWidth  int32
 	CodedHeight int32
@@ -29,7 +28,7 @@ func CMLogo(t testing.TB, db sqlcgen.DBTX, opts ...func(*CMLogoParams)) {
 		opt(&params)
 	}
 	if err := sqlcgen.New(db).UpsertCMLogo(t.Context(), sqlcgen.UpsertCMLogoParams{
-		NetworkID: params.NetworkID, ServiceID: params.ServiceID, Lgd: params.LGD, PreviewPng: params.PreviewPNG,
+		NetworkID: params.NetworkID, ServiceID: params.ServiceID, Lgd: params.LGD,
 		LearnedFrom: params.LearnedFrom, CodedWidth: params.CodedWidth, CodedHeight: params.CodedHeight,
 	}); err != nil {
 		t.Fatalf("upserting CM logo for network %d service %d: %v", params.NetworkID, params.ServiceID, err)
