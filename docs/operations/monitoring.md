@@ -102,7 +102,7 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 | `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` | Gauge（DB） | 予約状況の全量取り込みが最後に成功した時刻 |
 | `rokuban_presync_scrape_errors_total{site}` | Counter（DB） | presync の収集に失敗した回数 |
 
-`rokuban_reconcile_pending_diff` の `create` / `delete` / `update` は、収束すればゼロに戻り、アラートはこの 3 つで取る。`delete_deferred` と `update_deferred` は録画中などで通常非ゼロになりうるので、アラートしない。値ごとの読み方は差分ゲージの action の節にある。
+`rokuban_reconcile_pending_diff` の `create` / `delete` / `update` は、収束すればゼロに戻り、アラートはこの 3 つで取る。`delete_deferred` と `update_deferred` は録画中などでは非ゼロが正常なので、アラートしない。値ごとの読み方は差分ゲージの action の節にある。
 
 `rokuban_reconcile_schedule_lost_total` の意味は reconcile の節にある。
 
