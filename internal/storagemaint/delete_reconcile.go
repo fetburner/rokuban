@@ -77,24 +77,17 @@ const (
 // 範囲（`scope` 列）に使う。`DeleteReconcileArgs.QueueStore` と `OriginalQueue` により、
 // ジョブは置き場ごとの `original_{store}` キューで動く（`TestJobArgsSpecAndPhysicalQueue`）。
 type DeleteReconcileWorker struct {
+	store.DeleteReconcileStores
 	// Storage は孤児・実体無しの監査の永続化契約。nil は監査を呼ばない部分テストでのみ許容する。
-	Storage     store.StorageObservation
-	MediaDelete store.MediaDelete
-	// MediaPendingReclaim は MediaStoreName と DerivedObjectStoreName が同じ FS の
-	// pending 派生物を回収する。S3 の独立 pass は DerivedObjectDeleteStores に束ねた契約を使う。
-	MediaPendingReclaim store.PendingCopyReclaim
-	StorageTransfer     store.StorageTransfer
-	RecordingPurge      store.RecordingPurge
-	Breakers            store.Breakers
-	MediaDir            string
-	MediaStoreName      string
+	Storage        store.StorageObservation
+	Breakers       store.Breakers
+	MediaDir       string
+	MediaStoreName string
 
 	// 派生物の置き場が original と別スコープのときに設定する（object_delete.go）。DerivedObjectStoreName は
 	// 削除ブレーカーの範囲にも使い、FS の置き場（MediaStoreName）の件数とは合算しない。
-	// DerivedObjectDeleteStores は、その置き場に束ねた削除パスの store 契約である。nil なら独立パスは無い。
-	DerivedObjects            objstore.Store
-	DerivedObjectStoreName    string
-	DerivedObjectDeleteStores *store.DerivedObjectDeleteStores
+	DerivedObjects         objstore.Store
+	DerivedObjectStoreName string
 	// StorageObjects は置き場の名前ごとの objstore.Store。派生物のコピーは、そのコピーの置き場の
 	// Store で消す・確かめる。派生物の置き場を S3 に切り替えた後も、FS の置き場に残る旧いコピーは
 	// その FS の置き場の Store を通る。

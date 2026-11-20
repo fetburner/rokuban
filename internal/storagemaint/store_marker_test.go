@@ -147,7 +147,7 @@ func TestDeleteMediaAssetWithholdsUnlinkWhenMarkerDisappears(t *testing.T) {
 			testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(path), 0o755), "os.MkdirAll")
 			testutil.RequireNoError(t, os.WriteFile(path, []byte("original"), 0o600), "os.WriteFile")
 			mediaDelete := &markerTestMediaDelete{}
-			worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: mediaDelete}, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
 			previous := beforeMediaAssetUnlink
 			beforeMediaAssetUnlink = func(string) { mismatchStoreMarker(t, mediaDir, state) }
 			t.Cleanup(func() { beforeMediaAssetUnlink = previous })
@@ -180,7 +180,7 @@ func TestDeleteMediaAssetWithholdsMarkDeletedWhenMarkerDisappears(t *testing.T) 
 			testutil.RequireNoError(t, os.MkdirAll(filepath.Dir(path), 0o755), "os.MkdirAll")
 			testutil.RequireNoError(t, os.WriteFile(path, []byte("original"), 0o600), "os.WriteFile")
 			mediaDelete := &markerTestMediaDelete{}
-			worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: mediaDelete}, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
 			previous := beforeMediaAssetMarkDeleted
 			beforeMediaAssetMarkDeleted = func(int64) { mismatchStoreMarker(t, mediaDir, state) }
 			t.Cleanup(func() { beforeMediaAssetMarkDeleted = previous })
@@ -318,7 +318,7 @@ func TestDeleteMediaAssetWithholdsMarkDeletedAfterErrNotExistWhenMarkerDisappear
 			testutil.RequireNoError(t, mediapath.WriteStoreMarker(mediaDir, "tokyo"), "mediapath.WriteStoreMarker")
 			// ファイルは最初から無い。unlink は ErrNotExist になる。
 			mediaDelete := &markerTestMediaDelete{}
-			worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
+			worker := &DeleteReconcileWorker{DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: mediaDelete}, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
 			previous := beforeMediaAssetMarkDeleted
 			beforeMediaAssetMarkDeleted = func(int64) { mismatchStoreMarker(t, mediaDir, state) }
 			t.Cleanup(func() { beforeMediaAssetMarkDeleted = previous })
@@ -357,7 +357,7 @@ func TestResolveDeletingAssetWithholdsDecisionWhenMarkerDisappearsAfterStat(t *t
 					testutil.RequireNoError(t, os.WriteFile(path, []byte("original"), 0o600), "os.WriteFile")
 				}
 				mediaDelete := &markerTestMediaDelete{}
-				worker := &DeleteReconcileWorker{MediaDelete: mediaDelete, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
+				worker := &DeleteReconcileWorker{DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: mediaDelete}, MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "tokyo", mediaDir), MediaStoreName: "tokyo"}
 				previous := afterDeletingAssetStat
 				afterDeletingAssetStat = func(string) { mismatchStoreMarker(t, mediaDir, state) }
 				t.Cleanup(func() { afterDeletingAssetStat = previous })
