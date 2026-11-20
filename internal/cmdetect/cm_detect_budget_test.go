@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -16,33 +16,29 @@ func TestCMDetectionNewDesireAfterFailedStartsNewBudget(t *testing.T) {
 	t.Parallel()
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
+	det := pgstoretest.Analysis(pool)
 	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(1301)))
 	for _, step := range []struct {
 		count int32
 		state string
 	}{{1, "retrying"}, {2, "retrying"}, {3, "failed"}} {
-		attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
+		attemptCount := startCMDetectionTestAttempt(t, ctx, det, id)
 		if attemptCount != step.count {
 			t.Fatalf("attempt count = %d, want %d", attemptCount, step.count)
 		}
-		markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, step.state, nil, nil)
+		markCMDetectionTestFailure(t, ctx, pool, det, id, attemptCount, step.state, nil, nil)
 	}
 	testutil.MustExec(t, pool, "aging the attempt", `UPDATE recording_cm_attempts SET attempted_at = now() - interval '1 hour' WHERE recording_id = $1`, id)
-	testutil.RequireNoError(t, q.UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
-		NetworkID: 32736, ServiceID: 1024, Lgd: []byte("lgd"), LearnedFrom: &id, CodedWidth: 1440, CodedHeight: 1080,
-	}), "q.UpsertCMLogo")
-	if desired, err := q.IsCMDetectionDesired(ctx, id); err != nil || !desired {
-		t.Fatalf("IsCMDetectionDesired = %v, %v; want true after a newly learned logo", desired, err)
+	dbtest.CMLogo(t, pool, func(p *dbtest.CMLogoParams) { p.LearnedFrom = &id })
+	if desired, err := det.IsDetectionDesired(ctx, id); err != nil || !desired {
+		t.Fatalf("IsDetectionDesired = %v, %v; want true after a newly learned logo", desired, err)
 	}
-	attempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
-		RecordingID: id, MaxAttempts: cmDetectMaxTries,
-	})
-	if err != nil || !attempt.ShouldRun || attempt.AttemptCount != 1 {
-		t.Fatalf("BeginCMDetectionAttempt after failed = %#v, %v; want running attempt 1", attempt, err)
+	attempt, shouldRun, err := det.BeginAttempt(ctx, id, cmDetectMaxTries)
+	if err != nil || !shouldRun || attempt.AttemptCount != 1 {
+		t.Fatalf("BeginAttempt after failed = %#v, %v; want running attempt 1", attempt, err)
 	}
 	// Work は attemptCount < cmDetectMaxTries の失敗を retrying にする（cm_detect.go）。
-	markCMDetectionTestFailure(t, ctx, pool, q, id, attempt.AttemptCount, "retrying", nil, nil)
+	markCMDetectionTestFailure(t, ctx, pool, det, id, attempt.AttemptCount, "retrying", nil, nil)
 	var state string
 	var count int32
 	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &count), "reading attempt state")

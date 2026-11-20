@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
@@ -101,9 +100,8 @@ func TestCMDetectReconcileFailedAttemptMovesPastFirstCandidate(t *testing.T) {
 		t.Fatalf("detection jobs after first pass = %+v, want only recording %d", detectionJobs, firstID)
 	}
 
-	q := sqlcgen.New(pool)
-	attempt := startCMDetectionTestAttemptRow(t, ctx, q, firstID)
-	markCMDetectionTestFailure(t, ctx, pool, q, firstID, attempt.AttemptCount, "failed", nil, nil)
+	attempt := startCMDetectionTestAttemptRow(t, ctx, detectionStore, firstID)
+	markCMDetectionTestFailure(t, ctx, pool, detectionStore, firstID, attempt.AttemptCount, "failed", nil, nil)
 
 	// --once starts a new worker for the next pass. The failed attempt removes the
 	// first recording from the view, so the next row is now at the head of the window.
