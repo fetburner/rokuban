@@ -36,18 +36,9 @@ Prometheus の text exposition format で返す。**ロールに関わらずす�
 
 録画失敗は理由別のカウンタで、取り込みの滞留は DB を引くゲージで見る。
 
-| メトリクス | 型 | 意味 |
-|---|---|---|
-| `rokuban_recordings_failed_total{reason}` | Counter | `recording.failed` の理由別件数 |
-| `rokuban_records_broken_total{reason}` | Counter | `recording.record-broken` の理由別件数 |
-| `rokuban_ingest_bytes_total` | Counter | ingest バイト数 |
-| `rokuban_ingest_duration_seconds` | Histogram | ingest 所要時間。中断は含まない |
-| `rokuban_ingest_jobs_total{result}` | Counter | ingest の結果別件数 |
-| `rokuban_uningested_records{site}` | Gauge（DB） | 未 ingest record 総量（件数） |
-| `rokuban_uningested_record_bytes{site}` | Gauge（DB） | 未 ingest record 総量（バイト） |
-| `rokuban_uningested_backlog_scrape_errors_total{site}` | Counter | 上の 2 つの取得失敗回数 |
+名前・型・意味は `internal/metrics` と `internal/metrics/dbcollector` の定義（`Name` と `Help`）を引く。
 
-ingest の所要時間に中断を含めない理由と、結果別件数の数え方は ingest の節にある。未 ingest のゲージが数えるのは、終了したと観測済みのぶんだけである。
+ingest の結果別件数と所要時間が数えない試行と、未 ingest のゲージが含む範囲は、[ingest](#ingest) の節にある。
 
 録画失敗は観測した時点で数える。予約の照会や mirakc への問い合わせより後に置くと、それらが失敗したときに取りこぼす。物事がうまくいっていないときこそ数えたい。
 
@@ -55,8 +46,7 @@ PID 別のドロップ内訳はメトリクスにしない。PID × 録画数で
 
 <details><summary>根拠</summary>
 
-- 未 ingest のゲージが数える対象: `finished`
-- 所要時間が中断を含まない理由と対応する結果別件数: `ingest_jobs_total`
+- 失敗は観測した時点で数え、後続の照会の失敗で取りこぼさない: `rokuban_recordings_failed_total`
 
 </details>
 

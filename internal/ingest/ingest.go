@@ -372,8 +372,7 @@ func (w *IngestWorker) resolveProgressInterval() time.Duration {
 //
 // 戻り値を名前付きにするのは、defer が「この試行の結末」を分類して
 // metrics.IngestJobs / IngestDuration へ記録するためである（記録の値域と
-// 中断を数えない理由は下の defer のコメントと
-// docs/operations/monitoring.md の rokuban_ingest_jobs_total）。
+// 数えない試行は下の defer のコメントと docs/operations/monitoring.md の §ingest を見る）。
 func (w *IngestWorker) Work(ctx context.Context, args jobs.IngestJobArgs) (err error) {
 	log := slog.With("site", args.Site, "record_id", args.RecordID)
 

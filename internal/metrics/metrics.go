@@ -30,20 +30,21 @@ var (
 	})
 
 	// IngestDuration は ingest 1 件の所要。転送は録画長と回線速度で決まるため
-	// バケットは秒〜十数分をカバーする。中断（River の soft stop）は含まない。
+	// バケットは秒〜十数分をカバーする。observe は IngestJobs の Inc と同じ条件でだけ
+	// 行い、中断（River の soft stop）と snooze（区切り・SHA-256 待ち）は含まない。
 	IngestDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "rokuban_ingest_duration_seconds",
-		Help:    "Duration of ingest jobs.",
+		Help:    "Duration of ingest job attempts counted in rokuban_ingest_jobs_total; interrupted attempts and snoozes are excluded.",
 		Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800},
 	})
 
 	// IngestJobs は ingest ジョブの結果別の件数。result は success / failure /
 	// canceled の 3 値で、増やさない。River の soft stop はどれにも数えない。
-	// 各値の意味と分母の違いは docs/operations/monitoring.md、判定と既知の窓は
-	// internal/ingest/ingest.go の Work。
+	// 各値の意味と分母の違いは docs/operations/monitoring.md の §ingest「結果の 3 値の数え方」、
+	// 判定と既知の窓は internal/ingest/ingest.go の Work。
 	IngestJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_ingest_jobs_total",
-		Help: "Ingest jobs by result.",
+		Help: "Ingest jobs by result: success, failure, or canceled.",
 	}, []string{"result"})
 
 	// IngestHashMismatches は mirakc の content.sha256 と転送内容の不一致。
@@ -334,18 +335,20 @@ var (
 // watcher（M1-3）のメトリクス。
 var (
 	// RecordingsFailed は録画失敗の理由別件数。
-	// reason は mirakc の FailedReason.type（need-rescheduling / io-error 等）で
-	// 値域は有界なのでラベルに使える。
+	// reason は mirakc の FailedReason.type（need-rescheduling / io-error 等）で、
+	// 空なら unknown（internal/watcher の failureReason）。値域は mirakc が決め、
+	// 有界なのでラベルに使える。
 	RecordingsFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_recordings_failed_total",
-		Help: "Failed recordings by mirakc failure reason.",
+		Help: "Failed recordings by mirakc FailedReason.type; unknown when empty.",
 	}, []string{"reason"})
 
 	// RecordsBroken は録画中の異常（record-broken）の理由別件数。
-	// 同じ録画で複数回発生しうる。
+	// 同じ録画で複数回発生しうる。reason は mirakc の値で、空なら unknown
+	// （internal/watcher の brokenReason）。
 	RecordsBroken = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_records_broken_total",
-		Help: "mirakc record-broken events by reason.",
+		Help: "mirakc record-broken events by reason; unknown when empty.",
 	}, []string{"reason"})
 )
 
