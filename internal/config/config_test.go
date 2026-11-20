@@ -2053,160 +2053,32 @@ func TestLiveConfig_ValidateTools(t *testing.T) {
 	}
 }
 
-func TestLiveConfig_ValidateTools_MPEG2Decoder(t *testing.T) {
-	writeFFmpeg := func(t *testing.T, hasMPEG2 bool) string {
-		t.Helper()
-		line := " V..... mpeg4                 MPEG-4 part 2"
-		if hasMPEG2 {
-			line = " V..... mpeg2video           MPEG-2 video"
-		}
-		path := filepath.Join(t.TempDir(), "fake-ffmpeg")
-		testexec.WriteExecutable(t, path, []byte("#!/bin/sh\necho '"+line+"'\n"))
-		return path
-	}
-
-	t.Run("errors before streaming when decoder is missing", func(t *testing.T) {
-		cfg := LiveConfig{Enabled: true, FFmpeg: writeFFmpeg(t, false)}
-		err := cfg.ValidateTools()
-		if err == nil || !strings.Contains(err.Error(), "mpeg2video") {
-			t.Fatalf("ValidateTools() error = %v, want missing mpeg2video decoder", err)
-		}
-	})
-
-	t.Run("accepts a build with the MPEG-2 source decoder", func(t *testing.T) {
-		cfg := LiveConfig{Enabled: true, FFmpeg: writeFFmpeg(t, true)}
-		if err := cfg.ValidateTools(); err != nil {
-			t.Fatalf("ValidateTools() = %v, want success", err)
-		}
-	})
-}
-
-// enabled + captions でも `ffmpeg -decoders` は 1 回しか exec しない。
-func TestLiveConfig_ValidateTools_ListsDecodersOnce(t *testing.T) {
+// ValidateTools は LookPath だけを行い、ffmpeg を実行しない。これは不変条件 4（ffmpeg/ffprobe
+// の exec は worker / cmdetect / encode / streamer / mediaexec だけ）の config 側を固定する。
+// config は LookPath のために os/exec を import するので、depguard の exec-role では
+// この境界を判定できない。デコーダの検査は streamer / encode が持つ。
+// 偽 ffmpeg は実行されると印を残すので、その印が無いことで実行の有無を見る。
+// 壊し方: ValidateTools に exec.Command(ffmpeg, "-decoders") を足すと落ちる。
+func TestValidateTools_DoesNotRunFFmpeg(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake ffmpeg script assumes a POSIX shell")
 	}
 	dir := t.TempDir()
-	calls := filepath.Join(dir, "calls")
-	script := "#!/bin/sh\necho x >> " + calls + "\necho ' V..... mpeg2video MPEG-2 video'\necho ' S..... libaribcaption ARIB'\n"
+	marker := filepath.Join(dir, "ran")
 	ffmpeg := filepath.Join(dir, "fake-ffmpeg")
-	testexec.WriteExecutable(t, ffmpeg, []byte(script))
+	testexec.WriteExecutable(t, ffmpeg, []byte("#!/bin/sh\ntouch "+marker+"\n"))
 	ffprobe := filepath.Join(dir, "fake-ffprobe")
-	testexec.WriteExecutable(t, ffprobe, []byte("#!/bin/sh\n"))
-	cfg := LiveConfig{Enabled: true, Captions: true, FFmpeg: ffmpeg, FFprobe: ffprobe}
-	if err := cfg.ValidateTools(); err != nil {
-		t.Fatalf("ValidateTools() = %v, want success", err)
+	testexec.WriteExecutable(t, ffprobe, []byte("#!/bin/sh\ntouch "+marker+"\n"))
+
+	if err := (EncodeConfig{FFmpeg: ffmpeg, FFprobe: ffprobe}).ValidateTools(); err != nil {
+		t.Fatalf("EncodeConfig.ValidateTools() = %v, want success", err)
 	}
-	got, err := os.ReadFile(calls)
-	if err != nil {
-		t.Fatal(err)
+	if err := (LiveConfig{FFmpeg: ffmpeg, FFprobe: ffprobe, Enabled: true, Captions: true}).ValidateTools(); err != nil {
+		t.Fatalf("LiveConfig.ValidateTools() = %v, want success", err)
 	}
-	if n := strings.Count(string(got), "x"); n != 1 {
-		t.Fatalf("ffmpeg -decoders executed %d times, want 1", n)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("ValidateTools executed ffmpeg or ffprobe; want LookPath only")
 	}
-}
-
-// writeFakeFFmpegDecoders は `ffmpeg -hide_banner -decoders` の代わりに応答する
-// 偽 ffmpeg を用意する（validateLibARIBCaption はこの 1 コマンドの出力しか見ない）。
-// includeARIB が true なら出力に libaribcaption を含める。
-func writeFakeFFmpegDecoders(t *testing.T, includeARIB bool) string {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("fake ffmpeg script assumes a POSIX shell")
-	}
-	line := " V..... mpeg4                 MPEG-4 part 2"
-	if includeARIB {
-		line = " S..... libaribcaption        ARIB caption decoder"
-	}
-	script := "#!/bin/sh\necho \"" + line + "\"\n"
-	dir := t.TempDir()
-	path := filepath.Join(dir, "fake-ffmpeg")
-	testexec.WriteExecutable(t, path, []byte(script))
-	return path
-}
-
-// TestEncodeConfig_ValidateTools_LibARIBCaption は subtitles: webvtt を持つ
-// プロファイルがあるとき、実際に使う ffmpeg が libaribcaption デコーダを
-// 持たなければ起動エラーになる（持てばならない）ことを固定する。
-//
-// 壊し方: validateLibARIBCaption 呼び出しをまるごと消す、または
-// strings.Contains の判定を反転する。いずれも「デコーダ無しでもエラーに
-// ならない」側のサブテストが失敗を検出し損ねる、または「デコーダ有りでも
-// エラーになる」側が誤ってエラーを返して落ちる。
-func TestEncodeConfig_ValidateTools_LibARIBCaption(t *testing.T) {
-	t.Run("errors without libaribcaption decoder", func(t *testing.T) {
-		ffmpeg := writeFakeFFmpegDecoders(t, false)
-		cfg := EncodeConfig{
-			FFmpeg:   ffmpeg,
-			FFprobe:  ffmpeg,
-			Profiles: []EncodeProfile{{Name: "web", Subtitles: "webvtt"}},
-		}
-		err := cfg.ValidateTools()
-		if err == nil {
-			t.Fatal("expected error: ffmpeg without libaribcaption decoder")
-		}
-		if !strings.Contains(err.Error(), "libaribcaption") {
-			t.Errorf("error = %v, want mention of libaribcaption", err)
-		}
-	})
-
-	t.Run("passes with libaribcaption decoder", func(t *testing.T) {
-		ffmpeg := writeFakeFFmpegDecoders(t, true)
-		cfg := EncodeConfig{
-			FFmpeg:   ffmpeg,
-			FFprobe:  ffmpeg,
-			Profiles: []EncodeProfile{{Name: "web", Subtitles: "webvtt"}},
-		}
-		if err := cfg.ValidateTools(); err != nil {
-			t.Errorf("unexpected error with libaribcaption decoder: %v", err)
-		}
-	})
-
-	t.Run("no subtitle profile skips the check even without the decoder", func(t *testing.T) {
-		ffmpeg := writeFakeFFmpegDecoders(t, false)
-		cfg := EncodeConfig{
-			FFmpeg:   ffmpeg,
-			FFprobe:  ffmpeg,
-			Profiles: []EncodeProfile{{Name: "h264"}},
-		}
-		if err := cfg.ValidateTools(); err != nil {
-			t.Errorf("unexpected error without any subtitle profile: %v", err)
-		}
-	})
-}
-
-// TestLiveConfig_ValidateTools_LibARIBCaption はライブ側（live.captions）の
-// 同じ検査を固定する。EncodeConfig 側と判定関数（validateLibARIBCaption）を
-// 共有しているが、呼び出し条件（captions フラグ vs プロファイルの
-// subtitles: webvtt）が別物なので独立に検査する。
-func TestLiveConfig_ValidateTools_LibARIBCaption(t *testing.T) {
-	t.Run("errors without libaribcaption decoder", func(t *testing.T) {
-		ffmpeg := writeFakeFFmpegDecoders(t, false)
-		cfg := LiveConfig{FFmpeg: ffmpeg, FFprobe: ffmpeg, Captions: true}
-		err := cfg.ValidateTools()
-		if err == nil {
-			t.Fatal("expected error: ffmpeg without libaribcaption decoder")
-		}
-		if !strings.Contains(err.Error(), "libaribcaption") {
-			t.Errorf("error = %v, want mention of libaribcaption", err)
-		}
-	})
-
-	t.Run("passes with libaribcaption decoder", func(t *testing.T) {
-		ffmpeg := writeFakeFFmpegDecoders(t, true)
-		cfg := LiveConfig{FFmpeg: ffmpeg, FFprobe: ffmpeg, Captions: true}
-		if err := cfg.ValidateTools(); err != nil {
-			t.Errorf("unexpected error with libaribcaption decoder: %v", err)
-		}
-	})
-
-	t.Run("captions disabled skips the check even without the decoder", func(t *testing.T) {
-		ffmpeg := writeFakeFFmpegDecoders(t, false)
-		cfg := LiveConfig{FFmpeg: ffmpeg, FFprobe: ffmpeg, Captions: false}
-		if err := cfg.ValidateTools(); err != nil {
-			t.Errorf("unexpected error with captions disabled: %v", err)
-		}
-	})
 }
 
 // DSN は値を引用しないと空値・空白入りの値で壊れる。

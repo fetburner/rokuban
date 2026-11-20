@@ -21,7 +21,8 @@ import (
 type LiveConfig struct {
 	// Enabled が false ならライブ視聴のルートを一切登録しない。既定 false。
 	//
-	// **ffmpeg の LookPath 検査もこれが true のときだけ行う**（cmd/rokuban/server.go）。
+	// **ffmpeg の検査（LookPath とデコーダ検査）は、これが true のときと、録画 HLS を
+	// 有効にしたとき（Enabled が false でも）に行う**（cmd/rokuban/server.go）。
 	// 公式イメージ（ffmpeg 無し、docs/overview.md §イメージ戦略）で streamer ロールを
 	// 起動する構成（録画配信 / サムネイルのみ）を、ライブを設定していないという理由で
 	// 壊さない。
@@ -138,8 +139,10 @@ type LiveProfile struct {
 	ExtraArgs []string `yaml:"extra_args"`
 }
 
-// ValidateTools は ffmpeg が PATH（または絶対パス）で解決できることを検査する。
-// live.enabled が true の streamer ロール起動時だけ呼ぶ
+// ValidateTools は ffmpeg（と captions 有効時の ffprobe）が PATH（または絶対パス）で
+// 解決できることを LookPath で検査する。プロセスは実行しない。デコーダの検査は
+// internal/streamer.ValidateFFmpegDecoders が行う。streamer ロールの起動時、
+// live.enabled が true のときと録画 HLS を有効にしたときに呼ぶ
 // （不変条件 4、LiveConfig.Enabled のコメント参照）。
 func (c LiveConfig) ValidateTools() error {
 	if _, err := exec.LookPath(c.FFmpeg); err != nil {
@@ -148,24 +151,6 @@ func (c LiveConfig) ValidateTools() error {
 	if c.Captions {
 		if _, err := exec.LookPath(c.FFprobe); err != nil {
 			return fmt.Errorf("live.ffprobe %q not found in PATH: %w", c.FFprobe, err)
-		}
-	}
-	if !c.Enabled && !c.Captions {
-		return nil
-	}
-	// 1 回の `ffmpeg -decoders` の出力を両方の判定に使う。
-	decoders, err := ffmpegDecoders(c.FFmpeg)
-	if err != nil {
-		return err
-	}
-	if c.Enabled {
-		if err := validateFFmpegDecoder(decoders, "mpeg2video", "live source MPEG-2 TS"); err != nil {
-			return err
-		}
-	}
-	if c.Captions {
-		if err := validateLibARIBCaption(decoders, "live"); err != nil {
-			return err
 		}
 	}
 	return nil

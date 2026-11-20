@@ -32,6 +32,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/role"
+	"github.com/fetburner/rokuban/internal/testexec"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -1495,6 +1496,76 @@ func TestServerCmd_EncodeToolCheckFollowsQueuesFlag(t *testing.T) {
 	if !strings.Contains(err.Error(), "encode.ffmpeg") {
 		t.Errorf("err = %v, want the ffmpeg tool error", err)
 	}
+}
+
+// TestServerCmd_FFmpegDecoderCheckFailsStartup は、libaribcaption / mpeg2video を持たない
+// ffmpeg を指定したとき、3 つの起動経路（encode の字幕プロファイル、ライブ字幕、録画 HLS）が
+// 実際の起動で止まることを見る。デコーダ検査の中身は internal/encode と internal/streamer が
+// 固定し、ここは「server.go がその検査を呼ぶ」ことだけを固定する。
+//
+// 正しい経路では検査の失敗はすぐ返る。streamer の 2 つは起動が止まらないと bounded 実行の
+// 上限まで待つので、その上限を 10 秒にして、壊したときの待ち時間を抑える。
+// 壊し方: server.go の該当する encode.ValidateDecoders / streamer.ValidateFFmpegDecoders の
+// 呼び出しを消すと、その行は起動が止まらず、上限（encode は 30 秒、streamer は 10 秒）で落ちる。
+func TestServerCmd_FFmpegDecoderCheckFailsStartup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake ffmpeg scripts assume a POSIX shell")
+	}
+	testutil.SetupDB(t)
+	dir := t.TempDir()
+	// mpeg2video は持つが libaribcaption は持たない ffmpeg。字幕の検査だけが落ちる。
+	ffmpeg := filepath.Join(dir, "ffmpeg")
+	testexec.WriteExecutable(t, ffmpeg, []byte("#!/bin/sh\necho ' V....D mpeg2video           MPEG-2 video'\n"))
+	ffprobe := filepath.Join(dir, "ffprobe")
+	testexec.WriteExecutable(t, ffprobe, []byte("#!/bin/sh\nexit 1\n"))
+	profile := "  profiles:\n    - name: hd\n      video_codec: libx264\n      audio_codec: aac\n"
+
+	t.Run("encode subtitles webvtt", func(t *testing.T) {
+		path := writeOnceModeConfig(t, fmt.Sprintf(`encode:
+  ffmpeg: %s
+  ffprobe: %s
+  profiles:
+    - name: web
+      container: mp4
+      video_codec: libx264
+      audio_codec: aac
+      subtitles: webvtt`, ffmpeg, ffprobe))
+		_, err := runServerCmdBounded(t, 30*time.Second, path,
+			"--roles", "worker", "--sites=", "--queues=encode", "--once", "--once-idle-timeout=1s")
+		if err == nil || !strings.Contains(err.Error(), "libaribcaption") {
+			t.Fatalf("err = %v, want startup error naming libaribcaption", err)
+		}
+	})
+
+	t.Run("live captions", func(t *testing.T) {
+		path := writeWorkerTestConfig(t, "http://127.0.0.1:1", fmt.Sprintf(`live:
+  enabled: true
+  captions: true
+  ffmpeg: %s
+  ffprobe: %s
+  segment_dir: %s
+%s`, ffmpeg, ffprobe, t.TempDir(), profile))
+		_, err := runServerCmdBounded(t, 10*time.Second, path, "--roles", "streamer")
+		if err == nil || !strings.Contains(err.Error(), "libaribcaption") {
+			t.Fatalf("err = %v, want startup error naming libaribcaption", err)
+		}
+	})
+
+	t.Run("recording HLS with captions", func(t *testing.T) {
+		path := writeWorkerTestConfig(t, "http://127.0.0.1:1", fmt.Sprintf(`recording_hls:
+  enabled: true
+  segment_dir: %s
+live:
+  enabled: false
+  captions: true
+  ffmpeg: %s
+  ffprobe: %s
+%s`, t.TempDir(), ffmpeg, ffprobe, profile))
+		_, err := runServerCmdBounded(t, 10*time.Second, path, "--roles", "streamer")
+		if err == nil || !strings.Contains(err.Error(), "libaribcaption") {
+			t.Fatalf("err = %v, want startup error naming libaribcaption", err)
+		}
+	})
 }
 
 // **失敗するジョブでもプロセスは exit 0。** リトライは River が持っており、
