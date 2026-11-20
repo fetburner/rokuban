@@ -78,13 +78,20 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 
 </details>
 
-### 視聴状態・ごみ箱と完全削除
-
-録画の利用者操作は、1 つの業務操作を 1 つのメソッドで原子的に書く。ごみ箱の契約は利用側ごとに分ける。
+### 視聴状態
 
 視聴状態の書き込みは 1 つの契約にまとめる。再生位置は録画ごとに保存する。視聴済みの印は、押した録画の行にだけ置く。
 
 `MarkWatched` は印の upsert と再生位置の削除を 1 メソッドにする。2 つは「視聴済みにする」という同じ業務操作であり、呼び出し側が 2 回に分けて呼ぶと、印だけ付いて再生位置が残った状態で止まりうる。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.PlaybackState`
+- PostgreSQL 実装: `internal/store/pgstore.Playback`
+
+</details>
+
+### ごみ箱と完全削除
 
 ごみ箱の操作は、利用側ごとに 2 つの契約に分ける。api が使う操作と、削除 reconcile が使う操作が違うからである。
 
@@ -98,8 +105,6 @@ api が使うのは論理削除・復元・即時削除要求をまとめた `Re
 
 <details><summary>根拠</summary>
 
-- 視聴状態の契約: `internal/store.PlaybackState`
-- 視聴状態の PostgreSQL 実装: `internal/store/pgstore.Playback`
 - 契約: `internal/store.RecordingTrash` / `internal/store.RecordingPurge`
 - PostgreSQL 実装: `internal/store/pgstore.Recordings`
 - 削除述語と `purged_at` の意味: [削除エンジン](../storage/retention.md) §7
@@ -176,7 +181,7 @@ API のレスポンス状態は `recordingFromListFields` で毎回導出する�
 
 ### 録画ルールと予約の意図
 
-利用者の録画意図（record / skip）・上書きは、ruler が作る予約とは別に commit し、予約そのものは書かない。ルールの作成・更新・削除と EPGStation からの取り込みは、それぞれ 1 つの tx で確定する。
+予約の表を書くのは ruler と、ルールの削除だけである。利用者の録画意図・上書きを確定する契約は予約の表を書かず、それ自身の tx で確定する。ルールの作成・更新・削除と EPGStation からの取り込みも、それぞれ 1 つの tx で確定する。
 
 ルールの削除が予約の表も書くのは、意図の無い予約の削除とルールの削除を別の tx にすると、間で切れたときにルールの無い予約が残るからである。
 
@@ -185,7 +190,7 @@ API のレスポンス状態は `recordingFromListFields` で毎回導出する�
 <details><summary>根拠</summary>
 
 - ドメイン契約: `internal/store.Rules` / `internal/store.RuleImport`
-- 予約の意図・上書きの契約: `internal/store.Reservations`
+- 録画意図・上書きの契約: `internal/store.Reservations`
 - マージの設定と reset: `TestMergeOverrides_SetsOnlyGivenFields` / `TestMergeOverrides_ResetClearsEachField`
 - reset の対象が Options と一致すること: `TestOverrideFieldsMatchOptions`
 - PostgreSQL 実装: `internal/store/pgstore.Rules`
@@ -253,9 +258,9 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 
 </details>
 
-### メディア公開と TS scan
+### メディア公開
 
-原本・encoded・thumbnail・seek tiles の公開は、1 つの tx を開いたまま、DB の判定、ファイルの公開、commit をこの順に行う。TS の計測結果も、対象の状態を再確認してから一括で保存する。
+原本・encoded・thumbnail・seek tiles の公開は、1 つの tx を開いたまま、DB の判定、ファイルの公開、commit をこの順に行う。
 
 公開物を作って永続化する処理は、呼び出し側が関数 `publish` として store に渡す。
 
@@ -265,8 +270,6 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 
 store はファイルシステムと設定を知らない。in-place 登録のファイルの検査は `internal/inplace` が登録前に行い、設定に依存するクランプは凍結方針を導く呼び出し側の関数が持つ。
 
-TS 計測がサイズを見るのは、読んでいる間に in-place 登録がファイルを差し替えうるからである。古い計測結果が残っても計測サイズがずれたままなので、次の reconcile が計測をやり直す。
-
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.MediaPublish`
@@ -274,7 +277,19 @@ TS 計測がサイズを見るのは、読んでいる間に in-place 登録が�
 - ingest の commit 失敗で canonical が孤児として残ること: `TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect`
 - encode の commit 失敗で古い試行が後の公開を上書きしないこと: `TestEncodeWorker_DisconnectedAttemptCannotOverwriteLaterPublication`
 - in-place 登録で通常ファイル以外を拒否すること: `TestRegister_RequiresExistingRegularFile`
-- TS 計測の契約: `internal/store.TSScan`
+
+</details>
+
+### TS scan
+
+TS の計測結果は、対象の状態を再確認した上で一括して保存する。
+
+サイズを見るのは、読んでいる間に in-place 登録がファイルを差し替えうるからである。古い計測結果が残っても計測サイズがずれたままなので、次の reconcile が計測をやり直す。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.TSScan`
+- PostgreSQL 実装: `internal/store/pgstore.Media`
 
 </details>
 
@@ -361,13 +376,11 @@ cut の選択規則は設定の `recording_hls.enabled` に依存し、store は
 
 ### CM 検出（試行と結果）とチャプター編集
 
-CM 検出の結果とチャプター編集は録画の行で直列化し、CM 検出の結果は前提を保存の時点で確かめ直してから書く。ジョブの投入はすべて commit 後のヒントにする。
+CM 検出の結果とチャプター編集は、カット版の作り直し要求と公開を含めて録画単位で直列化する。CM 検出の結果は前提を保存の時点で確かめ直してから書き、ジョブの投入はすべて commit 後のヒントにする。
 
-同じ録画の行で直列化されるので、検出結果の書き込みとチャプター編集の自動チャプター引き取りは、互いの commit を見落とさない。
+直列化により、検出結果の書き込みとチャプター編集の自動チャプター引き取りは、互いの commit を見落とさない。
 
 再試行 API は結果と試行を消し、commit してからジョブを投入する。ingest と reconcile の投入も含め、どれも commit 後のヒントである。投入に失敗しても、定期 reconcile が desired な集合を取り直して投入する。
-
-チャプター編集は、CM 検出・カット版の作り直し要求・カット版の公開と、録画ごとに直列化される。
 
 カット版の作り直し要求の記録と公開をチャプター編集と直列化するのは、作り直し要求に記録する keep と、公開時に照合する keep が、途中のチャプター編集で変わらないようにするためである。
 
@@ -377,15 +390,14 @@ CM 検出の結果とチャプター編集は録画の行で直列化し、CM �
 - ドメイン契約（チャプター編集）: `internal/store.ChapterEdits`
 - PostgreSQL 実装: `internal/store/pgstore.Analysis`
 - 契約テスト: `internal/store/contracttest.RunCMDetection`
-- チャプター編集との録画単位の直列化: `lockRecordingState`
-- レベル駆動の回復: 不変条件 5
-- 録画単位の直列化（チャプター編集）: `lockRecording` / `lockRecordingState` / `internal/store/pgstore.Analysis.SaveDetection`
+- チャプター編集との録画単位の直列化: `lockRecording` / `lockRecordingState` / `internal/store/pgstore.Analysis.SaveDetection`
 - 作り直し要求とカット版の公開の直列化: `ReencodeRecordingProfile` / `prepareEncodePublish`
 - 範囲制約: `recording_chapter_spans` の排他制約
 - 導出値と事実: 不変条件 9
 - 意味のある行: 不変条件 10
 - 行の寿命: 不変条件 12
 - ライブラリの公開契約: 不変条件 14
+- レベル駆動の回復: 不変条件 5
 
 </details>
 
@@ -411,6 +423,8 @@ CM 検出の結果とチャプター編集は録画の行で直列化し、CM �
 
 ### schedule 同期と欠測の観測
 
+予定の観測と欠測の観測は、どちらも reconciler が mirakc から得た観測を書くので、同じ節にまとめる。予定の観測行は snapshot marker と同じ tx で確定する。
+
 観測行の置き換えと snapshot marker の更新は、1 つのトランザクションで確定する。marker を観測より先に確定すると、collector が不完全な観測を新鮮と誤認するからである。
 
 reconciler は、観測全量の置き換え、同期評価の候補、開始済みイベントの読み取りを `ScheduleSync` から使う。presync collector は、marker・観測一覧・同期評価の候補を `ScheduleSyncReader` から読み、marker が無いときだけ時刻を 0 として出す。実装は `pgstore.ScheduleSync` が両方を持つ。
@@ -423,11 +437,11 @@ reconciler は、観測全量の置き換え、同期評価の候補、開始済
 
 <details><summary>根拠</summary>
 
-- reconciler の契約: `internal/store.ScheduleSync`
+- reconciler の契約（予定の観測の置き換え）: `internal/store.ScheduleSync`
 - presync の読み取り契約: `internal/store.ScheduleSyncReader`
-- PostgreSQL 実装（schedule 同期）: `internal/store/pgstore.ScheduleSync`
-- 契約: `internal/store.NeverScheduledEvents`
-- PostgreSQL 実装: `internal/store/pgstore.NeverScheduledEvents`
+- PostgreSQL 実装（予定の観測）: `internal/store/pgstore.ScheduleSync`
+- 欠測の記録と削除の契約: `internal/store.NeverScheduledEvents`
+- 欠測の PostgreSQL 実装: `internal/store/pgstore.NeverScheduledEvents`
 - 削除の呼び出し元: `internal/ruler/ruler.go` の GC
 
 </details>
@@ -479,7 +493,7 @@ rescue は、文書にある deleted でないコピーのファイルの有無�
 
 restore が分類ルールの再評価と同じロックを最初の書き込みより前に取るのは、途中で取ると、recordings の upsert のトリガーが当たりの表の行を持ったままロックを待つからである。ロックを持つ再評価ジョブがその行を待つと、デッドロックする。
 
-ストレージ走査からの登録は、§メディア公開と TS scan の in-place 登録を使う。
+ストレージ走査からの登録は、§メディア公開の in-place 登録を使う。
 
 <details><summary>根拠</summary>
 
