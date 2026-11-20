@@ -62,6 +62,8 @@ type StorageObservation interface {
 	// ListStorageSync は現在の root 別観測値を返す。
 	ListStorageSync(ctx context.Context) ([]StorageSync, error)
 	// ListAllMediaAssetRelPaths は孤児との差集合に使う、この置き場の全コピーのパスを返す。
+	// 状態に関係なく全コピーを返し、パスは sites/{site}/ の接頭辞と thumbnails/ などの予約名前空間を含めたまま返す。
+	// 検査: contracttest.RunMedia の「audit lists every media asset path including reserved namespaces」（deleted のコピーを含むことを検査する。deleting のコピーを含むことは契約テストでは未検証）。
 	ListAllMediaAssetRelPaths(ctx context.Context) ([]string, error)
 	// UpsertOrphanFile は孤児候補を記録し、既存候補の first_seen を保持する。
 	UpsertOrphanFile(ctx context.Context, relPath string) error
@@ -74,6 +76,7 @@ type StorageObservation interface {
 	ListAllOrphanFiles(ctx context.Context) ([]OrphanFile, error)
 	// ListAgedOrphanFiles は指定期間より前から記録されている孤児候補を返す。
 	// 経過時間は候補を書いた DB の時計で比べる。
+	// 検査: contracttest.RunMedia の「orphan ageing compares against the database clock」。
 	ListAgedOrphanFiles(ctx context.Context, age time.Duration) ([]string, error)
 	// ListActiveMediaAssets は実体無しの差集合に使う、この置き場の全 active コピーを返す。
 	ListActiveMediaAssets(ctx context.Context) ([]ActiveMediaAsset, error)
@@ -85,6 +88,7 @@ type StorageObservation interface {
 	ListAllMissingMediaAssetIDs(ctx context.Context) ([]int64, error)
 	// ListAgedMissingMediaAssets は指定期間より前から見つからない active コピーを返す。
 	// 経過時間は候補を書いた DB の時計で比べる。
+	// 検査: contracttest.RunMedia の「missing asset ageing compares against the database clock」。
 	ListAgedMissingMediaAssets(ctx context.Context, age time.Duration) ([]AgedMissingMediaAsset, error)
 }
 

@@ -224,50 +224,34 @@ API のレスポンス状態は `recordingFromListFields` で毎回導出する�
 
 メディアとストレージの読み取りは、利用側ごとの契約に分ける。DB の行型を利用側へ広げないためである。
 
-streamer のハンドラは `MediaServing` を受け取る。worker のジョブは `MediaReconcile` と `StorageObservation` を、API のハンドラは `MediaReader` と `StorageObservation` を受け取る。api ロールと worker ロールの起動時の検査も `MediaReconcile` を使う。実装はどれも `pgstore.Media` が持つ。streamer が SQL の行型を知ると、配信してよい行の条件が streamer の中に散らばる。API が行型を知ると、読み取り条件が API の中に散らばる。
+streamer のハンドラは `MediaServing` を受け取る。worker のジョブは `MediaReconcile` と `StorageObservation` を、API のハンドラは `MediaReader` と `StorageObservation` を受け取る。worker は、エンコード計画の比較材料と再計算の候補を `MediaReconcile` から読む。置き場単位の観測と孤児・実体無しの候補は `StorageObservation` に記録する。API は同じ interface から観測値を読む。api ロールと worker ロールの起動時の検査も `MediaReconcile` を使う。実装はどれも `pgstore.Media` が持つ。streamer や API が SQL の行型を知ると、配信してよい行や読み取りの条件が利用側に散らばる。
 
-`MediaServing` は、録画 HLS の原本または ingest temp と世代、配信元アセット、録画状態を返す。対象が無ければ `ErrNotFound` を返す。`deleting` と `deleted` のアセットは配信元にしない。ごみ箱の録画は配信対象にしない。
-
-worker のジョブは `MediaReconcile` から、再計算する候補と、エンコード計画の比較材料を読む。比較材料は、encoded の行と凍結された keep 区間を同じ時点の 1 回の読み取りで返す。
-
-エンコード worker は、現在の keep 区間・録画時刻・通知対象を `MediaReconcile` から読む。現在の keep を読むとき、store は所有状態と区間を同じ時点の 1 回の読み取りで返す。通知対象の読み取りは、purged 後の録画も返す。エンコードの完了・失敗を webhook で通知するとき、purged 後でも局名と番組名を載せるためである。
+エンコード worker は、現在の keep 区間・録画時刻・通知対象を `MediaReconcile` から読む。通知対象に purged の録画を含めるのは、エンコードの完了・失敗を webhook で通知するとき、purged 後でも局名と番組名を載せるためである。
 
 チャプターから keep を作る導出は、store に 1 つだけ置く。エンコード計画、公開時の再確認、作り直し要求（`RequestCutRebuild`）が同じ導出を使う。写しが複数あると、一部だけ直ったときに 3 つの判定がずれる。
 
-ingest の転送前確認は `IngestPrecheck` に分ける。原本行の有無は state を問わずコミットの証拠にする。`rel_path` の衝突確認は 'deleting' の行も衝突に数える。`state = 'active'` に絞ると、'deleting' の行が使っている `rel_path` を ingest が上書きし、「DB は active、実体は別番組」の状態が再び生まれるためである。`rel_path` の衝突確認はヒントにすぎず、一意性の最終判定は原本を公開する `CommitOriginal` が行う。転送前に衝突を見落としても、`CommitOriginal` が `ErrConflict` で拒む。
+ingest の転送前確認は `IngestPrecheck` に分ける。転送前確認が 'deleting' の行も衝突に数えるのは、`state = 'active'` に絞ると、'deleting' の行が使っている `rel_path` を ingest が上書きするためである。その結果、「DB は active、実体は別番組」の状態が再び生まれる。転送前に衝突を見落としても、`CommitOriginal` が `ErrConflict` で拒む。
 
-起動時の検査は 2 つある。1 つは profile の意味の検査で、過去の encoded と作り直し要求を証拠として読む。api ロールと worker ロールの両方が走らせる。もう 1 つは `rel_path` の名前空間の検査で、worker ロールだけが走らせる。[`storage.stores` の FS 置き場](../configuration/keys.md#置き場の規則)の原本と encoded のうち `deleted` でないコピーを見て、`rel_path` が `sites/{site}/` で始まらない行があれば起動を拒む。site の成分が空の `sites//` も拒む。サムネイルとシークタイルは `thumbnails/` の名前空間にあるので、この検査の対象にしない。
+起動時の検査は 2 つある。1 つは profile の意味の検査で、api ロールと worker ロールの両方が走らせる。もう 1 つは `rel_path` の名前空間の検査で、worker ロールだけが走らせる。違反を見つけたら起動を拒む。検査の対象は [`storage.stores` の FS 置き場](../configuration/keys.md#置き場の規則)の原本と encoded である。
 
-worker は `StorageObservation` に置き場単位の `storage_sync` と、孤児・実体無しの候補を記録する。API は同じ interface から観測値を読む。孤児の判定に使う既知パスの一覧は、`storage.stores` の FS 置き場の `media_asset_copies` から状態に関係なく全て返す。パスは `sites/{site}/` を含めたままにする。接頭辞を落とすと、全ての原本が孤児候補になる。`thumbnails/` のように `sites/` の外にある予約名前空間も含める。除くと、サムネイルが孤児として記録される。削除途中のファイルも一覧に残す。外すと、削除エンジンが消している途中のファイルが孤児候補になる。
+孤児の判定に使う既知パスの一覧から、接頭辞・予約名前空間・削除途中のコピーを外すと、次の失敗が起きる。接頭辞を落とすと全ての原本が孤児候補になる。`thumbnails/` を除くとサムネイルが孤児として記録される。削除途中のファイルを外すと、削除エンジンが消している途中のファイルが孤児候補になる。
 
-候補の経過時間は DB の時計で比べる。契約は時刻ではなく `time.Duration` を受け取るので、worker の時計がずれても、公開前の名前の孤児を自動削除する時期（`agedUnpublishedOrphans`）と、孤児・実体無しを報告する時期は変わらない。一般則は [時刻](#時刻) にある。
+経過時間の比較を DB の時計に任せる。契約は時刻ではなく `time.Duration` を受け取るので、worker の時計がずれても、公開前の名前の孤児を自動削除する時期（`agedUnpublishedOrphans`）と、孤児・実体無しを報告する時期は変わらない。一般則は [時刻](#時刻) にある。
 
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.MediaServing` / `MediaReconcile` / `IngestPrecheck` / `MediaReader` / `StorageObservation`
 - エンコード進捗の契約: `internal/store.EncodeProgressReporter`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
-- 原本・encoded の配信元が active だけであること: `TestMediaStoreContract` の `serving returns only active assets`
 - encode queue が除く profile と `Running`: `TestMediaStoreContract` の `encode queue filters desired profiles and attempts`
 - ドロップ統計の録画での絞り込み: `TestMediaStoreContract` の `drop stats are scoped to the target recording`
 - ドロップ位置の録画での絞り込み: `TestMediaStoreContract` の `drop positions are scoped to the target recording`
 - 送ったエンコード進捗が、同じ値のまま通知で届くこと: `TestMediaStoreContract` の `encode progress reaches the listener`
-- サムネイル・シークタイルとごみ箱の録画: `TestMediaStoreContract` の `serving covers thumbnails and seek tiles`
 - 録画 HLS の対象: `TestRecordingHLSTargetPreservesCommittedGeneration` と `TestRecordingHLSTargetUsesIngestTempUntilCommit`
 - エンコード計画の観測と作り直し要求の照合: `TestMediaStoreContract` の `encode planning reads asset and request state through its contract`
-- keep 区間の導出・所有・purged の扱い: `TestMediaStoreContract` の `current cut keep is derived from owned chapters`
 - 所有状態と区間が同じ時点の読み取りであること: `pgstore` の `TestGetCurrentCutKeepReadsOwnershipAndSpansFromOneSnapshot`
 - encode 締切用の nullable 時刻: `TestMediaStoreContract` の `recording encode times preserve nullable timestamps`
-- purged 録画の通知対象: `TestMediaStoreContract` の `encode notify subject includes purged recordings`
-- state を問わない原本の有無: `TestMediaStoreContract` の `ingest precheck recognizes committed originals in every state`
-- 転送前の `rel_path` 確認: `TestMediaStoreContract` の `live rel_path precheck skips tombstones and counts deleting rows`
 - サムネイル再選択の候補の型付き値: `TestMediaStoreContract` の `thumbnail reselection candidates carry typed timeline and inputs`
-- 名前空間の検査の受理と空の site 成分: `TestMediaStoreContract` の `namespace guard accepts site paths and rejects malformed ones`
-- 接頭辞の無い原本と encoded: `TestMediaStoreContract` の `namespace guard rejects unprefixed originals and encoded files`
-- サムネイルとシークタイルの除外: `TestMediaStoreContract` の `namespace guard leaves thumbnails and seek tiles to their own namespace`
-- 既知パス一覧: `TestMediaStoreContract` の `audit lists every media asset path including reserved namespaces`
-- 孤児候補の経過時間: `TestMediaStoreContract` の `orphan ageing compares against the database clock`
-- 実体無し候補の経過時間と active でない行の除外: `TestMediaStoreContract` の `missing asset ageing compares against the database clock`
 - 孤児を報告し回収する仕組みと、実体無しを検出する仕組み: [storage contract](../storage/contract.md) §5「残量の観測」 / [retention contract](../storage/retention.md) §7「孤児の報告と回収」 / [missing-assets](../storage/missing-assets.md)
 - `rel_path` の名前空間: [storage contract](../storage/contract.md) §5「rel_path の名前空間」
 
@@ -565,11 +549,9 @@ reconciler と削除 reconcile は `Breakers`、API は `BreakerAdmin` を使う
 
 catalog の export と rescue の復元は、全保護対象の表を相手にする。ドメインごとの store を組み合わせると、export は表ごとに別の時点を読み、restore は途中まで書いた状態で失敗しうる。そのため、この 2 つだけはドメインをまたぐメソッドにする。
 
-`Catalog.Export` は全表を 1 つのスナップショットから読む。`Catalog.Restore` は全表の upsert・分類ルールの全件再評価・ID シーケンスの合わせ込みを 1 つの tx で確定する。
+rescue は、文書にある deleted でないコピーのファイルの有無を確かめ、無かったコピーを `RestoreOptions.MissingAssetCopyKeys` で渡す。
 
-rescue は、文書にある active な asset の相対パスをロックしてからファイルの有無を確かめ、ロックを `Restore` が返るまで保持する。ファイルが無かった asset の ID は `RestoreOptions.MissingAssetIDs` で渡し、store はその行を従属する統計ごと残したまま `deleted` として復元する。欠損時刻は DB の時計で記録する。
-
-restore は分類ルールの再評価と同じロックを、最初の書き込みより前に取る。途中で取ると、recordings の upsert のトリガーが当たりの表の行を持ったままロックを待ち、ロックを持ってその行を待つ再評価ジョブとデッドロックする。
+restore が分類ルールの再評価と同じロックを最初の書き込みより前に取るのは、途中で取ると、recordings の upsert のトリガーが当たりの表の行を持ったままロックを待つからである。ロックを持つ再評価ジョブがその行を待つと、デッドロックする。
 
 ストレージ走査からの登録は、§メディア公開の in-place 登録を使う。
 
@@ -577,7 +559,7 @@ restore は分類ルールの再評価と同じロックを、最初の書き込
 
 - 契約: `internal/store.Catalog`
 - PostgreSQL 実装: `internal/store/pgstore.Catalog`
-- 同一スナップショット・往復・rollback・ロック順序・欠損ファイル: `TestCatalogContract`
+- 往復: `TestCatalogContract` の `restore round trips an exported document`
 - export 中の取り込み競合: `TestExport_ConcurrentIngestStaysConsistent`
 - 欠損ファイルの deleted 復元（rescue 経由）: `TestRescueCatalogMissingFiles`
 - rescue の再評価ロック位置: `TestCatalogContract/restore_waits_before_writing_for_label_rule_reevaluation`

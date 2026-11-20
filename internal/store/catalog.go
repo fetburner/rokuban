@@ -54,12 +54,16 @@ type RestoreResult struct {
 
 // Catalog は保護対象データの一貫した export と原子的な restore を行う。
 type Catalog interface {
-	// Export は全保護対象を単一のスナップショットから読む。
+	// Export は全保護対象を同じ時点の読み取りで返す。
+	// 検査: contracttest.RunCatalog の「export uses one snapshot during concurrent ingest」。
 	Export(ctx context.Context) (*catalogdoc.Document, error)
-	// Restore は文書内の全テーブルを 1 tx で復元する。同じ tx で分類ルールを再評価し、
-	// 構成の全 site の ruler 入力の版を 1 ずつ進める。
+	// Restore は文書内の全テーブルを原子的に復元する。同じ変更の中で分類ルールを再評価し、
+	// 構成の全 site の ruler 入力の版を 1 ずつ進める。ID の採番の続きも同じ変更で合わせ込む（契約テストでは未検証）。
+	// MissingAssetCopyKeys のコピーは、従属する統計を残したまま deleted として復元する。欠損時刻は DB の時計で記録する（時計は契約テストでは未検証）。
 	// 呼び出し側は古い catalog がメディア状態を上書きしないよう、Restore の完了まで
 	// メディア資産を変更する worker を停止する。
 	// Restore は分類ルールの再評価と直列化する。直列化は最初の書き込みより前から始まる。
+	// 検査: contracttest.RunCatalog の「restore failure rolls back」、「restore rolls back on revision failure」（rollback）、「restore bumps revisions once」（版の 1 ずつの更新）、
+	// 「restore marks missing assets deleted and keeps their statistics」（欠損コピー）、「restore waits before writing for label rule reevaluation」（直列化の開始）。
 	Restore(ctx context.Context, document *catalogdoc.Document, options RestoreOptions) (*RestoreResult, error)
 }
