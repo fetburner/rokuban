@@ -34,6 +34,18 @@ const (
 // ScaledJob で起動して終了する構成でも常駐プロセスの /metrics から同じ値を
 // 観測できる。snapshot marker は schedule_sync の全量 upsert / stale 削除が
 // 同一トランザクションでコミットされたときだけ更新される。
+//
+// pending は reason ごとに次の集合を数える。skip された予約と、終了済みの番組
+// （schedulesync.ProgramEnded）は数えない。never_scheduled_events に記録済みの
+// 予約も SQL で除く。
+//   - missing: schedule_sync に番組の行が無い。options を解決できない予約も、
+//     行が無いときだけ missing に入る（行が有れば、どの reason にも入らない）。
+//   - options: 行が Rokuban の program tag を持ち、state が scheduled で、
+//     priority・tag・明示 contentPath のどれかが desired と食い違う。
+//   - options_deferred: 上と同じ食い違いで、state が scheduled 以外。
+//
+// 食い違いの比較は schedulesync.CompareOptions に従う。Rokuban の tag が無い
+// schedule は比較せず、どの reason にも入らない。
 type PresyncCollector struct {
 	store store.ScheduleSyncReader
 	site  string
@@ -52,12 +64,12 @@ func NewPresyncCollector(reader store.ScheduleSyncReader, site string) *PresyncC
 		site:  site,
 		pending: prometheus.NewDesc(
 			"rokuban_presync_pending",
-			"Desired reservations not observed with the expected schedule state, by reason.",
+			"Desired reservations for programs that have not ended, excluding skipped ones, by reason: missing (no schedule_sync row for the program, including reservations whose options cannot be resolved; such a reservation that has a row counts in no reason), options (the schedule state is scheduled and its priority, Rokuban program tag, or explicit contentPath differs from desired), or options_deferred (the same difference, but the schedule state is not scheduled). Schedules without a Rokuban program tag are not compared.",
 			[]string{"reason"}, labels,
 		),
 		earliest: prometheus.NewDesc(
 			"rokuban_presync_pending_earliest_start_timestamp_seconds",
-			"Earliest program start time among the pending desired reservations for this reason.",
+			"Earliest program start time among the pending desired reservations for this reason. Not emitted for a reason with no pending reservation.",
 			[]string{"reason"}, labels,
 		),
 		snapshot: prometheus.NewDesc(
@@ -67,7 +79,7 @@ func NewPresyncCollector(reader store.ScheduleSyncReader, site string) *PresyncC
 		),
 		errors: prometheus.NewCounter(prometheus.CounterOpts{
 			Name:        "rokuban_presync_scrape_errors_total",
-			Help:        "Failures while querying the presync state during a scrape.",
+			Help:        "Failures while reading presync state during a scrape: the snapshot marker, the observed schedules, the desired reservations, or the decoding of observed options. A failed scrape emits no other presync gauge.",
 			ConstLabels: labels,
 		}),
 	}
@@ -85,7 +97,8 @@ func (c *PresyncCollector) Describe(ch chan<- *prometheus.Desc) {
 //
 // DB の取得に失敗した場合は pending や snapshot を 0 として出さない。0 は
 // 「未同期なし」または「一度も snapshot が成功していない」と読める値であり、
-// 障害を隠すためである。失敗時は専用のエラーカウンタだけを出す。
+// 障害を隠すためである。失敗時は earliest を含む presync のゲージを 1 本も出さず、
+// 専用のエラーカウンタだけを出す。
 func (c *PresyncCollector) Collect(ch chan<- prometheus.Metric) {
 	ctx, cancel := context.WithTimeout(context.Background(), presyncQueryTimeout)
 	defer cancel()
