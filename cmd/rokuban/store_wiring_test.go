@@ -477,7 +477,7 @@ func TestStoreScopedS3DeleteMarkersOnlyOwner(t *testing.T) {
 			t.Fatal(err)
 		}
 		deps := mustNewStoreScopedDeps(t, pool, cfg, policy, name, dir, objects)
-		w := &storagemaint.DeleteReconcileWorker{DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: deps.DeleteReconcile.MediaDelete, RecordingPurge: deps.DeleteReconcile.RecordingPurge, DerivedObjectDeleteStores: deps.DeleteReconcile.DerivedObjectDeleteStores}, MediaDir: deps.MediaDir, MediaStoreName: deps.MediaStoreName, Storage: deps.StorageObservation, Breakers: pgstore.NewBreakers(pool), DerivedObjects: objects, DerivedObjectStoreName: cfg.Storage.Derived, Markers: markers}
+		w := &storagemaint.DeleteReconcileWorker{MediaDir: deps.MediaDir, MediaStoreName: deps.MediaStoreName, DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: deps.DeleteReconcile.MediaDelete, RecordingPurge: deps.DeleteReconcile.RecordingPurge, DerivedObjectDeleteStores: deps.DeleteReconcile.DerivedObjectDeleteStores}, Storage: deps.StorageObservation, Breakers: pgstore.NewBreakers(pool), DerivedObjects: objects, DerivedObjectStoreName: cfg.Storage.Derived, Markers: markers}
 		before, err := markers.ReadLoopMarkers(ctx, store.LoopDeleteReconcile)
 		if err != nil {
 			t.Fatal(err)

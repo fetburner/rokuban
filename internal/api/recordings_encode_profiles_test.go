@@ -558,10 +558,9 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 		t.Fatalf("creating derived object store: %v", err)
 	}
 	w := &storagemaint.DeleteReconcileWorker{
-		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), MediaPendingReclaim: pgstoretest.Media(pool)},
-		Storage:               pgstoretest.Media(pool),
-		Breakers:              pgstoretest.Breakers(pool),
-		MediaDir:              mediaDir, MediaStoreName: dbtest.StoreName,
+		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), MediaPendingReclaim: pgstoretest.Media(pool)}, Storage: pgstoretest.Media(pool),
+		Breakers: pgstoretest.Breakers(pool),
+		MediaDir: mediaDir, MediaStoreName: dbtest.StoreName,
 		DerivedObjects: derivedObjects, DerivedObjectStoreName: dbtest.StoreName,
 		StorageObjects: map[string]objstore.Store{dbtest.StoreName: derivedObjects},
 	}
@@ -611,8 +610,7 @@ func TestSetRecordingEncodePolicy_AlwaysWhileDeleting_RevertsOnReconcile(t *test
 		t.Errorf("keep_original = %q, want always", got)
 	}
 
-	w := &storagemaint.DeleteReconcileWorker{
-		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool)}, Storage: pgstoretest.Media(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
+	w := &storagemaint.DeleteReconcileWorker{DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool)}, Storage: pgstoretest.Media(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
 	if err := jobqtestutil.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("delete reconcile: %v", err)
 	}

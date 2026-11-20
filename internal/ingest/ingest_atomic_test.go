@@ -274,8 +274,7 @@ func runCanonicalOrphanSurvives(
 	}
 
 	// 停止中は既定の猶予で走らせる。作成直後の temp は孤児候補に入らない。
-	cleanup := &storagemaint.DeleteReconcileWorker{
-		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool)}, Storage: pgstoretest.Media(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
+	cleanup := &storagemaint.DeleteReconcileWorker{DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool)}, Storage: pgstoretest.Media(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir, StorageObjects: testStorageObjects(t, "", mediaDir),
 		DerivedObjects: testFilesystemObjectStore(t, mediaDir)}
 	testutil.RequireNoError(t, cleanup.Work(ctx, jobs.DeleteReconcileArgs{}), "reconciling while publication is paused")
 	if linkedWhilePaused {

@@ -412,10 +412,9 @@ func TestDeleteReconcilePlacementDeletionRemovesEncodedSubtitleSidecar(t *testin
 	media := pgstore.NewMediaWithPolicy(pool, "test-store", mustStoragePolicy(t, cfg))
 	objects := transferTestObjectStores(t, roots)
 	worker := DeleteReconcileWorker{
-		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: media, StorageTransfer: media, RecordingPurge: pgstore.NewRecordings(pool, "test-store")},
-		Storage:               media,
-		Breakers:              pgstore.NewBreakers(pool),
-		MediaDir:              roots["test-store"], StorageObjects: testStorageObjects(t, "test-store", roots["test-store"]), MediaStoreName: "test-store", TransferOverlap: time.Hour,
+		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: media, StorageTransfer: media, RecordingPurge: pgstore.NewRecordings(pool, "test-store")}, Storage: media,
+		Breakers: pgstore.NewBreakers(pool),
+		MediaDir: roots["test-store"], StorageObjects: testStorageObjects(t, "test-store", roots["test-store"]), MediaStoreName: "test-store", TransferOverlap: time.Hour,
 		DerivedObjects: objects["archive"],
 	}
 	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
@@ -465,10 +464,9 @@ func TestDeleteReconcileReclaimsObsoletePendingFSCopyAndAllowsPurge(t *testing.T
 	derivedDeleteStores, storeErr := store.NewDerivedObjectDeleteStores(media, media, media)
 	testutil.RequireNoError(t, storeErr, "creating derived object delete stores")
 	worker := DeleteReconcileWorker{
-		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: media, StorageTransfer: media, RecordingPurge: pgstore.NewRecordings(pool, "archive"), MediaPendingReclaim: media, DerivedObjectDeleteStores: derivedDeleteStores},
-		Storage:               media,
-		Breakers:              pgstore.NewBreakers(pool),
-		MediaDir:              roots["archive"], StorageObjects: testStorageObjects(t, "archive", roots["archive"]), MediaStoreName: "archive", TrashRetention: time.Hour,
+		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: media, StorageTransfer: media, RecordingPurge: pgstore.NewRecordings(pool, "archive"), MediaPendingReclaim: media, DerivedObjectDeleteStores: derivedDeleteStores}, Storage: media,
+		Breakers: pgstore.NewBreakers(pool),
+		MediaDir: roots["archive"], StorageObjects: testStorageObjects(t, "archive", roots["archive"]), MediaStoreName: "archive", TrashRetention: time.Hour,
 		OrphanAge: time.Hour, OrphanMTimeGrace: time.Minute,
 		DerivedObjects: objects["archive"], DerivedObjectStoreName: "archive",
 	}
@@ -546,10 +544,9 @@ func TestDeleteReconcilePreservesPreexistingDestinationAfterPendingTransferRecla
 	deleteConfig := transferTestConfig("test-store", "archive", "test-store")
 	deleteMedia := pgstore.NewMediaWithPolicy(pool, "archive", mustStoragePolicy(t, deleteConfig))
 	deleteWorker := DeleteReconcileWorker{
-		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: deleteMedia, StorageTransfer: deleteMedia, RecordingPurge: pgstore.NewRecordings(pool, "archive"), MediaPendingReclaim: deleteMedia},
-		Storage:               deleteMedia,
-		Breakers:              pgstore.NewBreakers(pool),
-		MediaDir:              roots["archive"], StorageObjects: testStorageObjects(t, "archive", roots["archive"]), MediaStoreName: "archive",
+		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: deleteMedia, StorageTransfer: deleteMedia, RecordingPurge: pgstore.NewRecordings(pool, "archive"), MediaPendingReclaim: deleteMedia}, Storage: deleteMedia,
+		Breakers: pgstore.NewBreakers(pool),
+		MediaDir: roots["archive"], StorageObjects: testStorageObjects(t, "archive", roots["archive"]), MediaStoreName: "archive",
 		DerivedObjects: objects["archive"], DerivedObjectStoreName: "archive",
 	}
 	testutil.RequireNoError(t, deleteWorker.Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
@@ -607,10 +604,9 @@ func TestDeleteReconcileRetriesPendingReclaimWhenSubtitleRemovalFails(t *testing
 	deleteConfig := transferTestConfig("test-store", "archive", "test-store")
 	deleteMedia := pgstore.NewMediaWithPolicy(pool, "archive", mustStoragePolicy(t, deleteConfig))
 	worker := DeleteReconcileWorker{
-		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: deleteMedia, StorageTransfer: deleteMedia, RecordingPurge: pgstore.NewRecordings(pool, "archive"), MediaPendingReclaim: media},
-		Storage:               deleteMedia,
-		Breakers:              pgstore.NewBreakers(pool),
-		MediaDir:              roots["archive"], StorageObjects: testStorageObjects(t, "archive", roots["archive"]), MediaStoreName: "archive",
+		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: deleteMedia, StorageTransfer: deleteMedia, RecordingPurge: pgstore.NewRecordings(pool, "archive"), MediaPendingReclaim: media}, Storage: deleteMedia,
+		Breakers: pgstore.NewBreakers(pool),
+		MediaDir: roots["archive"], StorageObjects: testStorageObjects(t, "archive", roots["archive"]), MediaStoreName: "archive",
 		DerivedObjects: objects["archive"], DerivedObjectStoreName: "archive",
 	}
 	testutil.RequireNoError(t, worker.Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work with unremovable subtitle")
@@ -1247,10 +1243,9 @@ func TestStorageTransferWorkerRejectsOldFingerprintAndNewPolicyKeepsAValidCopy(t
 		t.Fatalf("stale source copy is not eligible after the new desired copy is active: %+v", candidates)
 	}
 	deleteWorker := DeleteReconcileWorker{
-		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: media, StorageTransfer: media, RecordingPurge: pgstore.NewRecordings(pool, "test-store")},
-		Storage:               media,
-		Breakers:              pgstore.NewBreakers(pool),
-		MediaDir:              roots["test-store"], StorageObjects: testStorageObjects(t, "test-store", roots["test-store"]), MediaStoreName: "test-store", TransferOverlap: time.Hour,
+		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: media, StorageTransfer: media, RecordingPurge: pgstore.NewRecordings(pool, "test-store")}, Storage: media,
+		Breakers: pgstore.NewBreakers(pool),
+		MediaDir: roots["test-store"], StorageObjects: testStorageObjects(t, "test-store", roots["test-store"]), MediaStoreName: "test-store", TransferOverlap: time.Hour,
 	}
 	testutil.RequireNoError(t, deleteWorker.Work(context.Background(), jobs.DeleteReconcileArgs{}), "deleting stale source copy")
 	if fileExists(filepath.Join(roots["test-store"], "sites/default/transfer/source.ts")) {
@@ -1605,10 +1600,9 @@ func TestDeleteReconcileReclaimsPendingOriginalAfterUntilEncoded(t *testing.T) {
 	newWorker := func(storeName string) *DeleteReconcileWorker {
 		media := pgstore.NewMediaWithPolicy(pool, storeName, mustStoragePolicy(t, cfg))
 		worker := &DeleteReconcileWorker{
-			DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: media, StorageTransfer: media, RecordingPurge: pgstore.NewRecordings(pool, storeName), DerivedObjectDeleteStores: derivedDeleteStores},
-			Storage:               media,
-			Breakers:              pgstore.NewBreakers(pool),
-			MediaDir:              roots[storeName], StorageObjects: testStorageObjects(t, storeName, roots[storeName]), MediaStoreName: storeName, TrashRetention: time.Hour,
+			DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: media, StorageTransfer: media, RecordingPurge: pgstore.NewRecordings(pool, storeName), DerivedObjectDeleteStores: derivedDeleteStores}, Storage: media,
+			Breakers: pgstore.NewBreakers(pool),
+			MediaDir: roots[storeName], StorageObjects: testStorageObjects(t, storeName, roots[storeName]), MediaStoreName: storeName, TrashRetention: time.Hour,
 			DerivedObjects: objects["archive"], DerivedObjectStoreName: "archive",
 		}
 		if storeName == "archive" {

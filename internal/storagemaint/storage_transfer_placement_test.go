@@ -24,10 +24,9 @@ func placementDeleteWorker(t *testing.T, pool *pgxpool.Pool, cfg config.StorageC
 	t.Helper()
 	media := pgstore.NewMediaWithPolicy(pool, storeName, mustStoragePolicy(t, cfg))
 	return &DeleteReconcileWorker{
-		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: media, StorageTransfer: media, RecordingPurge: pgstore.NewRecordings(pool, storeName)},
-		Storage:               media,
-		Breakers:              pgstore.NewBreakers(pool),
-		MediaDir:              roots[storeName], StorageObjects: map[string]objstore.Store{storeName: testFSObjectStore(roots[storeName])}, MediaStoreName: storeName, TransferOverlap: time.Nanosecond,
+		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: media, StorageTransfer: media, RecordingPurge: pgstore.NewRecordings(pool, storeName)}, Storage: media,
+		Breakers: pgstore.NewBreakers(pool),
+		MediaDir: roots[storeName], StorageObjects: map[string]objstore.Store{storeName: testFSObjectStore(roots[storeName])}, MediaStoreName: storeName, TransferOverlap: time.Nanosecond,
 	}
 }
 

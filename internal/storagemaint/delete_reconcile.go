@@ -77,8 +77,6 @@ const (
 // 範囲（`scope` 列）に使う。`DeleteReconcileArgs.QueueStore` と `OriginalQueue` により、
 // ジョブは置き場ごとの `original_{store}` キューで動く（`TestJobArgsSpecAndPhysicalQueue`）。
 type DeleteReconcileWorker struct {
-	// DeleteReconcileStores は削除の永続化契約（MediaDelete・MediaPendingReclaim・StorageTransfer・
-	// RecordingPurge と派生物の独立削除パス）。埋め込むので、フィールドは昇格して今の名前で読める。
 	store.DeleteReconcileStores
 	// Storage は孤児・実体無しの監査の永続化契約。nil は監査を呼ばない部分テストでのみ許容する。
 	Storage        store.StorageObservation
@@ -88,7 +86,6 @@ type DeleteReconcileWorker struct {
 
 	// 派生物の置き場が original と別スコープのときに設定する（object_delete.go）。DerivedObjectStoreName は
 	// 削除ブレーカーの範囲にも使い、FS の置き場（MediaStoreName）の件数とは合算しない。
-	// DerivedObjectDeleteStores（store.DeleteReconcileStores）が nil なら独立パスは無い。
 	DerivedObjects         objstore.Store
 	DerivedObjectStoreName string
 	// StorageObjects は置き場の名前ごとの objstore.Store。派生物のコピーは、そのコピーの置き場の
