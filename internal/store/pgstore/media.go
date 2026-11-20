@@ -258,13 +258,9 @@ func (s *Media) OriginalStores(ctx context.Context, recordingIDs []int64) (map[i
 
 // DesiredOriginalStoreAtIngest は規則を年齢 0 で評価した原本の置き場を返す。評価は SQL 関数
 // desired_media_store に任せる。
-func (s *Media) DesiredOriginalStoreAtIngest(ctx context.Context, policy store.StoragePolicy, site string) (string, error) {
-	rules, err := originalRulesJSON(policy)
-	if err != nil {
-		return "", fmt.Errorf("encoding original rules: %w", err)
-	}
+func (s *Media) DesiredOriginalStoreAtIngest(ctx context.Context, originalRules []byte, derivedStore, site string) (string, error) {
 	name, err := sqlcgen.New(s.pool).GetDesiredOriginalStoreAtIngest(ctx, sqlcgen.GetDesiredOriginalStoreAtIngestParams{
-		OriginalRules: rules, DerivedStore: policy.Derived, RecordingSite: site,
+		OriginalRules: originalRules, DerivedStore: derivedStore, RecordingSite: site,
 	})
 	if err != nil {
 		return "", fmt.Errorf("evaluating the original store rules for site %q: %w", site, err)

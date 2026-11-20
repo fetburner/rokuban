@@ -17,7 +17,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/mediapath"
-	"github.com/fetburner/rokuban/internal/store"
 )
 
 // StoreConfig は 1 つの物理置き場の接続定義。
@@ -401,6 +400,48 @@ func parseOlderThan(raw string) (time.Duration, error) {
 	return duration, nil
 }
 
+type sqlOriginalStoreRule struct {
+	Match *sqlOriginalStoreMatch `json:"match,omitempty"`
+	Store string                 `json:"store"`
+}
+
+type sqlOriginalStoreMatch struct {
+	Site            string `json:"site,omitempty"`
+	OlderThanMicros int64  `json:"older_than_us,omitempty"`
+}
+
+func (c StorageConfig) sqlOriginalRules() ([]sqlOriginalStoreRule, error) {
+	rules := make([]sqlOriginalStoreRule, 0, len(c.Originals))
+	for i, rule := range c.Originals {
+		converted := sqlOriginalStoreRule{Store: rule.Store}
+		if rule.Match != nil {
+			match := &sqlOriginalStoreMatch{Site: rule.Match.Site}
+			if rule.Match.OlderThan != "" {
+				duration, err := parseOlderThan(rule.Match.OlderThan)
+				if err != nil {
+					return nil, fmt.Errorf("storage.originals[%d].match.older_than: %w", i, err)
+				}
+				match.OlderThanMicros = duration.Microseconds()
+			}
+			if match.Site != "" || match.OlderThanMicros != 0 {
+				converted.Match = match
+			}
+		}
+		rules = append(rules, converted)
+	}
+	return rules, nil
+}
+
+// OriginalRulesJSON は desired_media_store が受け取る、正規化済みの規則の JSON を返す。
+// 時間はマイクロ秒に揃える。
+func (c StorageConfig) OriginalRulesJSON() ([]byte, error) {
+	rules, err := c.sqlOriginalRules()
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(rules)
+}
+
 // TransferBandwidthBytesPerSecond は、指定した転送元の帯域上限を byte/s で返す。
 // 未設定なら 0 を返す（無制限）。
 func (c StorageConfig) TransferBandwidthBytesPerSecond(sourceStore string) (int64, error) {
@@ -455,44 +496,11 @@ func parseTransferBandwidth(raw string) (int64, error) {
 	return 0, fmt.Errorf("unsupported bandwidth unit")
 }
 
-// StoragePolicy は置き場の方針を store の値にする。原本の規則は先勝ちの順のまま、FS 置き場の集合と派生物の置き場を添える。
-// 時間は store.OriginalRule.OlderThan に入れ、SQL へ渡す形への符号化は pgstore が行う。
-func (c StorageConfig) StoragePolicy() (store.StoragePolicy, error) {
-	originals := make([]store.OriginalRule, 0, len(c.Originals))
-	for i, rule := range c.Originals {
-		converted := store.OriginalRule{Store: rule.Store}
-		if rule.Match != nil {
-			converted.Site = rule.Match.Site
-			if rule.Match.OlderThan != "" {
-				duration, err := parseOlderThan(rule.Match.OlderThan)
-				if err != nil {
-					return store.StoragePolicy{}, fmt.Errorf("storage.originals[%d].match.older_than: %w", i, err)
-				}
-				converted.OlderThan = duration
-			}
-		}
-		originals = append(originals, converted)
-	}
-	return store.StoragePolicy{Originals: originals, FSStores: c.fsStoreNames(), Derived: c.Derived}, nil
-}
-
-// fingerprintOriginalRule は指紋の入力に入る原本規則の形である。指紋の値を変えないために JSON の形をここで固定する。
-// SQL へ渡す形（pgstore の符号化）とは独立に決まる。
-type fingerprintOriginalRule struct {
-	Match *fingerprintOriginalMatch `json:"match,omitempty"`
-	Store string                    `json:"store"`
-}
-
-type fingerprintOriginalMatch struct {
-	Site            string `json:"site,omitempty"`
-	OlderThanMicros int64  `json:"older_than_us,omitempty"`
-}
-
 type storagePolicyFingerprintInput struct {
-	Version   int                       `json:"version"`
-	Stores    map[string]StoreConfig    `json:"stores"`
-	Originals []fingerprintOriginalRule `json:"originals"`
-	Derived   string                    `json:"derived"`
+	Version   int                    `json:"version"`
+	Stores    map[string]StoreConfig `json:"stores"`
+	Originals []sqlOriginalStoreRule `json:"originals"`
+	Derived   string                 `json:"derived"`
 }
 
 // PolicyFingerprint は置き場の定義と原本・派生物の規則だけをハッシュした指紋を返す。
@@ -501,18 +509,9 @@ type storagePolicyFingerprintInput struct {
 // 置き場の定義のうち root と internal_url も含めない。どちらも転送元をどこから読むかを決めるだけで、宛先の判断に使わない。
 // encoding/json が map のキーを整列し、時間はマイクロ秒で表す。
 func (c StorageConfig) PolicyFingerprint() (string, error) {
-	policy, err := c.StoragePolicy()
+	rules, err := c.sqlOriginalRules()
 	if err != nil {
 		return "", err
-	}
-	rules := make([]fingerprintOriginalRule, 0, len(policy.Originals))
-	for _, rule := range policy.Originals {
-		converted := fingerprintOriginalRule{Store: rule.Store}
-		micros := rule.OlderThan.Microseconds()
-		if rule.Site != "" || micros != 0 {
-			converted.Match = &fingerprintOriginalMatch{Site: rule.Site, OlderThanMicros: micros}
-		}
-		rules = append(rules, converted)
 	}
 	stores := c.Stores
 	if len(stores) == 0 {
@@ -522,7 +521,7 @@ func (c StorageConfig) PolicyFingerprint() (string, error) {
 		Version:   1,
 		Stores:    stores,
 		Originals: rules,
-		Derived:   policy.Derived,
+		Derived:   c.Derived,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {

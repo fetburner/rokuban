@@ -55,7 +55,7 @@ func seedTransferWork(t *testing.T, pool *pgxpool.Pool, kind string) (StorageTra
 		t.Fatalf("unknown kind %q", kind)
 	}
 	worker := StorageTransferWorker{
-		Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Policy: policyOf(cfg), Roots: roots,
+		Storage: pgstore.NewMedia(pool, "test-store", ""), Config: cfg, Roots: roots,
 		ObjectStores: transferTestObjectStores(t, roots), ScratchDir: t.TempDir(),
 	}
 	return worker, jobs.StorageTransferArgs{MediaAssetID: assetID, Store: "archive", PolicyFingerprint: fingerprint}
@@ -154,21 +154,21 @@ func TestCompleteMediaAssetTransferAlreadyActiveAdvancesMarker(t *testing.T) {
 	content := []byte("already active bytes")
 	assetID := transferTestOriginal(t, pool, roots["test-store"], content)
 	cfg := transferTestConfig("archive", "archive", "test-store")
-	rules := mustStoragePolicy(t, cfg)
+	rules := mustOriginalRules(t, cfg)
 	media := pgstore.NewMedia(pool, "test-store", "")
-	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", rules, cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
+	transfer, ok, err := media.PrepareMediaAssetTransfer(context.Background(), assetID, "archive", rules, cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.FSStoreNames(), cfg.Derived, store.MediaAssetTransferAttemptLimit)
 	if err != nil || !ok {
 		t.Fatalf("PrepareMediaAssetTransfer = (%+v, %t, %v)", transfer, ok, err)
 	}
 	sum := sha256.Sum256(content)
-	active, outcome, err := media.CompleteMediaAssetTransfer(context.Background(), transfer, "archive", rules, sum[:])
+	active, outcome, err := media.CompleteMediaAssetTransfer(context.Background(), transfer, "archive", cfg.Derived, rules, sum[:])
 	testutil.RequireNoError(t, err, "first CompleteMediaAssetTransfer")
 	if !active || outcome != "activated" {
 		t.Fatalf("first CompleteMediaAssetTransfer = (%t, %q), want (true, activated)", active, outcome)
 	}
 	testutil.MustExec(t, pool, "rewinding the marker", `UPDATE loop_success_markers SET last_success_at = '2000-01-01T00:00:00Z' WHERE loop = $1`, store.LoopStorageTransfer)
 
-	active, outcome, err = media.CompleteMediaAssetTransfer(context.Background(), transfer, "archive", rules, sum[:])
+	active, outcome, err = media.CompleteMediaAssetTransfer(context.Background(), transfer, "archive", cfg.Derived, rules, sum[:])
 	testutil.RequireNoError(t, err, "second CompleteMediaAssetTransfer")
 	if !active || outcome != "already_active" {
 		t.Fatalf("second CompleteMediaAssetTransfer = (%t, %q), want (true, already_active)", active, outcome)

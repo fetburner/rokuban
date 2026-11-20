@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/fetburner/rokuban/internal/config"
 )
 
 func TestDesiredMediaStore(t *testing.T) {
@@ -23,7 +25,14 @@ func TestDesiredMediaStore(t *testing.T) {
 	}
 	defer func() { _ = conn.Close(ctx) }()
 
-	rules := `[{"match":{"site":"takamatsu","older_than_us":2592000000000},"store":"tokyo"},{"match":{"site":"takamatsu"},"store":"takamatsu"},{"store":"fallback"}]`
+	rules, err := (config.StorageConfig{Originals: []config.OriginalStoreRule{
+		{Match: &config.OriginalStoreMatch{Site: "takamatsu", OlderThan: "30d"}, Store: "tokyo"},
+		{Match: &config.OriginalStoreMatch{Site: "takamatsu"}, Store: "takamatsu"},
+		{Store: "fallback"},
+	}}).OriginalRulesJSON()
+	if err != nil {
+		t.Fatalf("normalize original rules: %v", err)
+	}
 
 	tests := []struct {
 		name      string
@@ -42,7 +51,7 @@ func TestDesiredMediaStore(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var got string
 			query := `SELECT desired_media_store($1, $2::jsonb, $3, $4, now() - $5::interval)`
-			if err := conn.QueryRow(ctx, query, tc.kind, rules, "s3main", tc.site, tc.age).Scan(&got); err != nil {
+			if err := conn.QueryRow(ctx, query, tc.kind, string(rules), "s3main", tc.site, tc.age).Scan(&got); err != nil {
 				t.Fatalf("desired_media_store: %v", err)
 			}
 			if got != tc.wantStore {
@@ -52,11 +61,18 @@ func TestDesiredMediaStore(t *testing.T) {
 	}
 
 	t.Run("subsecond threshold compares exact boundary", func(t *testing.T) {
-		fractionalRules := `[{"match":{"site":"takamatsu","older_than_us":2592000500000},"store":"tokyo"},{"match":{"site":"takamatsu"},"store":"takamatsu"},{"store":"fallback"}]`
+		fractionalRules, err := (config.StorageConfig{Originals: []config.OriginalStoreRule{
+			{Match: &config.OriginalStoreMatch{Site: "takamatsu", OlderThan: "720h500ms"}, Store: "tokyo"},
+			{Match: &config.OriginalStoreMatch{Site: "takamatsu"}, Store: "takamatsu"},
+			{Store: "fallback"},
+		}}).OriginalRulesJSON()
+		if err != nil {
+			t.Fatalf("normalize fractional rules: %v", err)
+		}
 		var got string
 		if err := conn.QueryRow(ctx,
 			`SELECT desired_media_store('original', $1::jsonb, 's3main', 'takamatsu', now() - interval '720 hours 500 milliseconds')`,
-			fractionalRules,
+			string(fractionalRules),
 		).Scan(&got); err != nil {
 			t.Fatalf("desired_media_store at subsecond threshold: %v", err)
 		}
@@ -99,11 +115,18 @@ func TestDesiredMediaStore(t *testing.T) {
 			_, _ = conn.Exec(ctx, `SELECT set_config('TimeZone', 'UTC', false)`)
 		})
 
-		rules := fmt.Sprintf(`[{"match":{"site":"takamatsu","older_than_us":%d},"store":"tokyo"},{"match":{"site":"takamatsu"},"store":"takamatsu"},{"store":"fallback"}]`, int64(days)*86_400_000_000)
+		rules, err := (config.StorageConfig{Originals: []config.OriginalStoreRule{
+			{Match: &config.OriginalStoreMatch{Site: "takamatsu", OlderThan: fmt.Sprintf("%dd", days)}, Store: "tokyo"},
+			{Match: &config.OriginalStoreMatch{Site: "takamatsu"}, Store: "takamatsu"},
+			{Store: "fallback"},
+		}}).OriginalRulesJSON()
+		if err != nil {
+			t.Fatalf("normalize DST test rules: %v", err)
+		}
 		var got string
 		if err := conn.QueryRow(ctx,
 			`SELECT desired_media_store('original', $1::jsonb, 's3main', 'takamatsu', $2::timestamptz)`,
-			rules, programEndAt,
+			string(rules), programEndAt,
 		).Scan(&got); err != nil {
 			t.Fatalf("desired_media_store across DST: %v", err)
 		}

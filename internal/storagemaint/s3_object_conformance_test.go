@@ -204,7 +204,7 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		sourceFS, err := fsstore.New(root)
 		testutil.RequireNoError(t, err, "fsstore.New")
 		worker := StorageTransferWorker{
-			Storage: pgstore.NewMedia(pool, dbtest.StoreName, ""), Config: cfg, Policy: policyOf(cfg),
+			Storage: pgstore.NewMedia(pool, dbtest.StoreName, ""), Config: cfg,
 			Roots:        map[string]string{dbtest.StoreName: root},
 			ObjectStores: map[string]objstore.Store{dbtest.StoreName: sourceFS, objectStoreName: objects},
 			ScratchDir:   t.TempDir(),

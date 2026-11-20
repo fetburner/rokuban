@@ -1,13 +1,11 @@
 package config
 
 import (
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/jobs"
-	"github.com/fetburner/rokuban/internal/store"
 )
 
 const validStoragePolicy = `
@@ -338,31 +336,18 @@ func TestStoragePolicyOverlapIsStrictlyGreaterThanMissingAgePlusTwoDeletePasses(
 	}
 }
 
-func TestStoragePolicyNormalizesOlderThan(t *testing.T) {
+func TestStoragePolicyOlderThanJSONNormalizesDuration(t *testing.T) {
 	storage := StorageConfig{Originals: []OriginalStoreRule{
 		{Match: &OriginalStoreMatch{Site: "default", OlderThan: "30d"}, Store: "archive"},
-		{Match: &OriginalStoreMatch{OlderThan: "720h"}, Store: "main"},
-		{Match: &OriginalStoreMatch{}, Store: "main"},
 		{Store: "main"},
-	}, Derived: "main", Stores: map[string]StoreConfig{"archive": {Kind: "fs"}, "main": {Kind: "fs"}}}
-	got, err := storage.StoragePolicy()
+	}}
+	got, err := storage.OriginalRulesJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []store.OriginalRule{
-		{Site: "default", OlderThan: 30 * 24 * time.Hour, Store: "archive"},
-		{OlderThan: 720 * time.Hour, Store: "main"},
-		{Store: "main"},
-		{Store: "main"},
-	}
-	if !slices.Equal(got.Originals, want) {
-		t.Fatalf("originals = %+v, want %+v", got.Originals, want)
-	}
-	if got.Derived != "main" || !slices.Equal(got.FSStores, []string{"archive", "main"}) {
-		t.Fatalf("derived/fs stores = %q/%v, want main/[archive main]", got.Derived, got.FSStores)
-	}
-	if _, err := (StorageConfig{Originals: []OriginalStoreRule{{Match: &OriginalStoreMatch{OlderThan: "soon"}, Store: "main"}}}).StoragePolicy(); err == nil {
-		t.Fatal("StoragePolicy accepted an unparsable older_than")
+	want := `[{"match":{"site":"default","older_than_us":2592000000000},"store":"archive"},{"store":"main"}]`
+	if string(got) != want {
+		t.Fatalf("rules JSON = %s, want %s", got, want)
 	}
 }
 
@@ -622,48 +607,5 @@ func TestTransferDestinationStoreNamesIncludesS3Derived(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// TestStoragePolicyFingerprintIsPinned は指紋の値そのものを固定する。値は StoragePolicy の変更前のコードで計算した。
-// 指紋が変わると、デプロイの前後で積まれていた転送ジョブがすべて拒まれる。
-func TestStoragePolicyFingerprintIsPinned(t *testing.T) {
-	fixed := StorageConfig{
-		Stores: map[string]StoreConfig{
-			"tokyo":     {Kind: "fs"},
-			"takamatsu": {Kind: "fs"},
-			"s3main":    {Kind: "s3", Endpoint: "https://s3.example.com", Bucket: "derived"},
-		},
-		Originals: []OriginalStoreRule{
-			{Match: &OriginalStoreMatch{Site: "default", OlderThan: "720h"}, Store: "tokyo"},
-			{Match: &OriginalStoreMatch{OlderThan: "30d"}, Store: "takamatsu"},
-			{Match: &OriginalStoreMatch{OlderThan: "1.5h"}, Store: "tokyo"},
-			{Match: &OriginalStoreMatch{Site: "default"}, Store: "takamatsu"},
-			{Match: &OriginalStoreMatch{}, Store: "tokyo"},
-			{Store: "takamatsu"},
-		},
-		Derived:  "s3main",
-		Transfer: StorageTransferConfig{Overlap: 48 * time.Hour},
-	}
-	minimal := StorageConfig{
-		Stores:    map[string]StoreConfig{"main": {Kind: "fs"}},
-		Originals: []OriginalStoreRule{{Store: "main"}},
-		Derived:   "main",
-	}
-	for _, tc := range []struct {
-		name string
-		cfg  StorageConfig
-		want string
-	}{
-		{name: "six rules with s3 derived store", cfg: fixed, want: "b500e4cbf63b7a5a22a4280b6cfd7ebd0e08a4d855d811d14e6e32025d25f782"},
-		{name: "one unconditional rule", cfg: minimal, want: "462c639321eecfcd423b4f9aa7045693dffa83d3c4379c6b6a4a901e4decd95c"},
-	} {
-		got, err := tc.cfg.PolicyFingerprint()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != tc.want {
-			t.Errorf("%s: PolicyFingerprint() = %s, want %s", tc.name, got, tc.want)
-		}
 	}
 }

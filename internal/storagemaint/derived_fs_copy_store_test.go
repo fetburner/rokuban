@@ -164,7 +164,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFile
 	recorder.reset()
 	// 巻き戻し判定: deleting にして条件から外れた行は、FS の置き場の Head で現存を確かめて active に戻る。
 	testutil.MustExec(t, pool, "setting the copy to deleting", `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1`, assetID)
-	testutil.RequireNoError(t, w.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), store.StoragePolicy{Derived: objectStoreName}), "restoreUnqualifiedDeletingAssets")
+	testutil.RequireNoError(t, w.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), nil, objectStoreName), "restoreUnqualifiedDeletingAssets")
 	if got := singleCopyState(t, pool, assetID); got != "active" {
 		t.Errorf("copy state after revert = %q, want active", got)
 	}
@@ -175,7 +175,7 @@ func TestDeleteReconcileWorker_StaleFilesystemDerivedCopyChecksAreHeadsOnItsFile
 	// FS の置き場から実体が消えていれば、巻き戻しではなく deleted に確定する（Head の ErrNotFound を不在として扱う）。
 	testutil.MustExec(t, pool, "setting the copy to deleting", `UPDATE media_asset_copies SET state = 'deleting' WHERE media_asset_id = $1`, assetID)
 	testutil.RequireNoError(t, os.Remove(filepath.Join(mediaDir, filepath.FromSlash(relPath))), "os.Remove")
-	testutil.RequireNoError(t, w.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), store.StoragePolicy{Derived: objectStoreName}), "restoreUnqualifiedDeletingAssets (absent)")
+	testutil.RequireNoError(t, w.restoreUnqualifiedDeletingAssets(ctx, time.Now(), time.Now(), nil, objectStoreName), "restoreUnqualifiedDeletingAssets (absent)")
 	if got := singleCopyState(t, pool, assetID); got != "deleted" {
 		t.Errorf("copy state after revert with the key absent = %q, want deleted", got)
 	}

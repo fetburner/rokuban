@@ -78,9 +78,9 @@ type OriginalLocator interface {
 
 // IngestStoreChooser は ingest が書き込む置き場を、置き場の規則から選ぶ。
 type IngestStoreChooser interface {
-	// DesiredOriginalStoreAtIngest は policy の原本の規則を
+	// DesiredOriginalStoreAtIngest は originalRules（config.StorageConfig.OriginalRulesJSON）を
 	// 放送終了を現在とみなして（年齢 0 で）評価した置き場を返す。一致する規則が無ければ空文字列を返す。
-	DesiredOriginalStoreAtIngest(ctx context.Context, policy StoragePolicy, site string) (string, error)
+	DesiredOriginalStoreAtIngest(ctx context.Context, originalRules []byte, derivedStore, site string) (string, error)
 }
 
 // MissingEncodeProfilesParams は未生成 encoded のページ条件を表す。

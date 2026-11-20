@@ -112,10 +112,9 @@ type EncodeReconcileWorker struct {
 
 	// Transfers は置き場ごとの転送待ちの件数を引く契約。nil なら背圧をかけない。
 	Transfers store.StorageTransfer
-	// StoragePolicy は storage.transfer.backlog_limit を持つ。backlog_limit の無い置き場には背圧をかけない。
+	// StoragePolicy は storage.transfer.backlog_limit と、転送待ちを数える規則を持つ。
+	// backlog_limit の無い置き場には背圧をかけない。
 	StoragePolicy config.StorageConfig
-	// Policy は起動時に StoragePolicy から一度だけ作った置き場の方針で、転送待ちを数える規則に使う。
-	Policy store.StoragePolicy
 
 	// Markers は全件パスの完走時刻を記録する。nil は記録を呼ばない部分テストでのみ許容する。
 	Markers store.LoopMarkers
@@ -360,6 +359,10 @@ func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context, limited
 			return nil, nil
 		}
 	}
+	rules, err := w.StoragePolicy.OriginalRulesJSON()
+	if err != nil {
+		return nil, fmt.Errorf("building original rules: %w", err)
+	}
 	// 数え始めた時刻を保存する。並行する別のパスの、より新しい件数を古い件数で戻さないため。
 	// 出所は DB の時計に 1 つにする（Pod ごとの時計のずれが比較に入らないように）。clock_timestamp() を選ぶのは、
 	// now() がトランザクション開始時刻なのに対し、これが読んだ時点の時刻で「数え始める直前」に合うため。
@@ -367,7 +370,7 @@ func (w *EncodeReconcileWorker) backpressuredStores(ctx context.Context, limited
 	if err != nil {
 		return nil, fmt.Errorf("reading database clock: %w", err)
 	}
-	counts, err := w.Transfers.CountMediaAssetTransferBacklogBySourceStore(ctx, w.Policy, limited, store.MediaAssetTransferAttemptLimit)
+	counts, err := w.Transfers.CountMediaAssetTransferBacklogBySourceStore(ctx, rules, w.StoragePolicy.FSStoreNames(), limited, w.StoragePolicy.Derived, store.MediaAssetTransferAttemptLimit)
 	if err != nil {
 		return nil, fmt.Errorf("counting transfer backlog by source store: %w", err)
 	}

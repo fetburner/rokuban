@@ -49,8 +49,6 @@ type StorageTransferReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
 	Storage  store.StorageTransfer
 	Config   config.StorageConfig
-	// Policy は起動時に Config から一度だけ作った置き場の方針である。
-	Policy   store.StoragePolicy
 	RowLimit int32
 }
 
@@ -65,12 +63,16 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 	if err := w.warnForDerivedCopiesOutsideS3(ctx); err != nil {
 		return err
 	}
-	policy := w.Policy
-	if err := w.Storage.ClearObsoleteMediaAssetTransferAttempts(ctx, policy); err != nil {
+	rules, err := w.Config.OriginalRulesJSON()
+	if err != nil {
+		return fmt.Errorf("encoding storage original rules: %w", err)
+	}
+	fsStores := w.Config.FSStoreNames()
+	if err := w.Storage.ClearObsoleteMediaAssetTransferAttempts(ctx, rules, fsStores, w.Config.Derived); err != nil {
 		return fmt.Errorf("clearing obsolete storage transfer attempts: %w", err)
 	}
 	// 転送の宛先は FS の置き場と、派生物が S3 ならその置き場。FS 1 つ + S3 の派生物でも移す先がある。
-	// 下の SQL 引数の転送元の集合は、マウントを掛けない policy.FSStores のままにする。どの転送も片端が FS で、その隣の worker が実行する。
+	// 下の SQL 引数の fsStores は転送元の集合のままにする。どの転送も片端が FS で、その隣の worker が実行する。
 	if len(w.Config.TransferDestinationStoreNames()) < 2 {
 		metrics.StorageTransferWaitingAssets.Set(0)
 		metrics.StorageTransferWaitingBytes.Set(0)
@@ -85,18 +87,18 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 	if rowLimit <= 0 {
 		rowLimit = storageTransferRowLimit
 	}
-	assets, byteCount, err := w.Storage.CountMediaAssetTransferCandidates(ctx, policy, store.MediaAssetTransferAttemptLimit)
+	assets, byteCount, err := w.Storage.CountMediaAssetTransferCandidates(ctx, rules, fsStores, w.Config.Derived, store.MediaAssetTransferAttemptLimit)
 	if err != nil {
 		return fmt.Errorf("counting storage transfer candidates: %w", err)
 	}
 	metrics.StorageTransferWaitingAssets.Set(float64(assets))
 	metrics.StorageTransferWaitingBytes.Set(float64(byteCount))
-	exhausted, err := w.Storage.CountMediaAssetTransferExhausted(ctx, policy, store.MediaAssetTransferAttemptLimit)
+	exhausted, err := w.Storage.CountMediaAssetTransferExhausted(ctx, rules, fsStores, w.Config.Derived, store.MediaAssetTransferAttemptLimit)
 	if err != nil {
 		return fmt.Errorf("counting exhausted storage transfers: %w", err)
 	}
 	metrics.StorageTransferExhaustedAssets.Set(float64(exhausted))
-	transfers, err := w.Storage.ListMediaAssetTransferCandidates(ctx, policy, store.MediaAssetTransferAttemptLimit, rowLimit)
+	transfers, err := w.Storage.ListMediaAssetTransferCandidates(ctx, rules, fsStores, w.Config.Derived, store.MediaAssetTransferAttemptLimit, rowLimit)
 	if err != nil {
 		return fmt.Errorf("listing storage transfer candidates: %w", err)
 	}
@@ -143,10 +145,8 @@ func (w *StorageTransferReconcileWorker) warnForDerivedCopiesOutsideS3(ctx conte
 
 // StorageTransferWorker copies one logical asset between mounted FS stores.
 type StorageTransferWorker struct {
-	Storage store.StorageTransfer
-	Config  config.StorageConfig
-	// Policy は起動時に Config から一度だけ作った置き場の方針である。
-	Policy       store.StoragePolicy
+	Storage      store.StorageTransfer
+	Config       config.StorageConfig
 	Roots        map[string]string
 	ObjectStores map[string]objstore.Store
 	ScratchDir   string
@@ -190,13 +190,16 @@ func (w *StorageTransferWorker) Work(ctx context.Context, args jobs.StorageTrans
 	} else if err := w.checkS3TransferWorker(args); err != nil {
 		return err
 	}
-	policy := w.Policy
+	rules, err := w.Config.OriginalRulesJSON()
+	if err != nil {
+		return fmt.Errorf("encoding storage original rules: %w", err)
+	}
 	fsStores, err := w.mountedFSStores(args.Store)
 	if err != nil {
 		return err
 	}
 	w.abortAbandonedUploads(ctx, args.Store)
-	return w.copyAsset(ctx, args, policy, transferSourceStores(w.Config, fsStores), fsStores, targetRoot)
+	return w.copyAsset(ctx, args, rules, fsStores, transferSourceStores(w.Config, fsStores), fsStores, targetRoot)
 }
 
 // checkS3TransferWorker は、宛先が S3 の転送をこの worker が実行できるかを確かめる。
@@ -281,9 +284,9 @@ func (w *StorageTransferWorker) mountedFSStores(targetStore string) ([]string, e
 	return mounted, nil
 }
 
-func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.StorageTransferArgs, policy store.StoragePolicy, sourceStores, mountedStores []string, targetRoot string) (retErr error) {
+func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.StorageTransferArgs, rules []byte, fsStores, sourceStores, mountedStores []string, targetRoot string) (retErr error) {
 	transfer, ok, err := w.Storage.PrepareMediaAssetTransfer(
-		ctx, args.MediaAssetID, args.Store, policy, sourceStores, mountedStores, mountedStores, store.MediaAssetTransferAttemptLimit,
+		ctx, args.MediaAssetID, args.Store, rules, fsStores, sourceStores, mountedStores, w.Config.Derived, store.MediaAssetTransferAttemptLimit,
 	)
 	if err != nil || !ok {
 		return err
@@ -305,7 +308,7 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 		}
 	}()
 	if transfer.Kind != store.AssetKindOriginal {
-		return w.copyDerivedAsset(ctx, transfer, args, policy, targetRoot, log)
+		return w.copyDerivedAsset(ctx, transfer, args, rules, targetRoot, log)
 	}
 	src, err := w.originalTransferSource(transfer)
 	if err != nil {
@@ -332,7 +335,7 @@ func (w *StorageTransferWorker) copyAsset(ctx context.Context, args jobs.Storage
 	if !acquired {
 		return jobq.Snooze(storageTransferLockSnooze)
 	}
-	return w.copyOriginalSlice(ctx, transfer, args, policy, src, targetRoot, targetPath, owner, progress, log)
+	return w.copyOriginalSlice(ctx, transfer, args, rules, src, targetRoot, targetPath, owner, progress, log)
 }
 
 // transferAttempt は、転送の 1 試行が持つ進捗の lease と、その試行の 1 slice の期限である。
@@ -349,7 +352,7 @@ type transferAttempt struct {
 // copyOriginalSlice は原本を 1 slice ぶん転送する。slice の期限か親 ctx の終わりで止まったら進捗を保存して snooze し、
 // 次の Work が続きから再開する。失敗で抜けるときは lease を切り、次の試行が世代を上げるようにする。
 // 照合の途中（progress.VerifyingSource）なら、コピーや採用の手順には入らず、転送元の読み直しを続ける。
-func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, policy store.StoragePolicy, src transferSource, targetRoot, targetPath string, owner uuid.UUID, progress store.TransferProgress, log *slog.Logger) (retErr error) {
+func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, src transferSource, targetRoot, targetPath string, owner uuid.UUID, progress store.TransferProgress, log *slog.Logger) (retErr error) {
 	sliceCtx, cancelSlice := context.WithTimeout(ctx, storageTransferSlice)
 	defer cancelSlice()
 	att := &transferAttempt{owner: owner, generation: progress.WriterGeneration, slice: sliceCtx}
@@ -367,7 +370,7 @@ func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer 
 		offset, state := sourceReadStart(progress)
 		return w.verifyOriginalSlice(ctx, att, transfer, src, offset, state, log)
 	}
-	if handled, err := w.adoptExistingDestination(ctx, att, transfer, args, policy, targetPath, src, progress, log); handled {
+	if handled, err := w.adoptExistingDestination(ctx, att, transfer, args, rules, targetPath, src, progress, log); handled {
 		return err
 	}
 	if err := storemarker.RequireMediaStoreMarker(targetRoot, args.Store, "creating transfer destination directory"); err != nil {
@@ -435,7 +438,7 @@ func (w *StorageTransferWorker) copyOriginalSlice(ctx context.Context, transfer 
 	if err := fsink.SyncParentDir(targetPath); err != nil {
 		return w.recordTransferFailure(ctx, transfer, log, fmt.Errorf("syncing transfer destination directory: %w", err))
 	}
-	return w.completeTransfer(ctx, att, transfer, args, policy, digest, src, targetPath, slice.path, true, log)
+	return w.completeTransfer(ctx, att, transfer, args, rules, digest, src, targetPath, slice.path, true, log)
 }
 
 // verifiedMismatchReason は、照合の結果を失敗として記録するときの理由である。照合の途中で止まっても、
@@ -775,7 +778,7 @@ func (w *StorageTransferWorker) saveOriginalSlice(transfer store.MediaAssetTrans
 
 // copyDerivedAsset transfers derived media through the object-store API. Temporary bytes live only in scratch;
 // canonical keys are published once with Store.Put and become visible when CompleteMediaAssetTransfer commits.
-func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, policy store.StoragePolicy, targetRoot string, log *slog.Logger) error {
+func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, targetRoot string, log *slog.Logger) error {
 	sourceStore := w.ObjectStores[transfer.SourceStore]
 	targetStore := w.ObjectStores[args.Store]
 	if sourceStore == nil || targetStore == nil {
@@ -832,7 +835,7 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 	if err := w.requireDestinationMarker(targetRoot, args.Store, "committing derived storage transfer"); err != nil {
 		return err
 	}
-	active, rejection, err := w.Storage.CompleteMediaAssetTransfer(ctx, transfer, args.Store, policy, digest)
+	active, rejection, err := w.Storage.CompleteMediaAssetTransfer(ctx, transfer, args.Store, w.Config.Derived, rules, digest)
 	if err != nil {
 		return fmt.Errorf("committing derived storage transfer: %w", err)
 	}
@@ -1351,7 +1354,7 @@ func storageTransferLeaseTTL() time.Duration {
 
 // adoptExistingDestination は宛先が既にあるとき、採用するか、SHA-256 を測るか、照合へ入るかを決める。
 // progress.PrevWriterGeneration の temp が宛先と同じ inode なら、採用と同時に片付ける。
-func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, att *transferAttempt, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, policy store.StoragePolicy, targetPath string, src transferSource, progress store.TransferProgress, log *slog.Logger) (bool, error) {
+func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, att *transferAttempt, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules []byte, targetPath string, src transferSource, progress store.TransferProgress, log *slog.Logger) (bool, error) {
 	info, err := os.Lstat(targetPath)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -1403,16 +1406,16 @@ func (w *StorageTransferWorker) adoptExistingDestination(ctx context.Context, at
 		return true, w.recordTransferFailure(ctx, transfer, log, err)
 	}
 	if matches {
-		return true, w.completeTransfer(ctx, att, transfer, args, policy, destinationSHA, src, targetPath, ownedTempPath, false, log)
+		return true, w.completeTransfer(ctx, att, transfer, args, rules, destinationSHA, src, targetPath, ownedTempPath, false, log)
 	}
 	return true, w.startSourceVerification(ctx, att, transfer, src, "", fmt.Sprintf("destination already exists with different size or SHA-256 (size=%d, want=%d)", size, transfer.SizeBytes), log)
 }
 
-func (w *StorageTransferWorker) completeTransfer(ctx context.Context, att *transferAttempt, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, policy store.StoragePolicy, digest []byte, src transferSource, targetPath, tempPath string, createdCanonical bool, log *slog.Logger) error {
+func (w *StorageTransferWorker) completeTransfer(ctx context.Context, att *transferAttempt, transfer store.MediaAssetTransfer, args jobs.StorageTransferArgs, rules, digest []byte, src transferSource, targetPath, tempPath string, createdCanonical bool, log *slog.Logger) error {
 	if err := storemarker.RequireMediaStoreMarker(w.Roots[args.Store], args.Store, "committing transferred media asset"); err != nil {
 		return err
 	}
-	active, rejection, err := w.Storage.CompleteMediaAssetTransfer(ctx, transfer, args.Store, policy, digest)
+	active, rejection, err := w.Storage.CompleteMediaAssetTransfer(ctx, transfer, args.Store, w.Config.Derived, rules, digest)
 	if err != nil {
 		return err
 	}
