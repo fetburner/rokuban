@@ -39,6 +39,8 @@ type RulerDedupe interface {
 	// 類似度は pg_trgm の similarity() と同じ値で判定する。これは実装依存ではなく契約で、
 	// 実装が別の方式に替わっても同じ入力は同じ判定になる。返り値は候補ごとに最良一致
 	// 1 件（同率は録画 ID 昇順）で、マッチ無しの候補はマップに現れない。
+	// 検査: 「dedupe uses the configured title similarity」（完全一致の類似度 1 と、マッチ無しの候補が現れないこと）、
+	// 「dedupe time window uses the supplied time」。最良一致の選び方と同率の順序は契約テストでは未検証。
 	EvaluateDedupe(ctx context.Context, site string, candidates []RulerDedupeCandidate, now time.Time) (map[int64]RulerDedupeMatch, error)
 }
 
@@ -72,6 +74,7 @@ type RulerPassPlan struct {
 }
 
 // RulerPassResult は ApplyPass が commit した書き込みの結果である。
+// 呼び出し側は、メトリクスとログをこの結果から commit 後に反映する。
 type RulerPassResult struct {
 	// InputRevisionChanged は commit 時点の版が plan.InputRevision と違い、何も書かなかったことを表す。
 	InputRevisionChanged     bool
@@ -106,6 +109,7 @@ type RulerPass interface {
 	// ListEnabled は有効なルール本体を優先度降順、ID 昇順で返す。子条件は含まない。
 	ListEnabled(ctx context.Context) ([]Rule, error)
 	// ListProgramIDReuses は指定時刻に終了済みスナップショットと射影を比べ、再利用が疑われる番組を返す。
+	// 検査: 「program ID reuse detection uses the supplied time」。
 	ListProgramIDReuses(ctx context.Context, site string, now time.Time) ([]RulerProgramIDReuse, error)
 	// ListProgramIntents は site の番組意図を返す。
 	ListProgramIntents(ctx context.Context, site string) ([]RulerProgramIntent, error)
@@ -121,7 +125,12 @@ type RulerPass interface {
 	// 1 つのトランザクションで確定する。削除時には現在の program investment を再評価する。
 	// commit 時点の site の版が plan.InputRevision と違えば、何も書かずに InputRevisionChanged を返す。
 	// 予約・スナップショット・ブレーカーのいずれも変わらない。
+	// 発動行の書き込みに失敗したら、削除も含めて巻き戻す。
+	// 検査: 「delete rechecks investment after the read」（読んだ後に入った意図で予約を消さない）、
+	// 「delete threshold trips breaker and keeps reservations」、「breaker write failure rolls back the pass」、
+	// 「stale input revision writes nothing」。
 	ApplyPass(ctx context.Context, site string, plan RulerPassPlan) (RulerPassResult, error)
 	// PruneEndedSnapshots は指定 cutoff より前に終了した番組スナップショットを削除する。
+	// 検査: 「snapshot pruning uses the supplied cutoff」。
 	PruneEndedSnapshots(ctx context.Context, before time.Time) (int64, error)
 }

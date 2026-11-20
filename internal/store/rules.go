@@ -92,10 +92,11 @@ type RuleDeleteResult struct {
 	Sites                []string
 }
 
-// Rules は録画ルールの読み書きを提供する。
+// Rules は API が使う録画ルールの読み書きを提供する。
 //
 // 各書き込みメソッドはルール本体と子表を 1 つのトランザクションで確定する。
 // Delete は意図の無い予約の削除とルールの削除も同じトランザクションで行う。
+// 検査: 「writes advance ruler input revisions」（Create・Update・Delete の版の前進）。
 type Rules interface {
 	// List は子条件を含むルールを優先度降順、ID 昇順で返す。
 	List(ctx context.Context) ([]Rule, error)
@@ -105,19 +106,24 @@ type Rules interface {
 	Sites(ctx context.Context, id int64) ([]string, error)
 	// Create はルール本体と全ての子条件を原子的に作成する。
 	// 同じ tx で、対象 site の ruler 入力の版を 1 進める。sites が空のルールは構成の全 site を対象とする。
+	// 検査: 「create child failure rolls back」。
 	Create(ctx context.Context, in RuleInput) (Rule, error)
 	// Update はルール本体と全ての子条件を置き換える。同じルールへの更新は直列化する。
 	// 同じ tx で、更新前と更新後の対象 site の両方について ruler 入力の版を 1 進める。
 	// どちらかの sites が空なら構成の全 site を進める。
+	// 検査: 「update replaces all children atomically」、「same-rule updates serialize」。
 	Update(ctx context.Context, id int64, in RuleInput) (Rule, error)
 	// Delete は、意図の無い予約の削除とルールの削除を原子的に行う。
 	// 意図のある予約は残し、ルールを削除すると録画と予約からルール参照が外れる。
+	// 予約の意図の有無は削除の tx の中で判定する。削除と並行して入った意図の予約も消さない（契約テストでは未検証）。
 	// 結果には削除前の対象 site を含める。
 	// 同じ tx で、削除前の対象 site の ruler 入力の版を 1 進める（sites が空だったルールは構成の全 site）。
+	// 検査: 「delete preserves reservations with intent」、「delete failure keeps reservations without intent」。
 	Delete(ctx context.Context, id int64) (RuleDeleteResult, error)
 }
 
 // RuleImport は EPGStation の識別子でルールを冪等に取り込む。
+// EPGStation のルール ID の保存方法は store の内側に閉じ、呼び出し側は見ない。
 //
 // 既存のルールを更新するとき、Description・Priority・DedupeEnabled・DedupeThreshold・
 // DedupeWindowSeconds・KeepOriginal・EncodeProfiles は既存の値を残し、RuleInput の
@@ -129,5 +135,6 @@ type RuleImport interface {
 	// ImportEPGStationRule は EPGStation rule ID のルールを作成または更新し、子条件を全置換する。
 	// 作成または更新と子条件は 1 つのトランザクションで確定する。
 	// 同じ tx で、Create / Update と同じ site の ruler 入力の版を 1 進める。
+	// 検査: 「EPGStation import uses stable identity atomically」、版の前進は「writes advance ruler input revisions」。
 	ImportEPGStationRule(ctx context.Context, epgstationRuleID int64, in RuleInput) (created bool, err error)
 }

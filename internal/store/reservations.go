@@ -30,6 +30,7 @@ type ProgramSnapshot struct {
 }
 
 // ReservationDetails は予約行に、番組スナップショットとユーザー入力（意図・上書き）を結合したもの。
+// source・state・実効オプションは含まない。これらは読み取り時に api が導出する。
 type ReservationDetails struct {
 	Reservation   ReservationRecord
 	Snapshot      ProgramSnapshot
@@ -57,10 +58,13 @@ type ReservationOverlap struct {
 // 直列化は、EPG 射影にある番組と、射影から外れて凍結スナップショットだけが残る番組の
 // どちらにも及ぶ。PatchOverrides は、直列化した後の既存の上書きにパッチをマージするので、
 // 別フィールドの同時 PATCH は互いの値を消さない。
+// 検査: 「concurrent field patches preserve both values」（射影にある番組と凍結スナップショットだけの番組の両方）。
+// 版の前進の検査: 「intent and override writes advance the ruler input revision」。
 type Reservations interface {
 	// PutIntent は番組のスナップショットを確保し、録画意図（record / skip）を書く。
 	// 2 つは同じ tx で確定する。射影にも凍結スナップショットにも番組が無ければ ErrNotFound を返す。
 	// 同じ tx で、site の ruler 入力の版を 1 進める。
+	// 検査: 「intent snapshots projection and rejects missing program」。
 	PutIntent(ctx context.Context, site string, programID int64, action string) error
 	// DeleteIntent は番組の録画意図を消す。意図が無くても成功する。
 	// 同じ tx で、site の ruler 入力の版を 1 進める。
@@ -70,6 +74,8 @@ type Reservations interface {
 	// 実効値が不正なら *reservation.InvalidEffectiveOptionsError を、射影にも凍結スナップショットにも
 	// 番組が無ければ ErrNotFound を返す。
 	// 成功したときは同じ tx で、site の ruler 入力の版を 1 進める。
+	// 検査: 「patch rejects a missing program」、「empty overrides delete their row」。
+	// 実効値の検証（InvalidEffectiveOptionsError）は契約テストでは未検証。
 	PatchOverrides(ctx context.Context, site string, programID int64, patch reservation.OverridesPatch) error
 	// DeleteOverrides は番組の上書きをすべて消す。行が無くても成功する。
 	// 同じ tx で、site の ruler 入力の版を 1 進める。
@@ -77,9 +83,13 @@ type Reservations interface {
 	// GetReservation は (site, programID) で予約を詳細つきで返す。無ければ ErrNotFound を返す。
 	GetReservation(ctx context.Context, site string, programID int64) (ReservationDetails, error)
 	// ListReservations は予約を詳細つきで、site と番組の開始時刻の順に返す。
+	// 順序は契約テストでは未検証。
+	// 検査: 「reservation reads return details and overlaps」（詳細の読み取り）。
 	ListReservations(ctx context.Context) ([]ReservationDetails, error)
 	// ListOverlaps は、EPG 射影の番組の放送時間帯（半開区間）と重なる予約の候補を返す。
 	// 対象自身と欠測除外済みの予約は含まない。skip の判定は実効値が要るので呼び出し側が行う。
 	// 射影に番組が無ければ ErrNotFound を返す。
+	// 検査: 「reservation reads return details and overlaps」（重なりの候補が上書きつきで返ること）。
+	// 対象自身・欠測の除外と、ErrNotFound は契約テストでは未検証。
 	ListOverlaps(ctx context.Context, site string, programID int64) ([]ReservationOverlap, error)
 }
