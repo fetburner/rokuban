@@ -184,7 +184,6 @@ linters:
             - "!${config-path}/internal/api/*"
             - "!${config-path}/internal/metrics/*"
             - "!${config-path}/internal/metrics/dbcollector/*"
-            - "!${config-path}/internal/ruler/*"
             # worker から移した既存の派生物公開・thumbnail のテスト。
             - "!${config-path}/internal/thumbnail/s3_conformance_test.go"
             - "!${config-path}/internal/thumbnail/seek_tiles_test.go"

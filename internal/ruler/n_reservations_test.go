@@ -8,7 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -72,25 +73,21 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 	}
 }
 
-// insertServiceRule はサービス条件（rule_services、(network_id, service_id) の
-// 一致）だけを持つ有効なルールを作る。テキスト条件ではなくサービス条件を使うのは、
-// pgstore のサービス述語（rulesql.go の `(p.network_id, p.service_id)
+// insertServiceRule はサービス条件（(network_id, service_id) の一致）だけを持つ有効なルールを作る。
+// sites を渡すと、そのサイトだけを対象にする（省略すると全サイト）。テキスト条件ではなくサービス条件を
+// 使うのは、pgstore のサービス述語（rulesql.go の `(p.network_id, p.service_id)
 // IN (...)`）を直接経由させるため --- ここに `p.site` を混ぜる変異が実際に踏む
 // 経路でなければ検証にならない。
-func insertServiceRule(t *testing.T, pool *pgxpool.Pool, ctx context.Context, name string) int64 {
+func insertServiceRule(t *testing.T, pool *pgxpool.Pool, ctx context.Context, name string, sites ...string) {
 	t.Helper()
-	var id int64
-	if err := pool.QueryRow(ctx, `
-INSERT INTO rules (name, priority) VALUES ($1, 10) RETURNING id`, name).Scan(&id); err != nil {
-		t.Fatalf("inserting rule fixture: %v", err)
+	_, err := pgstoretest.Rules(pool, nresSiteAName, nresSiteBName).Create(ctx, store.RuleInput{
+		Name:     name,
+		Services: []store.RuleService{{NetworkID: nresNetworkID, ServiceID: nresServiceID}},
+		Sites:    sites,
+	})
+	if err != nil {
+		t.Fatalf("creating rule %q: %v", name, err)
 	}
-	q := sqlcgen.New(pool)
-	if err := q.InsertRuleService(ctx, sqlcgen.InsertRuleServiceParams{
-		RuleID: id, NetworkID: nresNetworkID, ServiceID: nresServiceID,
-	}); err != nil {
-		t.Fatalf("inserting rule_services fixture: %v", err)
-	}
-	return id
 }
 
 // reservationSitesForProgram は programID の予約行が存在する site の集合を返す
@@ -179,11 +176,7 @@ func TestRunPass_RuleSitesRestrictsToListedSiteOnly(t *testing.T) {
 	insertProgramAtSite(t, pool, ctx, nresSiteAName, start)
 	insertProgramAtSite(t, pool, ctx, nresSiteBName, start)
 
-	ruleID := insertServiceRule(t, pool, ctx, "n-reservation-single-site")
-	q := sqlcgen.New(pool)
-	if err := q.InsertRuleSite(ctx, sqlcgen.InsertRuleSiteParams{RuleID: ruleID, Site: nresSiteAName}); err != nil {
-		t.Fatalf("inserting rule_sites fixture: %v", err)
-	}
+	insertServiceRule(t, pool, ctx, "n-reservation-single-site", nresSiteAName)
 
 	r := newRuler([]string{nresSiteAName, nresSiteBName}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
