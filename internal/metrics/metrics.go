@@ -69,14 +69,17 @@ var (
 		Name: "rokuban_ts_scan_scrambled_packets_total",
 		Help: "Total TS packets still scrambled during original scans.",
 	})
+	// TSScanDuration は 1 回の scan job（失敗を含む）の所要。読み出しから統計の置き換えまで。
 	TSScanDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "rokuban_ts_scan_duration_seconds",
-		Help:    "Duration of original TS scan jobs.",
+		Help:    "Duration of every original TS scan job attempt, from loading the active original to replacing its statistics.",
 		Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200},
 	})
+	// TSScanJobs は scan job の結果別の件数。result は success / failure の 2 値。
+	// 原本が active でなくなっていた job は success に数える（tsscan.ScanWorker.Work）。
 	TSScanJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_ts_scan_jobs_total",
-		Help: "TS scan jobs by result.",
+		Help: "TS scan jobs by result: success or failure.",
 	}, []string{"result"})
 )
 
