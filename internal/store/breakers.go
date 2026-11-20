@@ -43,7 +43,8 @@ type CircuitBreaker struct {
 
 // Breakers は worker がサーキットブレーカーを発動・観測する契約である。
 type Breakers interface {
-	// Trip は発動を記録し、すでに発動中なら pending と detail を更新する。発動時刻（tripped_at）を返す。
+	// Trip は発動を記録し、発動時刻（tripped_at）を返す。すでに発動中なら pending・threshold・detail を更新し、tripped_at は変えない。
+	// 検査: contracttest.RunBreakers。
 	Trip(ctx context.Context, scope, name string, threshold int, sample BreakerSample) (time.Time, error)
 	// IsTripped は指定したブレーカーが発動中かを返す。
 	IsTripped(ctx context.Context, scope, name string) (bool, error)
@@ -52,6 +53,6 @@ type Breakers interface {
 // BreakerAdmin は API が発動中一覧と手動再開を行う契約である。
 type BreakerAdmin interface {
 	List(ctx context.Context) ([]CircuitBreaker, error)
-	// Resume は発動行を削除し、行が無ければ ErrNotFound を返す。
+	// Resume は発動行を削除し、行が無ければ ErrNotFound を返す。検査: contracttest.RunBreakers。
 	Resume(ctx context.Context, scope, name string) error
 }
