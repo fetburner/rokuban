@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
+	"github.com/fetburner/rokuban/internal/ruler"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -86,4 +89,35 @@ func TestStoreScopedDerivedMediaBindsStoragePolicy(t *testing.T) {
 		t.Fatalf("derived MediaDelete (%T) does not evaluate original rules", scoped.DerivedObjectDeleteStores.MediaDelete())
 	}
 	requireBoundOriginalRules(t, "DerivedObjectDeleteStores.MediaDelete", derivedDelete)
+}
+
+// TestWorkerDepsFillRulerConfigAndStores は、worker の起動経路（newWorkerDeps）が ruler の設定値を config.yml
+// の値から、永続化の契約を pgstore から詰めることを確かめる。どれか 1 つを詰め忘れるとこのテストが落ちる。
+// 値はすべて 0 でない相異なるリテラルにして、取り違えも検出する。
+func TestWorkerDepsFillRulerConfigAndStores(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	retractGrace := 2 * time.Hour
+	cfg := &config.Config{
+		Mirakcs: []config.MirakcSite{{Site: "home", URL: "http://127.0.0.1:1"}},
+		Storage: policyWiringStorage(t, "tokyo", nil),
+		Epg:     config.EpgConfig{RetentionGrace: 36 * time.Hour},
+		Ruler:   config.RulerConfig{MaxDeletesPerPass: 17, RetractGrace: &retractGrace},
+	}
+	policy, err := cfg.Storage.BuildStorePolicy()
+	testutil.RequireNoError(t, err, "building the storage policy")
+	roots := map[string]string{"tokyo": cfg.Storage.Stores["tokyo"].Root, "nagoya": cfg.Storage.Stores["nagoya"].Root}
+
+	deps, _, err := newWorkerDeps(context.Background(), cfg, policy, nil, []string{"nagoya", "tokyo"}, roots, riveradapter.Config{Queues: []string{"ruler"}}, pool, nil, false)
+	testutil.RequireNoError(t, err, "building worker deps")
+
+	want := ruler.Config{RetentionGrace: 36 * time.Hour, MaxDeletesPerPass: 17, RetractGrace: 2 * time.Hour}
+	if !reflect.DeepEqual(deps.Ruler, want) {
+		t.Errorf("Deps.Ruler = %+v, want %+v", deps.Ruler, want)
+	}
+	if deps.RulerStores.RulerPass == nil {
+		t.Error("Deps.RulerStores.RulerPass is nil")
+	}
+	if deps.RulerStores.ProgramSearch == nil {
+		t.Error("Deps.RulerStores.ProgramSearch is nil")
+	}
 }

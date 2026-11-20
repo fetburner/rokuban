@@ -33,6 +33,7 @@ import (
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 	"github.com/fetburner/rokuban/internal/objstore/s3store"
 	"github.com/fetburner/rokuban/internal/role"
+	"github.com/fetburner/rokuban/internal/ruler"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/storemarker"
@@ -838,9 +839,7 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 		Enqueuer:                 deferred,
 		EPGSync:                  pgstore.NewEPG(pool),
 		RulerInputBumper:         pgstore.NewReservations(pool),
-		ProgramSearch:            pgstore.NewEPG(pool),
 		MirakcClients:            mirakcClients,
-		RulerPass:                reservationStore,
 		LoopMarkers:              reservationStore,
 		Breakers:                 breakersStore,
 		NeverScheduled:           neverScheduledStore,
@@ -868,9 +867,15 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 		CMDetect:                 cfg.CMDetect,
 		RecordingHLSEnabled:      cfg.RecordingHLS.Enabled,
 		EpgRetentionGrace:        cfg.Epg.RetentionGrace,
-		RulerRetentionGrace:      cfg.Epg.RetentionGrace,
-		RulerMaxDeletesPerPass:   cfg.Ruler.MaxDeletesPerPass,
-		RulerRetractGrace:        rulerRetractGrace,
+		Ruler: ruler.Config{
+			RetentionGrace:    cfg.Epg.RetentionGrace,
+			MaxDeletesPerPass: cfg.Ruler.MaxDeletesPerPass,
+			RetractGrace:      rulerRetractGrace,
+		},
+		RulerStores: ruler.Stores{
+			RulerPass:     reservationStore,
+			ProgramSearch: pgstore.NewEPG(pool),
+		},
 		ReconcileStartDelayGrace: cfg.Reconciler.StartDelayGrace,
 		IngestStallTimeout:       cfg.Ingest.StallTimeout,
 		RecoveryGrace:            clientCfg.RecoveryGrace(),

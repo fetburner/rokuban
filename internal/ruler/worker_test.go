@@ -50,11 +50,10 @@ VALUES ($1, 0, 'name', 'keyword', 'テスト', true, false)`, ruleID); err != ni
 
 	reservations := pgstoretest.Reservations(pool)
 	w := &ruler.PassWorker{
-		RulerPass:      reservations,
+		Stores:         ruler.Stores{RulerPass: reservations, ProgramSearch: pgstoretest.EPG(pool)},
 		Breakers:       pgstoretest.Breakers(pool),
 		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
 		LoopMarkers:    reservations,
-		ProgramSearch:  pgstoretest.EPG(pool),
 	}
 	if err := jobqtestutil.RunWorkerOnce(ctx, w, jobs.RulerPassArgs{Site: site}); err != nil {
 		t.Fatalf("PassWorker.Work: %v", err)
@@ -90,11 +89,10 @@ func TestPassWorker_DoesNotMarkFailedPass(t *testing.T) {
 
 	reservations := pgstoretest.Reservations(pool)
 	w := &ruler.PassWorker{
-		RulerPass:      reservations,
+		Stores:         ruler.Stores{RulerPass: reservations, ProgramSearch: pgstoretest.EPG(pool)},
 		Breakers:       pgstoretest.Breakers(pool),
 		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
 		LoopMarkers:    reservations,
-		ProgramSearch:  pgstoretest.EPG(pool),
 	}
 	job := jobs.RulerPassArgs{Site: "default"}
 	if err := jobqtestutil.RunWorkerOnce(ctx, w, job); err == nil {
@@ -122,11 +120,10 @@ func TestPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	reservations := pgstoretest.Reservations(pool)
 	w := &ruler.PassWorker{
-		RulerPass:      reservations,
+		Stores:         ruler.Stores{RulerPass: reservations, ProgramSearch: pgstoretest.EPG(pool)},
 		Breakers:       pgstoretest.Breakers(pool),
 		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
 		LoopMarkers:    reservations,
-		ProgramSearch:  pgstoretest.EPG(pool),
 		Enqueuer:       enqueuer,
 	}
 	if err := jobqtestutil.RunWorkerOnce(ctx, w, jobs.RulerPassArgs{Site: testSite}); err != nil {

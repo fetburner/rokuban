@@ -3,12 +3,17 @@ package ruler
 import (
 	"context"
 	"log/slog"
-	"time"
 
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
 )
+
+// Stores は ruler が予約の導出と適用に使う永続化の契約。PassWorker に埋め込み、ruler だけが使う。
+type Stores struct {
+	RulerPass     store.RulerPass
+	ProgramSearch store.ProgramSearch
+}
 
 // PassWorker は ruler の 1 パス評価を実行する queue worker。
 //
@@ -23,39 +28,26 @@ import (
 // 起きないので、jobs.VerifySite を呼ばない（「まだ書いていないだけ」ではなく
 // 不要と判断した結果）。
 type PassWorker struct {
+	// Config は ruler の設定値。本番では config.yml の epg.retention_grace・
+	// ruler.max_deletes_per_pass・ruler.retract_grace から注入される。
+	// RetentionGrace と MaxDeletesPerPass は 0 なら ruler 側の既定値、RetractGrace は 0 で
+	// 無効（解釈は New が持つ）。Now は本番では nil のままにする。
+	// 番組終了後の GC は docs/recording/ruler.md「番組終了後の GC」、直前 unmatch の猶予は同
+	// 「直前 unmatch の猶予」、大量削除の閾値は docs/recording/breaker.md「大量削除サーキットブレーカー」。
+	Config Config
+
+	Stores
 	Enqueuer       jobq.Enqueuer
-	RulerPass      store.RulerPass
 	Breakers       store.Breakers
 	NeverScheduled store.NeverScheduledEvents
 	LoopMarkers    store.LoopMarkers
-	ProgramSearch  store.ProgramSearch
-
-	// RetentionGrace は番組終了後、reservations / program_intents を GC するまでの
-	// 猶予。0 なら ruler 側の既定値を使う（epg.retention_grace をそのまま流用する
-	// 運用を想定。Config.RetentionGrace のコメント参照）。
-	RetentionGrace time.Duration
-
-	// MaxDeletesPerPass は大量削除サーキットブレーカーの閾値。0 なら ruler 側の
-	// 既定値を使う（config.yml の ruler.max_deletes_per_pass から注入される。
-	// Config.MaxDeletesPerPass のコメント参照）。
-	MaxDeletesPerPass int
-
-	// RetractGrace は放送開始直前にルールから外れた予約を削除しない猶予。0 は無効
-	// （config.yml の ruler.retract_grace から注入される。既定 1h は config 層が
-	// 埋めるので、ここでの 0 は「明示的に無効化された」を意味する。
-	// Config.RetractGrace のコメント参照）。
-	RetractGrace time.Duration
 }
 
 // Work は ruler の 1 パス評価を実行する。対象サイトはジョブ引数の 1 サイトのみ
 // （New はサイトのスライスを受け取れるが、ジョブの排他がサイト単位のため
 // ここでは常に長さ 1 で渡す）。
 func (w *PassWorker) Work(ctx context.Context, args jobs.RulerPassArgs) error {
-	r := New([]string{args.Site}, w.RulerPass, w.Breakers, w.NeverScheduled, w.LoopMarkers, &Config{
-		RetentionGrace:    w.RetentionGrace,
-		MaxDeletesPerPass: w.MaxDeletesPerPass,
-		RetractGrace:      w.RetractGrace,
-	}, w.ProgramSearch)
+	r := New([]string{args.Site}, w.RulerPass, w.Breakers, w.NeverScheduled, w.LoopMarkers, &w.Config, w.ProgramSearch)
 	if err := r.RunPass(ctx); err != nil {
 		return err
 	}

@@ -26,7 +26,7 @@ const maxRulerInputRevisionMismatches = 3
 // beforeRulerWriteTx は入力を読んだ後、予約の書き込み tx を始める前にテストが割り込むための hook。
 var beforeRulerWriteTx func()
 
-// Config は Ruler の設定。
+// Config は Ruler の設定値。
 type Config struct {
 	// Now は ruler の判定に使う時計。nil は time.Now を使う。
 	Now func() time.Time

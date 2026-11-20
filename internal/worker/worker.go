@@ -27,8 +27,7 @@ import (
 // 方針: 1 つのドメインだけが使う依存を足す・変えるときは、同じ種類（設定値か永続化の契約）が
 // 2 つ以上あるなら、そのドメインの型（Config・…Stores）に束ねて 1 フィールドで運ぶ。1 つ以下なら
 // 束ねても触る箇所が減らないので、ここに平たく置く。
-// 未解決: 既存の平たい依存（EPGSync と RulerInputBumper、RulerRetentionGrace・RulerMaxDeletesPerPass・
-// RulerRetractGrace など）はまだ束ねていない。
+// 未解決: 既存の平たい依存（EPGSync と RulerInputBumper など）はまだ束ねていない。
 // ts scan は契約が 1 つずつだが、置き場に束ねない契約と束ねた契約を型で区別するために束ねている。
 type Deps struct {
 	// Enqueuer は後続ジョブの投入に使う。worker と queue adapter の構築順の循環は
@@ -40,10 +39,6 @@ type Deps struct {
 	// RulerInputBumper は EPG 同期の完了時に ruler 入力の版を進める。
 	RulerInputBumper store.RulerInputBumper
 
-	// ProgramSearch は番組検索・ルール評価の永続化契約。
-	ProgramSearch store.ProgramSearch
-	// RulerPass は ruler が予約の導出と適用に使う永続化契約。
-	RulerPass store.RulerPass
 	// LoopMarkers はループの成功時刻（ruler / record_sweep / 全件パス / 削除 reconcile / EPG 同期 / チューナー同期 / 物理転送）を記録し、監視が読む契約。
 	LoopMarkers store.LoopMarkers
 	// Breakers は worker がサーキットブレーカーを発動・観測する契約。
@@ -124,22 +119,11 @@ type Deps struct {
 	// （config.epg.retention_grace。config.defaults() が既定値 24 時間を埋める）。
 	EpgRetentionGrace time.Duration
 
-	// RulerRetentionGrace は ruler が reservations / program_intents を GC するまでの
-	// 猶予。0 なら ruler 側の既定値を使う。epg.retention_grace と同じ値を流用する
-	// 運用を想定している（docs/recording.md §3.2「番組終了後の GC」）。
-	RulerRetentionGrace time.Duration
-
-	// RulerMaxDeletesPerPass は大量削除サーキットブレーカーの閾値
-	// （ruler.max_deletes_per_pass）。0 なら ruler 側の既定値を使う
-	// （docs/recording.md §3.2「大量削除サーキットブレーカー」）。
-	RulerMaxDeletesPerPass int
-
-	// RulerRetractGrace は放送開始直前にルールから外れた予約を削除しない猶予
-	// （ruler.retract_grace, issue #428）。**0 は無効**（他の 2 つと違い ruler 側の
-	// 既定値へのフォールバックはない --- internal/config.RulerConfig.RetractGrace が
-	// 既定 1h を埋めるので、ここに来る時点で「未設定」は既に解決済み。
-	// internal/ruler.Config.RetractGrace のコメント参照）。
-	RulerRetractGrace time.Duration
+	// Ruler は ruler の設定値（epg.retention_grace・ruler.max_deletes_per_pass・ruler.retract_grace）。
+	// 0 の意味は ruler.PassWorker.Config を参照。
+	Ruler ruler.Config
+	// RulerStores は ruler の永続化契約（予約の導出・適用と番組検索）。
+	RulerStores ruler.Stores
 
 	// ReconcileStartDelayGrace は開始遅延検出器の猶予
 	// （reconciler.start_delay_grace）。0 なら reconciler 側の既定値を使う
@@ -251,15 +235,12 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Markers:       deps.LoopMarkers,
 	})
 	riveradapter.Register(workers, &ruler.PassWorker{
-		Enqueuer:          deps.Enqueuer,
-		RulerPass:         deps.RulerPass,
-		Breakers:          deps.Breakers,
-		NeverScheduled:    deps.NeverScheduled,
-		LoopMarkers:       deps.LoopMarkers,
-		ProgramSearch:     deps.ProgramSearch,
-		RetentionGrace:    deps.RulerRetentionGrace,
-		MaxDeletesPerPass: deps.RulerMaxDeletesPerPass,
-		RetractGrace:      deps.RulerRetractGrace,
+		Config:         deps.Ruler,
+		Stores:         deps.RulerStores,
+		Enqueuer:       deps.Enqueuer,
+		Breakers:       deps.Breakers,
+		NeverScheduled: deps.NeverScheduled,
+		LoopMarkers:    deps.LoopMarkers,
 	})
 	riveradapter.Register(workers, &LabelRuleReconcileWorker{Store: deps.LabelRuleReevaluation})
 	riveradapter.Register(workers, &reconciler.PassWorker{
