@@ -3,7 +3,6 @@ package encode
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -14,18 +13,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testexec"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -472,18 +468,17 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	oldAbs := filepath.Join(mediaDir, filepath.FromSlash(oldRel))
 	testutil.RequireNoError(t, os.WriteFile(oldAbs, []byte("old"), 0o644), "WriteFile")
 	assetID := seedEncodedAsset(t, pool, recordingID, "cut", oldRel)
-	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 2000}}), "setFrozenCuts")
+	dbtest.SetMediaAssetCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 2000}})
 
 	requestedKeep := seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestedKeep
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, job), "Work")
 
-	profileName := "cut"
-	row, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
-		RecordingID: recordingID, Profile: &profileName,
-	})
-	testutil.RequireNoError(t, err, "loading encoded row")
+	row := encodedCutAsset(t, pool, recordingID)
+	if row == nil {
+		t.Fatal("encoded row missing after the cut job")
+	}
 	var relPath string
 	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT rel_path FROM active_media_asset_copies($1, NULL)`, row.ID).Scan(&relPath), "loading the current copy")
 	if relPath != "cut/replace_cut.g2.mp4" || row.DerivedGeneration != 2 {
@@ -505,10 +500,10 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 
 	// 2 回目は冪等にスキップする（凍結区間が一致しているので作り直さない）。
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, newCutEncodeJob(recordingID)), "second Work")
-	again, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
-		RecordingID: recordingID, Profile: &profileName,
-	})
-	testutil.RequireNoError(t, err, "loading encoded row")
+	again := encodedCutAsset(t, pool, recordingID)
+	if again == nil {
+		t.Fatal("encoded row missing after the no-op re-run")
+	}
 	if again.DerivedGeneration != row.DerivedGeneration {
 		t.Errorf("a no-op re-run advanced the generation: %d -> %d", row.DerivedGeneration, again.DerivedGeneration)
 	}
@@ -517,24 +512,19 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 // seedEncodedAsset は active な encoded media_assets 行を 1 つ作って id を返す。
 func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile, relPath string, generations ...int64) int64 {
 	t.Helper()
-	ctx := context.Background()
 	profileName := profile
 	generation := testLegacyDerivedGeneration(relPath)
 	if len(generations) > 0 {
 		generation = generations[0]
 	}
-	assetID, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "encoded",
-		RecordingID:       recordingID,
-		Profile:           &profileName,
-		SizeBytes:         1,
-		DerivedGeneration: generation,
+	assetID := dbtest.DerivedMediaAsset(t, pool, recordingID, "encoded", func(p *dbtest.DerivedMediaAssetParams) {
+		p.Profile = &profileName
+		p.Generation = generation
 	})
-	testutil.RequireNoError(t, err, "seeding encoded media_asset")
-	_, err = sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: relPath,
-		Generation: generation, State: "active",
+	dbtest.MediaAssetCopy(t, pool, assetID, func(p *dbtest.MediaAssetCopyParams) {
+		p.RelPath = relPath
+		p.Generation = generation
 	})
-	testutil.RequireNoError(t, err, "seeding encoded media_asset copy")
 	return assetID
 }
 
@@ -548,24 +538,6 @@ func testLegacyDerivedGeneration(relPath string) int64 {
 		return 0
 	}
 	return int64(generation)
-}
-
-// setFrozenCuts は media_asset_cuts を直接書く（commitCutEncoded がやることの
-// うち、行の upsert を除いた部分。テストが前状態を作るために使う）。
-func setFrozenCuts(t *testing.T, pool *pgxpool.Pool, assetID int64, keep []chapters.Range) error {
-	t.Helper()
-	ranges, err := pgstore.KeepRangesParam(keep)
-	if err != nil {
-		return err
-	}
-	q := sqlcgen.New(pool)
-	if err := q.DeleteMediaAssetCuts(context.Background(), assetID); err != nil {
-		return err
-	}
-	return q.InsertMediaAssetCuts(context.Background(), sqlcgen.InsertMediaAssetCutsParams{
-		MediaAssetID: assetID,
-		KeepRanges:   ranges,
-	})
 }
 
 func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T) {
@@ -586,11 +558,8 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 	}
 	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "rebuild/stale_cut.mp4")
 	oldKeep := []chapters.Range{{StartMs: 0, EndMs: 200000}, {StartMs: 300000, EndMs: 1800000}}
-	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, oldKeep), "seeding frozen cut ranges")
-	_, err = sqlcgen.New(pool).CreateRecordingEncodeAttemptRunning(ctx, sqlcgen.CreateRecordingEncodeAttemptRunningParams{
-		RecordingID: recordingID,
-		Profile:     "cut",
-	})
+	dbtest.SetMediaAssetCuts(t, pool, assetID, oldKeep)
+	_, err = pgstoretest.Media(pool).Begin(ctx, recordingID, "cut", jobs.EncodeAttemptLimit)
 	testutil.RequireNoError(t, err, "seeding running encode attempt")
 
 	observed, err := planEncodePublish(ctx, pool, recordingID, "cut", &cutContext{keep: currentKeep})
@@ -618,30 +587,28 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 
 func seedEncodedAssetRebuildRequest(t *testing.T, pool *pgxpool.Pool, recordingID int64, keep []chapters.Range) json.RawMessage {
 	t.Helper()
-	testutil.RequireNoError(t, sqlcgen.New(pool).UpsertEncodedAssetRebuildRequest(context.Background(), sqlcgen.UpsertEncodedAssetRebuildRequestParams{
-		RecordingID:   recordingID,
-		Profile:       "cut",
-		RequestedKeep: mustKeepRanges(t, keep),
-	}), "seeding encoded asset rebuild request")
+	dbtest.EncodedAssetRebuildRequest(t, pool, recordingID, "cut", keep)
 	requestedKeep, err := json.Marshal(keep)
 	testutil.RequireNoError(t, err, "encoding rebuild keep ranges")
 	return requestedKeep
 }
 
+// encodedCutAsset は録画の "cut" プロファイルの encoded 行を契約の GetEncodedPublishState で読む。行が無ければ nil を返す。
+func encodedCutAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64) *store.EncodedAssetObservation {
+	t.Helper()
+	state, err := pgstoretest.Media(pool).GetEncodedPublishState(context.Background(), recordingID, "cut", false, false)
+	testutil.RequireNoError(t, err, "loading encoded publish state")
+	return state.EncodedAsset
+}
+
 // rebuildRequestExists は録画の "cut" プロファイルの作り直し要求行があるかを返す。
 func rebuildRequestExists(t *testing.T, pool *pgxpool.Pool, recordingID int64) bool {
 	t.Helper()
-	_, err := sqlcgen.New(pool).GetEncodedAssetRebuildRequestForShare(context.Background(), sqlcgen.GetEncodedAssetRebuildRequestForShareParams{
-		RecordingID: recordingID,
-		Profile:     "cut",
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false
-	}
+	state, err := pgstoretest.Media(pool).GetEncodedPublishState(context.Background(), recordingID, "cut", false, false)
 	if err != nil {
 		t.Fatalf("loading rebuild request for recording %d: %v", recordingID, err)
 	}
-	return true
+	return state.HasRebuildRequest
 }
 
 // TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRow は、既に
@@ -662,7 +629,7 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
 	}
 	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "rebuild/noop_cut.mp4")
-	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, keep), "freezing current keep ranges")
+	dbtest.SetMediaAssetCuts(t, pool, assetID, keep)
 	requestedKeep := seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
 	profile := cutFFmpegProfile()
 	w := &EncodeWorker{
@@ -687,12 +654,9 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 	if got := unsatisfiedRebuildCount(t, pool, recordingID); got != 0 {
 		t.Fatalf("unsatisfied rebuilds = %d, want 0", got)
 	}
-	asset, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
-		RecordingID: recordingID,
-		Profile:     stringPtr("cut"),
-	})
-	if err != nil || asset.ID != assetID {
-		t.Fatalf("encoded asset after no-op = %+v, err %v; want existing asset %d", asset, err, assetID)
+	asset := encodedCutAsset(t, pool, recordingID)
+	if asset == nil || asset.ID != assetID {
+		t.Fatalf("encoded asset after no-op = %+v; want existing asset %d", asset, assetID)
 	}
 }
 
@@ -715,10 +679,7 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
 	}
 	requestJSON := seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
-	testutil.RequireNoError(t, sqlcgen.New(pool).DeleteEncodedAssetRebuildRequest(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestParams{
-		RecordingID: recordingID,
-		Profile:     "cut",
-	}), "consuming rebuild request")
+	testutil.MustExec(t, pool, "consuming rebuild request", `DELETE FROM encoded_asset_rebuild_requests WHERE recording_id = $1 AND profile = $2`, recordingID, "cut")
 	profile := cutFFmpegProfile()
 	w := &EncodeWorker{
 		Publisher: pgstoretest.Media(pool),
@@ -738,11 +699,8 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	if err := jobqfaketest.RunWorkerOnce(ctx, w, job); err != nil {
 		t.Fatalf("Work = %v, want nil (skip without running ffmpeg)", err)
 	}
-	if _, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
-		RecordingID: recordingID,
-		Profile:     stringPtr("cut"),
-	}); !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("encoded asset after skipped job: err %v, want no row", err)
+	if asset := encodedCutAsset(t, pool, recordingID); asset != nil {
+		t.Fatalf("encoded asset after skipped job = %+v, want no row", asset)
 	}
 }
 
@@ -839,7 +797,7 @@ func TestEncodeReconcile_DoesNotRebuildStaleCutWhenAddingProfile(t *testing.T) {
 	cutAssetID := seedEncodedAsset(t, pool, recordingID, "cut", "cut/add-profile_stale_cut.g1.mp4")
 	frozen, _, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
 	testutil.RequireNoError(t, err, "deriving initial keep ranges")
-	testutil.RequireNoError(t, setFrozenCuts(t, pool, cutAssetID, frozen), "seeding frozen ranges")
+	dbtest.SetMediaAssetCuts(t, pool, cutAssetID, frozen)
 	label := "CM2"
 	dbtest.ChapterSpan(t, pool, recordingID, func(p *dbtest.ChapterSpanParams) {
 		p.StartMs, p.EndMs, p.Label = 1200000, 1300000, &label

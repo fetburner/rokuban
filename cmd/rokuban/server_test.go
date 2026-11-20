@@ -25,7 +25,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/jobq"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
@@ -415,7 +414,6 @@ func TestServerCmd_WorkerStartsWhenMediaAssetRelPathsAreSitePrefixed(t *testing.
 // media_asset_cuts の行は作らない（rescue 後の状態）。
 func seedCutEncodedAsset(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site = "home"
 	})
@@ -426,20 +424,14 @@ func seedCutEncodedAsset(t *testing.T, pool *pgxpool.Pool) {
 	}
 	profile := "cutp"
 	generation := int64(1)
-	assetID, err := sqlcgen.New(pool).UpsertDerivedMediaAsset(ctx, sqlcgen.UpsertDerivedMediaAssetParams{Kind: "encoded",
-		RecordingID:       recordingID,
-		Profile:           &profile,
-		SizeBytes:         1,
-		DerivedGeneration: generation,
+	assetID := dbtest.DerivedMediaAsset(t, pool, recordingID, "encoded", func(p *dbtest.DerivedMediaAssetParams) {
+		p.Profile = &profile
+		p.Generation = generation
 	})
-	if err != nil {
-		t.Fatalf("UpsertDerivedMediaAsset: %v", err)
-	}
-	if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-		MediaAssetID: assetID, Store: "test-store", RelPath: relPath, Generation: generation, State: "active",
-	}); err != nil {
-		t.Fatalf("UpsertMediaAssetCopy: %v", err)
-	}
+	dbtest.MediaAssetCopy(t, pool, assetID, func(p *dbtest.MediaAssetCopyParams) {
+		p.RelPath = relPath
+		p.Generation = generation
+	})
 }
 
 // writeCutProfileConfig は、プロファイル cutp を持つ worker テスト用の config を書く。

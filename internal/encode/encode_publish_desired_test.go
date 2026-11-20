@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -31,9 +30,7 @@ func TestEncodeWorker_ProfileRemovedFromDesiredIsNotPublished(t *testing.T) {
 	go func() { done <- jobqfaketest.RunWorkerOnce(ctx, w, jobWithID(recordingID)) }()
 
 	waitReached(t, reached, done)
-	testutil.RequireNoError(t, sqlcgen.New(pool).RemoveRecordingEncodeProfile(ctx, sqlcgen.RemoveRecordingEncodeProfileParams{
-		RecordingID: recordingID, Profile: "h264",
-	}), "RemoveRecordingEncodeProfile")
+	dbtest.RemoveEncodeProfile(t, pool, recordingID, "h264")
 	release()
 	if err := waitDone(t, done); err != nil {
 		t.Fatalf("Work: %v, want success (skipped publish)", err)

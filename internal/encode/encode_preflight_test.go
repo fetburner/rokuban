@@ -15,7 +15,6 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -65,7 +64,7 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 			seed: func(t *testing.T, pool *pgxpool.Pool, id int64) jobs.EncodeJobArgs {
 				adoptChapters(t, pool, id)
 				assetID := seedEncodedAsset(t, pool, id, "cut", "preflight/old.g1.mp4")
-				testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, keepOld), "setFrozenCuts")
+				dbtest.SetMediaAssetCuts(t, pool, assetID, keepOld)
 				return newCutEncodeJob(id)
 			},
 			wantReason: "active_cut_protected",
@@ -75,11 +74,7 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 			name:     "rebuild request on a profile that is not cut",
 			profiles: []string{"h264"},
 			seed: func(t *testing.T, pool *pgxpool.Pool, id int64) jobs.EncodeJobArgs {
-				testutil.RequireNoError(t, sqlcgen.New(pool).UpsertEncodedAssetRebuildRequest(context.Background(), sqlcgen.UpsertEncodedAssetRebuildRequestParams{
-					RecordingID:   id,
-					Profile:       "h264",
-					RequestedKeep: mustKeepRanges(t, keepOld),
-				}), "UpsertEncodedAssetRebuildRequest")
+				dbtest.EncodedAssetRebuildRequest(t, pool, id, "h264", keepOld)
 				job := rebuildJob(t, id, keepOld)
 				job.Profile = "h264"
 				return job

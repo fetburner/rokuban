@@ -21,7 +21,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -528,11 +527,7 @@ func TestEncodeWorker_ResetAfterLimitRestartsFromOne(t *testing.T) {
 		Objects:         testFSObjectStore(mediaDir),
 		ObjectPublisher: pgstoretest.Media(pool),
 	}
-	if _, err := sqlcgen.New(pool).DeleteFailedRecordingEncodeAttempts(context.Background(), sqlcgen.DeleteFailedRecordingEncodeAttemptsParams{
-		RecordingID: recordingID, Profiles: []string{"missing"},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	testutil.RequireNoError(t, pgstoretest.Media(pool).AppendProfiles(context.Background(), recordingID, []string{"missing"}, nil), "resetting the failed attempt")
 	start, err := w.beginEncodeAttempt(context.Background(), recordingID, "missing")
 	testutil.RequireNoError(t, err, "w.beginEncodeAttempt")
 	if start.Terminal || start.Count != 1 {

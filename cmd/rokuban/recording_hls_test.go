@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testexec"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -35,14 +34,10 @@ live:
 `, enabled))
 			id := dbtest.Recording(t, pool)
 			assetID := dbtest.MediaAsset(t, pool, id)
-			if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(t.Context(), sqlcgen.UpsertMediaAssetCopyParams{
-				MediaAssetID: assetID,
-				Store:        "main-2",
-				RelPath:      fmt.Sprintf("test-original/%d.ts", assetID),
-				State:        "active",
-			}); err != nil {
-				t.Fatalf("seeding selected-store copy: %v", err)
-			}
+			dbtest.MediaAssetCopy(t, pool, assetID, func(p *dbtest.MediaAssetCopyParams) {
+				p.Store = "main-2"
+				p.RelPath = fmt.Sprintf("test-original/%d.ts", assetID)
+			})
 			resp, err := http.Get(fmt.Sprintf("%s/api/recordings/%d", base, id))
 			if err != nil {
 				t.Fatal(err)
@@ -131,14 +126,10 @@ live:
 `, tc.enabled, t.TempDir(), writeFakeFFTools(t)), tc.args...)
 			id := dbtest.Recording(t, pool)
 			assetID := dbtest.MediaAsset(t, pool, id)
-			if _, err := sqlcgen.New(pool).UpsertMediaAssetCopy(t.Context(), sqlcgen.UpsertMediaAssetCopyParams{
-				MediaAssetID: assetID,
-				Store:        "main",
-				RelPath:      "sites/default/server-recording-hls-test.m2ts",
-				State:        "active",
-			}); err != nil {
-				t.Fatalf("seeding main-store copy: %v", err)
-			}
+			dbtest.MediaAssetCopy(t, pool, assetID, func(p *dbtest.MediaAssetCopyParams) {
+				p.Store = "main"
+				p.RelPath = "sites/default/server-recording-hls-test.m2ts"
+			})
 			resp, err := http.Get(fmt.Sprintf("%s/api/media/stores/main/recordings/%d/hls/v7/hd/master.m3u8", base, id))
 			if err != nil {
 				t.Fatal(err)

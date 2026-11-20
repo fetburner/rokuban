@@ -19,7 +19,6 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -391,7 +390,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	g1, g2, g3 := "20240101/t3_cut.g1.mp4", "20240101/t3_cut.g2.mp4", "20240101/t3_cut.g3.mp4"
 	abs := func(rel string) string { return filepath.Join(mediaDir, filepath.FromSlash(rel)) }
 	assetID := seedEncodedAsset(t, pool, recordingID, "cut", g1)
-	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1000}}), "setFrozenCuts")
+	dbtest.SetMediaAssetCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1000}})
 	seedEncodedAssetRebuildRequest(t, pool, recordingID, cutKeep)
 
 	cut := &cutContext{keep: cutKeep}
@@ -459,7 +458,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	// 別の実行が g3 へ進めた状態（区間も X と違う）。
 	testutil.RequireNoError(t, os.WriteFile(abs(g3), []byte("g3 output"), 0o644), "os.WriteFile")
 	dbtest.ReplaceDerivedMediaAssetCopy(t, pool, assetID, dbtest.StoreName, g3, 3)
-	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 500}}), "setFrozenCuts")
+	dbtest.SetMediaAssetCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 500}})
 	if rowState != "active" {
 		dbtest.SetMediaAssetState(t, pool, assetID, rowState)
 	}
@@ -517,7 +516,7 @@ func newRebuildPublishScene(t *testing.T, pool *pgxpool.Pool, name string) rebui
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", requestedKeep, owned, err)
 	}
 	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "rebuild/"+name+"_cut.g1.mp4")
-	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}), "setFrozenCuts")
+	dbtest.SetMediaAssetCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}})
 	seedEncodedAssetRebuildRequest(t, pool, recordingID, requestedKeep)
 	cut := &cutContext{keep: requestedKeep}
 	observed, err := planEncodePublish(ctx, pool, recordingID, "cut", cut, requestedKeep)
@@ -576,12 +575,9 @@ func TestEncodeWorker_PublishKeepsRebuildRequestAndItIsSatisfied(t *testing.T) {
 	if got := unsatisfiedRebuildCount(t, pool, sc.recordingID); got != 0 {
 		t.Fatalf("unsatisfied rebuilds after publish = %d, want 0 (satisfied)", got)
 	}
-	asset, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
-		RecordingID: sc.recordingID,
-		Profile:     stringPtr("cut"),
-	})
-	if err != nil || asset.ID != sc.assetID || currentCopyRelPath(t, pool, asset.ID) != sc.finalRel {
-		t.Fatalf("encoded asset after publish = %+v, err %v; want id %d at %s", asset, err, sc.assetID, sc.finalRel)
+	asset := encodedCutAsset(t, pool, sc.recordingID)
+	if asset == nil || asset.ID != sc.assetID || currentCopyRelPath(t, pool, asset.ID) != sc.finalRel {
+		t.Fatalf("encoded asset after publish = %+v; want id %d at %s", asset, sc.assetID, sc.finalRel)
 	}
 	frozen, err := frozenKeepRanges(ctx, pool, sc.recordingID, "cut")
 	if err != nil || !chapters.SameRanges(frozen, sc.requestedKeep) {
@@ -638,12 +634,9 @@ func TestEncodeWorker_PublishSkipsWhenRequestIsPressedAgain(t *testing.T) {
 	if pendingState != "pending" {
 		t.Errorf("skipped output state = %q, want pending", pendingState)
 	}
-	asset, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
-		RecordingID: sc.recordingID,
-		Profile:     stringPtr("cut"),
-	})
-	if err != nil || asset.ID != sc.assetID || currentCopyRelPath(t, pool, asset.ID) != "rebuild/pressed-again_cut.g1.mp4" {
-		t.Fatalf("encoded asset after skip = %+v, err %v; want the previous generation", asset, err)
+	asset := encodedCutAsset(t, pool, sc.recordingID)
+	if asset == nil || asset.ID != sc.assetID || currentCopyRelPath(t, pool, asset.ID) != "rebuild/pressed-again_cut.g1.mp4" {
+		t.Fatalf("encoded asset after skip = %+v; want the previous generation", asset)
 	}
 	if got := unsatisfiedRebuildCount(t, pool, sc.recordingID); got != 1 {
 		t.Errorf("unsatisfied rebuilds = %d, want 1 (the new request is still pending)", got)
@@ -836,7 +829,7 @@ func TestEncodeWorker_PublishSkipLeavesSatisfiedRebuildRequest(t *testing.T) {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
 	}
 	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "rebuild/txskip_cut.g1.mp4")
-	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}), "setFrozenCuts")
+	dbtest.SetMediaAssetCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}})
 	seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
 	cut := &cutContext{keep: keep}
 	observed, err := planEncodePublish(ctx, pool, recordingID, "cut", cut, keep)
@@ -846,7 +839,7 @@ func TestEncodeWorker_PublishSkipLeavesSatisfiedRebuildRequest(t *testing.T) {
 	attempt := beginEncodeAttemptForProfilePublishTest(t, pool, recordingID, "cut")
 	// 観測の後に、別の公開が要求どおりの版へ置き換えた状況を作る。
 	dbtest.ReplaceDerivedMediaAssetCopy(t, pool, assetID, dbtest.StoreName, "rebuild/txskip_cut.g2.mp4", 2)
-	testutil.RequireNoError(t, setFrozenCuts(t, pool, assetID, keep), "setFrozenCuts")
+	dbtest.SetMediaAssetCuts(t, pool, assetID, keep)
 	scratchOut := filepath.Join(scratchDir, "rebuild.mp4")
 	testutil.RequireNoError(t, os.WriteFile(scratchOut, []byte("late"), 0o644), "os.WriteFile")
 	finalRel := "rebuild/txskip_cut.g2.mp4"
