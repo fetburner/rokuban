@@ -43,11 +43,14 @@ func (s ChapterSnapshot) DetectionPending(cmDetectEnabled bool) bool {
 // 各メソッドは自身のトランザクションを完了してから返す。Replace と Reset は
 // チャプターの状態を読み書きする前に録画の行をロックするので、同じロックを使う
 // CM 検出の書き込み、カット版の作り直し要求の記録、カット版の公開と直列化する。
+// CM 検出との直列化は Run の「replace serializes with detection commit」で検査する。カット版の作り直し要求・公開との直列化は契約テストでは未検証。
 type ChapterEdits interface {
 	// Read は有効なチャプター層と不透明な版を返す。
 	// 状態と区間は同じスナップショットから読む（一貫したスナップショットを返す）。
 	Read(ctx context.Context, recordingID int64) (ChapterSnapshot, error)
 	// Replace は expectedVersion が現在の版と一致するときだけ、ユーザー層を原子的に置き換える。
+	// 検査: Run の「replace checks version and reset is idempotent」（版の照合）、「concurrent replacements serialize」（同時の置き換えは片方だけが成功する）。
+	// 区間が重なるときは ErrConflict を返し、ユーザー層は変えない。検査: Run の「database range conflict rolls back replacement」。
 	// requireDetectionComplete は、デプロイが CM 検出を動かしているときに真にする。
 	Replace(ctx context.Context, recordingID int64, expectedVersion string, spans []chapters.Span, requireDetectionComplete bool) error
 	// Reset はユーザー層を消し、録画を自動層に戻す。
