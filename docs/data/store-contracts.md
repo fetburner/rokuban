@@ -423,13 +423,11 @@ CM 検出の結果とチャプター編集は、カット版の作り直し要�
 
 ### schedule 同期と欠測の観測
 
-予定の観測と欠測の観測は、どちらも reconciler が mirakc から得た観測を書くので、同じ節にまとめる。予定の観測行は snapshot marker と同じ tx で確定する。
+mirakc から得た予定と欠測の観測は、書き手である reconciler のドメインの契約に置く。
 
 観測行の置き換えと snapshot marker の更新は、1 つのトランザクションで確定する。marker を観測より先に確定すると、collector が不完全な観測を新鮮と誤認するからである。
 
 reconciler は、観測全量の置き換え、同期評価の候補、開始済みイベントの読み取りを `ScheduleSync` から使う。presync collector は、marker・観測一覧・同期評価の候補を `ScheduleSyncReader` から読み、marker が無いときだけ時刻を 0 として出す。実装は `pgstore.ScheduleSync` が両方を持つ。
-
-欠測の記録は reconciler のドメインに置く。書き手が reconciler（mirakc の観測）だからである。
 
 古い行の削除は、ruler の GC が同じ契約 `NeverScheduledEvents` を呼んで行う。実装は `pgstore.NeverScheduledEvents` が持つ。
 
