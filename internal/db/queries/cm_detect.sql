@@ -35,7 +35,11 @@ FROM recordings r
 LEFT JOIN recording_processing_policy p ON p.recording_id = r.id
 LEFT JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original'
 -- preferred_active_media_asset_copy が返す現行の原本コピーを 1 件選ぶ。
-LEFT JOIN LATERAL preferred_active_media_asset_copy(o.id, sqlc.narg('store_name')::text) copy ON true
+-- 関数を LATERAL で JOIN すると sqlc が rel_path を NOT NULL の string と推論し、
+-- コピーが無いとき NULL を scan できず失敗する。そのため関数は ID を引く副問い合わせに置き、
+-- コピー行は実テーブルへの LEFT JOIN で読む（sqlc は LEFT JOIN の右側を nullable にする）。
+LEFT JOIN media_asset_copies copy
+  ON copy.id = (SELECT c.id FROM preferred_active_media_asset_copy(o.id, sqlc.narg('store_name')::text) c)
 WHERE r.id = sqlc.arg('recording_id');
 
 -- name: GetCMRetryOriginal :one

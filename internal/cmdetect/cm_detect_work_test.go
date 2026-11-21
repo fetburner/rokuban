@@ -594,6 +594,42 @@ func TestCMDetectWorkFailureWritesNoResultAndMarksAttempt(t *testing.T) {
 	}
 }
 
+func TestCMDetectWorkSkipsRecordingWithoutActiveOriginal(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		deleteOriginal bool
+	}{
+		{name: "no original row"},
+		{name: "original without active copy", deleteOriginal: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pool := testutil.SetupDB(t)
+			ctx := context.Background()
+			mediaDir := t.TempDir()
+			id := dbtest.Recording(t, pool, cmRecordingOptions(927))
+			dbtest.ProcessingPolicy(t, pool, id, func(p *dbtest.ProcessingPolicyParams) {
+				p.KeepOriginal = "until_encoded"
+				p.EncodeProfiles = []string{"h264"}
+				p.CMDetect = true
+			})
+			if tt.deleteOriginal {
+				assetID := seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
+				dbtest.SetMediaAssetState(t, pool, assetID, "deleted")
+			}
+			tools := newFakeCMTools(t, buildTestLGD(2, 2, 1000, 4080), 0, "Trim(0,299)", "10.010000")
+
+			if err := jobqfaketest.RunWorkerOnce(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)); err != nil {
+				t.Fatalf("Work error = %v, want a skip without error", err)
+			}
+			var attempts int
+			testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&attempts), "counting attempts")
+			if attempts != 0 {
+				t.Fatalf("attempt rows = %d, want 0 without an active original", attempts)
+			}
+		})
+	}
+}
+
 func waitForCMLogoframeStart(t *testing.T, tools cmToolset) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
