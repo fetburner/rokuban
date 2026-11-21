@@ -57,3 +57,48 @@ jobs:
           targets: ${{ github.ref_name == github.event.repository.default_branch && 'image,full' || 'image' }}
           push: true
           vars: VERSION=${{ github.sha }}
+
+  # publish が push した multi-arch イメージを、arch ごとの実 runner で pull して起動を確かめる。
+  # arm64 runner は main への push のときだけ使う（ブランチごとに回すとコストが戻るため）。
+  # 検査は image の Architecture、/usr/local/bin/rokuban の ELF e_machine、--help の終了まで。
+  # 起動できることは確かめるが、動作（録画・API）は確かめない。
+  # publish は push 済みなので、ここが落ちても SHA タグと latest は公開されたまま（検知するだけで、latest の公開は止めない）。
+  smoke:
+    needs: publish
+    if: github.ref_name == github.event.repository.default_branch
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            elf_machine: "3e00"
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            elf_machine: "b700"
+    runs-on: ${{ matrix.runner }}
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}:${{ github.sha }}
+    steps:
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull the published image
+        run: docker pull "$IMAGE"
+      - name: Architecture matches the runner
+        run: |
+          got=$(docker image inspect --format '{{.Architecture}}' "$IMAGE")
+          test "$got" = "${{ matrix.arch }}"
+      # ELF の e_machine は offset 18 の 2 byte（little endian）。数値比較にすると
+      # "3e00" / "b700" が一致しないので、16 進の文字列のまま比べる。
+      - name: rokuban binary targets the runner's machine
+        run: |
+          got=$(docker run --rm --entrypoint od "$IMAGE" -An -tx1 -j18 -N2 /usr/local/bin/rokuban | tr -d ' \n')
+          test "$got" = "${{ matrix.elf_machine }}"
+      - name: rokuban starts
+        run: docker run --rm "$IMAGE" --help
