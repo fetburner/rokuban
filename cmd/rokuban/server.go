@@ -689,10 +689,13 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy st
 			FFprobe: cfg.Encode.FFprobe,
 		}))
 		if cfg.Live.Enabled {
-			// live.enabled が true のときだけ ffmpeg の LookPath 検査を行う ---
-			// 公式イメージ（ffmpeg 無し）で streamer を起動する構成
-			// （録画配信 / サムネイルのみ）を壊さない（不変条件 4）。
+			// live.enabled が true のときだけ ffmpeg の検査（LookPath と、MPEG-2 /
+			// 字幕のデコーダ検査）を行う --- 公式イメージ（ffmpeg 無し）で streamer を
+			// 起動する構成（録画配信 / サムネイルのみ）を壊さない（不変条件 4）。
 			if err := cfg.Live.ValidateTools(); err != nil {
+				return nil, err
+			}
+			if err := streamer.ValidateFFmpegDecoders(egCtx, cfg.Live.FFmpeg, cfg.Live.Captions); err != nil {
 				return nil, err
 			}
 			liveConfig := convertLiveConfig(cfg.Live)
@@ -710,11 +713,12 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy st
 		if cfg.RecordingHLS.Enabled && !noRecordingHLS && len(roots) == 1 {
 			// 世代付き録画 HLS は streamer ロールの中で独立した manager を持つ。
 			hlsStore := sortedKeys(roots)[0]
-			// live.enabled=false でも live.profiles を利用するため、FFmpeg の MPEG-2
-			// decoder 検査と ffprobe の存在確認をこの経路でも行う。
-			liveTools := cfg.Live
-			liveTools.Enabled = true
-			if err := liveTools.ValidateTools(); err != nil {
+			// live.enabled=false でも live.profiles を利用するため、ffmpeg の存在確認と
+			// MPEG-2 decoder 検査をこの経路でも行う。
+			if err := cfg.Live.ValidateTools(); err != nil {
+				return nil, err
+			}
+			if err := streamer.ValidateFFmpegDecoders(egCtx, cfg.Live.FFmpeg, cfg.Live.Captions); err != nil {
 				return nil, err
 			}
 			recordingHLS, err := streamer.NewRecordingHLS(pgstore.NewMediaInStoreWithoutPolicy(pool, hlsStore), streamer.RecordingHLSConfig{
@@ -807,6 +811,9 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 	scheduleSyncStore := pgstore.NewScheduleSync(pool)
 	if jobs.RequiresEncodeTools(clientCfg.Queues) {
 		if err := cfg.Encode.ValidateTools(); err != nil {
+			return nil, nil, err
+		}
+		if err := encode.ValidateDecoders(ctx, cfg.Encode); err != nil {
 			return nil, nil, err
 		}
 	}

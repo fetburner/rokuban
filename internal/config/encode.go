@@ -313,26 +313,15 @@ func (c EncodeConfig) CutProfileSet() map[string]struct{} {
 }
 
 // ValidateTools は ffmpeg / ffprobe が PATH（または絶対パス）で解決できることを
-// 検査する。worker ロールの起動時だけ呼ぶ（不変条件 4: ffmpeg/ffprobe の exec は
-// worker / streamer パッケージのみ。api は呼ばない）。
+// LookPath で検査する。プロセスは実行しない。デコーダの検査（ffmpeg -decoders）は
+// internal/encode.ValidateDecoders が行う。worker ロールの起動時だけ呼ぶ
+// （api は呼ばない）。
 func (c EncodeConfig) ValidateTools() error {
 	if _, err := exec.LookPath(c.FFmpeg); err != nil {
 		return fmt.Errorf("encode.ffmpeg %q not found in PATH: %w", c.FFmpeg, err)
 	}
 	if _, err := exec.LookPath(c.FFprobe); err != nil {
 		return fmt.Errorf("encode.ffprobe %q not found in PATH: %w", c.FFprobe, err)
-	}
-	for _, p := range c.Profiles {
-		if p.Subtitles == "webvtt" {
-			decoders, err := ffmpegDecoders(c.FFmpeg)
-			if err != nil {
-				return err
-			}
-			if err := validateLibARIBCaption(decoders, "encode"); err != nil {
-				return err
-			}
-			break
-		}
 	}
 	return nil
 }

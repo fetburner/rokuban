@@ -111,7 +111,7 @@ type Deps struct {
 	ScratchDir          string
 
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
-	// worker ロール起動時に ValidateTools 済み（不変条件 4）。
+	// worker ロール起動時に ValidateTools と encode.ValidateDecoders 済み（不変条件 4）。
 	Encode   config.EncodeConfig
 	CMDetect config.CMDetectConfig
 

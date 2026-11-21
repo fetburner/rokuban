@@ -138,7 +138,7 @@ flowchart RL
 
 矢印は接続を張る向き（リクエストの向き）で、ラベルはその用途を表す。**線の無い組み合わせは触らない。**
 
-lint が判定するのは次の 2 つの境界である。api は mirakc・ファイルシステム・ffmpeg に依存しない（不変条件 1）。os/exec を使えるのは worker・streamer・CM 検出（cmdetect）・エンコード（encode）、共用の実行補助、起動時にツールを検査する設定の読み込み部だけである（不変条件 4）。
+lint が判定するのは次の 2 つの境界である。api は mirakc・ファイルシステム・ffmpeg に依存しない（不変条件 1）。ffmpeg などの外部ツールを実行するのは worker・streamer・CM 検出（cmdetect）・エンコード（encode）と、共用の実行補助だけである（不変条件 4）。設定の読み込み部（config）も os/exec を import するが、起動時に LookPath で存在を確かめるだけで、何も実行しない。この点は lint では判定せず、テストで固定している。
 
 lint は import の向きも判定する。cmdetect、ストレージの転送・削除（storagemaint）、サムネイル・シークタイルの生成（thumbnail）は worker だけが import できる。encode は worker と起動時に検査する cmd/rokuban だけが import できる。取り込み（ingest）は worker と起動時に置き場を検査する cmd/rokuban だけが import できる。共用の実行補助は worker・cmdetect・thumbnail・encode・streamer だけが import できる。それ以外の線は lint では判定していない。
 
@@ -146,7 +146,8 @@ lint は import の向きも判定する。cmdetect、ストレージの転送�
 
 - 境界を判定する lint の設定: `.golangci.yml`（depguard）
 - ファイルシステムへの依存を禁じる対象: `internal/mediapath`
-- exec を使えるパッケージ: `os/exec` を使う worker・streamer・cmdetect・encode・mediaexec と、起動時にツールを検査する `internal/config`
+- 外部ツールを実行するパッケージ: worker・streamer・cmdetect・encode・mediaexec
+- `os/exec` を import するが LookPath しか使わないパッケージ: `internal/config`（実行はしない。exec-role の許可リストに入っている）
 
 </details>
 
