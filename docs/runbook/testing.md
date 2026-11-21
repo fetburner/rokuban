@@ -11,14 +11,14 @@
 - 契約テストは、状態の確認を契約の読み取りメソッドか、次の操作の結果で行う。どちらでも確かめられないものだけを、フィクスチャのフックで読む。テストのためだけに契約へ読み取りメソッドを足さない。足すと、別の方言の実装も同じメソッドを持つことになる。
 - 契約テストは、通知が届いたことだけを確かめ、どう運ばれたかは見ない。通知の受信と、並行性・故障注入のフックは、方言ごとに実装する。
 
-既存のテストには、この方針に沿っていないものが残っている。
+既存のドメインのテストには、生 SQL で store の表を直接書いたり読んだりしているものが残っている。`sqlcgen` の import は lint が止めるが、生 SQL は lint が止めない。
 
 <details><summary>根拠</summary>
 
 - 振る舞いを持つテストダブルの例: `internal/jobq/jobqfake`（`internal/jobq/contracttest` を River 版と同じように通す）
 - 本物の mirakc との一致の判定: `internal/mirakc/conformance`（`-tags conformance`）
 - 契約テスト: `internal/store/contracttest`
-- テストからの `sqlcgen` の import: `.golangci.yml` の depguard `test-sqlcgen-boundary`。移行の残りは、この規則の除外のうち「移行中」のもの
+- テストからの `sqlcgen` の import: `.golangci.yml` の depguard `test-sqlcgen-boundary`。除外は DB の基盤そのもの（store の実装・生成クエリ・テスト DB の準備）に限る
 
 </details>
 

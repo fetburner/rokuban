@@ -173,7 +173,7 @@ linters:
               desc: generated database queries are limited to pgstore and the database foundation
         test-sqlcgen-boundary:
           # テストは状態を契約のメソッドか internal/db/dbtest で作る。sqlcgen を直接使わない。
-          # 「移行中」の除外は、まだ sqlcgen を使っているテストのパッケージ。下の階層のパッケージは除外しない。移行が済んだら消す。
+          # 除外は DB 基盤そのものに限る。pgstore は store の実装、internal/db は生成クエリとマイグレーション、internal/testutil はテスト DB の準備。
           list-mode: lax
           files:
             - "$test"
