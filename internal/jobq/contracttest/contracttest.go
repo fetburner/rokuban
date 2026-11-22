@@ -53,6 +53,7 @@ func Run(t *testing.T, factory Factory) {
 		{"process death makes active Work eligible again", testCrash},
 		{"coalescing accepts one or more deliveries", testCoalescing},
 		{"coalescing releases completed Args", testCoalescingAfterCompletion},
+		{"coalescing releases Args after final failure", testCoalescingAfterFinalFailure},
 		{"coalescing distinguishes different Args", testCoalescingDistinguishesArgs},
 		{"coalescing distinguishes Timeout in Args", testCoalescingDistinguishesTimeout},
 		{"Register rejects a nonpositive timeout", testRegisterTimeout},
@@ -350,6 +351,34 @@ func testCoalescingAfterCompletion(t *testing.T, factory Factory) {
 	waitIdle(t, fixture)
 	if got := calls.Load(); got != 2 {
 		t.Errorf("Work calls after completed Args were enqueued again = %d, want literal 2", got)
+	}
+}
+
+func testCoalescingAfterFinalFailure(t *testing.T, factory Factory) {
+	var calls atomic.Int32
+	fixture := newFixture(t, factory, contractWorker{work: func(context.Context, contractArgs) error {
+		calls.Add(1)
+		return errors.New("terminal failure")
+	}})
+	args := contractArgs{Value: "same after failure", TimeoutMS: 2000, MaxAttempts: 1, Coalesce: true}
+	start(t, fixture)
+	if _, err := fixture.Enqueue(context.Background(), args); err != nil {
+		t.Fatalf("first Enqueue() error = %v", err)
+	}
+	waitIdle(t, fixture)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("Work calls after first enqueue = %d, want literal 1", got)
+	}
+	result, err := fixture.Enqueue(context.Background(), args)
+	if err != nil {
+		t.Fatalf("second Enqueue() error = %v", err)
+	}
+	if result.Coalesced {
+		t.Fatal("final failure retained the coalescing lock")
+	}
+	waitIdle(t, fixture)
+	if got := calls.Load(); got != 2 {
+		t.Errorf("Work calls after re-enqueueing failed Args = %d, want literal 2", got)
 	}
 }
 

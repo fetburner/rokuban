@@ -38,13 +38,13 @@
 | 何を何分で、何本並列で | 製品仕様の変更 | 製品側（`cmd/rokuban` の仕様の組み立て） |
 | どの site・どのキューを受け持つか、誰が定期投入の契機を持つか | デプロイ | 起動形態（`--sites` / `--queues` / `worker.periodic_jobs` / `--once`） |
 | 仕様の型の意味と不変条件 | エンジンに依らない約束の変更 | 契約（`internal/jobq`） |
-| エンジンでどう実現するか | エンジンの差し替え | adapter（`internal/jobq/riveradapter`） |
+| エンジンでどう実現するか | エンジンの差し替え | adapter（`internal/jobq/riveradapter`、`internal/jobq/asynqadapter`） |
 
 API は、store の commit 後にヒントとして投入する。投入の失敗はログに残し、定期 reconcile に委ねる。watcher も、観測の commit の後にヒントとして投入する。CLI は単発で投入し、合流の有無を結果から表示する。
 
 River クライアントと投入オプションへの変換は、adapter に閉じ込める。worker の登録だけは River の公開 API が具体型を要求するので、River adapter を通す。他の adapter は中立なレジストリを使う。
 
-import 境界の linter は、本番コードによる River adapter の直接 import を禁止する。例外は worker の登録とテスト DB 作成だけである。構成の根である起動コードは adapter を組み立てるので、対象外にする。テストも River の import を adapter に閉じる。唯一の例外は KEDA の SQL テストで、ScaledJob の状態名を River のスキーマと照合する。
+import 境界の linter は、本番コードによる River adapter の直接 import を禁止する。例外は worker の登録とテスト DB 作成だけである。構成の根である起動コードは adapter を組み立てるので、対象外にする。テストも River の import を adapter に閉じる。唯一の例外は KEDA の SQL テストで、ScaledJob の状態名を River のスキーマと照合する。asynq と go-redis の import も、テストを含め asynq adapter に閉じる。
 
 逆向きの境界も持つ。adapter の本番コードは、契約とエンジンだけに依存する。禁止リストで製品パッケージを塞ぐと、リストに無い別の製品パッケージへの依存が通る。そのため許可リストで判定し、テストは対象外にする。
 
@@ -69,7 +69,7 @@ import 境界の linter は、本番コードによる River adapter の直接 i
 - 中立なレジストリ: `jobq.Registry`
 - 仕様の型と検査: `jobq.WorkerSpec` の `Validate` / `Select` / `CheckKinds` / `CheckQueueFor`
 - 仕様の組み立て: `cmd/rokuban` の `newWorkerSpec`（`tsscan` が `internal/jobs` を import するので jobs には置けない）
-- import 境界の判定: `.golangci.yml` の depguard。adapter の本番コードは `riveradapter-allowlist`（許可リスト）
+- import 境界の判定: `.golangci.yml` の depguard。adapter の本番コードは `riveradapter-allowlist` と `asynqadapter-allowlist`（許可リスト）
 - import の例外: `internal/` の本番コードでは `internal/worker/worker.go` と `internal/testutil`
 - 対象外にする起動コード: `cmd/`
 - SHA-256 待ち後の再開: `TestIngestWorker_CompletesUntilLateContentSHA256`
