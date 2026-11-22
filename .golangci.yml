@@ -113,6 +113,38 @@ linters:
           deny:
             - pkg: github.com/fetburner/rokuban/internal/store/pgstore
               desc: PostgreSQL store implementations are constructed only in cmd/rokuban
+        mysqlstore-composition-root:
+          # MySQL store の組み立ては cmd/rokuban に置き、テストと adapter 自身は対象外にする。
+          list-mode: lax
+          files:
+            - "${config-path}/**"
+            - "!$test"
+            - "!${config-path}/internal/store/mysqlstore/**"
+            - "!${config-path}/cmd/rokuban/**"
+          deny:
+            - pkg: github.com/fetburner/rokuban/internal/store/mysqlstore
+              desc: MySQL store の組み立ては cmd/rokuban に限る
+        mysql-driver-boundary:
+          # MySQL driver の import は store adapter と MySQL 基盤・テスト DB helper に限る。
+          list-mode: lax
+          files:
+            - "${config-path}/**"
+            - "!$test"
+            - "!${config-path}/internal/store/mysqlstore/**"
+            - "!${config-path}/internal/mysqldb/**"
+            - "!${config-path}/internal/mysqltest/**"
+          deny:
+            - pkg: github.com/go-sql-driver/mysql
+              desc: MySQL driver は mysqlstore と MySQL 基盤の外で import しない
+        mysqltest-test-only:
+          # mysqltest はテスト専用。cmd/rokuban を含む本番コードからの import を止める。
+          list-mode: lax
+          files:
+            - "${config-path}/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/fetburner/rokuban/internal/mysqltest
+              desc: MySQL テスト DB helper はテストファイルに限る
         pgstoretest-test-only:
           # pgstoretest はテスト用。pgstore-composition-root は cmd/rokuban を検査から外すので、
           # pgstoretest の import はこの規則で cmd/rokuban も含めて止める。

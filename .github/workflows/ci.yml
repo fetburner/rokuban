@@ -324,6 +324,38 @@ jobs:
           # 同じ run の test-timings に渡すだけ。残すのは cache 側。
           retention-days: 1
 
+  mysql-contract-test:
+    name: mysql contract test (${{ matrix.mysql }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql: ["9.7"]
+    services:
+      mysql:
+        image: mysql:${{ matrix.mysql }}
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_ROOT_HOST: "%"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ROKUBAN_TEST_MYSQL_DSN: root:root@tcp(127.0.0.1:3306)/
+      ROKUBAN_REQUIRE_MYSQL: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Run MySQL store contract tests
+        run: go test -race -count=1 ./internal/mysqldb ./internal/mysqltest ./internal/store/mysqlstore
+
   # main の実行だけが見積もりを更新する。PR はこの保存を行わず、main のキャッシュを読むだけ。
   test-timings:
     needs: test-shard
