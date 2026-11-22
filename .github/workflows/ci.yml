@@ -511,7 +511,7 @@ jobs:
 
   # 生成物（sqlc/oapi-codegen/orval）が openapi.yaml / マイグレーションからの再生成と一致するかを
   # 検証する。生成物はコミット済みなので他 job（build/test）は再生成漏れがあっても普通に緑になる。
-  # ツール版は CLAUDE.md §ビルド・テストに固定した版に合わせる（版がずれると偽陽性で赤くなる）。
+  # ツールの版は go.mod の tool ディレクティブが固定し、手元と CI は同じ版を使う。
   generated-diff:
     runs-on: ubuntu-latest
     steps:
@@ -534,26 +534,7 @@ jobs:
       # Go の依存は go list -deps で、Web の依存は pnpm install 後の node_modules から辿るので、pnpm build は要らない。
       - name: Check third-party notices
         run: npm run third-party-notices -- --check
-      # sqlc / oapi-codegen は go.mod の依存に入れず、golangci-lint と同じくローカルバイナリ
-      # 前提（CLAUDE.md）。sqlc は固定チェックサムのリリースバイナリで、oapi-codegen は go install で入れる。
-      - name: Install sqlc release binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          sqlc_version=1.31.1
-          sqlc_sha256=497ae4fcdfa64c5b0c311ffe4c2bd991e43991e82e5367792ed78bc2dca27354
-          archive="$RUNNER_TEMP/sqlc_${sqlc_version}_linux_amd64.tar.gz"
-          checksum_file="$RUNNER_TEMP/sqlc_${sqlc_version}_linux_amd64.sha256"
-          install_dir="$RUNNER_TEMP/sqlc-bin"
-          curl -fsSL "https://github.com/sqlc-dev/sqlc/releases/download/v${sqlc_version}/sqlc_${sqlc_version}_linux_amd64.tar.gz" -o "$archive"
-          printf '%s  %s\n' "$sqlc_sha256" "$archive" > "$checksum_file"
-          sha256sum -c "$checksum_file"
-          mkdir -p "$install_dir"
-          tar -xzf "$archive" -C "$install_dir" sqlc
-          echo "$install_dir" >> "$GITHUB_PATH"
-      - run: go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0
-      - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - run: sqlc generate
+      - run: go tool sqlc generate
       # internal/api/gen.go の //go:generate directive をそのまま踏む。ここで直接
       # oapi-codegen を呼ぶと directive の増減・フラグ変更を検知できないまま緑になる。
       - run: go generate ./internal/api/
@@ -573,7 +554,7 @@ jobs:
         run: |
           git add -A
           git diff --cached --exit-code \
-            || { echo "::error::生成物が古い。sqlc generate / go generate ./internal/api/ / (cd web && pnpm exec orval) / scripts/schemadump.sh を実行してコミットしてください"; exit 1; }
+            || { echo "::error::生成物が古い。go tool sqlc generate / go generate ./internal/api/ / (cd web && pnpm exec orval) / scripts/schemadump.sh を実行してコミットしてください"; exit 1; }
 
   lint:
     runs-on: ubuntu-latest

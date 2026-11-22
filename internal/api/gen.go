@@ -4,4 +4,4 @@ package api
 // 生成物 (openapi_gen.go) はコミットする（レビューで API の差分が見える／ビルドに
 // oapi-codegen が要らないため）。再生成漏れは CI の generated-diff ジョブが
 // 再生成して差分を検証する。
-//go:generate oapi-codegen --config=oapi-codegen.yaml ../../openapi.yaml
+//go:generate go tool oapi-codegen --config=oapi-codegen.yaml ../../openapi.yaml

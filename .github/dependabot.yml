@@ -5,8 +5,6 @@ updates:
     directory: "/"
     schedule:
       interval: monthly
-    # sqlc と oapi-codegen は go.mod の依存ではなく、generated-diff ジョブで
-    # バージョンを pin したローカルバイナリとして管理しているため対象外。
     groups:
       minor-patch:
         update-types:
