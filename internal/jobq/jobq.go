@@ -108,8 +108,12 @@ type snoozeError struct {
 
 func (e snoozeError) Error() string { return fmt.Sprintf("jobq: snooze for %s", e.delay) }
 
-// Snooze asks the adapter to redeliver the same Args after at least d. Snoozes do not consume
-// MaxAttempts. A negative delay returns an ordinary error.
+// Snooze asks the adapter to redeliver the same Args after at least d when the clock used to
+// observe deliveries agrees with the backend clock. If the backend clock is ahead of the
+// worker's clock, the worker may observe redelivery before d has elapsed by that offset. Which
+// clocks are used is adapter-specific; TestContract/Snooze_delay_is_a_lower_bound checks the
+// lower bound with the fixture's measured clock skew. Snoozes do not consume MaxAttempts. A
+// negative delay returns an ordinary error.
 func Snooze(d time.Duration) error {
 	if d < 0 {
 		return fmt.Errorf("jobq: snooze duration must not be negative: %s", d)

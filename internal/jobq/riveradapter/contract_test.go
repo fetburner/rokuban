@@ -329,6 +329,21 @@ func (fixture *riverContractFixture) RecoveryGrace() time.Duration {
 	return fixture.cfg.RecoveryGrace()
 }
 
+func (fixture *riverContractFixture) SnoozeClockSkew(ctx context.Context) (time.Duration, error) {
+	// databaseNow has no monotonic reading, so Sub compares wall-clock values. Sampling
+	// localBefore before the query includes the outbound delay and query time, deliberately
+	// overestimating the database clock's lead and widening the test allowance.
+	localBefore := time.Now()
+	var databaseNow time.Time
+	if err := fixture.pool.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&databaseNow); err != nil {
+		return 0, fmt.Errorf("reading database clock for snooze contract: %w", err)
+	}
+	if skew := databaseNow.Sub(localBefore); skew > 0 {
+		return skew, nil
+	}
+	return 0, nil
+}
+
 var _ contracttest.Fixture = (*riverContractFixture)(nil)
 
 type riverContractWorkerFunc func(context.Context, contracttest.Args) error

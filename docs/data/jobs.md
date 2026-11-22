@@ -50,6 +50,10 @@ import 境界の linter は、本番コードによる River adapter の直接 i
 
 契約は River と asynq の共通部分に絞る。扱うのは queue・timeout・retry・enqueue・work・runner lifecycle、worker の仕様の型、1 件消化モードの終了理由である。仕様の型は、キューごとの並列数と購読する物理キュー名、定期ジョブの一覧と周期を表す。定期投入の runner は、起動直後に 1 回、その後は周期ごとに投入する。この点は型の doc に書いた契約である。1 件消化モードの待機と停止は adapter が担い、起動側は終了理由を受け取る。排他、一覧、job ID / 試行番号、購読の仕組みは adapter 固有のまま外に置く。adapter の内部状態へ依存しない境界を先に作るためである。
 
+`jobq.Snooze` の下限 d は配送を観測する時計と backend の時計が一致している前提である。backend の時計が worker の時計より進んでいれば worker からはその時計差の分だけ早く届くことがある。使う時計は adapter ごとに異なり、公開契約も計時基準を定めていないため、adapter 側では時計差を補正しない。再試行する側は待ちのあと Work で状態を確かめ直すため、delay の下限ちょうどに正しさを頼らない。
+
+契約テストに固定の許容幅を置くと時計差が幅を超えたときに再び落ちる。幅を広げるほど短すぎる delay を見逃すため、fixture は backend の時計が配送を観測する時計よりどれだけ進んでいるかを測り、その実測分だけを許容幅に加える。
+
 定期投入の責務は 3 つに分かれ、変わる理由が違う。一覧と周期は製品の方針で、jobq の仕様が持つ。誰が投入の契機を持つかはデプロイ形態が決める（[定期実行の契機](#定期実行の契機はデプロイ形態に委ねる)）。投入の仕組みは adapter 固有である。`worker.periodic_jobs` を false にしても、仕様の定期ジョブの一覧は空にならない。契機の有無と一覧は別の軸だからである。
 
 設定キーを持たない周期と並列数は、上書きできない製品の仕様として組み立て関数のリテラルで書く。config に既定値を置くのは、設定キーのある値だけである。adapter は既定値を持たず、0 の並列数や周期を起動時に拒む。adapter が「0 なら既定値」を持つと、config の既定値との二重既定になり、片方だけが直る。
@@ -68,6 +72,9 @@ import 境界の linter は、本番コードによる River adapter の直接 i
 - import 境界の判定: `.golangci.yml` の depguard。adapter の本番コードは `riveradapter-allowlist` と `asynqadapter-allowlist`（許可リスト）
 - import の例外: `internal/` の本番コードでは `internal/worker/worker.go` と `internal/testutil`
 - 対象外にする起動コード: `cmd/`
+- SHA-256 待ち後の再開: `TestIngestWorker_CompletesUntilLateContentSHA256`
+- 古い publish 計画の再確認: `TestEncodeWorker_StaleCutPlanDoesNotRewindRow`
+- 保存済み slice の再開: `TestStorageTransferWorkerSliceStopsAndResumesToCompletion`
 
 </details>
 
