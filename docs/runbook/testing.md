@@ -226,6 +226,8 @@ mock では検出できない前提は、実物の mirakc コンテナに対す�
 
 コマンドは `go test -tags conformance -p 1 ./internal/mirakc/conformance/...`。放送病態はケースごとにパッケージを分け、CI の `gotestsum tool ci-matrix` が実測時間でシャードへ振り分ける。reconciler の `overrides.contentPath` の既存 schedule への反映も対象である。これは mirakc が `GET /api/recording/schedules` で `options.contentPath` を POST した値のまま返すことに依存する。 `/events` の再送・録画中の Range 挙動も同様で、テストの mock は権威にならず、こちらが権威になる。症状と観測手段は [troubleshooting.md](troubleshooting.md) の該当項目。
 
+PR の CI は Go の依存先か、ソースの `// ci-extra-deps:` で宣言した追加依存が変わったパッケージだけを回す。`go.mod` や `.github/` などを変えた PR と、main への push および週次検証では全パッケージを回す。
+
 <details><summary>根拠</summary>
 
 - 実物の mirakc に対する判定の置き場: `internal/mirakc/conformance`

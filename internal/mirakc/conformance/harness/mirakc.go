@@ -1,5 +1,7 @@
 //go:build conformance
 
+// ci-extra-deps: -tags=conformance ./internal/mirakc/conformance/cmd/fixturetuner
+
 package harness
 
 import (
