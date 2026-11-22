@@ -264,3 +264,4 @@ flowchart TD
 pin した digest はいずれ取れなくなる。CI が pull できずに赤くなるのは pin の失効であり、conformance の回帰とは読まない。最新の digest を取り直して pin を差し替える。
 
 出どころの `main-debian` タグはビルドのたびに上書きされる可動タグなので、古い digest は Docker Hub 側でタグ無し（untagged）manifest として prune されうる。そうなると CI は「pull できない」で赤くなる。この赤はテストの失敗ではない。まず `docker pull mirakc/mirakc:main-debian` で最新の digest を取り直す。digest は `docker inspect --format '{{index .RepoDigests 0}}' mirakc/mirakc:main-debian` で確認できる。確認できたら上記の手順で pin を差し替える。
+
