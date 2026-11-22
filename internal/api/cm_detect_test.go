@@ -43,7 +43,7 @@ func saveCMDetectionForTest(t *testing.T, ctx context.Context, pool *pgxpool.Poo
 	if err != nil || !shouldRun {
 		t.Fatalf("BeginAttempt(%d) = %#v, %v", recordingID, attempt, err)
 	}
-	saved, err := det.SaveDetection(ctx, attempt, ranges)
+	saved, err := det.SaveDetection(ctx, attempt, ranges, store.CMDetectionMaterial{})
 	if err != nil || !saved {
 		t.Fatalf("SaveDetection(%d) = %v, %v; want saved", recordingID, saved, err)
 	}

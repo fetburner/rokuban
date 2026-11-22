@@ -14,12 +14,17 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func chaptersURL(base string, id int64) string {
 	return fmt.Sprintf("%s/api/recordings/%d/chapters", base, id)
+}
+
+func chapterReviewURL(base string, id int64) string {
+	return fmt.Sprintf("%s/api/recordings/%d/chapter-review", base, id)
 }
 
 func strPtr(s string) *string { return &s }
@@ -113,6 +118,96 @@ func TestGetRecordingChapters_AutoLayerReturnsCMAsCutSpans(t *testing.T) {
 		got.Spans[0].EndMs != want[0].EndMs || got.Spans[0].Cut != true ||
 		got.Spans[0].Label == nil || *got.Spans[0].Label != "CM" {
 		t.Fatalf("spans = %+v, want %+v", got.Spans, want)
+	}
+}
+
+func TestGetRecordingChapterReview_ReturnsMaterialsAndLatestAutoLayerAfterAdoption(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := NewTestServer(t, pool, withChapters(pool, true))
+	ctx := context.Background()
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "検出レビュー", time.Now().Truncate(time.Second), "finished", 1091
+	})
+	enableCMDetect(t, pool, id)
+	presentOriginalForTest(t, pool, id)
+	det := pgstoretest.Analysis(pool)
+	attempt, shouldRun, err := det.BeginAttempt(ctx, id, 3)
+	if err != nil || !shouldRun {
+		t.Fatalf("BeginAttempt() = %#v, %v", attempt, err)
+	}
+	saved, err := det.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 1000, EndMs: 7000}}, store.CMDetectionMaterial{
+		LogoRanges: []chapters.Range{{StartMs: 1000, EndMs: 6001}},
+		Elements:   []chapters.CMElement{{StartMs: 1000, EndMs: 7000, ErrorFrames: 6, Label: ":CM"}},
+	})
+	if err != nil || !saved {
+		t.Fatalf("SaveDetection() = %v, %v", saved, err)
+	}
+
+	url := chaptersURL(srv.URL, id)
+	before := getChapters(t, url)
+	if response := putChapters(t, url, before.Spans); response.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT status = %d, want 204", response.StatusCode)
+	}
+	got := GetJSON[RecordingChapterReview](t, chapterReviewURL(srv.URL, id))
+	if !got.MaterialsAvailable {
+		t.Fatal("MaterialsAvailable = false, want true")
+	}
+	if len(got.LogoRanges) != 1 || got.LogoRanges[0].StartMs != 1000 || got.LogoRanges[0].EndMs != 6001 {
+		t.Fatalf("logoRanges = %#v", got.LogoRanges)
+	}
+	if len(got.AutoSpans) != 1 || got.AutoSpans[0].StartMs != 1001 || got.AutoSpans[0].EndMs != 7007 {
+		t.Fatalf("autoSpans = %#v, want latest detector result", got.AutoSpans)
+	}
+	if len(got.Candidates) != 2 || got.Candidates[0].Kind != "overcut_logo" || got.Candidates[1].Kind != "overcut_grid" {
+		t.Fatalf("candidates = %#v", got.Candidates)
+	}
+}
+
+func TestGetRecordingChapterReview_OldDetectionHasNoMaterials(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := NewTestServer(t, pool, withChapters(pool, true))
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "旧い検出", time.Now().Truncate(time.Second), "finished", 1092
+	})
+	enableCMDetect(t, pool, id)
+	presentOriginalForTest(t, pool, id)
+	saveCMDetectionForTest(t, context.Background(), pool, id, chapters.Range{StartMs: 1000, EndMs: 2000})
+	if _, err := pool.Exec(context.Background(), `UPDATE recording_cm_detections SET logo_ranges = NULL, structure_elements = NULL WHERE recording_id = $1`, id); err != nil {
+		t.Fatalf("clearing review material to model a pre-migration detection: %v", err)
+	}
+	got := GetJSON[RecordingChapterReview](t, chapterReviewURL(srv.URL, id))
+	if got.MaterialsAvailable {
+		t.Fatal("MaterialsAvailable = true, want false for a detection without review materials")
+	}
+	if got.Candidates == nil || len(got.Candidates) != 0 {
+		t.Fatalf("candidates = %#v, want empty array", got.Candidates)
+	}
+}
+
+func TestGetRecordingChapterReview_EmptyCandidateSetHasMaterials(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := NewTestServer(t, pool, withChapters(pool, true))
+	ctx := context.Background()
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "候補なし", time.Now().Truncate(time.Second), "finished", 1093
+	})
+	enableCMDetect(t, pool, id)
+	presentOriginalForTest(t, pool, id)
+	det := pgstoretest.Analysis(pool)
+	attempt, shouldRun, err := det.BeginAttempt(ctx, id, 3)
+	if err != nil || !shouldRun {
+		t.Fatalf("BeginAttempt() = %#v, %v", attempt, err)
+	}
+	saved, err := det.SaveDetection(ctx, attempt, nil, store.CMDetectionMaterial{})
+	if err != nil || !saved {
+		t.Fatalf("SaveDetection() = %v, %v", saved, err)
+	}
+	got := GetJSON[RecordingChapterReview](t, chapterReviewURL(srv.URL, id))
+	if !got.MaterialsAvailable {
+		t.Fatal("MaterialsAvailable = false, want true")
+	}
+	if got.Candidates == nil || len(got.Candidates) != 0 {
+		t.Fatalf("candidates = %#v, want empty array", got.Candidates)
 	}
 }
 

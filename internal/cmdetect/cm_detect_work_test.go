@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image/png"
@@ -17,6 +18,7 @@ import (
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
@@ -152,7 +154,7 @@ if [ -f %q ]; then
   : > %q
   while [ -f %q ]; do sleep 0.05; done
 fi
-: > "$o"
+printf '  30 S 0 ALL 30 90\n  89 E 0 ALL 89 90\n' > "$o"
 if [ ! -f "$d/$ch.latest" ]; then
   cp %q "$d/$ch-v0001.lgd"
   printf '1\n%%s\n' "$ch-v0001.lgd" > "$d/$ch.latest"
@@ -169,10 +171,11 @@ exit %d
 `, chapterExit))
 	writeExecutable(t, filepath.Join(dir, "join_logo_scp"), fmt.Sprintf(`
 while [ $# -gt 0 ]; do
-  case "$1" in -o) o=$2;; esac
+  case "$1" in -o) o=$2;; -oscp) s=$2;; esac
   shift
 done
 echo %q > "$o"
+printf '    30     89    2   6    1 :CM\n    90    119    1   0    0 \n' > "$s"
 `, cutAVS))
 	writeExecutable(t, filepath.Join(dir, "ffprobe"), fmt.Sprintf(`
 case "$*" in
@@ -302,6 +305,35 @@ func TestCMDetectWorkKeepsCommercialsBeyondProgramDurationAndStoresLogoPreview(t
 	}
 	if codedWidth != 1440 || codedHeight != 1080 {
 		t.Errorf("coded size = %dx%d, want 1440x1080", codedWidth, codedHeight)
+	}
+}
+
+func TestCMDetectWorkStoresReviewMaterialOnCMFrameAxis(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	id := dbtest.Recording(t, pool, cmRecordingOptions(929))
+	seedCMDetectionState(t, pool, mediaDir, id)
+	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,29) ++ Trim(90,299)", "10.010000")
+	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)), "Work")
+
+	var cmRanges, logoRanges string
+	var structureJSON []byte
+	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT cm_ranges::text, logo_ranges::text, structure_elements FROM recording_cm_detections WHERE recording_id = $1`, id).
+		Scan(&cmRanges, &logoRanges, &structureJSON), "reading detection result and review material")
+	if cmRanges != "{[1001,3003)}" || logoRanges != cmRanges {
+		t.Fatalf("cm_ranges/logo_ranges = %q/%q, want same frame-derived interval {[1001,3003)}", cmRanges, logoRanges)
+	}
+	var elements []chapters.CMElement
+	if err := json.Unmarshal(structureJSON, &elements); err != nil {
+		t.Fatalf("decoding structure elements: %v", err)
+	}
+	want := []chapters.CMElement{
+		{StartMs: 1001, EndMs: 3003, ErrorFrames: 6, Label: ":CM"},
+		{StartMs: 3003, EndMs: 4004, ErrorFrames: 0, Label: ""},
+	}
+	if !reflect.DeepEqual(elements, want) {
+		t.Fatalf("structure elements = %#v, want %#v", elements, want)
 	}
 }
 
@@ -775,7 +807,7 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 		RecordingID: late, Station: item.Station,
 		AttemptCount: first.AttemptCount, PolicyGeneration: first.PolicyGeneration,
 	}
-	if _, err := w.DetectionStore.SaveDetection(ctx, lateAttempt, nil); err != nil {
+	if _, err := w.DetectionStore.SaveDetection(ctx, lateAttempt, nil, store.CMDetectionMaterial{}); err != nil {
 		t.Fatalf("persisting late first-attempt result: %v", err)
 	}
 	var detections int
@@ -820,7 +852,7 @@ func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
 		RecordingID: id, Station: item.Station,
 		AttemptCount: oldAttempt.AttemptCount, PolicyGeneration: oldAttempt.PolicyGeneration,
 	}
-	if _, err := w.DetectionStore.SaveDetection(ctx, oldDetectionAttempt, nil); err != nil {
+	if _, err := w.DetectionStore.SaveDetection(ctx, oldDetectionAttempt, nil, store.CMDetectionMaterial{}); err != nil {
 		t.Fatalf("saving result from pre-toggle worker: %v", err)
 	}
 	var detections int
@@ -837,7 +869,7 @@ func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
 	newDetectionAttempt := oldDetectionAttempt
 	newDetectionAttempt.AttemptCount = newAttempt.AttemptCount
 	newDetectionAttempt.PolicyGeneration = newAttempt.PolicyGeneration
-	if _, err := w.DetectionStore.SaveDetection(ctx, newDetectionAttempt, nil); err != nil {
+	if _, err := w.DetectionStore.SaveDetection(ctx, newDetectionAttempt, nil, store.CMDetectionMaterial{}); err != nil {
 		t.Fatalf("saving result from current worker: %v", err)
 	}
 	testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&detections), "counting detections")

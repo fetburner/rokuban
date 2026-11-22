@@ -411,9 +411,11 @@ type RecordingCmAttempt struct {
 }
 
 type RecordingCmDetection struct {
-	RecordingID int64
-	CmRanges    pgtype.Multirange[pgtype.Range[pgtype.Int8]]
-	DetectedAt  time.Time
+	RecordingID       int64
+	CmRanges          pgtype.Multirange[pgtype.Range[pgtype.Int8]]
+	DetectedAt        time.Time
+	LogoRanges        pgtype.Multirange[pgtype.Range[pgtype.Int8]]
+	StructureElements json.RawMessage
 }
 
 type RecordingEncodeAttempt struct {

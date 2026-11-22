@@ -2,6 +2,7 @@ package pgstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -135,11 +136,11 @@ func (s *Analysis) AbortAttempt(ctx context.Context, attempt store.CMDetectionAt
 	return nil
 }
 
-// SaveDetection は一致する現在世代の試行について、正規化した CM 区間を保存する。
+// SaveDetection は一致する現在世代の試行について、正規化した CM 区間と任意のレビュー材料を保存する。
 // 局、録画、試行の順で書き手を直列化する。ごみ箱の録画でも desired でなければ試行を消すので、
 // lockRecording ではなく lockRecordingState を使う。
 // 局ロゴの版は、解析をロゴありで始めた試行（LogoLearnedAt が非 nil）だけ照合する。
-func (s *Analysis) SaveDetection(ctx context.Context, attempt store.CMDetectionAttempt, ranges []chapters.Range) (bool, error) {
+func (s *Analysis) SaveDetection(ctx context.Context, attempt store.CMDetectionAttempt, ranges []chapters.Range, review store.CMDetectionMaterial) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, fmt.Errorf("beginning CM result transaction for recording %d: %w", attempt.RecordingID, err)
@@ -197,10 +198,18 @@ func (s *Analysis) SaveDetection(ctx context.Context, attempt store.CMDetectionA
 			return false, nil
 		}
 	}
+	if review.Elements == nil {
+		review.Elements = make([]chapters.CMElement, 0)
+	}
+	structure, err := json.Marshal(review.Elements)
+	if err != nil {
+		return false, fmt.Errorf("encoding CM structure elements: %w", err)
+	}
 	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
 		RecordingID: attempt.RecordingID, CmRanges: encodeInt8Multirange(ranges),
+		LogoRanges: encodeInt8Multirange(review.LogoRanges), StructureElements: structure,
 	}); err != nil {
-		return false, fmt.Errorf("saving CM ranges for recording %d: %w", attempt.RecordingID, mapDatabaseError(err))
+		return false, fmt.Errorf("saving CM detection result for recording %d: %w", attempt.RecordingID, mapDatabaseError(err))
 	}
 	if err := q.DeleteCMDetectionAttempt(ctx, attempt.RecordingID); err != nil {
 		return false, fmt.Errorf("clearing CM detection attempt for recording %d: %w", attempt.RecordingID, err)

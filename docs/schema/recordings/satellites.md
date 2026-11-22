@@ -58,6 +58,8 @@ CM 検出の結果は、検出処理全体の完了を 1 行で表し、処理�
 
 結果の区間は、原本の先頭を 0 としたミリ秒の multirange である。空の multirange は、広告区間が無かったという結果である。
 
+レビュー材料は `cm_ranges` と同じ行に置く。同じジョブが同じトランザクションで書き、再検出や局のロゴ変更で同時に消えるため、寿命が同じである。ロゴ区間は時間範囲の集合なので `int8multirange`、構造要素はラベルと格子誤差を含む解析出力なので JSONB にする。JSONB の中身で SQL の絞り込みや結合はせず、Go が読み出して候補を導出する。両列が NULL の行は古い検出結果で材料が無く、空の multirange と JSON 配列は材料を読み取ったうえで該当値が無かった結果を表す。
+
 試行の状態は、処理中・再投入待ち・失敗の 3 つである。再投入待ちは、失敗後または停止時の中断後に再投入を待つ状態で、失敗は最大 3 回の試行後も失敗した状態である。新しいロゴや枠で再び対象になった失敗行は、試行回数を 1 に戻して再開する。停止時の中断は回数に入れず、以前の失敗回数を保つ。
 
 失敗工程は、worker が観測した工程である。検出前の準備から結果の保存までの工程に加え、停止・映像サイズの不一致・ロゴの不一致・採用待ちがある。採用待ちは、枠があり、候補の採用を待つため検出しなかったことを表す。
@@ -69,6 +71,7 @@ CM worker は実尺に基づくタイムアウトを返し、停止・異常終�
 <details><summary>根拠</summary>
 
 - 結果の行と区間: `recording_cm_detections`、`cm_ranges`（`int8multirange`）
+- レビュー材料: `logo_ranges`（`int8multirange`）、`structure_elements`（`jsonb`）
 - 試行状態の表: `recording_cm_attempts`
 - 試行の 3 状態: `running`（処理中）、`retrying`（再投入待ち）、`failed`（失敗）
 - 失敗工程の列と値: `stage`、`setup` / `probe` / `area` / `logo` / `chapter` / `join` / `parse` / `save`、ほかに `stopped` / `resolution` / `match` / `adopt`

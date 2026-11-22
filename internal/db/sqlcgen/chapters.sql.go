@@ -174,6 +174,34 @@ func (q *Queries) GetRecordingCMRangesJSON(ctx context.Context, recordingID int6
 	return ranges, err
 }
 
+const getRecordingChapterReviewMaterial = `-- name: GetRecordingChapterReviewMaterial :one
+SELECT (d.logo_ranges IS NOT NULL AND d.structure_elements IS NOT NULL)::boolean AS materials_available,
+       COALESCE((
+           SELECT jsonb_agg(jsonb_build_object('startMs', lower(lr.logo_range), 'endMs', upper(lr.logo_range))
+                            ORDER BY lower(lr.logo_range))
+           FROM unnest(d.logo_ranges) AS lr(logo_range)
+       ), '[]'::jsonb)::jsonb AS logo_ranges,
+       COALESCE(d.structure_elements, '[]'::jsonb)::jsonb AS structure_elements
+FROM recordings r
+LEFT JOIN recording_cm_detections d ON d.recording_id = r.id
+WHERE r.id = $1 AND r.purged_at IS NULL
+`
+
+type GetRecordingChapterReviewMaterialRow struct {
+	MaterialsAvailable bool
+	LogoRanges         json.RawMessage
+	StructureElements  json.RawMessage
+}
+
+// Review payload is read only by the chapter editor. SQL returns stored values without
+// inspecting structure_elements; candidate derivation stays in the Go chapters package.
+func (q *Queries) GetRecordingChapterReviewMaterial(ctx context.Context, recordingID int64) (GetRecordingChapterReviewMaterialRow, error) {
+	row := q.db.QueryRow(ctx, getRecordingChapterReviewMaterial, recordingID)
+	var i GetRecordingChapterReviewMaterialRow
+	err := row.Scan(&i.MaterialsAvailable, &i.LogoRanges, &i.StructureElements)
+	return i, err
+}
+
 const getRecordingChapterSpansJSON = `-- name: GetRecordingChapterSpansJSON :one
 SELECT COALESCE(
     jsonb_agg(

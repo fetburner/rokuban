@@ -6,6 +6,99 @@ import (
 	"testing"
 )
 
+func TestReviewCandidates_LogoThreshold(t *testing.T) {
+	auto := []Span{{StartMs: 0, EndMs: 10000, Label: LabelCM, Cut: true}}
+	for _, tt := range []struct {
+		name string
+		end  int64
+		want []ReviewCandidate
+	}{
+		{name: "below", end: 4999, want: []ReviewCandidate{}},
+		{name: "at threshold", end: 5000, want: []ReviewCandidate{{Kind: "overcut_logo", StartMs: 0, EndMs: 10000}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ReviewCandidates(auto, []Range{{StartMs: 0, EndMs: tt.end}}, nil)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("ReviewCandidates() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReviewCandidates_GridErrorThresholdBothSigns(t *testing.T) {
+	cut := []Span{{StartMs: 0, EndMs: FrameToMs(300), Label: LabelCM, Cut: true}}
+	for _, tt := range []struct {
+		name        string
+		errorFrames int64
+		want        []ReviewCandidate
+	}{
+		{name: "positive boundary", errorFrames: 5, want: []ReviewCandidate{}},
+		{name: "positive outside", errorFrames: 6, want: []ReviewCandidate{{Kind: "overcut_grid", StartMs: 0, EndMs: 4004}}},
+		{name: "negative outside", errorFrames: -6, want: []ReviewCandidate{{Kind: "overcut_grid", StartMs: 0, EndMs: 4004}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ReviewCandidates(cut, nil, []CMElement{{StartMs: 0, EndMs: FrameToMs(120), ErrorFrames: tt.errorFrames, Label: ":CM"}})
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("ReviewCandidates() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReviewCandidates_KnownLengthMatchTolerance(t *testing.T) {
+	cut := []Span{
+		{StartMs: 0, EndMs: FrameToMs(400), Label: LabelCM, Cut: true},
+		{StartMs: FrameToMs(1000), EndMs: FrameToMs(1400), Label: LabelCM, Cut: true},
+	}
+	elements := []CMElement{
+		{StartMs: FrameToMs(20), EndMs: FrameToMs(320), Label: ":CM"},
+		{StartMs: FrameToMs(1020), EndMs: FrameToMs(1322), Label: ":CM"},
+		{StartMs: FrameToMs(2000), EndMs: FrameToMs(2305), Label: ":Sponsor(cut)"},
+		{StartMs: FrameToMs(3000), EndMs: FrameToMs(3306), Label: ""},
+	}
+	want := []ReviewCandidate{{Kind: "missed_cm", StartMs: 66733, EndMs: 76910}}
+	got := ReviewCandidates(cut, nil, elements)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ReviewCandidates() = %#v, want %#v", got, want)
+	}
+}
+
+func TestReviewCandidates_KnownLengthClusterTolerance(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		secondLength int64
+		want         []ReviewCandidate
+	}{
+		{name: "within cluster tolerance", secondLength: 303, want: []ReviewCandidate{{Kind: "missed_cm", StartMs: 66733, EndMs: 76743}}},
+		{name: "outside cluster tolerance", secondLength: 304, want: []ReviewCandidate{}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			auto := []Span{
+				{StartMs: 0, EndMs: FrameToMs(400), Label: LabelCM, Cut: true},
+				{StartMs: FrameToMs(1000), EndMs: FrameToMs(1400), Label: LabelCM, Cut: true},
+			}
+			elements := []CMElement{
+				{StartMs: FrameToMs(20), EndMs: FrameToMs(320), Label: ":CM"},
+				{StartMs: FrameToMs(1020), EndMs: FrameToMs(1020 + tt.secondLength), Label: ":CM"},
+				{StartMs: FrameToMs(2000), EndMs: FrameToMs(2300), Label: ":Nologo"},
+			}
+			got := ReviewCandidates(auto, nil, elements)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("ReviewCandidates() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReviewCandidates_NoMaterialsAndNoCandidatesAreDistinctAtCallerBoundary(t *testing.T) {
+	// The pure function's empty result means no evidence matched; the API's separately stored
+	// materialsAvailable bit distinguishes this from an older detection with no evidence.
+	got := ReviewCandidates(nil, []Range{}, []CMElement{})
+	if got == nil || len(got) != 0 {
+		t.Fatalf("ReviewCandidates() = %#v, want a non-nil empty result", got)
+	}
+}
+
 func TestQuantizeMs_SnapsToFrameBoundaries(t *testing.T) {
 	// 1 フレーム = 1001/30 ms ≈ 33.367ms。1001ms がちょうど 30 フレーム。
 	cases := []struct{ in, want int64 }{

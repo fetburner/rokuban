@@ -53,6 +53,20 @@ FROM recording_cm_detections d
 CROSS JOIN LATERAL unnest(d.cm_ranges) AS cr(cm_range)
 WHERE d.recording_id = sqlc.arg('recording_id');
 
+-- Review payload is read only by the chapter editor. SQL returns stored values without
+-- inspecting structure_elements; candidate derivation stays in the Go chapters package.
+-- name: GetRecordingChapterReviewMaterial :one
+SELECT (d.logo_ranges IS NOT NULL AND d.structure_elements IS NOT NULL)::boolean AS materials_available,
+       COALESCE((
+           SELECT jsonb_agg(jsonb_build_object('startMs', lower(lr.logo_range), 'endMs', upper(lr.logo_range))
+                            ORDER BY lower(lr.logo_range))
+           FROM unnest(d.logo_ranges) AS lr(logo_range)
+       ), '[]'::jsonb)::jsonb AS logo_ranges,
+       COALESCE(d.structure_elements, '[]'::jsonb)::jsonb AS structure_elements
+FROM recordings r
+LEFT JOIN recording_cm_detections d ON d.recording_id = r.id
+WHERE r.id = sqlc.arg('recording_id') AND r.purged_at IS NULL;
+
 -- ユーザー層。行が無ければ空配列。label は NULL を保つ（sqlc のポインタ型）。
 -- name: GetRecordingChapterSpansJSON :one
 SELECT COALESCE(

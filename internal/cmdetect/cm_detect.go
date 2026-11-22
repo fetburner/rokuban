@@ -238,6 +238,7 @@ func (w *CMDetectWorker) detect(
 	logoFrames := filepath.Join(jobDir, "logoframe.txt")
 	chapters := filepath.Join(jobDir, "chapter_exe.txt")
 	cutAvs := filepath.Join(jobDir, "obs_cut.avs")
+	structureOutput := filepath.Join(jobDir, "join_logo_scp.txt")
 	tools := func(name string) string { return filepath.Join(w.CMDetect.BinaryDir, name) }
 	logoArgs := []string{inputPath, "-channel", channel, "-logo-dir", logoDir,
 		"-logo-match", "0", "-oa", logoFrames}
@@ -261,7 +262,7 @@ func (w *CMDetectWorker) detect(
 		return cmFailure("chapter", fmt.Errorf("running chapter_exe: %w", err))
 	}
 	if _, err := runCMTool(ctx, jobDir, tools("join_logo_scp"), "-inlogo", logoFrames,
-		"-inscp", chapters, "-incmd", cmDetectRuleFile(), "-o", cutAvs); err != nil {
+		"-inscp", chapters, "-incmd", cmDetectRuleFile(), "-o", cutAvs, "-oscp", structureOutput); err != nil {
 		return cmFailure("join", fmt.Errorf("running join_logo_scp: %w", err))
 	}
 	cutText, err := os.ReadFile(cutAvs)
@@ -280,7 +281,23 @@ func (w *CMDetectWorker) detect(
 		return cmFailure("parse", fmt.Errorf("parsing obs_cut.avs: %w", err))
 	}
 	ranges := chapterRangesFromFrames(frameRanges, totalMs)
-	saved, err := w.DetectionStore.SaveDetection(ctx, attempt, ranges)
+	logoText, err := os.ReadFile(logoFrames)
+	if err != nil {
+		return cmFailure("parse", fmt.Errorf("reading logoframe output: %w", err))
+	}
+	logoRanges, err := parseLogoFrameRanges(string(logoText), totalMs)
+	if err != nil {
+		return cmFailure("parse", fmt.Errorf("parsing logoframe output: %w", err))
+	}
+	structureText, err := os.ReadFile(structureOutput)
+	if err != nil {
+		return cmFailure("parse", fmt.Errorf("reading join_logo_scp structure output: %w", err))
+	}
+	elements, err := parseStructureOutput(string(structureText), totalMs)
+	if err != nil {
+		return cmFailure("parse", fmt.Errorf("parsing join_logo_scp structure output: %w", err))
+	}
+	saved, err := w.DetectionStore.SaveDetection(ctx, attempt, ranges, store.CMDetectionMaterial{LogoRanges: logoRanges, Elements: elements})
 	if err != nil {
 		return cmFailure("save", err)
 	}

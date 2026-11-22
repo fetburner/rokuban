@@ -30,6 +30,14 @@ type ChapterSnapshot struct {
 	CMRanges           []chapters.Range
 }
 
+// ChapterReviewSnapshot は編集用に最新自動層と検出レビュー材料を同じ読取スナップショットで返す。
+type ChapterReviewSnapshot struct {
+	Chapter            ChapterSnapshot
+	MaterialsAvailable bool
+	LogoRanges         []chapters.Range
+	Elements           []chapters.CMElement
+}
+
 // DetectionPending は、所有前で検出が終端に達していないかを返す。
 // cmDetectEnabled はデプロイ側の CM 検出の有効/無効で、無効なら常に偽になる。
 // その構成では検出ジョブが積まれず終端に永久に達しないので、編集を封じると
@@ -48,6 +56,8 @@ type ChapterEdits interface {
 	// Read は有効なチャプター層と不透明な版を返す。
 	// 状態と区間は同じスナップショットから読む（一貫したスナップショットを返す）。
 	Read(ctx context.Context, recordingID int64) (ChapterSnapshot, error)
+	// ReadReview は編集専用のレビュー材料と最新自動層を一貫した読取スナップショットで返す。
+	ReadReview(ctx context.Context, recordingID int64) (ChapterReviewSnapshot, error)
 	// Replace は expectedVersion が現在の版と一致するときだけ、ユーザー層を原子的に置き換える。
 	// 検査: Run の「replace checks version and reset is idempotent」（版の照合）、「concurrent replacements serialize」（同時の置き換えは片方だけが成功する）。
 	// 区間が重なるときは ErrConflict を返し、ユーザー層は変えない。検査: Run の「database range conflict rolls back replacement」。

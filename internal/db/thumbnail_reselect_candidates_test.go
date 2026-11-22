@@ -36,7 +36,7 @@ func seedReselectRecording(t *testing.T, db sqlcgen.DBTX, f reselectFixture) int
 	}
 	if f.detected {
 		testutil.RequireNoError(t, q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
-			RecordingID: id, CmRanges: "{[0,60000)}",
+			RecordingID: id, CmRanges: "{[0,60000)}", LogoRanges: "{}", StructureElements: []byte("[]"),
 		}), "saving CM detection")
 	}
 	if f.owned {

@@ -238,6 +238,39 @@ export interface RecordingChapters {
   spans: ChapterSpan[];
 }
 
+export interface ChapterRange {
+  startMs: number;
+  endMs: number;
+}
+
+/**
+ * 候補の種別。
+ */
+export type ChapterReviewCandidateKind = typeof ChapterReviewCandidateKind[keyof typeof ChapterReviewCandidateKind];
+
+
+export const ChapterReviewCandidateKind = {
+  overcut_logo: 'overcut_logo',
+  overcut_grid: 'overcut_grid',
+  missed_cm: 'missed_cm',
+} as const;
+
+export interface ChapterReviewCandidate {
+  /** 候補の種別。 */
+  kind: ChapterReviewCandidateKind;
+  startMs: number;
+  endMs: number;
+}
+
+export interface RecordingChapterReview {
+  /** 判定材料が保存されているか。偽は空の候補とは異なり、材料が無いことを表す。 */
+  materialsAvailable: boolean;
+  logoRanges: ChapterRange[];
+  candidates: ChapterReviewCandidate[];
+  /** 最新の自動検出区間。CM 率の安全弁を通し、ユーザー所有の有無によらず返す。 */
+  autoSpans: ChapterSpan[];
+}
+
 export interface ChapterEditsInput {
   /** GET が返した `version`。行ロックの後で現在の版と比べる。 */
   version: string;
@@ -9107,6 +9140,159 @@ export function useGetRecordingChapters<TData = Awaited<ReturnType<typeof getRec
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
   const queryOptions = getGetRecordingChaptersQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export type getRecordingChapterReviewResponse200 = {
+  data: RecordingChapterReview
+  status: 200
+}
+
+export type getRecordingChapterReviewResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type getRecordingChapterReviewResponseSuccess = (getRecordingChapterReviewResponse200) & {
+  headers: Headers;
+};
+export type getRecordingChapterReviewResponseError = (getRecordingChapterReviewResponse404) & {
+  headers: Headers;
+};
+
+export type getRecordingChapterReviewResponse = (getRecordingChapterReviewResponseSuccess | getRecordingChapterReviewResponseError)
+
+export const getGetRecordingChapterReviewUrl = (id: number,) => {
+
+
+
+
+  return `/api/recordings/${id}/chapter-review`
+}
+
+/**
+ * 編集画面だけが使う検出レビュー材料を返す。通常再生でも毎回読む
+ * `/chapters` の応答を重くしないため、専用の読み取り口に分ける。
+ * `autoSpans` は最新の検出結果を CM 率の安全弁に通した値で、確認済みの録画でも返す。
+ * `materialsAvailable` が偽なら旧形式の検出結果などで材料が無い。真で候補が空なら、
+ * 判定材料はあるが候補が無い。
+ * @summary Get CM detection review material for chapter editing
+ */
+export const getRecordingChapterReview = async (id: number, options?: Parameters<typeof customInstance>[1]): Promise<getRecordingChapterReviewResponse> => {
+
+  return customInstance<getRecordingChapterReviewResponse>(getGetRecordingChapterReviewUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetRecordingChapterReviewQueryKey = (id: number,) => {
+    return [
+    `/api/recordings/${id}/chapter-review`
+    ] as const;
+    }
+
+
+export const getGetRecordingChapterReviewQueryOptions = <TData = Awaited<ReturnType<typeof getRecordingChapterReview>>, TError = ErrorResponse>(id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapterReview>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetRecordingChapterReviewQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getRecordingChapterReview>>> = ({ signal }) => getRecordingChapterReview(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: id !== null && id !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapterReview>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetRecordingChapterReviewQueryResult = NonNullable<Awaited<ReturnType<typeof getRecordingChapterReview>>>
+export type GetRecordingChapterReviewQueryError = ErrorResponse
+
+
+/**
+ * 編集画面だけが使う検出レビュー材料を返す。通常再生でも毎回読む
+ * `/chapters` の応答を重くしないため、専用の読み取り口に分ける。
+ * `autoSpans` は最新の検出結果を CM 率の安全弁に通した値で、確認済みの録画でも返す。
+ * `materialsAvailable` が偽なら旧形式の検出結果などで材料が無い。真で候補が空なら、
+ * 判定材料はあるが候補が無い。
+ * @summary Get CM detection review material for chapter editing
+ */
+export function useGetRecordingChapterReview<TData = Awaited<ReturnType<typeof getRecordingChapterReview>>, TError = ErrorResponse>(
+ id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapterReview>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getRecordingChapterReview>>,
+          TError,
+          Awaited<ReturnType<typeof getRecordingChapterReview>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 編集画面だけが使う検出レビュー材料を返す。通常再生でも毎回読む
+ * `/chapters` の応答を重くしないため、専用の読み取り口に分ける。
+ * `autoSpans` は最新の検出結果を CM 率の安全弁に通した値で、確認済みの録画でも返す。
+ * `materialsAvailable` が偽なら旧形式の検出結果などで材料が無い。真で候補が空なら、
+ * 判定材料はあるが候補が無い。
+ * @summary Get CM detection review material for chapter editing
+ */
+export function useGetRecordingChapterReview<TData = Awaited<ReturnType<typeof getRecordingChapterReview>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapterReview>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getRecordingChapterReview>>,
+          TError,
+          Awaited<ReturnType<typeof getRecordingChapterReview>>
+        > , 'initialData'
+      >, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 編集画面だけが使う検出レビュー材料を返す。通常再生でも毎回読む
+ * `/chapters` の応答を重くしないため、専用の読み取り口に分ける。
+ * `autoSpans` は最新の検出結果を CM 率の安全弁に通した値で、確認済みの録画でも返す。
+ * `materialsAvailable` が偽なら旧形式の検出結果などで材料が無い。真で候補が空なら、
+ * 判定材料はあるが候補が無い。
+ * @summary Get CM detection review material for chapter editing
+ */
+export function useGetRecordingChapterReview<TData = Awaited<ReturnType<typeof getRecordingChapterReview>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapterReview>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+/**
+ * 編集画面だけが使う検出レビュー材料を返す。通常再生でも毎回読む
+ * `/chapters` の応答を重くしないため、専用の読み取り口に分ける。
+ * `autoSpans` は最新の検出結果を CM 率の安全弁に通した値で、確認済みの録画でも返す。
+ * `materialsAvailable` が偽なら旧形式の検出結果などで材料が無い。真で候補が空なら、
+ * 判定材料はあるが候補が無い。
+ * @summary Get CM detection review material for chapter editing
+ */
+export function useGetRecordingChapterReview<TData = Awaited<ReturnType<typeof getRecordingChapterReview>>, TError = ErrorResponse>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getRecordingChapterReview>>, TError, TData>>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetRecordingChapterReviewQueryOptions(id,options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 
