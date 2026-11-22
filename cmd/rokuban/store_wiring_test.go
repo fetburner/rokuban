@@ -43,7 +43,15 @@ func (r *enqueueRecorder) Enqueue(_ context.Context, args jobq.Args, _ ...jobq.E
 
 func mustNewStoreScopedDeps(t *testing.T, pool *pgxpool.Pool, cfg *config.Config, policy store.StoragePolicy, name, root string, derivedObjects objstore.Store) *worker.StoreDeps {
 	t.Helper()
-	deps, err := newStoreScopedDeps(pool, cfg, policy, name, root, derivedObjects)
+	objects, err := fsstore.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storageObjects := map[string]objstore.Store{name: objects}
+	if derivedObjects != nil {
+		storageObjects[cfg.Storage.Derived] = derivedObjects
+	}
+	deps, err := newStoreScopedDeps(pool, cfg, policy, name, root, storageObjects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +159,10 @@ FROM media_assets a WHERE a.id = $1`, assetID, relPath); err != nil {
 		TransferOverlap:         cfg.Storage.Transfer.Overlap,
 		Cleanup:                 config.CleanupConfig{MaxDeletesPerPass: 100},
 	}
-	scoped := mustNewStoreScopedDeps(t, pool, cfg, policy, "test-store", roots["test-store"], nil)
+	scoped, err := newStoreScopedDeps(pool, cfg, policy, "test-store", roots["test-store"], objects)
+	if err != nil {
+		t.Fatal(err)
+	}
 	base.DerivedObjectStoreName = cfg.Storage.Derived
 	base.PerStore = map[string]*worker.StoreDeps{"test-store": scoped}
 	registry := worker.NewWorkers(base)
@@ -261,7 +272,6 @@ FROM media_assets a WHERE a.id = $1`, assetID, copy.name, copy.relPath); err != 
 	media := pgstore.NewMediaUnboundWithPolicy(pool, newPolicy)
 	base := &worker.Deps{
 		Breakers:                pgstore.NewBreakers(pool),
-		DerivedObjects:          derivedObjects,
 		DerivedObjectStoreName:  cfg.Storage.Derived,
 		StorageObjects:          map[string]objstore.Store{"test-store": fsObjects, "s3-b": derivedObjects},
 		StorageRoots:            map[string]string{"test-store": fsRoot},
@@ -270,7 +280,7 @@ FROM media_assets a WHERE a.id = $1`, assetID, copy.name, copy.relPath); err != 
 		TransferOverlap:         cfg.Storage.Transfer.Overlap,
 		Cleanup:                 config.CleanupConfig{MaxDeletesPerPass: 100},
 	}
-	perStore, err := newPerStoreWorkerDeps(pool, cfg, newPolicy, base.StorageRoots, derivedObjects)
+	perStore, err := newPerStoreWorkerDeps(pool, cfg, newPolicy, base.StorageRoots, base.StorageObjects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +444,7 @@ func requireStoreFieldsSet(t *testing.T, path string, value reflect.Value) {
 		name := path + "." + field.Name
 		switch got.Kind() {
 		case reflect.String:
-			if name != "StoreDeps.MediaDir" && name != "StoreDeps.MediaStoreName" {
+			if name != "StoreDeps.MediaDir" && name != "StoreDeps.MediaStoreName" && name != "StoreDeps.DerivedPublishStoreName" {
 				t.Errorf("%s is an unexpected non-store field", name)
 			}
 		case reflect.Interface:

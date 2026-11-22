@@ -879,7 +879,6 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 		CapacityStore:            tunerStore,
 		LabelRuleReevaluation:    pgstore.NewLabelRules(pool),
 		UnscopedMediaReconcile:   mediaStore,
-		DerivedObjects:           derivedObjects,
 		DerivedObjectStoreName:   cfg.Storage.Derived,
 		StorageObjects:           storageObjects,
 		UnscopedStorageTransfer:  mediaStore,
@@ -913,7 +912,7 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 		Webhook:                  webhookClient,
 		Cleanup:                  cfg.Cleanup,
 	}
-	base.PerStore, err = newPerStoreWorkerDeps(pool, cfg, storagePolicy, roots, derivedObjects)
+	base.PerStore, err = newPerStoreWorkerDeps(pool, cfg, storagePolicy, roots, storageObjects)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -937,10 +936,10 @@ func buildWorkerAdapter(ctx context.Context, cfg *config.Config, storagePolicy s
 }
 
 // newPerStoreWorkerDeps は、サーバーがマウントした FS 置き場ごとに worker.StoreDeps を作る。
-func newPerStoreWorkerDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy store.StoragePolicy, roots map[string]string, derivedObjects objstore.Store) (map[string]*worker.StoreDeps, error) {
+func newPerStoreWorkerDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy store.StoragePolicy, roots map[string]string, storageObjects map[string]objstore.Store) (map[string]*worker.StoreDeps, error) {
 	perStore := make(map[string]*worker.StoreDeps, len(roots))
 	for _, name := range sortedKeys(roots) {
-		deps, err := newStoreScopedDeps(pool, cfg, storagePolicy, name, roots[name], derivedObjects)
+		deps, err := newStoreScopedDeps(pool, cfg, storagePolicy, name, roots[name], storageObjects)
 		if err != nil {
 			return nil, err
 		}
@@ -951,7 +950,8 @@ func newPerStoreWorkerDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy
 
 // newDerivedObjects は storage.derived の置き場の objstore を作る。
 // FS は mounted から引き、遠隔は newObjectStore で作る。派生物の置き場が FS のときは、このプロセスがマウントしている場合（mounted にある場合）だけ返し、していなければ nil を返す。
-// nil のとき、派生物を書く仕事は派生物の置き場が使えず失敗する。
+// FS をマウントしていなければ、その FS に公開する仕事には objstore が渡らない。
+// 遠隔の置き場は転送・読み取り・削除に使い、生成物の公開先は置き場ごとに決める。
 func newDerivedObjects(ctx context.Context, storage config.StorageConfig, mounted map[string]objstore.Store) (objstore.Store, error) {
 	derived, ok := storage.Stores[storage.Derived]
 	if !ok {
@@ -965,7 +965,7 @@ func newDerivedObjects(ctx context.Context, storage config.StorageConfig, mounte
 
 // newStoreScopedDeps は、置き場 name に束ねた worker.StoreDeps を新しく組み立てる。
 // 置き場で修飾するキューのワーカーと ingest がこの値を使う。
-func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy store.StoragePolicy, name, root string, derivedObjects objstore.Store) (*worker.StoreDeps, error) {
+func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy store.StoragePolicy, name, root string, storageObjects map[string]objstore.Store) (*worker.StoreDeps, error) {
 	mediaStore := pgstore.NewMediaInStore(pool, name, storagePolicy)
 	analysisStore := pgstore.NewAnalysis(pool, name)
 	recordingStore := pgstore.NewRecordings(pool, name)
@@ -994,23 +994,33 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy st
 		},
 		Catalog: pgstore.NewCatalog(pool, registryNames(cfg.Registry()), name),
 	}
-	if derivedObjects != nil {
-		derivedMedia := pgstore.NewMediaForDerivedStore(pool, cfg.Storage.Derived, name, storagePolicy)
-		scoped.DerivedMediaPublish = derivedMedia
-		// この置き場が派生物の置き場と同じ FS なら、既存の削除・監査の経路を共有する。
-		// 遠隔の独立パスは名前順で最初の FS 置き場だけに載せ、複数の original キューから同じ置き場を
-		// 繰り返し走査・削除しない。FS の派生物の置き場を別の置き場の worker が mount している
-		// ときは、その FS 全体を objstore のパスで掃かないよう、このパスを作らない。
-		fsNames := cfg.Storage.FSStoreNames()
-		if cfg.Storage.Derived != name &&
-			!cfg.Storage.Stores[cfg.Storage.Derived].IsFilesystem() &&
-			len(fsNames) > 0 && name == fsNames[0] {
-			derivedDeleteStores, err := store.NewDerivedObjectDeleteStores(derivedMedia, derivedMedia, derivedMedia)
-			if err != nil {
-				return nil, fmt.Errorf("configuring derived object delete stores for %q: %w", name, err)
-			}
-			scoped.DeleteReconcile.DerivedObjectDeleteStores = derivedDeleteStores
+	derivedName := cfg.Storage.Derived
+	derived, configured := cfg.Storage.Stores[derivedName]
+	if configured {
+		publishName := derivedName
+		if !derived.IsFilesystem() {
+			publishName = name
 		}
+		if objects := storageObjects[publishName]; objects != nil {
+			scoped.DerivedPublishStoreName = publishName
+			scoped.DerivedPublishObjects = objects
+			scoped.DerivedMediaPublish = pgstore.NewMediaForDerivedStore(pool, publishName, name, storagePolicy)
+		}
+	}
+
+	// この置き場が派生物の置き場と同じ FS なら、既存の削除・監査の経路を共有する。
+	// 遠隔の独立パスは名前順で最初の FS 置き場だけに載せ、複数の original キューから同じ置き場を
+	// 繰り返し走査・削除しない。FS の派生物の置き場を別の置き場の worker が mount している
+	// ときは、その FS 全体を objstore のパスで掃かないよう、このパスを作らない。
+	fsNames := cfg.Storage.FSStoreNames()
+	if storageObjects[derivedName] != nil && derivedName != name &&
+		!derived.IsFilesystem() && len(fsNames) > 0 && name == fsNames[0] {
+		derivedMedia := pgstore.NewMediaForDerivedStore(pool, derivedName, name, storagePolicy)
+		derivedDeleteStores, err := store.NewDerivedObjectDeleteStores(derivedMedia, derivedMedia, derivedMedia)
+		if err != nil {
+			return nil, fmt.Errorf("configuring derived object delete stores for %q: %w", name, err)
+		}
+		scoped.DeleteReconcile.DerivedObjectDeleteStores = derivedDeleteStores
 	}
 	return scoped, nil
 }

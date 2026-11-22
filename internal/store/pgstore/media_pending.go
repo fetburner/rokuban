@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -18,7 +19,7 @@ var (
 	_ store.PendingCopyReclaim    = (*Media)(nil)
 )
 
-// PreparePendingMediaAssetCopy は S3 の PUT の前に、論理行と pending のコピー行を commit する。
+// PreparePendingMediaAssetCopy は派生物を Put する前に、論理行と pending のコピー行を commit する。
 //
 // pending は現行のコピーではない（active_media_asset_copies は active だけを返す）。
 // 置き換えは新しい世代の行を足すだけで、現行の active コピーと世代を書き換えない。
@@ -174,7 +175,7 @@ func (s *Media) ListAgedPendingMediaAssetCopies(ctx context.Context, before time
 }
 
 // ReclaimPendingMediaAssetCopy は pending の行をロックしたまま deleteObject を呼び、deleted にする。
-func (s *Media) ReclaimPendingMediaAssetCopy(ctx context.Context, copyID int64, before time.Time, deleteObject func() error) (bool, error) {
+func (s *Media) ReclaimPendingMediaAssetCopy(ctx context.Context, copyID int64, before time.Time, deleteObject func(ownedRelPaths []string) error) (bool, error) {
 	if deleteObject == nil {
 		return false, errors.New("reclaiming pending media asset copy: deleter is nil")
 	}
@@ -193,7 +194,23 @@ func (s *Media) ReclaimPendingMediaAssetCopy(ctx context.Context, copyID int64, 
 	if err != nil {
 		return false, fmt.Errorf("locking pending media asset copy %d: %w", copyID, mapDatabaseError(err))
 	}
-	if err := deleteObject(); err != nil {
+	var ownedRelPaths []string
+	if slices.Contains(s.derivedStagingStores(), s.storeName) {
+		hasEvidence, err := q.PendingMediaAssetCopyHasTransferEvidence(ctx, copyID)
+		if err != nil {
+			return false, fmt.Errorf("checking transfer evidence for pending copy %d: %w", copyID, err)
+		}
+		if hasEvidence {
+			owned, err := q.ListMediaAssetTransferObjectsOwned(ctx, sqlcgen.ListMediaAssetTransferObjectsOwnedParams{
+				CopyID: copyID, StoreName: s.storeName,
+			})
+			if err != nil {
+				return false, fmt.Errorf("listing owned objects for pending copy %d: %w", copyID, err)
+			}
+			ownedRelPaths = append([]string{}, owned...)
+		}
+	}
+	if err := deleteObject(ownedRelPaths); err != nil {
 		return false, fmt.Errorf("deleting object of pending media asset copy %d: %w", copyID, err)
 	}
 	updated, err := q.MarkPendingMediaAssetCopyDeleted(ctx, sqlcgen.MarkPendingMediaAssetCopyDeletedParams{CopyID: copyID, StoreName: s.storeName})
@@ -202,6 +219,11 @@ func (s *Media) ReclaimPendingMediaAssetCopy(ctx context.Context, copyID int64, 
 	}
 	if updated != 1 {
 		return false, fmt.Errorf("marking pending media asset copy %d deleted updated %d rows, want one", copyID, updated)
+	}
+	if ownedRelPaths != nil {
+		if err := clearPendingTransferState(ctx, q, copyID); err != nil {
+			return false, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("committing pending media asset copy reclaim: %w", mapDatabaseError(err))

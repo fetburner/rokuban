@@ -51,15 +51,16 @@ const (
 // EncodeWorker の doc コメント参照。
 type ThumbnailWorker struct {
 	// Media はサムネイル入力の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
-	Media            store.MediaReconcile
-	Objects          objstore.Store
-	ObjectPublisher  store.DerivedMediaPublisher
-	MediaDir         string
-	MediaStoreName   string
-	DerivedStoreName string
-	ScratchDir       string
-	FFmpeg           string
-	FFprobe          string
+	Media           store.MediaReconcile
+	Objects         objstore.Store
+	ObjectPublisher store.DerivedMediaPublisher
+	MediaDir        string
+	MediaStoreName  string
+	// InputObjects は encoded のコピーを読み取れる置き場を名前で引く。
+	InputObjects map[string]objstore.Store
+	ScratchDir   string
+	FFmpeg       string
+	FFprobe      string
 
 	// runCmd はテストで差し替える実行フック。nil なら exec.CommandContext。
 	// stdout を返す（ffprobe）。ffmpeg はファイル副作用だけを使う。
@@ -75,7 +76,7 @@ type thumbnailWorkPlan struct {
 	seekMs       int64
 	relPath      string
 	generation   int64
-	expected     *thumbnailObserved
+	expected     *store.ThumbnailObservation
 }
 
 // Work は thumbnail ジョブを実行する。
@@ -128,13 +129,6 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 		return fmt.Errorf("scratch thumbnail is empty")
 	}
 
-	expected := (*store.ThumbnailObservation)(nil)
-	if plan.expected != nil {
-		expected = &store.ThumbnailObservation{
-			ID: plan.expected.ID, RelPath: plan.expected.RelPath,
-			SeekMs: plan.expected.SeekMs, DerivedGeneration: plan.expected.DerivedGeneration,
-		}
-	}
 	var size int64
 	var published bool
 	pending := store.PendingMediaAssetCopy{
@@ -149,7 +143,7 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 			return w.ObjectPublisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
 				RecordingID: recordingID, RelPath: plan.relPath, SizeBytes: size,
 				SeekMs: plan.seekMs, InputAssetID: plan.inputID, InputStore: plan.inputStore,
-				DerivedGeneration: plan.generation, Expected: expected,
+				DerivedGeneration: plan.generation, Expected: plan.expected,
 				SHA256: sum[:], PendingCopy: true,
 			}, func() error { return nil })
 		})
@@ -259,7 +253,8 @@ func (w *ThumbnailWorker) reselectionThumbnailPlan(
 	if state.ThumbnailRelPath == nil || state.ThumbnailMediaAssetID == nil {
 		return thumbnailWorkPlan{}, false, fmt.Errorf("active thumbnail planning state is incomplete")
 	}
-	expected := &thumbnailObserved{
+	expected := &store.ThumbnailObservation{
+		Store:             state.ThumbnailStore,
 		ID:                *state.ThumbnailMediaAssetID,
 		RelPath:           *state.ThumbnailRelPath,
 		SeekMs:            state.SeekMs,
@@ -299,10 +294,11 @@ func (w *ThumbnailWorker) resolveThumbnailInput(ctx context.Context, relPath, st
 	if !derived {
 		return mediapath.Resolve(w.MediaDir, relPath)
 	}
-	if w.DerivedStoreName == "" || storeName != w.DerivedStoreName {
+	objects := w.InputObjects[storeName]
+	if objects == nil {
 		return "", fmt.Errorf("thumbnail input store %q is not readable by this worker", storeName)
 	}
-	reader, ok := w.Objects.(objstore.Reader)
+	reader, ok := objects.(objstore.Reader)
 	if !ok {
 		return "", fmt.Errorf("object store %q does not support streaming reads", storeName)
 	}
@@ -369,13 +365,6 @@ func thumbnailSeek(duration time.Duration) time.Duration {
 		return thumbnailSeekMax
 	}
 	return seek
-}
-
-type thumbnailObserved struct {
-	ID                int64
-	RelPath           string
-	SeekMs            *int64
-	DerivedGeneration int64
 }
 
 func (w *ThumbnailWorker) probeDuration(ctx context.Context, inputPath string) (time.Duration, error) {

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
@@ -23,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
@@ -326,8 +328,6 @@ func TestStorageTransferS3CopyLetsDeleteReconcileRetireFSCopy(t *testing.T) {
 	f.args = job
 	f.driveToEnd(t)
 
-	// S3 のコピーが overlap の期間を過ぎてから、FS の旧いコピーの配置の削除を走らせる。
-	testutil.MustExec(t, f.pool, "aging the cloud copy past the overlap", `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'cloud'`, f.assetID)
 	media := pgstore.NewMediaInStore(f.pool, "test-store", mustStoragePolicy(t, f.cfg))
 	deleter := DeleteReconcileWorker{
 		DeleteReconcileStores: store.DeleteReconcileStores{MediaDelete: media, StorageTransfer: media, RecordingPurge: pgstore.NewRecordings(f.pool, "test-store")}, Storage: media,
@@ -335,6 +335,16 @@ func TestStorageTransferS3CopyLetsDeleteReconcileRetireFSCopy(t *testing.T) {
 		MediaDir: f.root, StorageObjects: testStorageObjects(t, "test-store", f.root), MediaStoreName: "test-store", TransferOverlap: time.Hour,
 		DerivedObjects: f.worker.ObjectStores["cloud"],
 	}
+	testutil.RequireNoError(t, deleter.Work(t.Context(), jobs.DeleteReconcileArgs{}), "reconciling before overlap")
+	if got := storeCopyState(t, f.pool, "test-store", f.assetID); got != "active" {
+		t.Fatalf("FS copy before overlap = %q, want active", got)
+	}
+	if _, err := os.Lstat(filepath.Join(f.root, filepath.FromSlash(f.relPath))); err != nil {
+		t.Fatalf("checking FS object before overlap: %v", err)
+	}
+
+	// S3 のコピーが overlap の期間を過ぎてから、FS の旧いコピーの配置の削除を走らせる。
+	testutil.MustExec(t, f.pool, "aging the cloud copy past the overlap", `UPDATE media_asset_copies SET created_at = now() - interval '3 hours' WHERE media_asset_id = $1 AND store = 'cloud'`, f.assetID)
 	testutil.RequireNoError(t, deleter.Work(context.Background(), jobs.DeleteReconcileArgs{}), "DeleteReconcileWorker.Work")
 	fsState := storeCopyState(t, f.pool, "test-store", f.assetID)
 	if fsState != "deleted" {
@@ -345,5 +355,129 @@ func TestStorageTransferS3CopyLetsDeleteReconcileRetireFSCopy(t *testing.T) {
 	}
 	if got := f.cloudCopyState(t); got != "active" {
 		t.Fatalf("cloud copy state = %q, want active", got)
+	}
+}
+
+// TestStagingFilesystemReclaimsPendingPublicationAfterGrace は、転送元になった旧 FS 宛先で
+// 旧い転送予約も生成中の派生物も公開の猶予まで残すことを検査する。
+// 転送の所有記録だけが実体の削除を許し、進捗の送信状態は掃除待ちに移す。
+func TestStagingFilesystemReclaimsPendingPublicationAfterGrace(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		recordedTransfer bool
+	}{
+		{name: "before progress was recorded"},
+		{name: "with progress and owned main", recordedTransfer: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newS3DerivedFixture(t)
+			ctx := t.Context()
+			roots := transferTestRoots(t, "archive")
+			root := roots["archive"]
+			legacy := transferTestConfig("archive", "test-store", "archive")
+			legacyMedia := pgstore.NewMediaInStore(f.pool, "archive", mustStoragePolicy(t, legacy))
+			reservation, ok, err := legacyMedia.PrepareMediaAssetTransfer(ctx, f.assetID, "archive", legacy.FSStoreNames(), legacy.FSStoreNames(), legacy.FSStoreNames(), store.MediaAssetTransferAttemptLimit)
+			if !ok || err != nil {
+				t.Fatalf("preparing legacy FS transfer = (%+v, %t, %v), want pending reservation", reservation, ok, err)
+			}
+			f.cfg.Stores["archive"] = config.StoreConfig{Kind: "fs"}
+			media := pgstore.NewMediaInStore(f.pool, "archive", mustStoragePolicy(t, f.cfg))
+			archive, err := fsstore.New(root)
+			testutil.RequireNoError(t, err, "opening archive object store")
+			objects := map[string]objstore.Store{"archive": archive}
+			var upload []byte
+			testutil.RequireNoError(t, archive.Put(ctx, reservation.RelPath, bytes.NewReader(f.content), int64(len(f.content)), sha256.Sum256(f.content), "video/mp4"), "putting legacy destination key")
+			subtitle, err := mediapath.SubtitleSibling(reservation.RelPath)
+			testutil.RequireNoError(t, err, "deriving legacy subtitle key")
+			foreign := []byte("foreign subtitle")
+			testutil.RequireNoError(t, archive.Put(ctx, subtitle, bytes.NewReader(foreign), int64(len(foreign)), sha256.Sum256(foreign), "text/vtt"), "putting unowned legacy sidecar")
+			if tc.recordedTransfer {
+				owner := uuid.New()
+				progress, acquired, err := legacyMedia.AcquireMediaAssetTransferProgress(ctx, reservation.CopyID, owner, time.Minute)
+				if !acquired || err != nil {
+					t.Fatalf("acquiring legacy progress = (%+v, %t, %v)", progress, acquired, err)
+				}
+				upload, err = archive.StartUpload(ctx, reservation.RelPath, int64(len(f.content)), sha256.Sum256(f.content), "video/mp4")
+				testutil.RequireNoError(t, err, "creating FS upload state")
+				testutil.RequireNoError(t, legacyMedia.ReplaceMediaAssetTransferUpload(ctx, reservation.CopyID, owner, progress.WriterGeneration, "archive", upload), "storing legacy upload state")
+				testutil.RequireNoError(t, legacyMedia.RecordMediaAssetTransferFailure(ctx, reservation.CopyID, "legacy transfer interrupted"), "recording legacy transfer failure")
+				ownership, err := legacyMedia.MarkMediaAssetTransferObjectOwned(ctx, reservation.CopyID, "archive", reservation.RelPath)
+				if ownership != store.TransferObjectOwned || err != nil {
+					t.Fatalf("recording legacy ownership = (%v, %v), want owned", ownership, err)
+				}
+			}
+			recordingID := dbtest.Recording(t, f.pool)
+			key := fmt.Sprintf("thumbnails/%d.jpg", recordingID)
+			payload := []byte("not yet committed")
+			testutil.RequireNoError(t, media.PreparePendingMediaAssetCopy(ctx, store.PendingMediaAssetCopy{
+				RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key, SizeBytes: int64(len(payload)), ReserveNewGeneration: true,
+			}), "reserving a generated key on FS")
+			testutil.RequireNoError(t, objects["archive"].Put(ctx, key, bytes.NewReader(payload), int64(len(payload)), sha256.Sum256(payload), "image/jpeg"), "putting pending object on FS")
+
+			deleter := DeleteReconcileWorker{
+				DeleteReconcileStores: store.DeleteReconcileStores{
+					MediaDelete: media, MediaPendingReclaim: media, StorageTransfer: media, RecordingPurge: pgstore.NewRecordings(f.pool, "archive"),
+				},
+				Storage: media, Breakers: pgstore.NewBreakers(f.pool),
+				MediaDir: root, MediaStoreName: "archive", StorageObjects: objects,
+				DerivedObjectStoreName: "cloud", FilesystemDerivedPublisher: true,
+				MaxDeletesPerPass: 1, OrphanAge: 24 * time.Hour,
+			}
+			obsolete, err := media.ListObsoletePendingMediaAssetTransferCopies(ctx, 10)
+			testutil.RequireNoError(t, err, "listing obsolete reservations on staging FS")
+			if len(obsolete) != 0 {
+				t.Fatalf("obsolete reservations = %v, want none", obsolete)
+			}
+			testutil.RequireNoError(t, deleter.Work(ctx, jobs.DeleteReconcileArgs{}), "reclaiming before publication grace")
+			if got := copyStateIn(t, f.pool, f.assetID, "archive"); got != "pending" {
+				t.Fatalf("legacy transfer reservation before grace = %q, want pending", got)
+			}
+			requireState := func(want string) {
+				t.Helper()
+				var got string
+				testutil.RequireNoError(t, f.pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE store = 'archive' AND rel_path = $1`, key).Scan(&got), "reading pending publication state")
+				if got != want {
+					t.Fatalf("FS publication state = %q, want %q", got, want)
+				}
+			}
+			requireState("pending")
+			_, err = objects["archive"].Head(ctx, key)
+			testutil.RequireNoError(t, err, "checking pending object before grace")
+
+			testutil.MustExec(t, f.pool, "aging legacy transfer reservation", `UPDATE media_asset_copies SET created_at = now() - interval '48 hours' WHERE id = $1`, reservation.CopyID)
+			testutil.RequireNoError(t, deleter.Work(ctx, jobs.DeleteReconcileArgs{}), "reclaiming the aged legacy reservation")
+			if got := copyStateIn(t, f.pool, f.assetID, "archive"); got != "deleted" {
+				t.Fatalf("legacy transfer reservation after grace = %q, want deleted", got)
+			}
+			_, err = archive.Head(ctx, subtitle)
+			testutil.RequireNoError(t, err, "checking unowned legacy subtitle is retained")
+			_, mainErr := archive.Head(ctx, reservation.RelPath)
+			if tc.recordedTransfer {
+				if !errors.Is(mainErr, objstore.ErrNotFound) {
+					t.Fatalf("owned legacy destination: HEAD error = %v, want ErrNotFound", mainErr)
+				}
+				var progressRows, ownershipRows, attemptRows, abandonedRows int
+				testutil.RequireNoError(t, f.pool.QueryRow(ctx, `SELECT
+		  (SELECT count(*) FROM media_asset_copy_transfer_progress WHERE copy_id = $1),
+		  (SELECT count(*) FROM media_asset_transfer_objects WHERE copy_id = $1),
+		  (SELECT count(*) FROM media_asset_transfer_attempts WHERE copy_id = $1),
+		  (SELECT count(*) FROM media_asset_transfer_abandoned_uploads WHERE store = 'archive' AND upload_state = $2)
+		`, reservation.CopyID, upload).Scan(&progressRows, &ownershipRows, &attemptRows, &abandonedRows), "checking retired transfer state")
+				if progressRows != 0 || ownershipRows != 0 || attemptRows != 0 || abandonedRows != 1 {
+					t.Fatalf("legacy transfer state (progress, ownership, attempts, abandoned) = (%d, %d, %d, %d), want (0, 0, 0, 1)",
+						progressRows, ownershipRows, attemptRows, abandonedRows)
+				}
+			} else {
+				testutil.RequireNoError(t, mainErr, "checking legacy destination without ownership is retained")
+			}
+			requireState("pending")
+
+			testutil.MustExec(t, f.pool, "aging the pending publication", `UPDATE media_asset_copies SET created_at = now() - interval '48 hours' WHERE store = 'archive' AND rel_path = $1`, key)
+			testutil.RequireNoError(t, deleter.Work(ctx, jobs.DeleteReconcileArgs{}), "reclaiming after publication grace")
+			requireState("deleted")
+			if _, err := objects["archive"].Head(ctx, key); !errors.Is(err, objstore.ErrNotFound) {
+				t.Fatalf("pending object after grace: HEAD error = %v, want ErrNotFound", err)
+			}
+		})
 	}
 }

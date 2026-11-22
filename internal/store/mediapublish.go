@@ -142,6 +142,7 @@ type EncodedPublishInput struct {
 
 // ThumbnailObservation は再選択前に読んだサムネイルを表す。
 type ThumbnailObservation struct {
+	Store             string
 	ID                int64
 	RelPath           string
 	SeekMs            *int64

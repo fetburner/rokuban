@@ -46,6 +46,22 @@ encode の出力は原本と違って既にある行の `rel_path` を指す（�
 
 </details>
 
+### 遠隔の置き場に送る派生物
+
+派生物の宛先が S3 のときは、生成したワーカーが自分の FS に公開する。字幕サイドカー、サムネイル、シークタイルも同じ規則に従う。
+
+FS に公開した encoded は、不足を埋める encode の候補から外れる。S3 への送信失敗は転送先コピーの試行に数える。encode の試行には数えず、ffmpeg もやり直さない。
+
+転送元の FS では未公開の生成物も `storage.derived` の切り替え前の転送予約も猶予後に回収する。この転送予約では所有記録のあるキーだけを削除し、保存済みの送信状態を掃除待ちに移す。
+
+<details><summary>根拠</summary>
+
+- 生成した派生物の FS への公開: `TestGeneratedMediaPublishesToFilesystem`
+- 転送失敗時の encode の試行と再実行: `TestFailedDerivedTransferDoesNotReencode`
+- 転送元 FS の未公開の生成物を猶予後に回収: `TestStagingFilesystemReclaimsPendingPublicationAfterGrace`
+
+</details>
+
 ### 公開時の tx 内の再確認
 
 公開時の tx の中では、まず試行回数が自分の token と一致することを確かめ、続けて行を読み直す。計画時とパスが違う、既に同じ試行の内容で active になっている、または profile が desired に無いときは公開しない。ただし計画が古いだけで行が active のままなら、成功で飛ばさず、いったん戻して計画をやり直す。

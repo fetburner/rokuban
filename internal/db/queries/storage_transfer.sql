@@ -386,6 +386,8 @@ FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
 WHERE c.store = sqlc.arg('store_name')
   AND c.state = 'pending'
+  -- A staging FS reclaims derived pending copies only after the publication grace.
+  AND (a.kind = 'original' OR NOT sqlc.arg('staging_fs')::boolean)
   AND storage_transfer_pending_copy_obsolete(
       c.id,
       sqlc.arg('original_rules')::jsonb,

@@ -14,18 +14,24 @@ import (
 // ケースごとに変えて、録画 ID で絞った呼び出しでも同じ結果になることを確かめる。
 // 述語 r.deleted_at IS NULL を外すと Trashed_NotListed が候補に現れて落ちる。
 // 実体無しの原本の除外は internal/store/pgstore の既存テストが検査する。
+// 遠隔への転送待ちのコピーは、設定済みの FS にある場合だけ既存の派生物として扱う。
 func TestListMissingDerivedRecordings(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// trash は録画をごみ箱へ入れる。
-		trash bool
+		trash         bool
+		derivedStore  string
+		stagingStores []string
+		seedDerived   bool
 		// wantThumbnail / wantSeekTiles は、その録画が候補に含まれるべきか。
 		wantThumbnail bool
 		wantSeekTiles bool
 	}{
-		{name: "Plain_Listed", trash: false, wantThumbnail: true, wantSeekTiles: true},
-		{name: "Trashed_NotListed", trash: true, wantThumbnail: false, wantSeekTiles: false},
+		{name: "Plain_Listed", trash: false, derivedStore: dbtest.StoreName, wantThumbnail: true, wantSeekTiles: true},
+		{name: "Trashed_NotListed", trash: true, derivedStore: dbtest.StoreName, wantThumbnail: false, wantSeekTiles: false},
+		{name: "PublishedOnStagingFS_NotListed", derivedStore: "cloud", stagingStores: []string{dbtest.StoreName}, seedDerived: true},
+		{name: "PublishedOutsideStagingFS_Listed", derivedStore: "cloud", stagingStores: []string{"other"}, seedDerived: true, wantThumbnail: true, wantSeekTiles: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -34,6 +40,13 @@ func TestListMissingDerivedRecordings(t *testing.T) {
 			q := sqlcgen.New(pool)
 			recordingID := dbtest.Recording(t, pool)
 			dbtest.MediaAsset(t, pool, recordingID)
+			if tc.seedDerived {
+				for _, kind := range []string{"thumbnail", "seek_tiles"} {
+					dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+						p.Kind, p.RelPath = kind, "thumbnails/"+kind+".jpg"
+					})
+				}
+			}
 			if tc.trash {
 				_, err := q.SoftDeleteRecording(ctx, recordingID)
 				testutil.RequireNoError(t, err, "soft deleting recording")
@@ -47,17 +60,19 @@ func TestListMissingDerivedRecordings(t *testing.T) {
 				{name: "targeted", recordingID: &recordingID},
 			} {
 				thumbnails, err := q.ListMissingThumbnailRecordings(ctx, sqlcgen.ListMissingThumbnailRecordingsParams{
-					RecordingID:  scope.recordingID,
-					DerivedStore: dbtest.StoreName,
-					RowLimit:     10,
+					RecordingID:   scope.recordingID,
+					DerivedStore:  tc.derivedStore,
+					StagingStores: tc.stagingStores,
+					RowLimit:      10,
 				})
 				testutil.RequireNoError(t, err, "ListMissingThumbnailRecordings")
 				checkListedRecording(t, scope.name+" thumbnail candidates", thumbnails, recordingID, tc.wantThumbnail)
 
 				seekTiles, err := q.ListMissingSeekTilesRecordings(ctx, sqlcgen.ListMissingSeekTilesRecordingsParams{
-					RecordingID:  scope.recordingID,
-					DerivedStore: dbtest.StoreName,
-					RowLimit:     10,
+					RecordingID:   scope.recordingID,
+					DerivedStore:  tc.derivedStore,
+					StagingStores: tc.stagingStores,
+					RowLimit:      10,
 				})
 				testutil.RequireNoError(t, err, "ListMissingSeekTilesRecordings")
 				checkListedRecording(t, scope.name+" seek_tiles candidates", seekTiles, recordingID, tc.wantSeekTiles)

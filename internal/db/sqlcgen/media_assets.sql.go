@@ -134,17 +134,23 @@ const getActiveSeekTilesMediaAssetID = `-- name: GetActiveSeekTilesMediaAssetID 
 SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1
   AND kind = 'seek_tiles'
-  AND EXISTS (SELECT 1 FROM active_media_asset_copies(media_assets.id, $2::text))
+  AND EXISTS (
+      SELECT 1 FROM active_media_asset_copies(media_assets.id, NULL) copy
+      WHERE $2::text IS NULL
+         OR copy.store = $2::text
+         OR copy.store = ANY($3::text[])
+  )
 `
 
 type GetActiveSeekTilesMediaAssetIDParams struct {
-	RecordingID int64
-	StoreName   *string
+	RecordingID   int64
+	StoreName     *string
+	StagingStores []string
 }
 
 // seek_tiles の冪等性チェック用。active な seek_tiles 行があれば id を返す。
 func (q *Queries) GetActiveSeekTilesMediaAssetID(ctx context.Context, arg GetActiveSeekTilesMediaAssetIDParams) (int64, error) {
-	row := q.db.QueryRow(ctx, getActiveSeekTilesMediaAssetID, arg.RecordingID, arg.StoreName)
+	row := q.db.QueryRow(ctx, getActiveSeekTilesMediaAssetID, arg.RecordingID, arg.StoreName, arg.StagingStores)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
@@ -154,17 +160,23 @@ const getActiveThumbnailMediaAssetID = `-- name: GetActiveThumbnailMediaAssetID 
 SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1
   AND kind = 'thumbnail'
-  AND EXISTS (SELECT 1 FROM active_media_asset_copies(media_assets.id, $2::text))
+  AND EXISTS (
+      SELECT 1 FROM active_media_asset_copies(media_assets.id, NULL) copy
+      WHERE $2::text IS NULL
+         OR copy.store = $2::text
+         OR copy.store = ANY($3::text[])
+  )
 `
 
 type GetActiveThumbnailMediaAssetIDParams struct {
-	RecordingID int64
-	StoreName   *string
+	RecordingID   int64
+	StoreName     *string
+	StagingStores []string
 }
 
 // thumbnail の冪等性チェック用。active な thumbnail 行があれば id を返す。
 func (q *Queries) GetActiveThumbnailMediaAssetID(ctx context.Context, arg GetActiveThumbnailMediaAssetIDParams) (int64, error) {
-	row := q.db.QueryRow(ctx, getActiveThumbnailMediaAssetID, arg.RecordingID, arg.StoreName)
+	row := q.db.QueryRow(ctx, getActiveThumbnailMediaAssetID, arg.RecordingID, arg.StoreName, arg.StagingStores)
 	var id int64
 	err := row.Scan(&id)
 	return id, err

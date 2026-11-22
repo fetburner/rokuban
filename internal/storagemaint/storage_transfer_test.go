@@ -1694,11 +1694,13 @@ func TestUntilEncodedOriginalWaitsForPresentDerivedCopiesInDesiredStore(t *testi
 	assertOriginalEligibility(false)
 	transferTestAddCopy(t, pool, seekTilesID, "archive", "sites/default/retention/tiles.jpg")
 	assertOriginalEligibility(true)
-	seekTilesCopyID := transferTestCopyID(t, pool, seekTilesID, "archive")
-	testutil.MustExec(t, pool, "marking desired seek tiles copy missing", `INSERT INTO missing_media_assets (media_asset_copy_id) VALUES ($1)`, seekTilesCopyID)
-	assertOriginalEligibility(false)
-	testutil.MustExec(t, pool, "removing the missing-media marker", `DELETE FROM missing_media_assets WHERE media_asset_copy_id = $1`, seekTilesCopyID)
-	assertOriginalEligibility(true)
+	for _, assetID := range []int64{encodedID, thumbnailID, seekTilesID} {
+		copyID := transferTestCopyID(t, pool, assetID, "archive")
+		testutil.MustExec(t, pool, "marking desired copy missing", `INSERT INTO missing_media_assets (media_asset_copy_id) VALUES ($1)`, copyID)
+		assertOriginalEligibility(false)
+		testutil.MustExec(t, pool, "removing the missing-media marker", `DELETE FROM missing_media_assets WHERE media_asset_copy_id = $1`, copyID)
+		assertOriginalEligibility(true)
+	}
 
 	cfg := transferTestConfig("archive", "archive", "test-store")
 	candidates, err := pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)).ListMediaAssetTransferCandidates(

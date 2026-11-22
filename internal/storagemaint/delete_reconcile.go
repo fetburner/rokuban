@@ -88,6 +88,8 @@ type DeleteReconcileWorker struct {
 	// 削除ブレーカーの範囲にも使い、FS の置き場（MediaStoreName）の件数とは合算しない。
 	DerivedObjects         objstore.Store
 	DerivedObjectStoreName string
+	// FilesystemDerivedPublisher は MediaStoreName に生成物を公開する構成を示す。
+	FilesystemDerivedPublisher bool
 	// StorageObjects は置き場の名前ごとの objstore.Store。派生物のコピーは、そのコピーの置き場の
 	// Store で消す・確かめる。派生物の置き場を S3 に切り替えた後も、FS の置き場に残る旧いコピーは
 	// その FS の置き場の Store を通る。
@@ -237,8 +239,8 @@ func (w *DeleteReconcileWorker) workFilesystem(ctx context.Context, cfg deleteSe
 	if err != nil {
 		return err
 	}
-	if w.DerivedObjectStoreName != "" && w.DerivedObjectStoreName == w.MediaStoreName {
-		if w.DerivedObjects == nil || w.MediaPendingReclaim == nil {
+	if w.FilesystemDerivedPublisher || (w.DerivedObjectStoreName != "" && w.DerivedObjectStoreName == w.MediaStoreName) {
+		if w.StorageObjects[w.MediaStoreName] == nil || w.MediaPendingReclaim == nil {
 			return errors.New("shared filesystem derived-object store and pending-copy reclaimer are required")
 		}
 		candidates.pendingBefore = time.Now().Add(-orphanAge)

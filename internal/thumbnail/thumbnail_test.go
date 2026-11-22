@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,7 +16,9 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -229,22 +232,22 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	})
 
 	w := &ThumbnailWorker{
-		Objects:          testFSObjectStore(mediaDir),
-		ObjectPublisher:  pgstoretest.Media(pool),
-		Media:            pgstoretest.Media(pool),
-		DerivedStoreName: dbtest.StoreName,
-		MediaDir:         mediaDir,
-		ScratchDir:       scratchDir,
-		FFmpeg:           "ffmpeg",
-		FFprobe:          "ffprobe",
-		runCmd:           fakeThumbnailTools(t, 100.0),
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		Media:           pgstoretest.Media(pool),
+		InputObjects:    map[string]objstore.Store{dbtest.StoreName: testFSObjectStore(mediaDir)},
+		MediaDir:        mediaDir,
+		ScratchDir:      scratchDir,
+		FFmpeg:          "ffmpeg",
+		FFprobe:         "ffprobe",
+		runCmd:          fakeThumbnailTools(t, 100.0),
 	}
 
 	job := jobs.ThumbnailJobArgs{RecordingID: recordingID}
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(context.Background(), w, job), "Work() error")
 
 	// DB 行が 1 つ。
-	state := requireThumbnailState(t, pool, recordingID, dbtest.StoreName)
+	state := requireThumbnailState(t, pool, recordingID)
 	if state.SeekMs == nil || *state.SeekMs != 10000 {
 		t.Errorf("initial thumbnail seek_ms = %v, want 10000", state.SeekMs)
 	}
@@ -289,12 +292,12 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 
 	var gotInputSeek string
 	w := &ThumbnailWorker{
-		Objects:          testFSObjectStore(mediaDir),
-		ObjectPublisher:  pgstoretest.Media(pool),
-		Media:            pgstoretest.Media(pool),
-		DerivedStoreName: dbtest.StoreName,
-		MediaDir:         mediaDir,
-		ScratchDir:       scratchDir,
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		Media:           pgstoretest.Media(pool),
+		InputObjects:    map[string]objstore.Store{dbtest.StoreName: testFSObjectStore(mediaDir)},
+		MediaDir:        mediaDir,
+		ScratchDir:      scratchDir,
 		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			if containsArg(args, "format=duration") {
 				t.Fatal("chapter-aware reselection must not call ffprobe")
@@ -317,7 +320,7 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 		t.Errorf("ffmpeg -ss = %q, want 89.993 seconds", gotInputSeek)
 	}
 
-	state := requireThumbnailState(t, pool, recordingID, dbtest.StoreName)
+	state := requireThumbnailState(t, pool, recordingID)
 	if state.ID != thumbnailID {
 		t.Errorf("thumbnail row id = %d, want unchanged id %d", state.ID, thumbnailID)
 	}
@@ -371,12 +374,12 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 
 	var gotInputSeek string
 	w := &ThumbnailWorker{
-		Objects:          testFSObjectStore(mediaDir),
-		ObjectPublisher:  pgstoretest.Media(pool),
-		Media:            pgstoretest.Media(pool),
-		DerivedStoreName: dbtest.StoreName,
-		MediaDir:         mediaDir,
-		ScratchDir:       t.TempDir(),
+		Objects:         testFSObjectStore(mediaDir),
+		ObjectPublisher: pgstoretest.Media(pool),
+		Media:           pgstoretest.Media(pool),
+		InputObjects:    map[string]objstore.Store{dbtest.StoreName: testFSObjectStore(mediaDir)},
+		MediaDir:        mediaDir,
+		ScratchDir:      t.TempDir(),
 		runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			if i := indexOfArg(args, "-ss"); i >= 0 && i+1 < len(args) {
 				gotInputSeek = args[i+1]
@@ -392,7 +395,7 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 	if gotInputSeek != "30.000" {
 		t.Errorf("cut input -ss = %q, want 30.000 seconds", gotInputSeek)
 	}
-	state := requireThumbnailState(t, pool, recordingID, dbtest.StoreName)
+	state := requireThumbnailState(t, pool, recordingID)
 	if state.SeekMs == nil || *state.SeekMs != 90000 {
 		t.Errorf("cut-only thumbnail seek_ms = %v, want 90000", state.SeekMs)
 	}
@@ -403,62 +406,95 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 
 func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T) {
 	t.Parallel()
-	pool := testutil.SetupDB(t)
-	if pool == nil {
-		return
-	}
+	for _, tc := range []struct {
+		name, desired string
+		remoteCopy    bool
+	}{
+		{name: dbtest.StoreName, desired: dbtest.StoreName},
+		{name: "s3main", desired: "s3main"},
+		{name: "both copies present", desired: "s3main", remoteCopy: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := testutil.SetupDB(t)
+			if pool == nil {
+				return
+			}
 
-	ctx := context.Background()
-	mediaDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
-	profile := "uncut-profile"
-	encodedRelPath := "encoded/uncut.mp4"
-	seedMediaAsset(t, pool, mediaDir, recordingID,
-		store.AssetKindEncoded, &profile, encodedRelPath, []byte("fake-mp4"))
-	thumbnailID := seedMediaAsset(t, pool, mediaDir, recordingID,
-		store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID, 0), tinyJPEG)
-	setThumbnailSeek(t, pool, thumbnailID, 30000)
-	// 状態: 原本の行はあるが実体無しの印が付いている（原本は使えない入力）。
-	seedLostOriginalCMRanges(t, pool, mediaDir, recordingID, []chapters.Range{{StartMs: 0, EndMs: 60000}})
+			ctx := context.Background()
+			mediaDir := t.TempDir()
+			recordingID := dbtest.Recording(t, pool)
+			profile := "uncut-profile"
+			encodedRelPath := "encoded/uncut.mp4"
+			encodedID := seedMediaAsset(t, pool, mediaDir, recordingID,
+				store.AssetKindEncoded, &profile, encodedRelPath, []byte("fake-mp4"))
+			thumbnailID := seedMediaAsset(t, pool, mediaDir, recordingID,
+				store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID, 0), tinyJPEG)
+			setThumbnailSeek(t, pool, thumbnailID, 30000)
+			// 状態: 原本の行はあるが実体無しの印が付いている（原本は使えない入力）。
+			seedLostOriginalCMRanges(t, pool, mediaDir, recordingID, []chapters.Range{{StartMs: 0, EndMs: 60000}})
 
-	var gotInputSeek string
-	var gotInput []byte
-	w := &ThumbnailWorker{
-		Objects:          testFSObjectStore(mediaDir),
-		ObjectPublisher:  pgstoretest.Media(pool),
-		Media:            pgstoretest.Media(pool),
-		DerivedStoreName: dbtest.StoreName,
-		MediaDir:         mediaDir,
-		ScratchDir:       t.TempDir(),
-		runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
-			if i := indexOfArg(args, "-ss"); i >= 0 && i+1 < len(args) {
-				gotInputSeek = args[i+1]
+			media := pgstoretest.Media(pool)
+			if tc.desired != dbtest.StoreName {
+				media = pgstore.NewMediaInStore(pool, dbtest.StoreName, store.NewStoragePolicy(nil, []string{dbtest.StoreName}, tc.desired))
 			}
-			if i := indexOfArg(args, "-i"); i >= 0 && i+1 < len(args) {
-				var err error
-				gotInput, err = os.ReadFile(args[i+1])
-				if err != nil {
-					return nil, err
-				}
+			objects := testFSObjectStore(mediaDir)
+			inputObjects := map[string]objstore.Store{dbtest.StoreName: objects}
+			if tc.remoteCopy {
+				dbtest.MediaAssetCopy(t, pool, encodedID, func(p *dbtest.MediaAssetCopyParams) {
+					p.Store, p.RelPath = tc.desired, "encoded/remote-uncut.mp4"
+				})
+				inputObjects[tc.desired] = rejectEncodedRead{t: t, Store: objects}
 			}
-			if err := os.WriteFile(args[len(args)-1], tinyJPEG, 0o644); err != nil {
-				return nil, err
+			var gotInputSeek string
+			var gotInput []byte
+			w := &ThumbnailWorker{
+				Objects:         objects,
+				ObjectPublisher: media,
+				Media:           media,
+				InputObjects:    inputObjects,
+				MediaDir:        mediaDir,
+				ScratchDir:      t.TempDir(),
+				runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+					if i := indexOfArg(args, "-ss"); i >= 0 && i+1 < len(args) {
+						gotInputSeek = args[i+1]
+					}
+					if i := indexOfArg(args, "-i"); i >= 0 && i+1 < len(args) {
+						var err error
+						gotInput, err = os.ReadFile(args[i+1])
+						if err != nil {
+							return nil, err
+						}
+					}
+					if err := os.WriteFile(args[len(args)-1], tinyJPEG, 0o644); err != nil {
+						return nil, err
+					}
+					return nil, nil
+				},
 			}
-			return nil, nil
-		},
+			job := jobs.ThumbnailJobArgs{RecordingID: recordingID}
+			testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, job), "Work() error")
+			if gotInputSeek != "89.993" {
+				t.Errorf("uncut encoded input -ss = %q, want 89.993 seconds", gotInputSeek)
+			}
+			if !bytes.Equal(gotInput, []byte("fake-mp4")) {
+				t.Errorf("ffmpeg input bytes = %q, want the uncut encoded object", gotInput)
+			}
+			state := requireThumbnailState(t, pool, recordingID)
+			if state.SeekMs == nil || *state.SeekMs != 89993 {
+				t.Errorf("thumbnail seek_ms = %v, want 89993", state.SeekMs)
+			}
+		})
 	}
-	job := jobs.ThumbnailJobArgs{RecordingID: recordingID}
-	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, job), "Work() error")
-	if gotInputSeek != "89.993" {
-		t.Errorf("uncut encoded input -ss = %q, want 89.993 seconds", gotInputSeek)
-	}
-	if !bytes.Equal(gotInput, []byte("fake-mp4")) {
-		t.Errorf("ffmpeg input bytes = %q, want the uncut encoded object", gotInput)
-	}
-	state := requireThumbnailState(t, pool, recordingID, dbtest.StoreName)
-	if state.SeekMs == nil || *state.SeekMs != 89993 {
-		t.Errorf("thumbnail seek_ms = %v, want 89993", state.SeekMs)
-	}
+}
+
+type rejectEncodedRead struct {
+	objstore.Store
+	t *testing.T
+}
+
+func (s rejectEncodedRead) Get(_ context.Context, key string) (io.ReadCloser, error) {
+	s.t.Errorf("reselection tried to read remote encoded key %q with a local copy present", key)
+	return nil, fmt.Errorf("reading remote encoded key %q is forbidden in this case", key)
 }
 
 func TestThumbnailWorker_IdempotentRerun(t *testing.T) {
@@ -728,7 +764,7 @@ func TestThumbnailWorker_ReselectSkipsNonCandidatesEvenWhenLaterRecordingIsCandi
 	}
 	job := jobs.ThumbnailJobArgs{RecordingID: noChapters}
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, job), "Work() error")
-	cur := requireThumbnailState(t, pool, noChapters, dbtest.StoreName)
+	cur := requireThumbnailState(t, pool, noChapters)
 	if cur.RelPath != noChaptersRel {
 		t.Errorf("recording %d rel_path = %q, want unchanged %q", noChapters, cur.RelPath, noChaptersRel)
 	}

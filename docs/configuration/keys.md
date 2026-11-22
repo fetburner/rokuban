@@ -105,7 +105,7 @@
 
 置き場の名前の長さは、River のキュー名 `{queue}_{store}` が 64 文字に収まる式で決まる。
 
-`storage.originals` は上から評価して最初に一致した規則を使う。時刻の条件を `older_than`（放送終了時刻からの経過時間）だけにするのは、`newer_than` や時刻の窓を許すと desired の置き場が行き来し、転送と削除が往復するからである。最後の規則を無条件にするのは、どの資産にも desired の置き場が決まるようにするためである。原本の置き場は `fsync` と atomic rename と hard link を信頼できる POSIX FS に限る（[ストレージ契約](../storage/contract.md) §1）。`storage.derived` は、全 site 共通の派生物の置き場を 1 つ選ぶ。派生物には FS と S3 API の置き場を使える。
+`storage.originals` は上から評価して最初に一致した規則を使う。時刻の条件を `older_than`（放送終了時刻からの経過時間）だけにするのは、`newer_than` や時刻の窓を許すと desired の置き場が行き来し、転送と削除が往復するからである。最後の規則を無条件にするのは、どの資産にも desired の置き場が決まるようにするためである。原本の置き場は `fsync` と atomic rename と hard link を信頼できる POSIX FS に限る（[ストレージ契約](../storage/contract.md) §1）。`storage.derived` は、全 site 共通の派生物の desired の置き場を選ぶ。派生物には FS と S3 API の置き場を使える。
 
 #### 転送
 
@@ -115,7 +115,11 @@
 
 `storage.transfer.bandwidth` は、転送元の FS 置き場ごとの正の帯域値である。S3 置き場は転送元にならず、帯域を書いてもどの転送も絞らないので、検証は S3 置き場の名前を拒否する。既存の設定に S3 置き場の帯域を書いていると、起動できなくなる。`bps` / `Bps` は 1 秒あたりの bit / byte、`Kbps` / `Mbps` / `Gbps` と `KBps` / `MBps` / `GBps` は 10 進、`KiBps` / `MiBps` / `GiBps` は 2 進で読む。たとえば `50Mbps` は毎秒 6.25 MB である。
 
-`storage.transfer.backlog_limit` は FS 置き場ごとの正の整数である。転送待ちとは、その置き場にコピーがあり、desired の置き場へまだ転送されていない資産の件数である。件数は転送の reconcile と同じ述語で数える。転送の失敗が試行上限に達した資産は数えない。件数が上限に達すると、encode reconcile はその置き場の原本を読む encode（キュー `encode_{store}`）を投入しない。原本の ingest は止めない。ingest しなかった原本は後から取り戻せないが、encode は転送待ちが減った後に走れるからである。
+`storage.transfer.backlog_limit` は FS 置き場ごとの正の整数である。転送待ちとは、その置き場にコピーがあり、desired の置き場へまだ転送されていない資産の件数である。件数は転送の reconcile と同じ述語で数える。転送の失敗が試行上限に達した資産は数えない。
+
+S3 が宛先なら、録画ごとに各プロファイルの encode 出力とサムネイル、シークタイルが転送待ちに入る。この内訳を見込んで置き場ごとの上限を決める。
+
+件数が上限に達すると、encode reconcile はその置き場の原本を読む encode（キュー `encode_{store}`）を投入しない。原本の ingest は止めない。ingest しなかった原本は後から取り戻せないが、encode は転送待ちが減った後に走れるからである。
 
 集計は資産数に比例して重い（media_assets 2 万行で約 2.1 秒、6 万行で約 6.6 秒。[監視](../operations/monitoring-transfer.md)）。
 

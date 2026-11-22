@@ -891,18 +891,21 @@ FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
 WHERE c.store = $1
   AND c.state = 'pending'
+  -- A staging FS reclaims derived pending copies only after the publication grace.
+  AND (a.kind = 'original' OR NOT $2::boolean)
   AND storage_transfer_pending_copy_obsolete(
       c.id,
-      $2::jsonb,
-      $3::text[],
-      $4::text
+      $3::jsonb,
+      $4::text[],
+      $5::text
   )
 ORDER BY c.id
-LIMIT $5
+LIMIT $6
 `
 
 type ListObsoletePendingMediaAssetTransferCopiesParams struct {
 	StoreName     string
+	StagingFs     bool
 	OriginalRules json.RawMessage
 	FsStores      []string
 	DerivedStore  string
@@ -925,6 +928,7 @@ type ListObsoletePendingMediaAssetTransferCopiesRow struct {
 func (q *Queries) ListObsoletePendingMediaAssetTransferCopies(ctx context.Context, arg ListObsoletePendingMediaAssetTransferCopiesParams) ([]ListObsoletePendingMediaAssetTransferCopiesRow, error) {
 	rows, err := q.db.Query(ctx, listObsoletePendingMediaAssetTransferCopies,
 		arg.StoreName,
+		arg.StagingFs,
 		arg.OriginalRules,
 		arg.FsStores,
 		arg.DerivedStore,

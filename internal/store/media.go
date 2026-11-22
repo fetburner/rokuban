@@ -180,6 +180,7 @@ type ThumbnailReselectCandidate struct {
 	EncodedAssets         []ThumbnailEncodedAsset
 	ThumbnailMediaAssetID *int64
 	ThumbnailRelPath      *string
+	ThumbnailStore        string
 	ThumbnailGeneration   int64
 	SeekMs                *int64
 }

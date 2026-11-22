@@ -154,6 +154,23 @@ WHERE copy.id = sqlc.arg('copy_id')
   AND copy.created_at < sqlc.arg('created_before')::timestamptz
 FOR UPDATE OF asset, copy;
 
+-- 生成は未使用の世代を予約する。別コピーと世代を共有する予約は、
+-- 進捗を残す前に止まった転送も含め、所有記録の無いキーを保護する。
+-- name: PendingMediaAssetCopyHasTransferEvidence :one
+SELECT (EXISTS (
+    SELECT 1
+    FROM media_asset_copies c
+    JOIN media_asset_copies sibling
+      ON sibling.media_asset_id = c.media_asset_id AND sibling.generation = c.generation AND sibling.id <> c.id
+    WHERE c.id = sqlc.arg('copy_id')
+) OR EXISTS (
+    SELECT 1 FROM media_asset_copy_transfer_progress WHERE copy_id = sqlc.arg('copy_id')
+) OR EXISTS (
+    SELECT 1 FROM media_asset_transfer_attempts WHERE copy_id = sqlc.arg('copy_id')
+) OR EXISTS (
+    SELECT 1 FROM media_asset_transfer_objects WHERE copy_id = sqlc.arg('copy_id')
+))::boolean AS has_evidence;
+
 -- name: MarkPendingMediaAssetCopyDeleted :execrows
 UPDATE media_asset_copies
 SET state = 'deleted', deleted_at = COALESCE(deleted_at, now())

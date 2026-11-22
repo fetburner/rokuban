@@ -32,8 +32,9 @@ import (
 )
 
 // TestS3DerivedObjectPublicationAndRecovery は、実際の S3 API の実装（CI では RustFS）に対して、
-// 派生物の公開・回収を測る。DB の振る舞いは object_store_test.go が fsstore で測るので、
-// ここは S3 の応答（条件付き書き込み・multipart・HEAD の SHA-256・List）に依存する部分に絞る。
+// 派生物の公開・回収を測る。DB の振る舞いは object_store_test.go が fsstore で測る。
+// ここでは FS への公開から始め、S3 転送と既存キーの回収に必要な S3 の応答
+// （条件付き書き込み・multipart・HEAD の SHA-256・List）を確かめる。
 //
 //nolint:funlen // S3 の公開と回収の順序を 1 本の時系列で検査する。分けると前後関係が追えなくなる。
 func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
@@ -52,17 +53,22 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 	env := newObjectEnvWith(t, objects)
 	pool := env.pool
 	media := env.media
+	root := t.TempDir()
+	testutil.RequireNoError(t, mediapath.WriteStoreMarker(root, dbtest.StoreName), "writing source store marker")
+	sourceFS, err := fsstore.New(root)
+	testutil.RequireNoError(t, err, "creating source FS object store")
+	fsMedia := pgstore.NewMediaInStore(pool, dbtest.StoreName, store.NewStoragePolicy(nil, []string{dbtest.StoreName}, objectStoreName))
 	prefix := fmt.Sprintf("thumbnails/s3-conformance-%d", time.Now().UnixNano())
 	encodedKey := fmt.Sprintf("encoded/s3-conformance-%d.mp4", time.Now().UnixNano())
 	t.Cleanup(func() {
-		for _, key := range []string{prefix + "-active.jpg", prefix + "-pending.jpg", prefix + "-unknown.jpg", encodedKey} {
+		for _, key := range []string{prefix + "-pending.jpg", prefix + "-unknown.jpg"} {
 			if err := objects.Delete(context.Background(), key); err != nil {
 				t.Errorf("deleting S3 test key %q: %v", key, err)
 			}
 		}
 	})
 
-	t.Run("initial encoded output activates its pending S3 copy", func(t *testing.T) {
+	t.Run("initial encoded output becomes active in FS before transfer to S3", func(t *testing.T) {
 		recordingID := dbtest.Recording(t, pool)
 		profile := "h264"
 		dbtest.ProcessingPolicy(t, pool, recordingID, func(p *dbtest.ProcessingPolicyParams) { p.EncodeProfiles = []string{profile} })
@@ -75,52 +81,92 @@ func TestS3DerivedObjectPublicationAndRecovery(t *testing.T) {
 		pending := store.PendingMediaAssetCopy{
 			RecordingID: recordingID, Kind: store.AssetKindEncoded, Profile: &profile, RelPath: encodedKey, ReserveNewGeneration: true,
 		}
-		size, published, err := mediapublish.PublishGeneratedObject(ctx, objects, media, pending, scratchPath, "video/mp4", false, nil,
+		size, published, err := mediapublish.PublishGeneratedObject(ctx, sourceFS, fsMedia, pending, scratchPath, "video/mp4", false, nil,
 			func(size int64, sum [sha256.Size]byte) (bool, error) {
-				return media.PublishEncoded(ctx, store.EncodedPublishInput{
+				return fsMedia.PublishEncoded(ctx, store.EncodedPublishInput{
 					RecordingID: recordingID, Profile: profile, Attempt: 1, RelPath: encodedKey, SizeBytes: size,
 					SHA256: sum[:], PendingCopy: true,
 				}, func() error { return nil })
 			})
-		testutil.RequireNoError(t, err, "publishing initial S3 encoded asset")
+		testutil.RequireNoError(t, err, "publishing initial FS encoded asset")
 		if !published || size != int64(len(payload)) {
 			t.Fatalf("publish result = (%d, %t), want (%d, true)", size, published, len(payload))
 		}
-		if got := env.copyState(t, encodedKey); got != "active" {
-			t.Fatalf("committed encoded copy state = %q, want active", got)
+		var assetID int64
+		var state string
+		testutil.RequireNoError(t, pool.QueryRow(ctx, `
+SELECT media_asset_id, state FROM media_asset_copies WHERE store = $1 AND rel_path = $2
+`, dbtest.StoreName, encodedKey).Scan(&assetID, &state), "reading committed FS copy")
+		if state != "active" {
+			t.Fatalf("committed FS encoded copy state = %q, want active", state)
 		}
-		object, err := objects.Head(ctx, encodedKey)
-		testutil.RequireNoError(t, err, "heading published object")
+		cfg := config.StorageConfig{
+			Stores: map[string]config.StoreConfig{
+				dbtest.StoreName: {Kind: "fs"},
+				objectStoreName:  {Kind: "s3", Bucket: bucket},
+			},
+			Originals: []config.OriginalStoreRule{{Store: dbtest.StoreName}},
+			Derived:   objectStoreName,
+		}
+		fingerprint, err := cfg.PolicyFingerprint()
+		testutil.RequireNoError(t, err, "fingerprinting transfer policy")
+		worker := StorageTransferWorker{
+			Storage:      pgstore.NewMediaInStore(pool, dbtest.StoreName, mustStoragePolicy(t, cfg)),
+			Config:       cfg,
+			Roots:        map[string]string{dbtest.StoreName: root},
+			ObjectStores: map[string]objstore.Store{dbtest.StoreName: sourceFS, objectStoreName: objects},
+			ScratchDir:   t.TempDir(),
+		}
+		t.Cleanup(func() {
+			if key := transferTestLatestCopyRelPath(t, pool, assetID, objectStoreName); key != "" {
+				if err := objects.Delete(context.Background(), key); err != nil {
+					t.Errorf("deleting S3 transfer key %q: %v", key, err)
+				}
+			}
+		})
+		args := jobs.StorageTransferArgs{MediaAssetID: assetID, Store: objectStoreName, SourceStore: dbtest.StoreName, PolicyFingerprint: fingerprint}
+		testutil.RequireNoError(t, worker.Work(ctx, args), "transferring initial encoded asset")
+		targetKey := transferTestCopyRelPath(t, pool, assetID, objectStoreName)
+		if targetKey == encodedKey {
+			t.Fatalf("S3 transfer reused the FS key %q", targetKey)
+		}
+		if got := env.copyState(t, targetKey); got != "active" {
+			t.Fatalf("transferred encoded copy state = %q, want active", got)
+		}
+		object, err := objects.Head(ctx, targetKey)
+		testutil.RequireNoError(t, err, "heading transferred object")
 		if object.Size != int64(len(payload)) || object.SHA256 != fmt.Sprintf("%x", sha256.Sum256(payload)) {
 			t.Fatalf("published object metadata = (size %d, sha256 %q), want (%d, %x)", object.Size, object.SHA256, len(payload), sha256.Sum256(payload))
 		}
 	})
 
-	t.Run("pending commits before PUT and active follows PUT", func(t *testing.T) {
+	t.Run("pending commits before FS Put and active follows Put", func(t *testing.T) {
 		recordingID := dbtest.Recording(t, pool)
 		originalID := dbtest.MediaAsset(t, pool, recordingID)
 		key := prefix + "-active.jpg"
 		payload := []byte("published thumbnail bytes")
 		scratchPath := t.TempDir() + "/thumbnail.jpg"
 		writeFile(t, scratchPath, payload)
-		observing := &pendingObservedStore{Store: objects, t: t, pool: pool, storeName: objectStoreName}
+		observing := &pendingObservedStore{Store: sourceFS, t: t, pool: pool, storeName: dbtest.StoreName}
 		pending := store.PendingMediaAssetCopy{RecordingID: recordingID, Kind: store.AssetKindThumbnail, RelPath: key}
-		size, published, err := mediapublish.PublishGeneratedObject(ctx, observing, media, pending, scratchPath, "image/jpeg", false, nil,
+		size, published, err := mediapublish.PublishGeneratedObject(ctx, observing, fsMedia, pending, scratchPath, "image/jpeg", false, nil,
 			func(size int64, sum [sha256.Size]byte) (bool, error) {
-				return media.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+				return fsMedia.PublishThumbnail(ctx, store.ThumbnailPublishInput{
 					RecordingID: recordingID, RelPath: key, SizeBytes: size, InputAssetID: originalID,
 					SHA256: sum[:], PendingCopy: true,
 				}, func() error { return nil })
 			})
-		testutil.RequireNoError(t, err, "publishing S3 thumbnail")
+		testutil.RequireNoError(t, err, "publishing FS thumbnail")
 		if !observing.sawPending {
 			t.Fatal("PUT did not observe a committed pending copy row")
 		}
 		if !published || size != int64(len(payload)) {
 			t.Fatalf("publish result = (%d, %t), want (%d, true)", size, published, len(payload))
 		}
-		if got := env.copyState(t, key); got != "active" {
-			t.Fatalf("published copy state = %q, want active", got)
+		var state string
+		testutil.RequireNoError(t, pool.QueryRow(ctx, `SELECT state FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, dbtest.StoreName, key).Scan(&state), "reading committed FS thumbnail copy")
+		if state != "active" {
+			t.Fatalf("published copy state = %q, want active", state)
 		}
 	})
 

@@ -77,9 +77,7 @@ type Deps struct {
 	// thumbnail / encode の周期 reconcile が使う値は意図的に未束縛である。StoreDeps.MediaReconcile と
 	// build 内で取り違えないよう、置き場に束ねないことを名前で示す。
 	UnscopedMediaReconcile store.MediaReconcile
-	// DerivedObjects は派生物の置き場に束ねた object store で、全置き場のワーカーに同じ値を渡す。
-	// StoreDeps.DerivedMediaPublish と組み合わせて使う。
-	DerivedObjects         objstore.Store
+	// DerivedObjectStoreName は配置方針の派生物の宛先で、削除 reconcile が使う。
 	DerivedObjectStoreName string
 	StorageObjects         map[string]objstore.Store
 	// UnscopedStorageTransfer は置き場に束ねない transfer reconcile の永続化契約。
@@ -179,6 +177,9 @@ type StoreDeps struct {
 
 	// DerivedMediaPublish は、この置き場で生成した派生物を DB に公開する契約。
 	DerivedMediaPublish store.DerivedMediaPublisher
+	// DerivedPublishObjects と DerivedPublishStoreName は、DB の公開先と同じ物理置き場を指す。
+	DerivedPublishObjects   objstore.Store
+	DerivedPublishStoreName string
 }
 
 // perStore は置き場ごとの StoreDeps を返す。空なら置き場で修飾したワーカーを 1 つも登録しない。
@@ -299,7 +300,7 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 			Media:           s.MediaReconcile,
 			Publisher:       s.MediaPublish,
 			ObjectPublisher: s.DerivedMediaPublish,
-			Objects:         d.DerivedObjects,
+			Objects:         s.DerivedPublishObjects,
 			MediaDir:        s.MediaDir,
 			MediaStoreName:  s.MediaStoreName,
 			ScratchDir:      d.ScratchDir,
@@ -318,22 +319,22 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 	}))
 	riveradapter.Register[jobs.ThumbnailJobArgs](workers, newStoreRoute("thumbnail", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.ThumbnailJobArgs] {
 		return &thumbnail.ThumbnailWorker{
-			Media:            s.MediaReconcile,
-			ObjectPublisher:  s.DerivedMediaPublish,
-			Objects:          d.DerivedObjects,
-			MediaDir:         s.MediaDir,
-			MediaStoreName:   s.MediaStoreName,
-			DerivedStoreName: d.DerivedObjectStoreName,
-			ScratchDir:       d.ScratchDir,
-			FFmpeg:           d.Encode.FFmpeg,
-			FFprobe:          d.Encode.FFprobe,
+			Media:           s.MediaReconcile,
+			ObjectPublisher: s.DerivedMediaPublish,
+			Objects:         s.DerivedPublishObjects,
+			MediaDir:        s.MediaDir,
+			MediaStoreName:  s.MediaStoreName,
+			InputObjects:    d.StorageObjects,
+			ScratchDir:      d.ScratchDir,
+			FFmpeg:          d.Encode.FFmpeg,
+			FFprobe:         d.Encode.FFprobe,
 		}
 	}))
 	riveradapter.Register[jobs.SeekTilesJobArgs](workers, newStoreRoute("seek_tiles", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.SeekTilesJobArgs] {
 		return &thumbnail.SeekTilesWorker{
 			Media:           s.MediaReconcile,
 			ObjectPublisher: s.DerivedMediaPublish,
-			Objects:         d.DerivedObjects,
+			Objects:         s.DerivedPublishObjects,
 			MediaDir:        s.MediaDir,
 			MediaStoreName:  s.MediaStoreName,
 			ScratchDir:      d.ScratchDir,
@@ -379,21 +380,22 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 // newDeleteReconcileWorker は削除 reconcile worker を Deps と StoreDeps から組み立てる。
 func newDeleteReconcileWorker(deps *Deps, scoped *StoreDeps) *storagemaint.DeleteReconcileWorker {
 	return &storagemaint.DeleteReconcileWorker{
-		DeleteReconcileStores:  scoped.DeleteReconcile,
-		Breakers:               deps.Breakers,
-		Storage:                scoped.StorageObservation,
-		MediaDir:               scoped.MediaDir,
-		MediaStoreName:         scoped.MediaStoreName,
-		DerivedObjects:         deps.DerivedObjects,
-		DerivedObjectStoreName: deps.DerivedObjectStoreName,
-		StorageObjects:         deps.StorageObjects,
-		TransferOverlap:        deps.TransferOverlap,
-		TrashRetention:         deps.Cleanup.TrashRetention,
-		OrphanMTimeGrace:       deps.Cleanup.OrphanMTimeGrace,
-		OrphanAge:              deps.Cleanup.OrphanAge,
-		MaxDeletesPerPass:      deps.Cleanup.MaxDeletesPerPass,
-		MissingAssetAge:        deps.Cleanup.MissingAssetAge,
-		Webhook:                deps.Webhook,
-		Markers:                deps.LoopMarkers,
+		DeleteReconcileStores:      scoped.DeleteReconcile,
+		Breakers:                   deps.Breakers,
+		Storage:                    scoped.StorageObservation,
+		MediaDir:                   scoped.MediaDir,
+		MediaStoreName:             scoped.MediaStoreName,
+		DerivedObjects:             deps.StorageObjects[deps.DerivedObjectStoreName],
+		FilesystemDerivedPublisher: scoped.DerivedPublishStoreName == scoped.MediaStoreName && scoped.DerivedPublishObjects != nil,
+		DerivedObjectStoreName:     deps.DerivedObjectStoreName,
+		StorageObjects:             deps.StorageObjects,
+		TransferOverlap:            deps.TransferOverlap,
+		TrashRetention:             deps.Cleanup.TrashRetention,
+		OrphanMTimeGrace:           deps.Cleanup.OrphanMTimeGrace,
+		OrphanAge:                  deps.Cleanup.OrphanAge,
+		MaxDeletesPerPass:          deps.Cleanup.MaxDeletesPerPass,
+		MissingAssetAge:            deps.Cleanup.MissingAssetAge,
+		Webhook:                    deps.Webhook,
+		Markers:                    deps.LoopMarkers,
 	}
 }

@@ -232,9 +232,20 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 ### 派生物の置き場
 
-論理資産と物理コピーは、派生物に限らず原本でも分ける。コピーを置き場の間で移しても、論理資産の identity は変わらない。派生物の置き場は、全 site 共通で物理的に 1 か所にする。どの worker からも読めるようにするためである（S3 なら scratch へ取り寄せて読む）。
+論理資産と物理コピーは、派生物に限らず原本でも分ける。コピーを置き場の間で移しても、論理資産の identity は変わらない。派生物の desired の置き場は全 site 共通の一か所とする。どの worker からも読めるようにするためである。S3 を読むときは scratch へ取り寄せる。
+
+FS なら生成した派生物をその置き場に公開する。S3 なら worker が束ねられた FS に公開し、そこから転送する。
+
+サムネイルの選び直しは、入力の encoded がある置き場から scratch へ取り寄せる。S3 が desired のときは worker が束ねられた FS を優先し、そこに使えるコピーが無ければ S3 から読む。
 
 論理資産は `media_assets` の行で、派生物は録画・種別・profile・`derived_generation` で識別する。
+
+<details><summary>根拠</summary>
+
+- S3 にもコピーがあるときに worker の FS を優先する選び直し: `TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing`
+- S3 にある encoded を入力にし、FS に公開する選び直し: `TestThumbnailReselectionReadsEncodedInputFromS3`
+
+</details>
 
 ### 残量の観測
 

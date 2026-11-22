@@ -96,12 +96,12 @@ func seedLostOriginalCMRanges(t *testing.T, pool *pgxpool.Pool, mediaDir string,
 	testutil.RequireNoError(t, pgstoretest.Media(pool).UpsertMissingMediaAsset(t.Context(), dbtest.MediaAssetCopyID(t, pool, originalID, dbtest.StoreName)), "marking original missing")
 }
 
-// requireThumbnailState は録画 recordingID の置き場 storeName の active なサムネイルを返す。無ければテストを失敗させる。
-func requireThumbnailState(t *testing.T, pool *pgxpool.Pool, recordingID int64, storeName string) dbtest.ThumbnailRow {
+// requireThumbnailState は録画 recordingID の active なサムネイルを dbtest.StoreName から返す。無ければテストを失敗させる。
+func requireThumbnailState(t *testing.T, pool *pgxpool.Pool, recordingID int64) dbtest.ThumbnailRow {
 	t.Helper()
-	row, found := dbtest.ThumbnailState(t, pool, recordingID, storeName)
+	row, found := dbtest.ThumbnailState(t, pool, recordingID, dbtest.StoreName)
 	if !found {
-		t.Fatalf("recording %d has no active thumbnail in store %q", recordingID, storeName)
+		t.Fatalf("recording %d has no active thumbnail in store %q", recordingID, dbtest.StoreName)
 	}
 	return row
 }
