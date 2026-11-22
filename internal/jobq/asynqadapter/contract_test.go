@@ -250,6 +250,25 @@ func (fixture *redisFixture) Crash(ctx context.Context) error {
 // RecoveryGrace は共通契約テストに adapter の回収猶予を渡す。
 func (*redisFixture) RecoveryGrace() time.Duration { return RecoveryGrace }
 
+func (fixture *redisFixture) SnoozeClockSkew(ctx context.Context) (time.Duration, error) {
+	connection := redis.NewClient(fixture.options)
+	defer closeRedis(fixture.t, connection)
+
+	// serverNow has no monotonic reading, so Sub compares wall-clock values. Sampling
+	// localBefore before the command includes the outbound delay and command time,
+	// deliberately overestimating Redis clock's lead and widening the test allowance.
+	// This measures Redis time without assuming which clock Asynq uses for snooze eligibility.
+	localBefore := time.Now()
+	serverNow, err := connection.Time(ctx).Result()
+	if err != nil {
+		return 0, fmt.Errorf("reading Redis clock for snooze contract: %w", err)
+	}
+	if skew := serverNow.Sub(localBefore); skew > 0 {
+		return skew, nil
+	}
+	return 0, nil
+}
+
 func redisOptions(t *testing.T) *redis.Options {
 	t.Helper()
 	url := os.Getenv("ROKUBAN_TEST_REDIS_URL")
