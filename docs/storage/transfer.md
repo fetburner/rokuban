@@ -70,6 +70,8 @@ temp は宛先と同じディレクトリに `.rokuban-transfer-{media_asset_id}
 
 きれいな引き継ぎ（同じ置き場の送信状態が保存され、保存で lease を手放したあと）だけ続きを送る。保存せずに抜けた試行、置き場が違う送信状態、続けられない送信状態は、新しいアップロードから始める。古い送信状態は置き換えのときに掃除待ちへ移る。転送元の長さが宣言と違うと分かった試行も、ずれたバイトを含む送信状態は保存しない。
 
+宣言長まで送った状態から再開したら、完了の前に転送元の超過を確かめる。送信の途中で超過を確かめる読みは slice の期限で切れることがあり、確かめずに完了すると、超過した転送元をそのまま公開するおそれがあるためである。
+
 続けられないと分かったとき（`ErrUploadInvalid`）は、送信状態を保存してから lease を切り、この試行を失敗として数える。Complete が InvalidPart などで落ちたときも、`ErrUploadInvalid` に変換して同じ扱いにする。次の試行は新しいアップロードで最初から送る。古い試行の送信中のパートが同じ番号を後から上書きすることがある。上書きされたパートの ETag が保存した ETag と合わなければ、Complete が InvalidPart で落ちる。同じ番号のパートを送り直しても ETag が一致するとは限らない（SSE-KMS などでは ETag が MD5 ではない）ので、続けずに取り直す。
 
 進捗の行が消えると（完了、破棄、回収、コピーの CASCADE）、送信状態は DB の trigger で掃除待ちの表に移る。掃除は転送の Work の冒頭で、その宛先の置き場の分だけ行う。掃除待ちの行ごとに置き場の `AbortUpload` を呼び、置き場が `gone` と答えた行だけを消す。S3 では Abort のあとの ListParts が NoSuchUpload を返したときが gone で、FS では staging が無いときが gone である。掃除全体は短い締切（30 秒）で区切り、超えた残りは次の Work に回す。
@@ -214,7 +216,7 @@ desired の置き場から外れた配置は、削除 reconcile の腕の 1 つ�
 - slice をまたいで派生物を送り続け、完了する: `TestStorageTransferWorkerResumesDerivedUploadAcrossSlices`
 - きれいでない引き継ぎは新しい UploadId で送り直し、古い送信状態を掃除待ちに移す: `TestStorageTransferWorkerRestartsDerivedUploadAfterUncleanHandoff`
 - Complete が InvalidPart で落ちたら最初から送り直す: `TestStorageTransferWorkerRestartsDerivedUploadWhenCompleteIsInvalid`
-- 転送元の長さが宣言と違う試行は送信状態を保存せず、次の試行は新しい UploadId と staging から始まる: `TestStorageTransferWorkerRestartsAfterSourceLengthMismatch`
+- 転送元の長さが宣言と違う試行は、超過の確認が slice の期限と重なっても失敗として記録し、送信状態を保存しない。次の試行は新しい UploadId と staging から始まる: `TestStorageTransferWorkerRestartsAfterSourceLengthMismatch`
 - 掃除待ちの送信状態は、置き場が gone と答えるまで Abort を繰り返す: `TestStorageTransferWorkerKeepsAbandonedUploadUntilStoreReportsGone`
 - 掃除が締切で止まったら、残りの掃除待ちの行に触れず、転送は次の Work で完了する: `TestStorageTransferWorkerCleanupStopsWhenItRunsOutOfTime`
 - 未計測の派生物の転送元を slice で測り、送る前に観測値を書く: `TestStorageTransferWorkerMeasuresUnknownDerivedSourceBeforeSending`
