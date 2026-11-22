@@ -382,6 +382,7 @@ func (s *Media) ListObsoletePendingMediaAssetTransferCopies(ctx context.Context,
 		return nil, fmt.Errorf("encoding media asset transfer policy: %w", err)
 	}
 	rows, err := sqlcgen.New(s.pool).ListObsoletePendingMediaAssetTransferCopies(ctx, sqlcgen.ListObsoletePendingMediaAssetTransferCopiesParams{
+		StagingFs: slices.Contains(s.derivedStagingStores(), s.storeName),
 		StoreName: s.storeName, OriginalRules: policyArgs.originalRules, FsStores: policyArgs.fsStores, DerivedStore: policyArgs.derivedStore, RowLimit: limit,
 	})
 	if err != nil {
@@ -453,19 +454,27 @@ func (s *Media) ReclaimObsoletePendingMediaAssetTransferCopy(
 	if updated != 1 {
 		return false, fmt.Errorf("marking obsolete pending transfer copy %d deleted updated %d rows, want one", candidate.CopyID, updated)
 	}
-	if err := q.DeleteMediaAssetTransferAttemptsForCopy(ctx, candidate.CopyID); err != nil {
-		return false, fmt.Errorf("clearing obsolete transfer attempts for copy %d: %w", candidate.CopyID, mapDatabaseError(err))
-	}
-	if err := q.DeleteMediaAssetTransferObjectsForCopy(ctx, candidate.CopyID); err != nil {
-		return false, fmt.Errorf("clearing obsolete transfer object ownership for copy %d: %w", candidate.CopyID, mapDatabaseError(err))
-	}
-	if err := q.DeleteMediaAssetTransferProgress(ctx, candidate.CopyID); err != nil {
-		return false, fmt.Errorf("clearing obsolete transfer progress for copy %d: %w", candidate.CopyID, mapDatabaseError(err))
+	if err := clearPendingTransferState(ctx, q, candidate.CopyID); err != nil {
+		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("committing obsolete pending transfer copy reclaim: %w", mapDatabaseError(err))
 	}
 	return true, nil
+}
+
+// clearPendingTransferState は pending の退役と同じ tx で転送の状態を消す。
+func clearPendingTransferState(ctx context.Context, q *sqlcgen.Queries, copyID int64) error {
+	if err := q.DeleteMediaAssetTransferAttemptsForCopy(ctx, copyID); err != nil {
+		return fmt.Errorf("clearing obsolete transfer attempts for copy %d: %w", copyID, mapDatabaseError(err))
+	}
+	if err := q.DeleteMediaAssetTransferObjectsForCopy(ctx, copyID); err != nil {
+		return fmt.Errorf("clearing obsolete transfer object ownership for copy %d: %w", copyID, mapDatabaseError(err))
+	}
+	if err := q.DeleteMediaAssetTransferProgress(ctx, copyID); err != nil {
+		return fmt.Errorf("clearing obsolete transfer progress for copy %d: %w", copyID, mapDatabaseError(err))
+	}
+	return nil
 }
 
 // ListMediaAssetCopiesToDelete は overlap を過ぎ、現行 policy で削除可能なコピーを列挙する。

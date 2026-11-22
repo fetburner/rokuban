@@ -424,6 +424,31 @@ func (q *Queries) MarkPendingMediaAssetCopyDeleted(ctx context.Context, arg Mark
 	return result.RowsAffected(), nil
 }
 
+const pendingMediaAssetCopyHasTransferEvidence = `-- name: PendingMediaAssetCopyHasTransferEvidence :one
+SELECT (EXISTS (
+    SELECT 1
+    FROM media_asset_copies c
+    JOIN media_asset_copies sibling
+      ON sibling.media_asset_id = c.media_asset_id AND sibling.generation = c.generation AND sibling.id <> c.id
+    WHERE c.id = $1
+) OR EXISTS (
+    SELECT 1 FROM media_asset_copy_transfer_progress WHERE copy_id = $1
+) OR EXISTS (
+    SELECT 1 FROM media_asset_transfer_attempts WHERE copy_id = $1
+) OR EXISTS (
+    SELECT 1 FROM media_asset_transfer_objects WHERE copy_id = $1
+))::boolean AS has_evidence
+`
+
+// 生成は未使用の世代を予約する。別コピーと世代を共有する予約は、
+// 進捗を残す前に止まった転送も含め、所有記録の無いキーを保護する。
+func (q *Queries) PendingMediaAssetCopyHasTransferEvidence(ctx context.Context, copyID int64) (bool, error) {
+	row := q.db.QueryRow(ctx, pendingMediaAssetCopyHasTransferEvidence, copyID)
+	var has_evidence bool
+	err := row.Scan(&has_evidence)
+	return has_evidence, err
+}
+
 const setMediaAssetCopyState = `-- name: SetMediaAssetCopyState :execrows
 UPDATE media_asset_copies
 SET state = $1,

@@ -68,5 +68,7 @@ type PendingCopyReclaim interface {
 	// ReclaimPendingMediaAssetCopy は pending の行をロックし、まだ before より前の pending なら
 	// deleteObject を呼び、成功したら deleted にする。公開が先に active にしていれば何もせず false を返す。
 	// 公開の tx は同じ行を更新するので、deleteObject が走る間は active にならない。
-	ReclaimPendingMediaAssetCopy(ctx context.Context, copyID int64, before time.Time, deleteObject func() error) (bool, error)
+	// deleteObject は通常 nil を受け取る。転送元の FS で旧い転送予約を回収するときは、
+	// 所有を確認したキーだけを渡す。所有したキーが無い場合も nil ではなく空のスライスを渡す。
+	ReclaimPendingMediaAssetCopy(ctx context.Context, copyID int64, before time.Time, deleteObject func(ownedRelPaths []string) error) (bool, error)
 }

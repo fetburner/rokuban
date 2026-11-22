@@ -893,7 +893,7 @@ func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing
 	}
 	job := jobs.ThumbnailJobArgs{RecordingID: noChapters}
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, job), "Work() error")
-	cur := requireThumbnailState(t, pool, noChapters, dbtest.StoreName)
+	cur := requireThumbnailState(t, pool, noChapters)
 	if cur.RelPath != thumbnailRelPath(noChapters, 0) {
 		t.Errorf("rel_path = %q, want unchanged", cur.RelPath)
 	}
@@ -930,7 +930,7 @@ func TestThumbnailWorker_NoUsableInputKeepsThumbnailWithoutError(t *testing.T) {
 	}
 	job := jobs.ThumbnailJobArgs{RecordingID: id}
 	testutil.RequireNoError(t, jobqfaketest.RunWorkerOnce(ctx, w, job), "Work() error")
-	cur := requireThumbnailState(t, pool, id, dbtest.StoreName)
+	cur := requireThumbnailState(t, pool, id)
 	if cur.RelPath != thumbnailRelPath(id, 0) || cur.SeekMs == nil || *cur.SeekMs != 30000 {
 		t.Errorf("thumbnail = %q seek %v, want unchanged %q / 30000", cur.RelPath, cur.SeekMs, thumbnailRelPath(id, 0))
 	}

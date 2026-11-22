@@ -288,19 +288,27 @@ go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
 
 派生物の置き場は S3 にする。FS にすると、派生物を書くワーカーは全部その置き場をマウントする必要がある。エッジの encode と thumbnail のワーカーは置き場を 1 つだけマウントするので、起動を拒まれる。内部 URL で読めるのは原本だけなので、中央のワーカーはエッジの派生物を読めない。
 
-エッジで作る派生物は、エッジの encode と thumbnail のワーカーが S3 へ直接書く。エッジの置き場に残った派生物のコピーは、エッジの置き場の転送ワーカーが S3 へ直接送る。
+エッジで作る派生物は、エッジの encode と thumbnail のワーカーが自分の FS に公開する。エッジの置き場の転送ワーカーがそのコピーを S3 へ直接送る。
+
+エッジのディスクは原本、公開済みの派生物、同時実行ジョブの scratch の合計で見積もる。派生物は想定する回線停止中に生成する量と、転送完了後も `storage.transfer.overlap` の間に FS に残す量を足す。`until_encoded` の原本も、desired の置き場に必要な派生物が揃うまで残る。
+
+エッジの FS にしか現行コピーが無い間は、その FS をマウントしていない streamer が派生物に 404 を返す。転送 reconcile は転送元ごとのキューへジョブを資産 ID 順に投入する。同じ転送元からの送信は直列に進む。小さいサムネイルの転送も先に処理される大きい派生物の転送を待ちうる（実環境での待ち時間は未検証）。
 
 規則がエッジを置き場にしている間と、転送が終わるまでは、エッジのコピーが原本の唯一のコピーである。desired がエッジの原本は転送の候補にならないので、`rokuban_storage_transfer_waiting_assets` が 0 でも唯一のコピーのままである。その間にエッジのディスクを失うと、その原本は戻らない。エッジにしかコピーが無い資産の確かめ方は [エッジに置き場を持つ構成の導入](../runbook/edge-store.md) の注意にある。
 
 `internal_url` は VPN かクラスタ内の網だけに通す。Ingress には載せない。アプリは認証を持たないので、`internal_url` に届く者は原本を読める。Host 検証は転送の要求にも掛かる。`server.allowed_hosts` が空でないときは、`internal_url` のホストを含める（[HTTP API のデプロイ](../api/deployment.md) §X-Forwarded-Host の扱い）。
 
-`storage.transfer.bandwidth` が絞るのは転送の読みだけである。ジョブキューに帯域の制御が無いので、アプリ内の reader で絞る。ライブ視聴、HLS、エッジの encode が S3 へ直接書く PUT は対象に入らない。転送ワーカーが S3 へ書く Put は、転送の帯域の上限の下で流れる。回線全体を守るなら、網の層で絞る。
+`storage.transfer.bandwidth` が絞るのは転送の読みだけである。ジョブキューに帯域の制御が無いので、アプリ内の reader で絞る。ライブ視聴と HLS は対象に入らない。転送ワーカーが S3 へ送る派生物は、転送の帯域の上限の下で流れる。回線全体を守るなら、網の層で絞る。
 
 転送が遅れて転送待ちが溜まると、その置き場の原本を読む encode が止まる。その上限は `storage.transfer.backlog_limit` で置き場ごとに決める（[設定キー](../configuration/keys.md)）。止まっているかは `rokuban_encode_backpressure{store}` で見る（[監視](monitoring-transfer.md)）。
 
 <details><summary>根拠</summary>
 
 - encode と thumbnail のキューを引くワーカーは、FS の派生物の置き場をマウントしていないと起動を拒むこと: `TestValidateStoreBinding`（`cmd/rokuban/stores_test.go`）
+- 生成時の FS 公開: `TestGeneratedMediaPublishesToFilesystem`
+- 転送後の FS コピーの回収: `TestStorageTransferS3CopyLetsDeleteReconcileRetireFSCopy`
+- desired の派生物が揃うまでの原本の保持: `TestUntilEncodedOriginalWaitsForPresentDerivedCopiesInDesiredStore`
+- 読めるコピーが無いときの 404: `TestDerivedServingReturnsNotFoundWhenNoReadableCopyExists`
 - 内部 URL で読めるのは原本だけで、派生物の転送元はマウントした置き場に限ること: `TestPrepareMediaAssetTransferKeepsDerivedSourcesMounted`
 - `internal_url` の streamer が X-Accel-Redirect を返すと、転送ワーカーがその応答を拒むこと: `TestStorageTransferWorkerRejectsAccelRedirectAnswer`
 - 宛先が S3 の派生物は、転送元の FS 置き場の転送キューへ積むこと: `TestStorageTransferReconcileRoutesS3CopiesToSourceQueue`

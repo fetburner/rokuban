@@ -331,7 +331,7 @@ func TestObjectPublishCleansKeyWrittenAfterPendingCopyWasReclaimed(t *testing.T)
 						return fmt.Errorf("unexpected Put key %q", putKey)
 					}
 					var err error
-					reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now(), func() error {
+					reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now(), func([]string) error {
 						return env.objects.Delete(putCtx, key)
 					})
 					if err != nil || !markTrashed {
@@ -404,7 +404,7 @@ func TestObjectPublishCleansMainKeyWhenCompanionPutFailsAfterReclaim(t *testing.
 					return fmt.Errorf("aging pending copy before reclaim: %w", err)
 				}
 				var err error
-				reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now(), func() error { return nil })
+				reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now(), func([]string) error { return nil })
 				return err
 			case companionKey:
 				return companionErr
@@ -477,7 +477,7 @@ func TestObjectPublishCleanupDoesNotDeleteNewerThumbnailGeneration(t *testing.T)
 				return fmt.Errorf("aging pending copy before reclaim: %w", err)
 			}
 			var err error
-			reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now(), func() error {
+			reclaimed, err = env.media.ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now(), func([]string) error {
 				return env.objects.Delete(putCtx, keyA)
 			})
 			return err

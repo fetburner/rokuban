@@ -156,7 +156,12 @@ RETURNING id;
 SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1
   AND kind = 'thumbnail'
-  AND EXISTS (SELECT 1 FROM active_media_asset_copies(media_assets.id, sqlc.narg('store_name')::text));
+  AND EXISTS (
+      SELECT 1 FROM active_media_asset_copies(media_assets.id, NULL) copy
+      WHERE sqlc.narg('store_name')::text IS NULL
+         OR copy.store = sqlc.narg('store_name')::text
+         OR copy.store = ANY(sqlc.narg('staging_stores')::text[])
+  );
 
 -- thumbnail 差し替えの commit tx 内で論理行を直列化する。
 -- seek_ms は衛星表から読む。行が無ければ旧サムネイルで位置不明。
@@ -192,7 +197,12 @@ ON CONFLICT (media_asset_id) DO UPDATE SET seek_ms = EXCLUDED.seek_ms;
 SELECT media_assets.id FROM media_assets
 WHERE recording_id = $1
   AND kind = 'seek_tiles'
-  AND EXISTS (SELECT 1 FROM active_media_asset_copies(media_assets.id, sqlc.narg('store_name')::text));
+  AND EXISTS (
+      SELECT 1 FROM active_media_asset_copies(media_assets.id, NULL) copy
+      WHERE sqlc.narg('store_name')::text IS NULL
+         OR copy.store = sqlc.narg('store_name')::text
+         OR copy.store = ANY(sqlc.narg('staging_stores')::text[])
+  );
 
 -- pid_type は分類できなかった PID では NULL（空文字を入れない）。
 -- 値の権威は internal/tsstat（列に CHECK は無い）。

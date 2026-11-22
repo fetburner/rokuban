@@ -148,11 +148,15 @@ func (w *DeleteReconcileWorker) reclaimPendingFilesystemDerivedCopy(ctx context.
 		log.Error("delete_reconcile: derived object store is not configured", "err", err)
 		return
 	}
-	reclaimed, err := w.MediaPendingReclaim.ReclaimPendingMediaAssetCopy(ctx, copy.ID, before, func() error {
+	reclaimed, err := w.MediaPendingReclaim.ReclaimPendingMediaAssetCopy(ctx, copy.ID, before, func(ownedRelPaths []string) error {
 		if err := storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reclaiming pending derived object"); err != nil {
 			return err
 		}
-		if err := deletePendingObjectKey(ctx, objects, copy.RelPath, copy.Kind); err != nil {
+		if ownedRelPaths != nil {
+			if err := deleteOwnedTransferObjects(ctx, objects, copy.RelPath, copy.Kind, ownedRelPaths, nil); err != nil {
+				return err
+			}
+		} else if err := deletePendingObjectKey(ctx, objects, copy.RelPath, copy.Kind); err != nil {
 			return err
 		}
 		return storemarker.RequireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking pending derived object deleted")

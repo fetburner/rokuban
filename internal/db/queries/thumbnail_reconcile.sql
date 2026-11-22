@@ -20,7 +20,8 @@ WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
     WHERE t.recording_id = o.recording_id
       AND t.kind = 'thumbnail'
       AND EXISTS (
-          SELECT 1 FROM active_media_asset_copies(t.id, sqlc.arg('derived_store')::text)
+          SELECT 1 FROM active_media_asset_copies(t.id, NULL) copy
+          WHERE copy.store = sqlc.arg('derived_store')::text OR copy.store = ANY(sqlc.narg('staging_stores')::text[])
       )
   )
 ORDER BY o.recording_id
@@ -61,6 +62,7 @@ WITH planning AS (
         COALESCE(encoded.assets, '[]'::jsonb)::jsonb AS encoded_assets,
         thumbnail.id AS thumbnail_media_asset_id,
         thumbnail.rel_path AS thumbnail_rel_path,
+        thumbnail.store AS thumbnail_store,
         thumbnail.derived_generation AS thumbnail_generation,
         thumbnail.seek_ms
     FROM recordings r
@@ -84,7 +86,14 @@ WITH planning AS (
             ) ORDER BY a.profile
         ) AS assets
         FROM media_assets a
-        JOIN LATERAL active_present_media_asset_copies(a.id, sqlc.arg('derived_store')::text) copy ON true
+        JOIN LATERAL (
+            SELECT present.store, present.rel_path
+            FROM active_present_media_asset_copies(a.id, NULL) present
+            WHERE present.store = sqlc.arg('derived_store')::text
+               OR present.store = ANY(sqlc.narg('encoded_staging_stores')::text[])
+            ORDER BY (present.store = sqlc.arg('derived_store')::text), present.store
+            LIMIT 1
+        ) copy ON true
         LEFT JOIN media_asset_cuts c ON c.media_asset_id = a.id
         LEFT JOIN LATERAL (
             SELECT jsonb_agg(jsonb_build_object('startMs', lower(k), 'endMs', upper(k))
@@ -95,9 +104,13 @@ WITH planning AS (
           AND a.kind = 'encoded'
     ) encoded ON true
     LEFT JOIN LATERAL (
-        SELECT a.id, copy.rel_path, a.derived_generation, thumbnail_seek.seek_ms
+        SELECT a.id, copy.rel_path, copy.store, a.derived_generation, thumbnail_seek.seek_ms
         FROM media_assets a
-        JOIN LATERAL preferred_active_media_asset_copy(a.id, sqlc.arg('derived_store')::text) copy ON true
+        JOIN LATERAL preferred_readable_media_asset_copy(
+            a.id,
+            sqlc.arg('derived_store')::text,
+            array_prepend(sqlc.arg('derived_store')::text, sqlc.narg('staging_stores')::text[])
+        ) copy ON true
         LEFT JOIN media_asset_thumbnail_seeks thumbnail_seek ON thumbnail_seek.media_asset_id = a.id
         WHERE a.recording_id = r.id
           AND a.kind = 'thumbnail'
@@ -133,7 +146,8 @@ WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
     WHERE s.recording_id = o.recording_id
       AND s.kind = 'seek_tiles'
       AND EXISTS (
-          SELECT 1 FROM active_media_asset_copies(s.id, sqlc.arg('derived_store')::text)
+          SELECT 1 FROM active_media_asset_copies(s.id, NULL) copy
+          WHERE copy.store = sqlc.arg('derived_store')::text OR copy.store = ANY(sqlc.narg('staging_stores')::text[])
       )
   )
 ORDER BY o.recording_id

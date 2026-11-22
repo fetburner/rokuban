@@ -402,7 +402,7 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 	var assetID int64
 	if in.Expected == nil {
 		if _, err := q.GetActiveThumbnailMediaAssetID(ctx, sqlcgen.GetActiveThumbnailMediaAssetIDParams{
-			RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.storeName),
+			RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.derivedStoreName()), StagingStores: s.derivedStagingStores(),
 		}); err == nil {
 			return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 		} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -429,8 +429,12 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 			return false, fmt.Errorf("upserting thumbnail media asset: %w", mapStaleDerivedGeneration(err))
 		}
 	} else {
+		observedStore := in.Expected.Store
+		if observedStore == "" {
+			observedStore = s.storeName
+		}
 		current, err := q.LockActiveThumbnailMediaAsset(ctx, sqlcgen.LockActiveThumbnailMediaAssetParams{
-			RecordingID: in.RecordingID, StoreName: s.storeName,
+			RecordingID: in.RecordingID, StoreName: observedStore,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
@@ -446,8 +450,8 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 		if inputStore == "" {
 			inputStore = s.originalStore
 		}
-		if inputStore != s.originalStore && inputStore != s.storeName {
-			return false, fmt.Errorf("thumbnail input store %q is neither the original nor the publishing store", inputStore)
+		if inputStore != s.originalStore && inputStore != s.storeName && inputStore != s.derivedStoreName() {
+			return false, fmt.Errorf("thumbnail input store %q is outside the original, publishing and desired stores", inputStore)
 		}
 		active, err := q.IsActiveThumbnailInput(ctx, sqlcgen.IsActiveThumbnailInputParams{
 			MediaAssetID: in.InputAssetID, StoreName: inputStore,
@@ -514,7 +518,7 @@ func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishI
 		return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 	}
 	if _, err := q.GetActiveSeekTilesMediaAssetID(ctx, sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
-		RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.storeName),
+		RecordingID: in.RecordingID, StoreName: mediaStoreNameArg(s.derivedStoreName()), StagingStores: s.derivedStagingStores(),
 	}); err == nil {
 		return false, pendingMediaAssetCopyMissingIfAbsent(ctx, q, s.storeName, in.PendingCopy, in.RelPath)
 	} else if !errors.Is(err, pgx.ErrNoRows) {

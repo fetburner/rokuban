@@ -464,7 +464,7 @@ func TestObjectPendingReclaimSkipsCopyPublishedFirst(t *testing.T) {
 	var copyID int64
 	testutil.RequireNoError(t, env.pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, objectStoreName, key).Scan(&copyID), "loading copy")
 	called := false
-	reclaimed, err := env.media.ReclaimPendingMediaAssetCopy(ctx, copyID, time.Now(), func() error { called = true; return nil })
+	reclaimed, err := env.media.ReclaimPendingMediaAssetCopy(ctx, copyID, time.Now(), func([]string) error { called = true; return nil })
 	if err != nil || reclaimed || called {
 		t.Fatalf("reclaiming an active copy = (%t, %v, deleter called %t), want (false, nil, false)", reclaimed, err, called)
 	}
@@ -487,7 +487,7 @@ func TestObjectPublishFailsWhenPendingCopyWasReclaimed(t *testing.T) {
 	var copyID int64
 	testutil.RequireNoError(t, env.pool.QueryRow(ctx, `SELECT id FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, objectStoreName, key).Scan(&copyID), "loading copy")
 	testutil.MustExec(t, env.pool, "aging the copy", `UPDATE media_asset_copies SET created_at = now() - interval '30 days' WHERE id = $1`, copyID)
-	reclaimed, err := env.media.ReclaimPendingMediaAssetCopy(ctx, copyID, time.Now(), func() error { return nil })
+	reclaimed, err := env.media.ReclaimPendingMediaAssetCopy(ctx, copyID, time.Now(), func([]string) error { return nil })
 	if err != nil || !reclaimed {
 		t.Fatalf("reclaiming pending copy = (%t, %v), want (true, nil)", reclaimed, err)
 	}

@@ -324,10 +324,21 @@ func (s *Media) GetLiveMediaAssetRecordingID(ctx context.Context, relPath string
 	return recordingID, nil
 }
 
+// derivedStagingStores は、遠隔の宛先へ転送するまで派生物を置く FS 置き場を返す。
+func (s *Media) derivedStagingStores() []string {
+	fsStores := s.policy.FSStores()
+	desired := s.policy.DerivedStore()
+	if desired == "" || slices.Contains(fsStores, desired) {
+		return nil
+	}
+	return fsStores
+}
+
 // HasActiveThumbnailMediaAsset は active なサムネイルがあれば true を返す。
 func (s *Media) HasActiveThumbnailMediaAsset(ctx context.Context, recordingID int64) (bool, error) {
 	_, err := sqlcgen.New(s.pool).GetActiveThumbnailMediaAssetID(ctx, sqlcgen.GetActiveThumbnailMediaAssetIDParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.derivedStoreName()),
+		StagingStores: s.derivedStagingStores(),
+		RecordingID:   recordingID, StoreName: mediaStoreNameArg(s.derivedStoreName()),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -341,7 +352,8 @@ func (s *Media) HasActiveThumbnailMediaAsset(ctx context.Context, recordingID in
 // HasActiveSeekTilesMediaAsset は active なシークタイルがあれば true を返す。
 func (s *Media) HasActiveSeekTilesMediaAsset(ctx context.Context, recordingID int64) (bool, error) {
 	_, err := sqlcgen.New(s.pool).GetActiveSeekTilesMediaAssetID(ctx, sqlcgen.GetActiveSeekTilesMediaAssetIDParams{
-		RecordingID: recordingID, StoreName: mediaStoreNameArg(s.derivedStoreName()),
+		StagingStores: s.derivedStagingStores(),
+		RecordingID:   recordingID, StoreName: mediaStoreNameArg(s.derivedStoreName()),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -606,6 +618,7 @@ func (s *Media) GetDerivedMediaAssetGeneration(ctx context.Context, recordingID 
 // ListMissingThumbnailRecordings はサムネイルが無い録画をページ単位で返す。
 func (s *Media) ListMissingThumbnailRecordings(ctx context.Context, page store.MediaReconcilePage) ([]int64, error) {
 	rows, err := sqlcgen.New(s.pool).ListMissingThumbnailRecordings(ctx, sqlcgen.ListMissingThumbnailRecordingsParams{
+		StagingStores:    s.derivedStagingStores(),
 		AfterRecordingID: page.AfterRecordingID,
 		RecordingID:      page.RecordingID,
 		RowLimit:         page.RowLimit,
@@ -620,12 +633,20 @@ func (s *Media) ListMissingThumbnailRecordings(ctx context.Context, page store.M
 
 // ListThumbnailReselectCandidates は既存サムネイルの再選択候補を返す。
 func (s *Media) ListThumbnailReselectCandidates(ctx context.Context, page store.MediaReconcilePage) ([]store.ThumbnailReselectCandidate, error) {
+	stagingStores := s.derivedStagingStores()
+	encodedStagingStores := stagingStores
+	if s.originalStore != "" && len(encodedStagingStores) > 0 {
+		// 置き場で修飾した worker の入力は、自分の FS または遠隔の宛先から読む。
+		encodedStagingStores = []string{s.originalStore}
+	}
 	rows, err := sqlcgen.New(s.pool).ListThumbnailReselectCandidates(ctx, sqlcgen.ListThumbnailReselectCandidatesParams{
-		AfterRecordingID: page.AfterRecordingID,
-		RecordingID:      page.RecordingID,
-		RowLimit:         page.RowLimit,
-		OriginalStore:    mediaStoreNameArg(s.originalStore),
-		DerivedStore:     s.derivedStoreName(),
+		EncodedStagingStores: encodedStagingStores,
+		StagingStores:        stagingStores,
+		AfterRecordingID:     page.AfterRecordingID,
+		RecordingID:          page.RecordingID,
+		RowLimit:             page.RowLimit,
+		OriginalStore:        mediaStoreNameArg(s.originalStore),
+		DerivedStore:         s.derivedStoreName(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing thumbnail reselection candidates: %w", err)
@@ -642,6 +663,7 @@ func (s *Media) ListThumbnailReselectCandidates(ctx context.Context, page store.
 			OriginalRelPath:       row.OriginalRelPath,
 			ThumbnailMediaAssetID: &row.ThumbnailMediaAssetID,
 			ThumbnailRelPath:      &row.ThumbnailRelPath,
+			ThumbnailStore:        row.ThumbnailStore,
 			ThumbnailGeneration:   row.ThumbnailGeneration,
 			SeekMs:                row.SeekMs,
 		}
@@ -694,6 +716,7 @@ func decodeThumbnailEncodedAssets(raw []byte) ([]store.ThumbnailEncodedAsset, er
 // ListMissingSeekTilesRecordings はシークタイルが無い録画をページ単位で返す。
 func (s *Media) ListMissingSeekTilesRecordings(ctx context.Context, page store.MediaReconcilePage) ([]int64, error) {
 	rows, err := sqlcgen.New(s.pool).ListMissingSeekTilesRecordings(ctx, sqlcgen.ListMissingSeekTilesRecordingsParams{
+		StagingStores:    s.derivedStagingStores(),
 		AfterRecordingID: page.AfterRecordingID,
 		RecordingID:      page.RecordingID,
 		RowLimit:         page.RowLimit,

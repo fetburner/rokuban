@@ -265,7 +265,7 @@ func (w *DeleteReconcileWorker) deleteObjectCopyWithStore(ctx context.Context, o
 func (w *DeleteReconcileWorker) reclaimPendingObjectCopy(ctx context.Context, t store.MediaDeleteAsset, before time.Time) {
 	log := slog.With("media_asset_id", t.MediaAssetID, "media_asset_copy_id", t.ID, "rel_path", t.RelPath,
 		"source", "pending_reclaim", "store", w.DerivedObjectStoreName)
-	reclaimed, err := w.DerivedObjectDeleteStores.PendingCopyReclaim().ReclaimPendingMediaAssetCopy(ctx, t.ID, before, func() error {
+	reclaimed, err := w.DerivedObjectDeleteStores.PendingCopyReclaim().ReclaimPendingMediaAssetCopy(ctx, t.ID, before, func([]string) error {
 		return deletePendingObjectKey(ctx, w.DerivedObjects, t.RelPath, t.Kind)
 	})
 	if err != nil {

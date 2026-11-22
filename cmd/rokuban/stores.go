@@ -94,6 +94,7 @@ func storeNames(storage config.StorageConfig) []string {
 //   - worker が ingest を引くのに、FS 置き場を 1 つもマウントしていなければ起動エラー
 //   - worker が encode / thumbnail（seek_tiles を含む）を引くのに、storage.derived が FS 置き場で
 //     マウントしていなければ起動エラー。派生物はその置き場へ書くので、S3 にするか、マウントするかを選ばせる
+//   - storage.derived が遠隔のときは、置き場で修飾するキューの検査で公開先になる FS のマウントを要求する
 //   - worker が --once で、置き場で修飾した物理キューが 2 本以上になるなら起動エラー
 //     （1 件消化は 1 キューを前提にする）
 //
@@ -121,7 +122,7 @@ func validateStoreBinding(roles []string, explicit bool, storage config.StorageC
 	}
 	// encode と thumbnail（seek_tiles は thumbnail に載る）が派生物を書く。その集合は jobs が持つ。
 	// 派生物の FS 置き場をマウントしていないと、その仕事は実行時に置き場が無いと失敗するので、起動で止める。
-	if derived, ok := storage.Stores[storage.Derived]; ok && derived.Kind == "fs" &&
+	if derived, ok := storage.Stores[storage.Derived]; ok && derived.IsFilesystem() &&
 		jobs.RequiresEncodeTools(queues) && !slices.Contains(mounted, storage.Derived) {
 		return fmt.Errorf("--%s: the worker pulls encode or thumbnail (which write derived media) but storage.derived %q is an fs store this process does not mount; "+
 			"use an s3 store for storage.derived, or mount %q with --%s",

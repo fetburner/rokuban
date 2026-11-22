@@ -419,7 +419,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 					return fmt.Errorf("aging pending copy before Put: %w", err)
 				}
 				var err error
-				reclaimedBeforePut, err = pgstoretest.Media(pool).ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now(), func() error {
+				reclaimedBeforePut, err = pgstoretest.Media(pool).ReclaimPendingMediaAssetCopy(putCtx, copyID, time.Now(), func([]string) error {
 					err := os.Remove(abs(g2))
 					if errors.Is(err, os.ErrNotExist) {
 						return nil
