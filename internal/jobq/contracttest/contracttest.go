@@ -19,6 +19,10 @@ type Fixture interface {
 	jobq.Runner
 	WaitIdle(context.Context) error
 	Crash(context.Context) error
+	// SnoozeClockSkew reports the maximum measured amount by which the adapter's
+	// snooze eligibility clock is ahead of the clock used to observe Work deliveries.
+	// Adapters sharing those clocks report zero.
+	SnoozeClockSkew(context.Context) (time.Duration, error)
 	// RecoveryGrace is the adapter's recovery grace in jobq.Spec.Timeout: how long after the
 	// timeout it may take to make a job whose process died eligible for redelivery.
 	RecoveryGrace() time.Duration
@@ -167,13 +171,28 @@ func testSnoozeDelay(t *testing.T, factory Factory) {
 	}})
 	start(t, fixture)
 	args := contractArgs{Value: "preserve on snooze", TimeoutMS: 5000, MaxAttempts: 1}
+	skewBefore, err := fixture.SnoozeClockSkew(context.Background())
+	if err != nil {
+		t.Fatalf("SnoozeClockSkew() before snooze = %v", err)
+	}
 	if _, err := fixture.Enqueue(context.Background(), args); err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
 	waitIdle(t, fixture)
 	first, second := receive(t, calls), receive(t, calls)
-	if elapsed := second.at.Sub(first.at); elapsed < 2*time.Second {
-		t.Errorf("time between snoozed deliveries = %s, want at least 2s", elapsed)
+	// Measure again after delivery so the allowance includes clock offset changes during
+	// the wait. The fixture reports a measured quantity rather than a fixed tolerance.
+	skewAfter, err := fixture.SnoozeClockSkew(context.Background())
+	if err != nil {
+		t.Fatalf("SnoozeClockSkew() after snooze = %v", err)
+	}
+	skew := max(skewBefore, skewAfter)
+	delay := 2 * time.Second
+	if skew >= delay/2 {
+		t.Fatalf("measured snooze clock skew = %s, want less than half the requested delay (%s)", skew, delay/2)
+	}
+	if elapsed := second.at.Sub(first.at); elapsed+skew < delay {
+		t.Errorf("time between snoozed deliveries = %s with measured clock skew %s, want at least %s", elapsed, skew, delay)
 	}
 	if !reflect.DeepEqual(first.args, args) || !reflect.DeepEqual(second.args, args) {
 		t.Errorf("snoozed Args changed: first=%#v second=%#v want=%#v", first.args, second.args, args)

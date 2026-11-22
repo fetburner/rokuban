@@ -538,6 +538,10 @@ func (queue *Queue) WaitIdle(ctx context.Context) error {
 // Stop, so the grace is small.
 func (queue *Queue) RecoveryGrace() time.Duration { return time.Second }
 
+// SnoozeClockSkew reports zero because the fake schedules snoozes and observes deliveries
+// with the same process clock.
+func (queue *Queue) SnoozeClockSkew(context.Context) (time.Duration, error) { return 0, nil }
+
 // Deliveries returns a copy of the deliveries observed so far.
 func (queue *Queue) Deliveries() []Delivery {
 	if queue == nil {
