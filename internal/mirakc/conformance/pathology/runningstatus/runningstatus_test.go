@@ -1,5 +1,6 @@
 //go:build conformance
 
+// 計測用のコメント（マージしない）。
 package runningstatus
 
 import (
