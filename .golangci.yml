@@ -223,6 +223,28 @@ linters:
             - github.com/fetburner/rokuban/internal/jobq
             - github.com/jackc/pgx
             - github.com/riverqueue/river
+        asynq-adapter-only:
+          # asynq と go-redis の型はテストも含め adapter に閉じ込める。
+          list-mode: lax
+          files:
+            - "${config-path}/**"
+            - "!${config-path}/internal/jobq/asynqadapter/**"
+          deny:
+            - pkg: github.com/hibiken/asynq
+              desc: asynq imports are limited to internal/jobq/asynqadapter
+            - pkg: github.com/redis/go-redis
+              desc: go-redis imports are limited to internal/jobq/asynqadapter
+        asynqadapter-allowlist:
+          # 製品の方針はジョブキューの契約を通して受け取る。
+          list-mode: strict
+          files:
+            - "${config-path}/internal/jobq/asynqadapter/**"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/fetburner/rokuban/internal/jobq
+            - github.com/hibiken/asynq
+            - github.com/redis/go-redis/v9
         notifier-db-source:
           # notifier の EventHub と SSE 配信は DB を知らない。DB への接続は Source の
           # 実装のサブパッケージに閉じ込める。テストは実 DB を使う統合テストを含むので対象外。
