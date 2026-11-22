@@ -1,10 +1,10 @@
--- Active derived copies left in a configured S3 store after a policy switch.
--- Store identity comes from the copy rows; the caller supplies only configured S3 names.
--- name: ListActiveDerivedCopiesInNonDerivedS3 :many
+-- Active derived copies left in a configured remote store after a policy switch.
+-- Store identity comes from the copy rows; the caller supplies only configured remote names.
+-- name: ListActiveDerivedCopiesInNonDerivedRemote :many
 SELECT c.store, count(*)::bigint AS copies
 FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
-WHERE c.store = ANY(sqlc.arg('s3_stores')::text[])
+WHERE c.store = ANY(sqlc.arg('remote_stores')::text[])
   AND c.store <> sqlc.arg('derived_store')::text
   AND c.state = 'active'
   AND c.generation = a.derived_generation

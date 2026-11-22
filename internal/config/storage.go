@@ -36,6 +36,9 @@ type StoreConfig struct {
 	Bucket      string `yaml:"bucket,omitempty" json:"bucket,omitempty"`
 }
 
+// IsFilesystem は StoreConfig がファイルシステム置き場を表すか返す。
+func (c StoreConfig) IsFilesystem() bool { return c.Kind == "fs" }
+
 // OriginalStoreRule は原本の置き場を選ぶ 1 規則。
 // Match が nil または空なら無条件に一致する。
 type OriginalStoreRule struct {
@@ -108,11 +111,11 @@ func (c StorageConfig) fsStoreNames() []string {
 func (c StorageConfig) FSStoreNames() []string { return c.fsStoreNames() }
 
 // TransferDestinationStoreNames は転送の宛先になれる置き場の名前を昇順で返す。
-// FS の置き場すべてと、派生物の置き場が S3 ならその名前である。原本の宛先は FS だけなので、S3 は派生物の置き場として足す。
+// FS の置き場すべてと、派生物の置き場が遠隔ならその名前である。原本の宛先は FS だけなので、遠隔は派生物の置き場として足す。
 // 転送の宛先が 2 つ未満なら、転送も配置の削除も走らない（FS 1 つだけの構成は移す先が無い）。
 func (c StorageConfig) TransferDestinationStoreNames() []string {
 	names := c.fsStoreNames()
-	if derived, ok := c.Stores[c.Derived]; ok && derived.Kind == "s3" {
+	if derived, ok := c.Stores[c.Derived]; ok && !derived.IsFilesystem() {
 		names = append(names, c.Derived)
 		sort.Strings(names)
 	}

@@ -955,6 +955,14 @@ func TestNewStreamerObjectStoresIncludesMountedFSAndAllS3(t *testing.T) {
 	}
 }
 
+// TestNewObjectStoreRejectsUnsupportedKind は、newObjectStore が未対応の置き場種類にエラーを返すことを確かめる。
+func TestNewObjectStoreRejectsUnsupportedKind(t *testing.T) {
+	_, err := newObjectStore(context.Background(), "remote", config.StoreConfig{Kind: "gcs"}, "", false)
+	if err == nil || err.Error() != `creating object store "remote": unsupported kind "gcs"` {
+		t.Fatalf("newObjectStore() error = %v, want %q", err, `creating object store "remote": unsupported kind "gcs"`)
+	}
+}
+
 func TestServerRecordingQueryShowsS3EncodedCopyAfterOriginalRemoval(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

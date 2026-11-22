@@ -60,13 +60,13 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 	if w.Storage == nil {
 		return fmt.Errorf("storage transfer reconcile: storage contract is nil")
 	}
-	if err := w.warnForDerivedCopiesOutsideS3(ctx); err != nil {
+	if err := w.warnForDerivedCopiesInNonDerivedRemote(ctx); err != nil {
 		return err
 	}
 	if err := w.Storage.ClearObsoleteMediaAssetTransferAttempts(ctx); err != nil {
 		return fmt.Errorf("clearing obsolete storage transfer attempts: %w", err)
 	}
-	// 転送の宛先は FS の置き場と、派生物が S3 ならその置き場。FS 1 つ + S3 の派生物でも移す先がある。
+	// 転送の宛先は FS の置き場と、派生物が遠隔ならその置き場。FS 1 つ + 遠隔の派生物でも移す先がある。
 	// 候補 SQL は設定済み FS 集合で desired と転送元を判定する。
 	if len(w.Config.TransferDestinationStoreNames()) < 2 {
 		metrics.StorageTransferWaitingAssets.Set(0)
@@ -99,10 +99,10 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 	}
 	for _, candidate := range transfers {
 		job := jobs.StorageTransferArgs{MediaAssetID: candidate.MediaAssetID, Store: candidate.Store, PolicyFingerprint: fingerprint}
-		if w.Config.Stores[candidate.Store].Kind == "s3" {
-			// S3 の宛先は、転送元の FS 置き場の転送キューに積む（その worker が S3 へ直接送る）。
+		if !w.Config.Stores[candidate.Store].IsFilesystem() {
+			// 遠隔の宛先は、転送元の FS 置き場の転送キューに積む（その worker が直接送る）。
 			if candidate.SourceStore == "" {
-				slog.Warn("storage transfer reconcile: no current FS copy to transfer to s3; skipping", "media_asset_id", candidate.MediaAssetID, "store", candidate.Store)
+				slog.Warn("storage transfer reconcile: no current FS copy to transfer to remote store; skipping", "media_asset_id", candidate.MediaAssetID, "store", candidate.Store)
 				continue
 			}
 			job.SourceStore = candidate.SourceStore
@@ -114,17 +114,17 @@ func (w *StorageTransferReconcileWorker) Work(ctx context.Context, _ jobs.Storag
 	return nil
 }
 
-func (w *StorageTransferReconcileWorker) warnForDerivedCopiesOutsideS3(ctx context.Context) error {
-	s3Stores := make([]string, 0, len(w.Config.Stores))
+func (w *StorageTransferReconcileWorker) warnForDerivedCopiesInNonDerivedRemote(ctx context.Context) error {
+	remoteStores := make([]string, 0, len(w.Config.Stores))
 	for name, cfg := range w.Config.Stores {
-		if cfg.Kind == "s3" {
-			s3Stores = append(s3Stores, name)
+		if !cfg.IsFilesystem() {
+			remoteStores = append(remoteStores, name)
 		}
 	}
-	slices.Sort(s3Stores)
-	counts, err := w.Storage.ListActiveDerivedCopiesInNonDerivedS3(ctx, s3Stores)
+	slices.Sort(remoteStores)
+	counts, err := w.Storage.ListActiveDerivedCopiesInNonDerivedRemote(ctx, remoteStores)
 	if err != nil {
-		return fmt.Errorf("storage transfer reconcile: checking derived copies in non-derived S3 stores: %w", err)
+		return fmt.Errorf("storage transfer reconcile: checking derived copies in non-derived remote stores: %w", err)
 	}
 	var total int64
 	for _, count := range counts {
@@ -132,7 +132,7 @@ func (w *StorageTransferReconcileWorker) warnForDerivedCopiesOutsideS3(ctx conte
 	}
 	metrics.StorageDerivedCopiesOutsideDerivedS3.Set(float64(total))
 	for _, count := range counts {
-		slog.Warn("storage transfer reconcile: active derived copies remain in a non-derived S3 store; until_encoded originals can remain undeletable if encoded exists only there",
+		slog.Warn("storage transfer reconcile: active derived copies remain in a non-derived remote store; until_encoded originals can remain undeletable if encoded exists only there",
 			"derived_store", w.Config.Derived, "store", count.Store, "active_copies", count.Copies)
 	}
 	return nil
@@ -166,10 +166,10 @@ func (w *StorageTransferWorker) Work(ctx context.Context, args jobs.StorageTrans
 		return fmt.Errorf("storage transfer policy fingerprint changed: %w", jobq.ErrDiscard)
 	}
 	cfg, ok := w.Config.Stores[args.Store]
-	if !ok || (cfg.Kind != "fs" && cfg.Kind != "s3") {
-		return fmt.Errorf("storage transfer: store %q is not a configured fs or s3 store: %w", args.Store, jobq.ErrDiscard)
+	if !ok {
+		return fmt.Errorf("storage transfer: store %q is not configured: %w", args.Store, jobq.ErrDiscard)
 	}
-	// S3 の宛先は root と目印を持たないので、ここでは見ない。転送元の FS 置き場の worker だけが来る。
+	// 遠隔の宛先は root と目印を持たないので、ここでは見ない。転送元の FS 置き場の worker だけが来る。
 	var targetRoot string
 	if cfg.Kind == "fs" {
 		root, ok := w.Roots[args.Store]
@@ -182,7 +182,7 @@ func (w *StorageTransferWorker) Work(ctx context.Context, args jobs.StorageTrans
 			return err
 		}
 		targetRoot = root
-	} else if err := w.checkS3TransferWorker(args); err != nil {
+	} else if err := w.checkRemoteTransferWorker(args); err != nil {
 		return err
 	}
 	fsStores, err := w.mountedFSStores(args.Store)
@@ -193,12 +193,12 @@ func (w *StorageTransferWorker) Work(ctx context.Context, args jobs.StorageTrans
 	return w.copyAsset(ctx, args, fsStores, transferSourceStores(w.Config, fsStores), fsStores, targetRoot)
 }
 
-// checkS3TransferWorker は、宛先が S3 の転送をこの worker が実行できるかを確かめる。
+// checkRemoteTransferWorker は、宛先が遠隔の転送をこの worker が実行できるかを確かめる。
 // 宛先の objstore が再開できて、転送元の FS 置き場をこの worker がマウントしていること。どちらも無ければ、
 // FS の宛先が未マウントのときと同じメトリクスとエラーにする。
-func (w *StorageTransferWorker) checkS3TransferWorker(args jobs.StorageTransferArgs) error {
+func (w *StorageTransferWorker) checkRemoteTransferWorker(args jobs.StorageTransferArgs) error {
 	if args.SourceStore == "" {
-		return fmt.Errorf("storage transfer: s3 store %q has no source store: %w", args.Store, jobq.ErrDiscard)
+		return fmt.Errorf("storage transfer: remote store %q has no source store: %w", args.Store, jobq.ErrDiscard)
 	}
 	if _, ok := w.ObjectStores[args.Store].(objstore.Resumable); !ok {
 		metrics.StorageTransferMountMismatches.WithLabelValues(args.Store).Inc()
@@ -211,10 +211,10 @@ func (w *StorageTransferWorker) checkS3TransferWorker(args jobs.StorageTransferA
 	return nil
 }
 
-// requireDestinationMarker は派生物の経路で宛先の目印を確かめる。宛先が FS のときだけ確かめ、S3 の宛先では何もしない。
+// requireDestinationMarker は派生物の経路で宛先の目印を確かめる。宛先が FS のときだけ確かめ、遠隔の宛先では何もしない。
 // 原本の経路は宛先が常に FS なので、直接 storemarker.RequireMediaStoreMarker を呼ぶ。
 func (w *StorageTransferWorker) requireDestinationMarker(targetRoot, targetStore, operation string) error {
-	if w.Config.Stores[targetStore].Kind == "s3" {
+	if !w.Config.Stores[targetStore].IsFilesystem() {
 		return nil
 	}
 	return storemarker.RequireMediaStoreMarker(targetRoot, targetStore, operation)
@@ -850,7 +850,7 @@ func (w *StorageTransferWorker) copyDerivedAsset(ctx context.Context, transfer s
 // 返す digest と size は完了（CompleteMediaAssetTransfer）に渡す値である。done が真なら、この試行はここで終わるので err を返す。
 // 宛先の Resumable と転送元の RangeReader は、この worker が満たすべき前提である。どちらかが欠けたらジョブエラーを返し、
 // 転送失敗として数えない。この worker の構成の問題であってコピーの失敗ではないので、宛先が未マウントのときと同じ扱いにする。
-// S3 宛てでは、checkS3TransferWorker が宛先の不足だけを事前に拒否する（転送元の RangeReader は見ない）。
+// 遠隔宛てでは、checkRemoteTransferWorker が宛先の不足だけを事前に拒否する（転送元の RangeReader は見ない）。
 // SHA-256 が未知なら送る前に転送元を slice ごとに測り（measureDerivedSource）、既知なら再開できるアップロードで送る（putDerivedResumable）。
 func (w *StorageTransferWorker) putDerivedMain(
 	ctx context.Context,

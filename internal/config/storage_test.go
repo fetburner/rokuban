@@ -596,6 +596,7 @@ func TestTransferDestinationStoreNamesIncludesS3Derived(t *testing.T) {
 	}{
 		{name: "FS only", stores: fs, derived: "tokyo", want: []string{"takamatsu", "tokyo"}},
 		{name: "one FS store plus an S3 derived store", stores: withS3, derived: "cloud", want: []string{"cloud", "tokyo"}},
+		{name: "one FS store plus a remote derived store", stores: map[string]StoreConfig{"tokyo": {Kind: "fs"}, "cloud": {Kind: "gcs"}}, derived: "cloud", want: []string{"cloud", "tokyo"}},
 		{name: "S3 store that is not the derived store is not a destination", stores: map[string]StoreConfig{"tokyo": {Kind: "fs"}, "old": {Kind: "s3", Bucket: "b"}}, derived: "tokyo", want: []string{"tokyo"}},
 	}
 	for _, tt := range tests {

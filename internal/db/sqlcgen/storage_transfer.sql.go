@@ -654,7 +654,7 @@ func (q *Queries) ListAbandonedMediaAssetTransferUploads(ctx context.Context, ar
 	return items, nil
 }
 
-const listActiveDerivedCopiesInNonDerivedS3 = `-- name: ListActiveDerivedCopiesInNonDerivedS3 :many
+const listActiveDerivedCopiesInNonDerivedRemote = `-- name: ListActiveDerivedCopiesInNonDerivedRemote :many
 SELECT c.store, count(*)::bigint AS copies
 FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
@@ -667,27 +667,27 @@ GROUP BY c.store
 ORDER BY c.store
 `
 
-type ListActiveDerivedCopiesInNonDerivedS3Params struct {
-	S3Stores     []string
+type ListActiveDerivedCopiesInNonDerivedRemoteParams struct {
+	RemoteStores []string
 	DerivedStore string
 }
 
-type ListActiveDerivedCopiesInNonDerivedS3Row struct {
+type ListActiveDerivedCopiesInNonDerivedRemoteRow struct {
 	Store  string
 	Copies int64
 }
 
-// Active derived copies left in a configured S3 store after a policy switch.
-// Store identity comes from the copy rows; the caller supplies only configured S3 names.
-func (q *Queries) ListActiveDerivedCopiesInNonDerivedS3(ctx context.Context, arg ListActiveDerivedCopiesInNonDerivedS3Params) ([]ListActiveDerivedCopiesInNonDerivedS3Row, error) {
-	rows, err := q.db.Query(ctx, listActiveDerivedCopiesInNonDerivedS3, arg.S3Stores, arg.DerivedStore)
+// Active derived copies left in a configured remote store after a policy switch.
+// Store identity comes from the copy rows; the caller supplies only configured remote names.
+func (q *Queries) ListActiveDerivedCopiesInNonDerivedRemote(ctx context.Context, arg ListActiveDerivedCopiesInNonDerivedRemoteParams) ([]ListActiveDerivedCopiesInNonDerivedRemoteRow, error) {
+	rows, err := q.db.Query(ctx, listActiveDerivedCopiesInNonDerivedRemote, arg.RemoteStores, arg.DerivedStore)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListActiveDerivedCopiesInNonDerivedS3Row
+	var items []ListActiveDerivedCopiesInNonDerivedRemoteRow
 	for rows.Next() {
-		var i ListActiveDerivedCopiesInNonDerivedS3Row
+		var i ListActiveDerivedCopiesInNonDerivedRemoteRow
 		if err := rows.Scan(&i.Store, &i.Copies); err != nil {
 			return nil, err
 		}

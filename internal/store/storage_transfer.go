@@ -67,7 +67,7 @@ type AbandonedTransferUpload struct {
 type MediaAssetTransferCandidate struct {
 	MediaAssetID int64
 	Store        string
-	// SourceStore は、転送を実行しうる FS 置き場の候補である。reconcile は宛先が S3 のときだけ使う。
+	// SourceStore は、転送を実行しうる FS 置き場の候補である。reconcile は宛先が遠隔のときだけ使う。
 	// 候補が無いときは空になる（FS の宛先の候補は、この値を使わない）。
 	SourceStore string
 }
@@ -100,8 +100,8 @@ type MediaAssetCopyDeleteCandidate struct {
 	Generation   int64
 }
 
-// DerivedS3CopyCount は、現在の派生物置き場以外に残る active 派生コピーの件数を置き場ごとに表す。
-type DerivedS3CopyCount struct {
+// DerivedRemoteCopyCount は、現在の派生物置き場以外に残る active 派生コピーの件数を置き場ごとに表す。
+type DerivedRemoteCopyCount struct {
 	Store  string
 	Copies int64
 }
@@ -142,8 +142,8 @@ type TransferBacklogReader interface {
 // StorageTransfer は desired state と物理コピーの reconcile を永続化する契約である。
 type StorageTransfer interface {
 	TransferBacklogReader
-	// ListActiveDerivedCopiesInNonDerivedS3 は、設定済み S3 置き場にある current-generation の active 派生コピーを、現在の derived 以外について返す。
-	ListActiveDerivedCopiesInNonDerivedS3(ctx context.Context, s3Stores []string) ([]DerivedS3CopyCount, error)
+	// ListActiveDerivedCopiesInNonDerivedRemote は、設定済み遠隔置き場にある current-generation の active 派生コピーを、現在の derived 以外について返す。
+	ListActiveDerivedCopiesInNonDerivedRemote(ctx context.Context, remoteStores []string) ([]DerivedRemoteCopyCount, error)
 	// DatabaseClock は DB の時計の現在時刻を返す。RecordTransferBacklog の countedAt の出所は、
 	// プロセスごとに違う時計ではなく、この 1 つにする。
 	DatabaseClock(ctx context.Context) (time.Time, error)

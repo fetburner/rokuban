@@ -29,7 +29,7 @@ type transferRegistrationStore struct {
 	transferErr  error
 }
 
-func (s transferRegistrationStore) ListActiveDerivedCopiesInNonDerivedS3(context.Context, []string) ([]store.DerivedS3CopyCount, error) {
+func (s transferRegistrationStore) ListActiveDerivedCopiesInNonDerivedRemote(context.Context, []string) ([]store.DerivedRemoteCopyCount, error) {
 	return nil, nil
 }
 

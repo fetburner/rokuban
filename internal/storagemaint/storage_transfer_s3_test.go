@@ -130,18 +130,29 @@ func (f s3DerivedFixture) driveToEnd(t *testing.T) int {
 	return snoozes
 }
 
-// TestStorageTransferWorkerSendsDerivedCopyToS3FromFSSource は、S3 の派生物への転送が、転送元の FS 置き場の worker で
-// slice をまたいで完了し、cloud のコピーが active になることを確かめる。cloud には root も目印も無い。
+// TestStorageTransferWorkerSendsDerivedCopyToS3FromFSSource は、S3 と未対応種類名の派生物への転送が、転送元の FS 置き場の
+// worker で slice をまたいで完了し、cloud のコピーが active になることを確かめる。遠隔の宛先には root も目印も無い。
 func TestStorageTransferWorkerSendsDerivedCopyToS3FromFSSource(t *testing.T) {
-	f := newS3DerivedFixture(t)
-	snoozes := f.driveToEnd(t)
-	if snoozes == 0 {
-		t.Fatal("transfer finished in one slice; the test needs several slices to exercise resumption")
-	}
-	relPath := transferTestCopyRelPath(t, f.pool, f.assetID, "cloud")
-	got, err := os.ReadFile(filepath.Join(f.cloudRoot, filepath.FromSlash(relPath)))
-	if err != nil || !bytes.Equal(got, f.content) {
-		t.Fatalf("cloud object = %d bytes, %v; want the %d source bytes", len(got), err, len(f.content))
+	for _, tc := range []struct {
+		kind string
+	}{{kind: "s3"}, {kind: "gcs"}} {
+		t.Run(tc.kind, func(t *testing.T) {
+			f := newS3DerivedFixture(t)
+			f.cfg.Stores["cloud"] = config.StoreConfig{Kind: tc.kind, Bucket: "rokuban-test"}
+			f.worker.Config = f.cfg
+			fingerprint, err := f.cfg.PolicyFingerprint()
+			testutil.RequireNoError(t, err, "cfg.PolicyFingerprint")
+			f.args.PolicyFingerprint = fingerprint
+			snoozes := f.driveToEnd(t)
+			if snoozes == 0 {
+				t.Fatal("transfer finished in one slice; the test needs several slices to exercise resumption")
+			}
+			relPath := transferTestCopyRelPath(t, f.pool, f.assetID, "cloud")
+			got, err := os.ReadFile(filepath.Join(f.cloudRoot, filepath.FromSlash(relPath)))
+			if err != nil || !bytes.Equal(got, f.content) {
+				t.Fatalf("cloud object = %d bytes, %v; want the %d source bytes", len(got), err, len(f.content))
+			}
+		})
 	}
 }
 
@@ -167,44 +178,52 @@ func TestStorageTransferWorkerRequiresSourceMountForS3Destination(t *testing.T) 
 }
 
 // TestStorageTransferReconcileRoutesS3CopiesToSourceQueue は、reconcile が FS 宛ての候補を宛先のキューに、
-// S3 宛ての候補を転送元のキューに積むことを確かめる。原本は FS 宛てにしかならない。
+// S3 と未対応種類名の遠隔宛て候補を転送元のキューに積むことを確かめる。原本は FS 宛てにしかならない。
 func TestStorageTransferReconcileRoutesS3CopiesToSourceQueue(t *testing.T) {
 	t.Parallel()
-	pool := testutil.SetupDB(t)
-	roots := transferTestRoots(t, "test-store", "archive")
-	originalID := transferTestOriginal(t, pool, roots["test-store"], []byte("original to archive"))
-	recordingID := dbtest.Recording(t, pool)
-	profile := "web"
-	encodedID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, "sites/default/transfer/routed.mp4", []byte("encoded to cloud"))
-	cfg := s3TransferTestConfig()
-	cfg.Stores["archive"] = config.StoreConfig{Kind: "fs"}
-	cfg.Originals = []config.OriginalStoreRule{{Store: "archive"}}
-	enqueuer := &jobqfaketest.RecordingEnqueuer{}
-	reconcile := StorageTransferReconcileWorker{Enqueuer: enqueuer, Storage: pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg}
-	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "reconcile Work")
-	var fsJobs, s3Jobs []jobs.StorageTransferArgs
-	for _, a := range enqueuer.CallsOfKind("storage_transfer") {
-		got, ok := a.Args.(jobs.StorageTransferArgs)
-		if !ok {
-			t.Fatalf("enqueued arg type = %T, want jobs.StorageTransferArgs", a.Args)
-		}
-		if got.Store == "cloud" {
-			s3Jobs = append(s3Jobs, got)
-		} else {
-			fsJobs = append(fsJobs, got)
-		}
-	}
-	if len(fsJobs) != 1 || fsJobs[0].MediaAssetID != originalID || fsJobs[0].Store != "archive" || fsJobs[0].SourceStore != "" {
-		t.Fatalf("FS-destination jobs = %+v, want one copy of asset %d to archive with no source store", fsJobs, originalID)
-	}
-	if queue, err := jobs.PhysicalQueueFor(fsJobs[0]); err != nil || queue != "transfer_archive" {
-		t.Fatalf("FS-destination queue = %q, %v; want transfer_archive", queue, err)
-	}
-	if len(s3Jobs) != 1 || s3Jobs[0].MediaAssetID != encodedID || s3Jobs[0].SourceStore != "test-store" {
-		t.Fatalf("S3-destination jobs = %+v, want one copy of encoded asset %d sourced from test-store", s3Jobs, encodedID)
-	}
-	if queue, err := jobs.PhysicalQueueFor(s3Jobs[0]); err != nil || queue != "transfer_test-store" {
-		t.Fatalf("S3-destination queue = %q, %v; want transfer_test-store", queue, err)
+	for _, tc := range []struct {
+		name string
+		kind string
+	}{{name: "s3", kind: "s3"}, {name: "gcs", kind: "gcs"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := testutil.SetupDB(t)
+			roots := transferTestRoots(t, "test-store", "archive")
+			originalID := transferTestOriginal(t, pool, roots["test-store"], []byte("original to archive"))
+			recordingID := dbtest.Recording(t, pool)
+			profile := "web"
+			encodedID := seedEncodedOrThumbnailAsset(t, pool, roots["test-store"], recordingID, store.AssetKindEncoded, &profile, "sites/default/transfer/routed.mp4", []byte("encoded to cloud"))
+			cfg := s3TransferTestConfig()
+			cfg.Stores["cloud"] = config.StoreConfig{Kind: tc.kind, Bucket: "rokuban-test"}
+			cfg.Stores["archive"] = config.StoreConfig{Kind: "fs"}
+			cfg.Originals = []config.OriginalStoreRule{{Store: "archive"}}
+			enqueuer := &jobqfaketest.RecordingEnqueuer{}
+			reconcile := StorageTransferReconcileWorker{Enqueuer: enqueuer, Storage: pgstore.NewMediaInStore(pool, "test-store", mustStoragePolicy(t, cfg)), Config: cfg}
+			testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "reconcile Work")
+			var fsJobs, remoteJobs []jobs.StorageTransferArgs
+			for _, call := range enqueuer.CallsOfKind("storage_transfer") {
+				got, ok := call.Args.(jobs.StorageTransferArgs)
+				if !ok {
+					t.Fatalf("enqueued arg type = %T, want jobs.StorageTransferArgs", call.Args)
+				}
+				if got.Store == "cloud" {
+					remoteJobs = append(remoteJobs, got)
+				} else {
+					fsJobs = append(fsJobs, got)
+				}
+			}
+			if len(fsJobs) != 1 || fsJobs[0].MediaAssetID != originalID || fsJobs[0].Store != "archive" || fsJobs[0].SourceStore != "" {
+				t.Fatalf("FS-destination jobs = %+v, want one copy of asset %d to archive with no source store", fsJobs, originalID)
+			}
+			if queue, err := jobs.PhysicalQueueFor(fsJobs[0]); err != nil || queue != "transfer_archive" {
+				t.Fatalf("FS-destination queue = %q, %v; want transfer_archive", queue, err)
+			}
+			if len(remoteJobs) != 1 || remoteJobs[0].MediaAssetID != encodedID || remoteJobs[0].SourceStore != "test-store" {
+				t.Fatalf("remote-destination jobs = %+v, want one copy of encoded asset %d sourced from test-store", remoteJobs, encodedID)
+			}
+			if queue, err := jobs.PhysicalQueueFor(remoteJobs[0]); err != nil || queue != "transfer_test-store" {
+				t.Fatalf("remote-destination queue = %q, %v; want transfer_test-store", queue, err)
+			}
+		})
 	}
 }
 
