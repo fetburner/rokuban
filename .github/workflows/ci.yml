@@ -516,9 +516,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # このジョブだけが `go tool` で sqlc / oapi-codegen をビルドするため、専用のキャッシュキーにする。
+      # go.sum だけのキーは他ジョブと共有され、先に保存したジョブの中身になるため、ツールのビルド結果がキャッシュに乗らない。
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            sqlc.yaml
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: web/package.json
