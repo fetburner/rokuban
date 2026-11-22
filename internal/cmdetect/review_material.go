@@ -58,7 +58,8 @@ func parseLogoFrameRanges(output string, durationMs int64) ([]chapters.Range, er
 
 // parseStructureOutput は Dockerfile.full が pin する join_logo_scp v5.1.1 の -oscp を読む。
 // readme の6項目を使う。空白区切りとラベル文字列はpinした版の出力で確かめた値で、文書の契約ではない。
-// ラベルはAuto系コマンド時のみ出るため5項目も受け付ける。終端フレーム包含は未検証。
+// ラベルはAuto系コマンド時のみ出るため5項目も受け付ける。終端フレームは要素に含める。pinした版で実録画1本を
+// 検出し、終端の次のフレームが次の要素の開始と一致して要素が隙間なく続くことを確かめた（文書の契約ではない）。
 func parseStructureOutput(output string, durationMs int64) ([]chapters.CMElement, error) {
 	frames := make([]frameRange, 0)
 	var errors []int64
