@@ -1,16 +1,13 @@
 package main
 
 import (
-	"context"
 	"fmt"
-	"log/slog"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 )
 
@@ -40,7 +37,7 @@ const (
 	// **名前に idle を入れているのは、実行中のジョブには効かないことを名前で
 	// 示すため。** `--once-timeout` だと「Job 全体の制限時間」と読めてしまい、
 	// 数時間のエンコードを打ち切る設定だと誤解されうる（打ち切らないことが
-	// ScaledJob を選んだ理由そのもの。riveradapter.OnceGate のコメント参照）。
+	// ScaledJob を選んだ理由そのもの。River adapter の RunOnce のコメント参照）。
 	onceIdleTimeoutFlagName = "once-idle-timeout"
 
 	// softStopTimeoutFlagName は SIGTERM を受けてから実行中のジョブを打ち切る
@@ -167,11 +164,11 @@ func validateOnceMode(roles []string) error {
 }
 
 // resolveOnce は `--once` / `--once-idle-timeout` を解決する。1 件消化モードで
-// なければ (nil, 0, nil) を返す。
-func resolveOnce(cmd *cobra.Command, roles []string) (*riveradapter.OnceGate, time.Duration, error) {
+// なければ (false, 0, nil) を返す。
+func resolveOnce(cmd *cobra.Command, roles []string) (bool, time.Duration, error) {
 	once, err := cmd.Flags().GetBool(onceFlagName)
 	if err != nil {
-		return nil, 0, err
+		return false, 0, err
 	}
 	if !once {
 		// **効かないフラグを黙って無視しない。** ScaledJob の argv に
@@ -180,63 +177,18 @@ func resolveOnce(cmd *cobra.Command, roles []string) (*riveradapter.OnceGate, ti
 		// 症状は「KEDA の Job が succeeded にならない」で、argv を読んでも
 		// 気付けない。
 		if cmd.Flags().Changed(onceIdleTimeoutFlagName) {
-			return nil, 0, fmt.Errorf("--%s has no effect without --%s", onceIdleTimeoutFlagName, onceFlagName)
+			return false, 0, fmt.Errorf("--%s has no effect without --%s", onceIdleTimeoutFlagName, onceFlagName)
 		}
-		return nil, 0, nil
+		return false, 0, nil
 	}
 	if err := validateOnceMode(roles); err != nil {
-		return nil, 0, err
+		return false, 0, err
 	}
 	idleTimeout, err := resolveOnceIdleTimeout(cmd)
 	if err != nil {
-		return nil, 0, err
+		return false, 0, err
 	}
-	return riveradapter.NewOnceGate(), idleTimeout, nil
-}
-
-// stopOnceProcess は 1 件消化モードの停止手順。
-//
-// **順序が意味を持つので 1 か所にまとめる。** stopRiver（riverClient.Stop）は
-// producer の fetch を止めて実行中のジョブを待つ graceful stop、cancelProcess
-// （signal.NotifyContext の stop）は Start に渡した ctx の cancel である。
-//
-// **順序の理由は SoftStopTimeout の導入で変わった（危険度が下がった）。**
-// かつては work ctx が start ctx を継いでいたため、cancelProcess が
-// StopAndCancel 相当のハードストップになり、逆順にすると実行中のジョブが
-// **即座に**打ち切られた。いまは work ctx が start ctx から切り離されるので
-// （river@v0.50.0 client.go の workParentCtx。SoftStopTimeout > 0 の
-// とき）、
-// 逆順でも打ち切りは soft stop の猶予まで遅れる。それでも順序はこのままにする
-// --- graceful stop を先に撃つほうが、猶予を消費せずに完走できる。
-//
-// stopRiver に渡す ctx は cancel されないものにする。**この呼び出し自身に上限を
-// 置かない**のは、「実行中のジョブを打ち切らない」が ScaledJob を選んだ理由その
-// ものだからである（RunE の defer が呼ぶ `stopRiverForShutdown` は必ず実行される
-// が、1 件消化モードでは先にこちらが完了しているので、River の `Stop` が冪等な
-// ぶん無害な no-op になる）。
-//
-// **実際の上限は `--soft-stop-timeout` の猶予である。** 猶予が切れれば River が
-// work ctx を cancel するので、掴んでいたジョブは打ち切られる ---
-// 数時間のエンコードを載せるキューでは、既定の 30 秒では足りない
-// （docs/operations.md §5「Deployment 併用時」の対で引き上げる指針）。
-// **River が保証するのは work ctx の cancel までで、`Stop` が戻ることまでは
-// 保証しない**（ctx を見ないワーカーは止まらず、completer の停止待ちにも上限が
-// 無い。river@v0.50.0 client.go の `StopAllParallel` に付いた TODO）。最終的な
-// 上限は k8s の `terminationGracePeriodSeconds` 経過後の SIGKILL になる。
-//
-// エラーを握り潰さないのは作法として。現在の呼び出しでは ctx が cancel
-// されないので `Stop` は nil しか返さない（`Stop` が非 nil を返すのは
-// 渡した ctx が終わったときだけ）。
-//
-// 順序と ctx の扱いは TestStopOnceProcess が固定する。**振る舞いのテストでは
-// 守れない** --- 実行中のジョブが残る窓は実測 0/25 で踏めなかったので、順序を
-// 入れ替えても、この関数の呼び出し自体を `stop()` 1 行に置き換えても、
-// 実 DB のテストは緑のままである。
-func stopOnceProcess(ctx context.Context, stopRiver func(context.Context) error, cancelProcess func()) {
-	if err := stopRiver(context.WithoutCancel(ctx)); err != nil {
-		slog.Error("stopping river client (once mode)", "err", err)
-	}
-	cancelProcess()
+	return true, idleTimeout, nil
 }
 
 // resolveSoftStopTimeout は SIGTERM を受けてから実行中のジョブを打ち切るまでの

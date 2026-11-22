@@ -412,12 +412,11 @@ func TestNewWorkerSpec_PeriodicKindsResolveInWorkerRegistry(t *testing.T) {
 func TestNewWorkerClientConfig_StartupShape(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
 	cfg.Worker.RescueStuckJobsAfter = 3 * time.Minute
-	gate := riveradapter.NewOnceGate()
 	for _, periodic := range []bool{true, false} {
 		cfg.Worker.PeriodicJobs = periodic
-		got := newWorkerClientConfig(cfg, cfg.Registry(), cfg.Storage.FSStoreNames(), []string{"ruler"}, gate, 9*time.Second)
-		if got.Once != gate {
-			t.Error("Once gate was not passed through")
+		got := newWorkerClientConfig(cfg, cfg.Registry(), cfg.Storage.FSStoreNames(), []string{"ruler"}, true, 9*time.Second)
+		if !got.Once {
+			t.Error("Once mode was not passed through")
 		}
 		if got.RescueStuckJobsAfter != 3*time.Minute {
 			t.Errorf("RescueStuckJobsAfter = %s, want 3m", got.RescueStuckJobsAfter)

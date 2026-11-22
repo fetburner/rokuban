@@ -2,64 +2,112 @@ package riveradapter
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
+
+	"github.com/fetburner/rokuban/internal/jobq"
 )
 
-// OnceOutcome は 1 件消化モード（OnceGate）が待機を終えた理由。
+// RunOnce は 1 件消化モードのクライアントを起動し、待機を終えた理由を返す。
+// 購読は起動前に張り、戻るときに解除する。起動後は graceful stop を先に行い、
+// その後に cancelProcess を呼んでプロセスを畳む。ジョブの失敗は River の
+// リトライに任せるため、返すエラーは起動時のものだけである。結果は err が nil
+// のときに有効である。
 //
-// **どの理由でも呼び出し側は exit 0 にする**（ジョブの失敗は River の
-// リトライが引き取るので、プロセスの終了コードで表さない。Config.Once
-// のコメント参照）。この値は「なぜ終わったか」をログに残すためだけにある ---
-// 「1 件やって終わった」と「空振りで終わった」を運用側で区別できないと、
-// KEDA が Job を起こし続けているのに仕事が進まない状態を見分けられない。
-type OnceOutcome int
-
-const (
-	// OnceOutcomeJobDone は 1 件のジョブが Work を抜けたことを表す
-	// （成功・失敗のどちらも含む）。
-	OnceOutcomeJobDone OnceOutcome = iota
-
-	// OnceOutcomeIdleTimeout はジョブを 1 件も claim しないまま待ち時間を
-	// 使い切ったことを表す。KEDA が滞留を過大評価して Job を起こしすぎた
-	// （overshoot した）ときにこちらへ落ちる。
-	OnceOutcomeIdleTimeout
-
-	// OnceOutcomeCanceled は ctx が終了したことを表す（SIGTERM / ノード退避）。
-	OnceOutcomeCanceled
-
-	// OnceOutcomeJobUnhandled はジョブが終端に達したが **worker に入らなかった**
-	// ことを表す。River に登録されていない kind のジョブを掴んだ場合に起きる
-	// （SubscribeOnceEvents のコメント）。
-	//
-	// job_done と分けているのは、これが「仕事をした」ではなく「掴んで失敗させ、
-	// 試行回数を 1 つ潰した」だからである。CronJob や api が新しいイメージで、
-	// worker が古いイメージという版ずれで起きうるので、KEDA が Job を起こし
-	// 続けているのに何も進まない状態をログで名指しできるようにする。
-	OnceOutcomeJobUnhandled
-)
-
-// String は OnceOutcome のログ用の名前を返す。
-func (o OnceOutcome) String() string {
-	switch o {
-	case OnceOutcomeJobDone:
-		return "job_done"
-	case OnceOutcomeIdleTimeout:
-		return "idle_timeout"
-	case OnceOutcomeCanceled:
-		return "canceled"
-	case OnceOutcomeJobUnhandled:
-		return "job_unhandled"
-	default:
-		return "unknown"
+// 呼び出し側が戻り値から記録すると drain が終わるまでログが出ないため、
+// `outcome` は RunOnce の中で drain の前に記録する。このログは 2 発目の
+// SIGTERM を送る観測点でもある（TestServerCmd_SecondSigtermKillsDrainingProcess）。
+//
+// idleTimeout はジョブを掴む前にだけ効き、実行中のジョブを打ち切らない。
+//
+// 既知の窓（実害が空振り Job 1 つぶんなので閉じていない）: Work を抜けてから
+// Stop が producer を止めるまでの間に次のジョブが fetch されると、この Job は
+// 2 件消化して終わる。MaxWorkers=1 なので同時には走らない。打ち切られるのは
+// `--soft-stop-timeout` の猶予を超えたときだけである（実測 0/25 でこの窓には
+// 入らなかった）。
+//
+// waitCtx は完了待ち（onceGate.Wait）、signalCtx は起動と停止（finishOnce）に使う。
+// 待機と停止で取り違えてもコンパイルは通り、停止側は今のところ挙動が変わらない。
+// finishOnce は context.WithoutCancel でキャンセルを外し、ctx の値も見ていないため。
+// キャンセルを外すのをやめたら、停止には signalCtx が必要になる
+// （プロセスの stop() は errgroup の waitCtx に連鎖し、即座に切れる）。
+func (adapter *Adapter) RunOnce(waitCtx, signalCtx context.Context, idleTimeout time.Duration, cancelProcess func()) (jobq.OnceOutcome, error) {
+	if adapter == nil || !adapter.config.Once {
+		return jobq.OnceOutcomeCanceled, errors.New("riveradapter: once mode is not configured")
 	}
+
+	var gate *onceGate
+	var events <-chan struct{}
+	var unsubscribe func()
+	err := adapter.start(signalCtx, func(client *river.Client[pgx5.Tx], clientGate *onceGate) {
+		gate = clientGate
+		events, unsubscribe = subscribeOnceEvents(client)
+	})
+	if unsubscribe != nil {
+		defer unsubscribe()
+	}
+	if err != nil {
+		return jobq.OnceOutcomeCanceled, err
+	}
+
+	outcome := gate.Wait(waitCtx, idleTimeout, events)
+	slog.Info("worker: once mode finished", "outcome", outcome.String())
+	finishOnce(signalCtx, adapter.Stop, cancelProcess)
+	return outcome, nil
 }
 
-// OnceGate は「ジョブ 1 件を消化したら終了する」プロセスの終了条件を作る。
+// finishOnce は 1 件消化モードの停止手順。
+//
+// **順序が意味を持つので 1 か所にまとめる。** stopRiver（Adapter.Stop 経由の River の Stop）は
+// producer の fetch を止めて実行中のジョブを待つ graceful stop、cancelProcess
+// （signal.NotifyContext の stop）は Start に渡した ctx の cancel である。
+//
+// **順序の理由は SoftStopTimeout の導入で変わった（危険度が下がった）。**
+// かつては work ctx が start ctx を継いでいたため、cancelProcess が
+// StopAndCancel 相当のハードストップになり、逆順にすると実行中のジョブが
+// **即座に**打ち切られた。いまは work ctx が start ctx から切り離されるので
+// （river@v0.50.0 client.go の workParentCtx。SoftStopTimeout > 0 の
+// とき）、
+// 逆順でも打ち切りは soft stop の猶予まで遅れる。それでも順序はこのままにする
+// --- graceful stop を先に撃つほうが、猶予を消費せずに完走できる。
+//
+// stopRiver に渡す ctx は cancel されないものにする。**この呼び出し自身に上限を
+// 置かない**のは、「実行中のジョブを打ち切らない」が ScaledJob を選んだ理由その
+// ものだからである（起動成功後は RunE の defer が `stopRiverForShutdown` を必ず
+// 呼ぶが、1 件消化モードでは先にこちらが完了しているので、River の `Stop` が
+// 冪等なぶん無害な no-op になる）。
+//
+// **実際の上限は `--soft-stop-timeout` の猶予である。** 猶予が切れれば River が
+// work ctx を cancel するので、掴んでいたジョブは打ち切られる ---
+// 数時間のエンコードを載せるキューでは、既定の猶予では足りない
+// （docs/operations.md §5「Deployment 併用時」の対で引き上げる指針）。
+// **River が保証するのは work ctx の cancel までで、`Stop` が戻ることまでは
+// 保証しない**（ctx を見ないワーカーは止まらず、completer の停止待ちにも上限が
+// 無い。river@v0.50.0 client.go の `StopAllParallel` に付いた TODO）。最終的な
+// 上限は k8s の `terminationGracePeriodSeconds` 経過後の SIGKILL になる。
+//
+// エラーを握り潰さないのは作法として。現在の呼び出しでは ctx が cancel
+// されないので `Stop` は nil しか返さない（`Stop` が非 nil を返すのは
+// 渡した ctx が終わったときだけ）。
+//
+// 順序と ctx の扱いは TestFinishOnce が固定する。**振る舞いのテストでは
+// 守れない** --- 実行中のジョブが残る窓は実測 0/25 で踏めなかったので、順序を
+// 入れ替えても、この関数の呼び出し自体を `stop()` 1 行に置き換えても、
+// 実 DB のテストは緑のままである。
+func finishOnce(ctx context.Context, stopRiver func(context.Context) error, cancelProcess func()) {
+	if err := stopRiver(context.WithoutCancel(ctx)); err != nil {
+		slog.Error("stopping river client (once mode)", "err", err)
+	}
+	cancelProcess()
+}
+
+// onceGate は「ジョブ 1 件を消化したら終了する」プロセスの終了条件を作る。
 //
 // KEDA ScaledJob はキューアイテムごとに k8s Job を起こし、**その Job が自分で
 // 終了すること**を前提にした機構である（docs/operations.md §5「worker: KEDA
@@ -76,16 +124,16 @@ func (o OnceOutcome) String() string {
 // ことが ScaledJob を選んだ理由そのもの（「ジョブは完走するまで殺されない」）
 // なので、タイムアウトは「起きたが掴む仕事が無かった Job」を終わらせるためだけ
 // に使う。数時間のエンコードはタイムアウトの対象にならない。
-type OnceGate struct {
+type onceGate struct {
 	startOnce sync.Once
 	doneOnce  sync.Once
 	started   chan struct{}
 	done      chan struct{}
 }
 
-// NewOnceGate は OnceGate を作る。
-func NewOnceGate() *OnceGate {
-	return &OnceGate{
+// newOnceGate は onceGate を作る。
+func newOnceGate() *onceGate {
+	return &onceGate{
 		started: make(chan struct{}),
 		done:    make(chan struct{}),
 	}
@@ -98,7 +146,7 @@ func NewOnceGate() *OnceGate {
 // （at-least-once が壊れる）。プロセスの終了コードを 0 にするのは呼び出し側の
 // 責任であって、ここでエラーを消すことではない
 // （TestOnceGate_MiddlewarePropagatesWorkerError）。
-func (g *OnceGate) Middleware() rivertype.Middleware {
+func (g *onceGate) Middleware() rivertype.Middleware {
 	return river.WorkerMiddlewareFunc(func(ctx context.Context, _ *rivertype.JobRow, doInner func(context.Context) error) error {
 		g.startOnce.Do(func() { close(g.started) })
 		defer g.doneOnce.Do(func() { close(g.done) })
@@ -108,16 +156,16 @@ func (g *OnceGate) Middleware() rivertype.Middleware {
 
 // Wait は次のいずれかが起きるまでブロックし、その理由を返す。
 //
-//   - 最初のジョブが Work を抜けた → OnceOutcomeJobDone
-//   - ジョブが worker に入らずに終端に達した → OnceOutcomeJobUnhandled
-//   - ジョブを 1 件も claim しないまま idleTimeout が経過 → OnceOutcomeIdleTimeout
-//   - ctx が終了した → OnceOutcomeCanceled
+//   - 最初のジョブが Work を抜けた → jobq.OnceOutcomeJobDone
+//   - ジョブが worker に入らずに終端に達した → jobq.OnceOutcomeJobUnhandled
+//   - ジョブを 1 件も claim しないまま idleTimeout が経過 → jobq.OnceOutcomeIdleTimeout
+//   - ctx が終了した → jobq.OnceOutcomeCanceled
 //
-// events は SubscribeOnceEvents が返すチャネル（nil でもよい。その場合は
+// events は subscribeOnceEvents が返すチャネル（nil でもよい。その場合は
 // middleware から観測できるジョブだけが終了の契機になる）。
 //
 // **claim 済みならタイムアウトを適用しない**（型の説明参照）。
-func (g *OnceGate) Wait(ctx context.Context, idleTimeout time.Duration, events <-chan struct{}) OnceOutcome {
+func (g *onceGate) Wait(ctx context.Context, idleTimeout time.Duration, events <-chan struct{}) jobq.OnceOutcome {
 	timer := time.NewTimer(idleTimeout)
 	defer timer.Stop()
 	return g.wait(ctx, timer.C, events)
@@ -131,13 +179,13 @@ func (g *OnceGate) Wait(ctx context.Context, idleTimeout time.Duration, events <
 // まだ発火していないので、この分岐に入らない）。発火済みのチャネルを渡せる
 // ようにして、下の再確認が実際に効いていることを
 // TestOnceGate_IdleTimeoutDoesNotCutRunningJob が固定する。
-func (g *OnceGate) wait(ctx context.Context, timeout <-chan time.Time, events <-chan struct{}) OnceOutcome {
+func (g *onceGate) wait(ctx context.Context, timeout <-chan time.Time, events <-chan struct{}) jobq.OnceOutcome {
 	for {
 		select {
 		case <-ctx.Done():
-			return OnceOutcomeCanceled
+			return jobq.OnceOutcomeCanceled
 		case <-g.done:
-			return OnceOutcomeJobDone
+			return jobq.OnceOutcomeJobDone
 		case _, ok := <-events:
 			if !ok {
 				// **購読が閉じたことを「ジョブが終わった」と読まない。** 閉じた
@@ -150,7 +198,7 @@ func (g *OnceGate) wait(ctx context.Context, timeout <-chan time.Time, events <-
 				continue
 			}
 			// **middleware を通らずに終わったジョブ。** 未登録 kind がこれに当たる
-			// （SubscribeOnceEvents のコメント）。ここで終わらせないと、Job は
+			// （subscribeOnceEvents のコメント）。ここで終わらせないと、Job は
 			// idleTimeout の間そのキューを掴み続けて試行回数を潰す。
 			//
 			// started を見直すのは、worked なジョブの done と event が同時に
@@ -160,7 +208,7 @@ func (g *OnceGate) wait(ctx context.Context, timeout <-chan time.Time, events <-
 			case <-g.started:
 				return g.waitDone(ctx, events)
 			default:
-				return OnceOutcomeJobUnhandled
+				return jobq.OnceOutcomeJobUnhandled
 			}
 		case <-g.started:
 			return g.waitDone(ctx, events)
@@ -168,37 +216,37 @@ func (g *OnceGate) wait(ctx context.Context, timeout <-chan time.Time, events <-
 			// **タイマーと claim が同時に成立した場合は claim を優先する。**
 			// select は準備できた case をランダムに選ぶので、ここで started を
 			// 見直さないと、実行中のジョブを抱えたまま idle_timeout を返す ---
-			// 呼び出し側はそれを「空振りだった」と読む（打ち切り自体は呼び出し側の
-			// graceful stop が防ぐ。cmd/rokuban/server.go の once gate 参照）。
+			// 呼び出し側はそれを「空振りだった」と読む（打ち切り自体は RunOnce の
+			// graceful stop が防ぐ。finishOnce 参照）。
 			select {
 			case <-g.started:
 				return g.waitDone(ctx, events)
 			default:
-				return OnceOutcomeIdleTimeout
+				return jobq.OnceOutcomeIdleTimeout
 			}
 		}
 	}
 }
 
 // waitDone は claim 済みのジョブが Work を抜けるまで待つ（タイムアウトなし）。
-func (g *OnceGate) waitDone(ctx context.Context, events <-chan struct{}) OnceOutcome {
+func (g *onceGate) waitDone(ctx context.Context, events <-chan struct{}) jobq.OnceOutcome {
 	for {
 		select {
 		case <-ctx.Done():
-			return OnceOutcomeCanceled
+			return jobq.OnceOutcomeCanceled
 		case <-g.done:
-			return OnceOutcomeJobDone
+			return jobq.OnceOutcomeJobDone
 		case _, ok := <-events:
 			if !ok {
 				events = nil
 				continue
 			}
-			return OnceOutcomeJobDone
+			return jobq.OnceOutcomeJobDone
 		}
 	}
 }
 
-// SubscribeOnceEvents は 1 件消化モードが「ジョブが executor を出た」ことを
+// subscribeOnceEvents は 1 件消化モードが「ジョブが executor を出た」ことを
 // 観測するシグナル購読を張る。返す関数で購読を解除する。River の event 型は
 // この adapter の外へ出さない。
 //
@@ -206,7 +254,7 @@ func (g *OnceGate) waitDone(ctx context.Context, events <-chan struct{}) OnceOut
 // kind のジョブに対して WorkUnit == nil で早期 return し、その時点では
 // **WorkerMiddleware のチェーンをまだ組み立てていない**
 // （river@v0.50.0 internal/jobexecutor/job_executor.go の `if e.WorkUnit == nil`
-// が `execution.MiddlewareChain` より前にある）。したがって OnceGate の
+// が `execution.MiddlewareChain` より前にある）。したがって onceGate の
 // middleware は一度も呼ばれず、Job は「1 件も claim していない」と誤認したまま
 // idleTimeout まで掴み続ける。
 //
@@ -214,8 +262,8 @@ func (g *OnceGate) waitDone(ctx context.Context, events <-chan struct{}) OnceOut
 // 「まだ掴んでいない」と「掴んで実行中」を区別できず、実行中のジョブを
 // idleTimeout で打ち切ることになる。2 つの観測点が両方要る。
 //
-// **ただし本番の配線（buildConfig。cfg.Once != nil なら常に
-// OnceGate.Middleware() も一緒に登録する）では、4 つの購読のうち実際に
+// **ただし本番の配線（buildConfig。cfg.Once なら常に
+// onceGate.Middleware() も一緒に登録する）では、4 つの購読のうち実際に
 // 効いているのは EventKindJobFailed だけである。** 未登録 kind のジョブは
 // Work を一度も呼ばれないので、起こしようがあるのは job_failed だけ
 // （completed/cancelled/snoozed は Work が明示的に選ぶ終わり方であり、
@@ -238,8 +286,8 @@ func (g *OnceGate) waitDone(ctx context.Context, events <-chan struct{}) OnceOut
 // （`SoftStopTimeout` 経過または `StopAndCancel`）に起き、行は attempt を消費せず available に
 // 戻る（River v0.50.0 CHANGELOG.md §0.44.0）。1 件消化モードでこれが起きるのは
 // **停止が始まったあと**、つまり Start に渡した ctx が cancel されたか
-// stopOnceProcess が Stop を撃ったあとだけである。前者では Wait が
-// ctx.Done で OnceOutcomeCanceled を返し、後者では Wait が既に戻っている。
+// finishOnce が Stop を撃ったあとだけである。前者では Wait が
+// ctx.Done で jobq.OnceOutcomeCanceled を返し、後者では Wait が既に戻っている。
 // どちらでも購読は待ちの契機として要らない。**購読すると害がある側でもない**
 // （Wait は最初の 1 件で戻るだけ）が、「終端」の意味を停止と混ぜないために
 // 4 kind に留める。
@@ -253,11 +301,8 @@ func (g *OnceGate) waitDone(ctx context.Context, events <-chan struct{}) OnceOut
 // だけで Wait を終わらせられることを確認する（上記の保険側の裏付け。
 // go.mod の river の版が上がってここが崩れても go build/go vet では
 // 検出できない）。
-func SubscribeOnceEvents(adapter *Adapter) (<-chan struct{}, func()) {
-	if adapter == nil {
-		return nil, func() {}
-	}
-	riverEvents, unsubscribe := subscribeRiverOnceEvents(adapter.clientSnapshot())
+func subscribeOnceEvents(client *river.Client[pgx5.Tx]) (<-chan struct{}, func()) {
+	riverEvents, unsubscribe := subscribeRiverOnceEvents(client)
 	if riverEvents == nil {
 		return nil, unsubscribe
 	}

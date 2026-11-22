@@ -35,14 +35,15 @@ var pendingJobStates = []rivertype.JobState{
 type Adapter struct {
 	// lifecycleMu serializes Start and Stop without blocking client snapshots from Work.
 	lifecycleMu sync.Mutex
-	// mu protects client and stopped (Stop was called, so the next Start needs a new
-	// client); never hold it while calling River.
+	// mu protects client, its once gate, and stopped (Stop was called, so the next
+	// Start needs a new client); never hold it while calling River.
 	mu       sync.Mutex
 	pool     *pgxpool.Pool
 	registry *jobq.Registry
 	queueFor QueueFunc
 	config   Config
 	client   *river.Client[pgx.Tx]
+	once     *onceGate
 	stopped  bool
 	// started records that client has been Started. River's Stopped() channel is nil
 	// until Start, so only a client that was started needs rebuilding after Stop.
@@ -76,11 +77,11 @@ func NewAdapter(pool *pgxpool.Pool, registry *jobq.Registry, queueFor QueueFunc,
 	if queueFor == nil {
 		return nil, errors.New("riveradapter: queueFor is required")
 	}
-	client, err := newRegistryClient(pool, registry, queueFor, cfg)
+	client, gate, err := newRegistryClient(pool, registry, queueFor, cfg)
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{pool: pool, registry: registry, queueFor: queueFor, config: cfg, client: client}, nil
+	return &Adapter{pool: pool, registry: registry, queueFor: queueFor, config: cfg, client: client, once: gate}, nil
 }
 
 // workerTarget は Register が預けた builder に渡す、River の登録先と投入先の解決関数。
@@ -112,30 +113,30 @@ func Register[T jobq.Args](registry *jobq.Registry, worker jobq.Worker[T]) {
 	}
 }
 
-func buildRegistryConfig(registry *jobq.Registry, queueFor QueueFunc, cfg Config) (*river.Config, error) {
+func buildRegistryConfig(registry *jobq.Registry, queueFor QueueFunc, cfg Config) (workerConfig, error) {
 	if err := cfg.Spec.CheckKinds(registry); err != nil {
-		return nil, fmt.Errorf("riveradapter: %w", err)
+		return workerConfig{}, fmt.Errorf("riveradapter: %w", err)
 	}
 	if err := cfg.Spec.CheckQueueFor(queueFor); err != nil {
-		return nil, fmt.Errorf("riveradapter: %w", err)
+		return workerConfig{}, fmt.Errorf("riveradapter: %w", err)
 	}
 	workers := river.NewWorkers()
 	if err := registry.RegisterAdapterWorkers(adapterWorkerKey, &workerTarget{workers: workers, queueFor: queueFor}); err != nil {
-		return nil, fmt.Errorf("riveradapter: building workers: %w", err)
+		return workerConfig{}, fmt.Errorf("riveradapter: building workers: %w", err)
 	}
 	return buildConfig(workers, queueFor, cfg)
 }
 
-func newRegistryClient(pool *pgxpool.Pool, registry *jobq.Registry, queueFor QueueFunc, cfg Config) (*river.Client[pgx.Tx], error) {
+func newRegistryClient(pool *pgxpool.Pool, registry *jobq.Registry, queueFor QueueFunc, cfg Config) (*river.Client[pgx.Tx], *onceGate, error) {
 	riverCfg, err := buildRegistryConfig(registry, queueFor, cfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	client, err := river.NewClient(riverpgxv5.New(pool), riverCfg)
+	client, err := river.NewClient(riverpgxv5.New(pool), riverCfg.Config)
 	if err != nil {
-		return nil, fmt.Errorf("riveradapter: creating River client: %w", err)
+		return nil, nil, fmt.Errorf("riveradapter: creating River client: %w", err)
 	}
-	return client, nil
+	return client, riverCfg.once, nil
 }
 
 // Enqueue inserts args using the options derived from its jobq Spec.
@@ -157,6 +158,12 @@ func (adapter *Adapter) Enqueue(ctx context.Context, args jobq.Args, opts ...job
 
 // Start starts River delivery.
 func (adapter *Adapter) Start(ctx context.Context) error {
+	return adapter.start(ctx, nil)
+}
+
+// start はクライアントを起動する。起動前に購読が必要なら、起動対象が決まった時点で
+// beforeStart を呼ぶ。クライアントを再構築した場合は gate もそのクライアントのものを使う。
+func (adapter *Adapter) start(ctx context.Context, beforeStart func(*river.Client[pgx.Tx], *onceGate)) error {
 	if adapter == nil {
 		return errors.New("riveradapter: client is nil")
 	}
@@ -165,6 +172,7 @@ func (adapter *Adapter) Start(ctx context.Context) error {
 
 	adapter.mu.Lock()
 	client := adapter.client
+	gate := adapter.once
 	stopped := adapter.stopped
 	adapter.mu.Unlock()
 	if client == nil {
@@ -176,16 +184,20 @@ func (adapter *Adapter) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		newClient, err := newRegistryClient(adapter.pool, adapter.registry, adapter.queueFor, adapter.config)
+		newClient, newGate, err := newRegistryClient(adapter.pool, adapter.registry, adapter.queueFor, adapter.config)
 		if err != nil {
 			return err
 		}
 		adapter.mu.Lock()
 		adapter.client = newClient
+		adapter.once = newGate
 		adapter.stopped = false
 		adapter.started = false
 		adapter.mu.Unlock()
-		client = newClient
+		client, gate = newClient, newGate
+	}
+	if beforeStart != nil {
+		beforeStart(client, gate)
 	}
 	if err := client.Start(ctx); err != nil {
 		return fmt.Errorf("riveradapter: starting River client: %w", err)

@@ -9,10 +9,11 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// このファイルは river@v0.50.0 を対象に、SubscribeOnceEvents の doc コメントが
+// このファイルは river@v0.50.0 を対象に、subscribeOnceEvents の doc コメントが
 // 依拠する前提のうち「Work が選ぶ終わり方は
 // completed/failed/cancelled/snoozed の 4 EventKind で網羅される」を
 // 実 River client + 実 DB で固定する（issue #518）。
@@ -20,20 +21,20 @@ import (
 // **「ジョブの終わり方」全体の網羅ではない。** River v0.44 で
 // EventKindJobInterrupted が増えており、これはクライアントの停止で実行中の
 // ジョブが打ち切られたときにだけ起きる。1 件消化モードで購読しない理由は
-// SubscribeOnceEvents の doc コメントにある。
+// subscribeOnceEvents の doc コメントにある。
 //
 // もう一つの前提（未登録 kind では WorkerMiddleware が一度も呼ばれない）は
 // cmd/rokuban.TestServerCmd_OnceModeExitsOnUnhandledJobKind が本番と同じ
 // 配線（RunE 経由。試行回数が 1 回しか潰れないことも見ている）で既に
 // 固定済みなので、ここには弱い重複を足さない。
 //
-// once_test.go 側は OnceGate.wait/waitDone のロジックを合成イベントで
+// once_test.go 側は onceGate.wait/waitDone のロジックを合成イベントで
 // 検証しているが、「その合成イベントが実際に届く形と一致しているか」は
 // River 側の実装に依っており、River の更新でここが崩れてもコンパイルも
 // 既存 CI も緑のままになりうる。ここでは river.NewClient に実ワーカーを
 // 登録し、実際に Work を走らせて得た本物の *river.Event で同じ経路を通す。
 
-// onceRiverOutcome は Wait を別 goroutine で回し、OnceOutcome と、events から
+// onceRiverOutcome は Wait を別 goroutine で回し、jobq.OnceOutcome と、events から
 // 実際に読んだ最初の *river.Event の Kind を一緒に返す。
 //
 // **events を素通しの 1 段 tee で経由させる。** Wait 自身は読んだ Event の
@@ -44,7 +45,7 @@ import (
 // 控えた Kind は変数ではなくバッファ付きチャネルで返す。Wait が
 // idleTimeout 側で戻ると tee は読まれないまま中継 goroutine だけが走り続け、
 // 共有変数だと戻り値の読み出しと競合する（go test -race で落ちる）。
-func onceRiverOutcome(t *testing.T, gate *OnceGate, idleTimeout time.Duration, events <-chan *river.Event) (OnceOutcome, river.EventKind) {
+func onceRiverOutcome(t *testing.T, gate *onceGate, idleTimeout time.Duration, events <-chan *river.Event) (jobq.OnceOutcome, river.EventKind) {
 	t.Helper()
 
 	tee := make(chan struct{}, 1)
@@ -57,7 +58,7 @@ func onceRiverOutcome(t *testing.T, gate *OnceGate, idleTimeout time.Duration, e
 		}
 	}()
 
-	out := make(chan OnceOutcome, 1)
+	out := make(chan jobq.OnceOutcome, 1)
 	go func() { out <- gate.Wait(context.Background(), idleTimeout, tee) }()
 	limit := idleTimeout + 5*time.Second
 	select {
@@ -74,7 +75,7 @@ func onceRiverOutcome(t *testing.T, gate *OnceGate, idleTimeout time.Duration, e
 		}
 	case <-time.After(limit):
 		t.Fatalf("Wait が %s 以内に戻らない（1 件消化モードの Job が終了しない形）", limit)
-		return OnceOutcomeCanceled, ""
+		return jobq.OnceOutcomeCanceled, ""
 	}
 }
 
@@ -109,25 +110,25 @@ func (w *onceEventControlWorker) Work(_ context.Context, job *river.Job[onceEven
 }
 
 // **completed/failed/cancelled/snoozed の 4 EventKind すべてが
-// SubscribeOnceEvents 経由で届くことを、middleware に頼らず固定する。**
+// subscribeOnceEvents 経由で届くことを、middleware に頼らず固定する。**
 //
-// **この配線は本番ではない。** 本番（buildConfig）は cfg.Once != nil
-// のとき常に OnceGate.Middleware() も一緒に登録し、登録済み kind は
+// **この配線は本番ではない。** 本番（buildConfig）は cfg.Once
+// のとき常に onceGate.Middleware() も一緒に登録し、登録済み kind は
 // WorkUnit != nil なので JobExecutor は必ず execution.MiddlewareChain を
 // 組み立てて doInner（= Work）を呼ぶ --- つまり本番では、ここで動かす
 // 4 通りのどの終端でも WorkerMiddleware が先に g.done を閉じて Job を
 // 終わらせてしまい、events 側の購読が 1 つ欠けていても隠れてしまう
-// （SubscribeOnceEvents のコメントの「本番で唯一効いているのは
+// （subscribeOnceEvents のコメントの「本番で唯一効いているのは
 // EventKindJobFailed だけ」参照）。ここでは middleware をあえて
 // river.Config に登録せず、g.started/g.done を一生閉じない配線にすることで、
 // 「4 kind それぞれが events だけで Wait を終わらせられるか」という
 // 保険側の主張を、middleware という別の検出経路に隠されずに検証する。
 //
-// gate.started は一度も閉じないので、正しい OnceOutcome は job_unhandled
+// gate.started は一度も閉じないので、正しい jobq.OnceOutcome は job_unhandled
 // になる（waitDone には入らない。この配線で見ているのは「Wait が events
 // 分岐で戻ること」であって「waitDone が job_done を返すこと」ではない）。
 //
-// このテストが検出すべき変異: SubscribeOnceEvents から 4 kind のいずれか
+// このテストが検出すべき変異: subscribeOnceEvents から 4 kind のいずれか
 // 1 つを落とす。その kind に対応する subtest だけが idle_timeout まで
 // 戻らなくなり、outcome が job_unhandled ではなく idle_timeout になる
 // （このファイル内では他の 3 subtest は緑のまま。dropping
@@ -135,7 +136,7 @@ func (w *onceEventControlWorker) Work(_ context.Context, job *river.Job[onceEven
 // EventKindJobSnoozed をそれぞれ試し、対応する subtest だけが落ちることを
 // 確認済み。ただし EventKindJobFailed を落とすと
 // cmd/rokuban.TestServerCmd_OnceModeExitsOnUnhandledJobKind も一緒に赤くなる
-// --- それが本番で唯一効いている購読だから。SubscribeOnceEvents のコメント
+// --- それが本番で唯一効いている購読だから。subscribeOnceEvents のコメント
 // 参照）。
 func TestSubscribeOnceEvents_AllTerminalKindsEndWaitViaEventsWithoutMiddleware(t *testing.T) {
 	for _, tt := range []struct {
@@ -162,7 +163,7 @@ func TestSubscribeOnceEvents_AllTerminalKindsEndWaitViaEventsWithoutMiddleware(t
 				t.Fatalf("creating client: %v", err)
 			}
 
-			gate := NewOnceGate()
+			gate := newOnceGate()
 			events, unsubscribe := subscribeRiverOnceEvents(client)
 			defer unsubscribe()
 
@@ -183,9 +184,9 @@ func TestSubscribeOnceEvents_AllTerminalKindsEndWaitViaEventsWithoutMiddleware(t
 			const idleTimeout = 2 * time.Second
 			outcome, gotKind := onceRiverOutcome(t, gate, idleTimeout, events)
 
-			if outcome != OnceOutcomeJobUnhandled {
+			if outcome != jobq.OnceOutcomeJobUnhandled {
 				t.Errorf("Wait() = %v, want %v（events だけで終わっているはず。"+
-					"middleware は登録していない）", outcome, OnceOutcomeJobUnhandled)
+					"middleware は登録していない）", outcome, jobq.OnceOutcomeJobUnhandled)
 			}
 			if gotKind != tt.wantKind {
 				t.Errorf("受け取った Event.Kind = %q, want %q", gotKind, tt.wantKind)

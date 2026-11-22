@@ -95,7 +95,7 @@ type Config struct {
 	// StopAndCancel, Config.SoftStopTimeout）。中断されたジョブは attempt が開始前の値に
 	// 戻り、errors を増やさず `available` に戻る（River v0.50.0 CHANGELOG.md §0.44.0）。
 	//
-	// 1 件消化モードの正常終了では `stopOnceProcess` が graceful stop を使うため、
+	// 1 件消化モードの正常終了では `RunOnce` が graceful stop を使うため、
 	// すでに掴んでいる追加ジョブの完走待ちにもこの猶予が適用される。
 	SoftStopTimeout time.Duration
 
@@ -104,10 +104,10 @@ type Config struct {
 	// RecoveryGrace は JobTimeout > 0 なら常に JobTimeout + 1h とみなす）。設定キーは worker.rescue_stuck_jobs_after。
 	RescueStuckJobsAfter time.Duration
 
-	// Once が非 nil なら 1 件消化モード（`rokuban server --once`）になる。
+	// Once が true なら 1 件消化モード（`rokuban server --once`）になる。
 	// KEDA ScaledJob が起こした k8s Job が自分で終了できるようにするための
 	// 起動形態で、ジョブ 1 件の Work を抜けたら（成功・失敗を問わず）
-	// プロセスを畳む（OnceGate、docs/operations.md §5）。
+	// プロセスを畳む（RunOnce、docs/operations.md §5）。
 	//
 	// このモードでは buildConfig が次の 3 つを強制する:
 	//
@@ -119,33 +119,39 @@ type Config struct {
 	// **ジョブの失敗をプロセスの終了コードに出さない。** リトライは River が
 	// 持っており、k8s 側は `backoffLimit: 0` / `restartPolicy: Never` で
 	// 起こし直さない前提なので、両方が再試行して二重にリトライする形を作らない
-	// （終了コードの決定は cmd/rokuban 側。OnceOutcome のコメント参照）。
-	Once *OnceGate
+	// （終了コードの決定は cmd/rokuban 側。jobq.OnceOutcome のコメント参照）。
+	Once bool
+}
+
+// workerConfig はクライアントの設定と、その middleware が通知する gate をまとめる。
+type workerConfig struct {
+	*river.Config
+	once *onceGate
 }
 
 // buildConfig は Config から river.Config を組み立てる。
 //
 // newRegistryClient から分離してあるのは、DB 接続なしで queues 検証や
 // 定期ジョブの有無を単体テストできるようにするため。
-func buildConfig(workers *river.Workers, queueFor QueueFunc, cfg Config) (*river.Config, error) {
+func buildConfig(workers *river.Workers, queueFor QueueFunc, cfg Config) (workerConfig, error) {
 	if err := cfg.Spec.Validate(); err != nil {
-		return nil, err
+		return workerConfig{}, err
 	}
 	// 論理名のまま選ぶ --- worker.queues の設定値・未知キューのエラーメッセージのいずれも
 	// 論理名にするため。
 	spec, err := cfg.Spec.Select(cfg.Queues)
 	if err != nil {
-		return nil, err
+		return workerConfig{}, err
 	}
 	if err := configureOnceQueues(cfg, &spec); err != nil {
-		return nil, err
+		return workerConfig{}, err
 	}
 	physicalQueues, err := riverQueues(spec)
 	if err != nil {
-		return nil, err
+		return workerConfig{}, err
 	}
 	if err := validateOncePhysicalQueues(cfg, physicalQueues); err != nil {
-		return nil, err
+		return workerConfig{}, err
 	}
 
 	// 実際に SKIP LOCKED で引く物理キュー名の集合をログに出す。全キュー購読（既定）が
@@ -167,11 +173,15 @@ func buildConfig(workers *river.Workers, queueFor QueueFunc, cfg Config) (*river
 
 		RescueStuckJobsAfter: cfg.RescueStuckJobsAfter,
 	}
-	configureOnceRiver(riverCfg, cfg.Once, physicalQueues)
-	if err := configurePeriodicJobs(riverCfg, queueFor, cfg); err != nil {
-		return nil, fmt.Errorf("configuring periodic jobs: %w", err)
+	var gate *onceGate
+	if cfg.Once {
+		gate = newOnceGate()
+		configureOnceRiver(riverCfg, gate, physicalQueues)
 	}
-	return riverCfg, nil
+	if err := configurePeriodicJobs(riverCfg, queueFor, cfg); err != nil {
+		return workerConfig{}, fmt.Errorf("configuring periodic jobs: %w", err)
+	}
+	return workerConfig{Config: riverCfg, once: gate}, nil
 }
 
 // riverQueues は選ばれた仕様を、実際に SKIP LOCKED で引く物理キューの River 設定へ変換する。
@@ -193,7 +203,7 @@ func riverQueues(spec jobq.WorkerSpec) (map[string]river.QueueConfig, error) {
 // configureOnceQueues は once モードの論理キュー検証と同時実行数の制限を行う。
 // spec.Queues は書き換える（Select が複製済み）。
 func configureOnceQueues(cfg Config, spec *jobq.WorkerSpec) error {
-	if cfg.Once == nil {
+	if !cfg.Once {
 		return nil
 	}
 	// **1 キューだけ**を要求する。ScaledJob はキュー単位に作る（寿命 ×
@@ -239,7 +249,7 @@ func configureOnceQueues(cfg Config, spec *jobq.WorkerSpec) error {
 // 束縛 site が 2 つ以上のとき、ここで初めて 2 物理キューに割れてしまう
 // （この検査が無いと once モードの「同時 claim は 1 件」の前提が黙って崩れる）。
 func validateOncePhysicalQueues(cfg Config, physicalQueues map[string]river.QueueConfig) error {
-	if cfg.Once == nil || len(physicalQueues) == 1 {
+	if !cfg.Once || len(physicalQueues) == 1 {
 		return nil
 	}
 	return fmt.Errorf(
@@ -250,10 +260,7 @@ func validateOncePhysicalQueues(cfg Config, physicalQueues map[string]river.Queu
 }
 
 // configureOnceRiver は once モードの middleware と起動ログを設定する。
-func configureOnceRiver(riverCfg *river.Config, once *OnceGate, physicalQueues map[string]river.QueueConfig) {
-	if once == nil {
-		return
-	}
+func configureOnceRiver(riverCfg *river.Config, once *onceGate, physicalQueues map[string]river.QueueConfig) {
 	// ジョブの開始と終了を観測する唯一の手段として WorkerMiddleware を使う
 	// （River には「ジョブが claim された」イベントが無く、Subscribe で拾える
 	// のは完了後のイベントだけなので、「まだ 1 件も掴んでいない」と

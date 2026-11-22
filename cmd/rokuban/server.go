@@ -361,7 +361,7 @@ func newObjectStore(ctx context.Context, name string, configured config.StoreCon
 // newServerCmd から切り出してあるのは、フラグ登録を本体の直後に置くため
 // （RunE の中に本体を直接書くと cmd.Flags() の並びが本体の向こう側になる）。
 //
-// pool.Close、River の drain、once 購読の unsubscribe はこの関数に残す。
+// pool.Close と終了時の drain はこの関数に残す。once 購読は RunOnce が解除する。
 // defer は登録した関数を終了時に逆順で実行するため、これらを構築ヘルパーへ
 // 移すと pool.Close が River の drain より先に走り、running の Job 行を残す。
 func runServer(cmd *cobra.Command, _ []string) error {
@@ -394,7 +394,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	onceGate, onceIdleTimeout, err := resolveOnce(cmd, roles)
+	once, onceIdleTimeout, err := resolveOnce(cmd, roles)
 	if err != nil {
 		return err
 	}
@@ -410,7 +410,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := validateSiteBinding(roles, bound, queues); err != nil {
 		return err
 	}
-	mounted, roots, err := resolveMountedStores(cmd, cfg, roles, queues, onceGate != nil)
+	mounted, roots, err := resolveMountedStores(cmd, cfg, roles, queues, once)
 	if err != nil {
 		return err
 	}
@@ -419,7 +419,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	workerCfg := newWorkerClientConfig(cfg, bound, mounted, queues, onceGate, softStopTimeout)
+	workerCfg := newWorkerClientConfig(cfg, bound, mounted, queues, once, softStopTimeout)
 
 	ctx, stop := installSignalHandler(cmd.Context())
 	defer stop()
@@ -489,21 +489,16 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 
-		var onceEvents <-chan struct{}
-		if onceGate != nil {
-			var unsubscribe func()
-			onceEvents, unsubscribe = riveradapter.SubscribeOnceEvents(workerAdapter)
-			defer unsubscribe()
+		var startErr error
+		if once {
+			_, startErr = workerAdapter.RunOnce(egCtx, ctx, onceIdleTimeout, stop)
+		} else {
+			startErr = workerAdapter.Start(ctx)
 		}
-
-		if startErr := workerAdapter.Start(ctx); startErr != nil {
+		if startErr != nil {
 			return fmt.Errorf("starting job queue adapter: %w", startErr)
 		}
 		defer func() { stopRiverForShutdown(workerAdapter.Stop, softStopTimeout) }()
-
-		if onceGate != nil {
-			superviseOnceMode(egCtx, ctx, eg, onceGate, onceIdleTimeout, onceEvents, workerAdapter.Stop, stop)
-		}
 	}
 
 	var watcherEnqueuer jobq.Enqueuer
@@ -548,8 +543,8 @@ func validateRoleStorageConfig(roles []string, cfg *config.Config) error {
 // Ctrl-C も `kill -TERM` も効かず、止める手段が SIGKILL だけになる。
 //
 // **外す契機は「1 発目のシグナル」であって「畳み終えたところ」ではない。**
-// 後者にすると、drain を errgroup の中で回す 1 件消化モード
-// （`stopOnceProcess`）では畳み終えるまで外れず、`--soft-stop-timeout` を
+// 後者にすると、drain を `eg.Wait` より先に回す 1 件消化モード
+// （`RunOnce`）では畳み終えるまで外れず、`--soft-stop-timeout` を
 // 長く取る構成ほど逃げ道が無くなる（数時間の猶予を勧めている先が
 // ScaledJob = 1 件消化モードなので、一番効いてほしい構成で効かなくなる）。
 //
@@ -785,14 +780,14 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy st
 //
 // **pool に依存しない。** worker ロールが無いプロセスでは使われないが、
 // 組み立て自体は無害。
-func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, mounted []string, queues []string, onceGate *riveradapter.OnceGate, softStopTimeout time.Duration) riveradapter.Config {
+func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, mounted []string, queues []string, once bool, softStopTimeout time.Duration) riveradapter.Config {
 	return riveradapter.Config{
 		// 何を購読し何を定期投入するかは製品の仕様（workerspec.go）。
 		// 以下は起動形態だけである。
 		Spec:                 newWorkerSpec(cfg, bound, mounted),
 		SchedulePeriodicJobs: cfg.Worker.PeriodicJobs,
 		Queues:               queues,
-		Once:                 onceGate,
+		Once:                 once,
 		SoftStopTimeout:      softStopTimeout,
 		RescueStuckJobsAfter: cfg.Worker.RescueStuckJobsAfter,
 	}
@@ -1013,32 +1008,6 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy st
 		}
 	}
 	return scoped, nil
-}
-
-// superviseOnceMode は once モードの完了を待ち、プロセス停止を開始する。
-// River の graceful stop を先に行い、その後にプロセスを畳む順序は
-// stopOnceProcess に委ねる。ジョブの失敗は River のリトライに任せるため、
-// この監督 goroutine は常に nil を返す。
-//
-// 既知の窓（実害が空振り Job 1 つぶんなので閉じていない）: Work を抜けてから
-// Stop が producer を止めるまでの間に次のジョブが fetch されると、この Job は
-// 2 件消化して終わる。MaxWorkers=1 なので同時には走らない。打ち切られるのは
-// `--soft-stop-timeout` の猶予を超えたときだけである（実測 0/25 でこの窓には
-// 入らなかった）。
-//
-// egCtx は完了待ち（onceGate.Wait）、signalCtx は停止（stopOnceProcess）に使う。
-// どちらも context.Context で隣接しているので取り違えてもコンパイルは通るが、
-// **今のところ挙動は変わらない** --- stopOnceProcess は
-// `stopRiver(context.WithoutCancel(ctx))` で ctx のキャンセルを外しており、
-// 値も見ていないため。stopOnceProcess がキャンセルを外すのをやめたら、
-// signalCtx でなければならない（egCtx は stop() が連鎖して即座に切れる）。
-func superviseOnceMode(egCtx, signalCtx context.Context, eg *errgroup.Group, onceGate *riveradapter.OnceGate, onceIdleTimeout time.Duration, onceEvents <-chan struct{}, stopRiver func(context.Context) error, stop context.CancelFunc) {
-	eg.Go(func() error {
-		outcome := onceGate.Wait(egCtx, onceIdleTimeout, onceEvents)
-		slog.Info("worker: once mode finished", "outcome", outcome.String())
-		stopOnceProcess(signalCtx, stopRiver, stop)
-		return nil
-	})
 }
 
 // superviseSingletons はシングルトンロールをサイトごとの監督 goroutine に登録する。
