@@ -304,35 +304,56 @@ func sortedKeys(m map[string]string) []string {
 }
 
 // newStreamerObjectStores は、streamer が配れる派生物の置き場を作る。
-// FS はこのプロセスがマウントしたものだけ、S3 は設定された全置き場を reader として登録する。
+// FS はこのプロセスがマウントしたものだけ、遠隔は設定された全置き場を reader として登録する。
 func newStreamerObjectStores(ctx context.Context, storage config.StorageConfig, roots map[string]string) (map[string]objstore.Store, error) {
 	objects := make(map[string]objstore.Store, len(roots)+len(storage.Stores))
-	for _, name := range sortedKeys(roots) {
-		objectStore, err := fsstore.New(roots[name])
-		if err != nil {
-			return nil, fmt.Errorf("creating filesystem object store %q for streamer: %w", name, err)
-		}
-		objects[name] = objectStore
-	}
-
 	storeNames := slices.Collect(maps.Keys(storage.Stores))
 	slices.Sort(storeNames)
 	for _, name := range storeNames {
 		configured := storage.Stores[name]
-		if configured.Kind != "s3" {
-			continue
-		}
-		objectStore, err := s3store.NewReader(ctx, s3store.Config{
-			Endpoint: configured.Endpoint,
-			Region:   configured.Region,
-			Bucket:   configured.Bucket,
-		})
+		root := roots[name]
+		objectStore, err := newObjectStore(ctx, name, configured, root, true)
 		if err != nil {
-			return nil, fmt.Errorf("creating S3 object store reader %q for streamer: %w", name, err)
+			return nil, err
 		}
-		objects[name] = objectStore
+		if objectStore != nil {
+			objects[name] = objectStore
+		}
 	}
 	return objects, nil
+}
+
+// newObjectStore は置き場の objstore を作る。readOnly は遠隔置き場を reader として作るかを指定する。
+// FS の root が空なら (nil, nil) を返し、呼び出し元はその置き場を登録しない。未対応の種類はエラーを返す。
+func newObjectStore(ctx context.Context, name string, configured config.StoreConfig, root string, readOnly bool) (objstore.Store, error) {
+	switch configured.Kind {
+	case "fs":
+		if root == "" {
+			return nil, nil
+		}
+		objectStore, err := fsstore.New(root)
+		if err != nil {
+			return nil, fmt.Errorf("creating filesystem object store %q: %w", name, err)
+		}
+		return objectStore, nil
+	case "s3":
+		// S3 は接続せずに作る（資格情報の取得・確認は各操作で行う）。
+		cfg := s3store.Config{Endpoint: configured.Endpoint, Region: configured.Region, Bucket: configured.Bucket}
+		if readOnly {
+			objectStore, err := s3store.NewReader(ctx, cfg)
+			if err != nil {
+				return nil, fmt.Errorf("creating S3 object store reader %q: %w", name, err)
+			}
+			return objectStore, nil
+		}
+		objectStore, err := s3store.New(ctx, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("creating S3 object store %q: %w", name, err)
+		}
+		return objectStore, nil
+	default:
+		return nil, fmt.Errorf("creating object store %q: unsupported kind %q", name, configured.Kind)
+	}
 }
 
 // runServer は server サブコマンドの本体。
@@ -792,11 +813,13 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 	mediaStore := pgstore.NewMediaUnboundWithPolicy(pool, storagePolicy)
 	storageObjects := make(map[string]objstore.Store)
 	for _, name := range sortedKeys(roots) {
-		objects, err := fsstore.New(roots[name])
+		objects, err := newObjectStore(ctx, name, cfg.Storage.Stores[name], roots[name], false)
 		if err != nil {
-			return nil, nil, fmt.Errorf("creating filesystem object store %q: %w", name, err)
+			return nil, nil, err
 		}
-		storageObjects[name] = objects
+		if objects != nil {
+			storageObjects[name] = objects
+		}
 	}
 	derivedObjects, err := newDerivedObjects(ctx, cfg.Storage, storageObjects)
 	if err != nil {
@@ -927,26 +950,17 @@ func newPerStoreWorkerDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy
 }
 
 // newDerivedObjects は storage.derived の置き場の objstore を作る。
-// S3 は接続せずに作る（資格情報の取得・確認は各操作で行う）。FS の置き場は、このプロセスが
-// マウントしているとき（mounted に root がある）だけ作り、していなければ nil を返す。
-// nil のとき派生物を書く仕事は、派生物の置き場が使えないと失敗する。
+// FS は mounted から引き、遠隔は newObjectStore で作る。派生物の置き場が FS のときは、このプロセスがマウントしている場合（mounted にある場合）だけ返し、していなければ nil を返す。
+// nil のとき、派生物を書く仕事は派生物の置き場が使えず失敗する。
 func newDerivedObjects(ctx context.Context, storage config.StorageConfig, mounted map[string]objstore.Store) (objstore.Store, error) {
 	derived, ok := storage.Stores[storage.Derived]
 	if !ok {
 		return nil, nil
 	}
-	switch derived.Kind {
-	case "fs":
+	if derived.Kind == "fs" {
 		return mounted[storage.Derived], nil
-	case "s3":
-		objects, err := s3store.New(ctx, s3store.Config{Endpoint: derived.Endpoint, Region: derived.Region, Bucket: derived.Bucket})
-		if err != nil {
-			return nil, fmt.Errorf("creating derived object store %q: %w", storage.Derived, err)
-		}
-		return objects, nil
-	default:
-		return nil, fmt.Errorf("creating derived object store %q: unsupported kind %q", storage.Derived, derived.Kind)
 	}
+	return newObjectStore(ctx, storage.Derived, derived, "", false)
 }
 
 // newStoreScopedDeps は、置き場 name に束ねた worker.StoreDeps を新しく組み立てる。
@@ -984,12 +998,12 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy st
 		derivedMedia := pgstore.NewMediaForDerivedStore(pool, cfg.Storage.Derived, name, storagePolicy)
 		scoped.DerivedMediaPublish = derivedMedia
 		// この置き場が派生物の置き場と同じ FS なら、既存の削除・監査の経路を共有する。
-		// S3 の独立パスは名前順で最初の FS 置き場だけに載せ、複数の original キューから同じ S3 を
+		// 遠隔の独立パスは名前順で最初の FS 置き場だけに載せ、複数の original キューから同じ置き場を
 		// 繰り返し走査・削除しない。FS の派生物の置き場を別の置き場の worker が mount している
 		// ときは、その FS 全体を objstore のパスで掃かないよう、このパスを作らない。
 		fsNames := cfg.Storage.FSStoreNames()
 		if cfg.Storage.Derived != name &&
-			cfg.Storage.Stores[cfg.Storage.Derived].Kind == "s3" &&
+			!cfg.Storage.Stores[cfg.Storage.Derived].IsFilesystem() &&
 			len(fsNames) > 0 && name == fsNames[0] {
 			derivedDeleteStores, err := store.NewDerivedObjectDeleteStores(derivedMedia, derivedMedia, derivedMedia)
 			if err != nil {

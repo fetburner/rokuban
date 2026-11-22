@@ -18,17 +18,17 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// ListActiveDerivedCopiesInNonDerivedS3 は、現在の派生物置き場以外に残る current-generation の active 派生コピーを返す。
-func (s *Media) ListActiveDerivedCopiesInNonDerivedS3(ctx context.Context, s3Stores []string) ([]store.DerivedS3CopyCount, error) {
-	rows, err := sqlcgen.New(s.pool).ListActiveDerivedCopiesInNonDerivedS3(ctx, sqlcgen.ListActiveDerivedCopiesInNonDerivedS3Params{
-		S3Stores: s3Stores, DerivedStore: s.policy.DerivedStore(),
+// ListActiveDerivedCopiesInNonDerivedRemote は、現在の派生物置き場以外に残る current-generation の active 派生コピーを返す。
+func (s *Media) ListActiveDerivedCopiesInNonDerivedRemote(ctx context.Context, remoteStores []string) ([]store.DerivedRemoteCopyCount, error) {
+	rows, err := sqlcgen.New(s.pool).ListActiveDerivedCopiesInNonDerivedRemote(ctx, sqlcgen.ListActiveDerivedCopiesInNonDerivedRemoteParams{
+		RemoteStores: remoteStores, DerivedStore: s.policy.DerivedStore(),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("listing active derived copies in non-derived S3 stores: %w", err)
+		return nil, fmt.Errorf("listing active derived copies in non-derived remote stores: %w", err)
 	}
-	out := make([]store.DerivedS3CopyCount, 0, len(rows))
+	out := make([]store.DerivedRemoteCopyCount, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, store.DerivedS3CopyCount{Store: row.Store, Copies: row.Copies})
+		out = append(out, store.DerivedRemoteCopyCount{Store: row.Store, Copies: row.Copies})
 	}
 	return out, nil
 }

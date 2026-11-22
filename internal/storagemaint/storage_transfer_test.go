@@ -1302,7 +1302,7 @@ func TestStorageTransferWorkerReconcileEnqueuesDesiredCopies(t *testing.T) {
 	}
 }
 
-func TestStorageTransferReconcileWarnsForActiveDerivedCopyInNonDerivedS3(t *testing.T) {
+func TestStorageTransferReconcileWarnsForActiveDerivedCopyInNonDerivedRemote(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store")
 	recordingID := dbtest.Recording(t, pool)
@@ -1331,14 +1331,14 @@ func TestStorageTransferReconcileWarnsForActiveDerivedCopyInNonDerivedS3(t *test
 	}
 	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "storage transfer reconcile")
 	if got := promtestutil.ToFloat64(metrics.StorageDerivedCopiesOutsideDerivedS3); got != 1 {
-		t.Fatalf("active derived copies outside current S3 = %v, want 1", got)
+		t.Fatalf("active derived copies outside current remote store = %v, want 1", got)
 	}
-	if !strings.Contains(logs.String(), "active derived copies remain in a non-derived S3 store") || !strings.Contains(logs.String(), "store=s3-a") {
+	if !strings.Contains(logs.String(), "active derived copies remain in a non-derived remote store") || !strings.Contains(logs.String(), "store=s3-a") {
 		t.Fatalf("reconcile warning = %q, want warning naming s3-a", logs.String())
 	}
 }
 
-func TestStorageTransferReconcileDoesNotWarnWithoutActiveDerivedCopyInNonDerivedS3(t *testing.T) {
+func TestStorageTransferReconcileDoesNotWarnWithoutActiveDerivedCopyInNonDerivedRemote(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	roots := transferTestRoots(t, "test-store")
 	recordingID := dbtest.Recording(t, pool)
@@ -1369,9 +1369,9 @@ func TestStorageTransferReconcileDoesNotWarnWithoutActiveDerivedCopyInNonDerived
 	}
 	testutil.RequireNoError(t, reconcile.Work(context.Background(), jobs.StorageTransferReconcileArgs{}), "storage transfer reconcile")
 	if got := promtestutil.ToFloat64(metrics.StorageDerivedCopiesOutsideDerivedS3); got != 0 {
-		t.Fatalf("active derived copies outside current S3 = %v, want 0", got)
+		t.Fatalf("active derived copies outside current remote store = %v, want 0", got)
 	}
-	if strings.Contains(logs.String(), "active derived copies remain in a non-derived S3 store") {
+	if strings.Contains(logs.String(), "active derived copies remain in a non-derived remote store") {
 		t.Fatalf("reconcile warned without an active stale copy: %q", logs.String())
 	}
 }
