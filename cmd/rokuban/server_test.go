@@ -1,3 +1,5 @@
+// ci-extra-deps: ./cmd/rokuban
+
 package main
 
 import (

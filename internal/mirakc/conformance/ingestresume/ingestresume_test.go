@@ -1,5 +1,7 @@
 //go:build conformance
 
+// ci-extra-deps: ./cmd/rokuban
+
 package ingestresume
 
 import (
