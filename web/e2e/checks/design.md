@@ -1,6 +1,6 @@
 > [web/e2e/README.md](../README.md) の一部。索引から辿る
 
-### デザイン（`design.mjs`）
+### デザイン（`design-*.mjs`）
 
 **色は jsdom では測れない。** Tailwind のクラスは解決されず、oklch も計算されない。`pnpm test` が全部通っても、色については何の保証にもならない --- [docs/frontend/design.md](../../../docs/frontend/design.md) の「合否は画素で測る」に実行可能な形を与えるのがこれ。
 
@@ -9,7 +9,11 @@
 pnpm build && pnpm preview --port 4173 --strictPort &
 
 # 2) 撮る + 判定する
-E2E_URL=http://localhost:4173 node e2e/run.mjs design
+(
+  for script in design-screenshots design-home design-layout design-appearance design-interactions; do
+    E2E_URL=http://localhost:4173 node e2e/run.mjs "$script" || exit "$?"
+  done
+)
 ```
 
 `go:embed` 経路（`rokuban server --roles api`）に `E2E_URL` を向けても動くはずだが**未検証**。API は全部差し替わるのでサーバーは静的配信しかしないという理屈だけで、実際に回してはいない。
@@ -22,15 +26,19 @@ E2E_URL=http://localhost:4173 node e2e/run.mjs design
 
 判定本体は `validateFixturesOrExit`（`e2e/lib.mjs`）である。これは `verifyBundleMatchesOrExit` と同じ**前提条件**チェックで、スクリプト固有の OK/NG 判定ではないため、共有ハーネス側に置いてある。
 
-フィクスチャを orval 生成の zod スキーマ（`web/src/api/zod.ts` の `List*ResponseItem`）で `parse` し、1 件でも不一致なら他の判定を一切せず exit 1 する。これは ⓪ の `verifyBundleMatchesOrExit` と同じ「前提が崩れていたら打ち切る」扱いである。`design.mjs` に加えて `badge-links.mjs` / `sse-refresh.mjs` / `grid-reserved.mjs` / `reservations-mobile.mjs` も自分のフィクスチャで呼ぶ。**契約を変えたら、フィクスチャを持つ各スクリプトも同じ PR で直す。**
+フィクスチャを orval 生成の zod スキーマ（`web/src/api/zod.ts` の `List*ResponseItem`）で `parse` し、1 件でも不一致なら他の判定を一切せず exit 1 する。これは ⓪ の `verifyBundleMatchesOrExit` と同じ「前提が崩れていたら打ち切る」扱いである。デザインの各判定に加えて `badge-links.mjs` / `sse-refresh.mjs` / `grid-reserved.mjs` / `reservations-mobile.mjs` も自分のフィクスチャで呼ぶ。**契約を変えたら、フィクスチャを持つ各スクリプトも同じ PR で直す。**
 
-`zod.ts` は `import.meta.env` 等 Vite 依存を持たない素の TypeScript なので、Node の ESM スクリプトから `../src/api/zod.ts` を直接 import できる。追加のローダー（tsx・vite-node）は要らない。Node は型注釈だけを消す型ストリッピングを既定で持つ（`.node-version` の 24.20.0 で実際に import できることを確認済み）。`zod.ts` は enum・namespace・parameter properties のような変換が要る構文を持たないため、これだけで通る。個別の実行は `node e2e/run.mjs design` のように runner へ名前を渡す。
+`zod.ts` は `import.meta.env` 等 Vite 依存を持たない素の TypeScript なので、Node の ESM スクリプトから `../src/api/zod.ts` を直接 import できる。追加のローダー（tsx・vite-node）は要らない。Node は型注釈だけを消す型ストリッピングを既定で持つ（`.node-version` の 24.20.0 で実際に import できることを確認済み）。`zod.ts` は enum・namespace・parameter properties のような変換が要る構文を持たないため、これだけで通る。個別の実行は `node e2e/run.mjs design-appearance` のように runner へ名前を渡す。
 
-`design.mjs` は画面のテキストに欠損文字列が混ざっていないかも全ショットに掛ける ---「安いので全画面に掛ける」。見るのは `undefined` / `NaN`（単語境界 `\b`）と `[object`（前方一致）。**`null` は対象にしない** --- 番組名・ルール名に偶然「null」を含む文字列が来ると単語境界だけでは区別できず偽陽性になりうるため。
+「安いので全画面に掛ける」という方針で、主要画面の撮影ループでは毎回テキストに欠損文字列が混ざっていないかを確認する。番組ハブや録画詳細などの追加シナリオでも確認する。見るのは `undefined` / `NaN`（単語境界 `\b`）と `[object`（前方一致）。**`null` は対象にしない** --- 番組名・ルール名に偶然「null」を含む文字列が来ると単語境界だけでは区別できず偽陽性になりうるため。
 
 出るもの:
 
-- `e2e/screenshots/*.png`（追跡しない）。主要 8 画面（ホーム・シリーズ一覧・番組ハブを含む）× ライト / ダーク × デスクトップ / モバイル。加えて番組表グリッド・サーキットブレーカー発動中・モバイルの「その他」を開いた状態・読み込み中（Skeleton の走査線を撮るため録画一覧の応答を遅延させたもの）を撮る。
+- 撮影した画像は `e2e/screenshots/` のスクリプト別ディレクトリに置く（追跡しない）。
+
+  `E2E_SHOT_DIR` を指定すると、`e2e/screenshots/` の代わりに指定したディレクトリの下へスクリプト別に置く。各スクリプトは自分のディレクトリだけを作り直す。
+
+  主要 8 画面（ホーム・シリーズ一覧・番組ハブを含む）× ライト / ダーク × デスクトップ / モバイル。加えて番組表グリッド・サーキットブレーカー発動中・モバイルの「その他」を開いた状態・読み込み中（Skeleton の走査線を撮るため録画一覧の応答を遅延させたもの）を撮る。
 
   空状態（EmptyState の文言。既定のショットでは折り返しの下に隠れて文字が写らないので、スクロールしてから撮る）とホームの全セクション空状態（`home-empty-*`）を足す。さらにシリーズ一覧の格子とリスト（`series-card-*` / `series-list-*`）を 360px と 2560px で撮る。番組ハブは 400px とデスクトップ幅で配置とメニューを撮る（`series-hub-400-*` / `series-hub-desktop-*`）。**人が見て判断するための成果物**で、機械が比較するものではない
 - 合否（exit code）。以下をすべて実画素・実描画で判定する:
@@ -57,9 +65,9 @@ E2E_URL=http://localhost:4173 node e2e/run.mjs design
 - **半透明の地は合成してから測る。** `text-warning` が乗るのは地ではなく `bg-warning/10` の上。地に対する比だけを見ると 0.5〜0.7 甘い数字が出る
 - **下限を割るものは通常の失敗にする。** 既知の不足を理由に合否から外したり、閾値を断りなく下げたりしない
 
-ダークは Playwright context の `colorScheme` で OS 設定をエミュレートする。`design.mjs` はクラスを直接付けず、アプリが初回描画前に `html.dark` へ同期する到達経路を判定する。
+ダークは Playwright context の `colorScheme` で OS 設定をエミュレートする。デザインの判定はクラスを直接付けず、アプリが初回描画前に `html.dark` へ同期する到達経路を判定する。
 
-**`getComputedStyle()` の戻り値を正規表現で読んではいけない**。トークンが oklch なので Chromium は計算値も `oklch(...)` のまま返し、`rgb(...)` を期待した実装は全部の判定を「読めない」ですり抜けさせる。`design.mjs` は 1px 塗って `getImageData` で実画素を採っている。
+**`getComputedStyle()` の戻り値を正規表現で読んではいけない**。トークンが oklch なので Chromium は計算値も `oklch(...)` のまま返し、`rgb(...)` を期待した実装は全部の判定を「読めない」ですり抜けさせる。`design-support.mjs` の `readColor` は 1px 塗って `getImageData` で実画素を採っている。
 
 トークン外の生の色値（`bg-amber-700` / `bg-black` / `#rrggbb`）の検出は実ブラウザが要らないので、そちらは別のコマンドにしてあり **CI の lint job で回る**。
 
@@ -126,7 +134,7 @@ E2E_URL=http://localhost:4173 node e2e/run.mjs personalization
 
 **`break-words` は入れていない。** ①②を `break-words` 無しでも測ったが差が出なかった（和文は文字間で折り返せる）。長い ASCII 1 語での挙動は未検証。
 
-`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は `page.clock.setFixedTime` で固定）。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
+`design-support.mjs` の `createOpen` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は `page.clock.setFixedTime` で固定）。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &

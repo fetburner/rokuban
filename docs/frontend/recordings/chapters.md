@@ -389,7 +389,7 @@ URL は `?profile=` のままである。
 - 表示形式のトグルと分岐: `RecordingsPage`、`RecordingRow`、`view`
 - 再生開始の呼び出し: `.play()`
 - Tab 到達の明示: `<video>`、`tabIndex={0}`
-- Tab 到達の機械判定: `web/e2e/design.mjs`
+- Tab 到達の機械判定: `web/e2e/design-interactions.mjs`
 
 </details>
 

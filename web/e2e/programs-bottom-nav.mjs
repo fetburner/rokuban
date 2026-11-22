@@ -26,7 +26,7 @@
 //      のに行が絶対配置でせり出す等）を捉える回帰確認として置いてある。
 //
 // **mirakc も実チューナーも DB も要らない。** `/api/**` を `page.route` で
-// ブラウザ側から丸ごと差し替える（e2e/design.mjs と同じ手）。
+// ブラウザ側から丸ごと差し替える（design-support.mjs の createOpen と同じ手）。
 //
 //   cd web && pnpm build && pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 node e2e/run.mjs programs-bottom-nav
@@ -89,7 +89,7 @@ function programsFor(startISO, endISO) {
   return out
 }
 
-/** apiHandler は `/api/**` の応答を作る（design.mjs と同じ手）。 */
+/** apiHandler は `/api/**` の応答を作る（design-fixtures.mjs の apiHandler と同じ手）。 */
 async function apiHandler({ path: p, url, json }) {
   if (p === '/api/sites') return json([SITE])
   if (p === '/api/capabilities') return json({ live: true, cmDetect: false })

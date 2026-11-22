@@ -1224,7 +1224,7 @@ function HomeThumbnail({
   const className = cn(
     'relative aspect-video w-full min-w-0 overflow-hidden rounded border border-border bg-muted',
     // calc の 25rem は映像の外に積む縦の予算: ページ見出し・本文の上下余白・局名/番組名/時刻の 3 行。
-    // 映像と 3 行が初期 viewport に収まることは e2e/design.mjs が測る
+    // e2e/design-screenshots.mjs は主役サムネイルと新着 1 枚目が初期画面に入るかを測る。
     hero &&
       'md:flex-[1.7_1_0%] md:max-w-[clamp(24rem,calc((100dvh-25rem)*16/9),64rem)]',
   )

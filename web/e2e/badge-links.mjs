@@ -23,7 +23,7 @@
 //      一度も通さないと実装のバグがそこに隠れていても検出できない
 //
 // **mirakc も実チューナーも DB も要らない。** `/api/**` を `page.route` で
-// ブラウザ側から丸ごと差し替える（e2e/design.mjs と同じ手）。時刻も
+// ブラウザ側から丸ごと差し替える（design-support.mjs の createOpen と同じ手）。時刻も
 // `page.clock.setFixedTime` で固定する。
 //
 //   cd web && pnpm build && pnpm preview --port 4173 --strictPort &
@@ -166,7 +166,7 @@ async function apiHandler({ path: p, url, json, route }) {
     }
     // ProgramRow は未予約の番組に常に ProgramOverlapWarning を出す（展開しなくても
     // 見える位置。issue #24 M2-8）ので、リスト表示（③）ではここが必ず呼ばれる。
-    // 形は `{ count, reservations }`（design.mjs と同じ）。catch-all の `[]` を
+    // 形は `{ count, reservations }`（design-fixtures.mjs の apiHandler と同じ）。catch-all の `[]` を
     // 返すと `overlaps.reservations.map` が `undefined.map` になって
     // 落ちる（実際に踏んだ。実装のバグではなくこのフィクスチャの不足だった ---
     // グリッド（①②が通る経路）はセルの中に ProgramRow を作り込まないため、
@@ -181,7 +181,7 @@ log(`固定時刻 : ${FIXED_NOW.toISOString()} (Asia/Tokyo)`)
 log(`不足区間 : ${overage.startAt} 〜 ${overage.endAt}`)
 
 // 契約検証: フィクスチャが orval 生成の zod スキーマと一致するか
-// （`validateFixturesOrExit`。design.mjs / e2e/README.md §デザイン 参照）。
+// （`validateFixturesOrExit`。lib.mjs / e2e/README.md §デザイン 参照）。
 log('\n=== 契約検証: フィクスチャの zod parse ===')
 await validateFixturesOrExit(
   [

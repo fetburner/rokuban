@@ -2,7 +2,7 @@
 
 ### SSE 抜きでの定期再取得・接続断バナー（`sse-refresh.mjs`）
 
-SSE の通知を 1 通も届けないまま接続だけ維持したとき、**定めた周期で REST 再取得が実際に起きるか**を、リクエスト数を数えて判定する。周期と対象は運用状態 60 秒 / ストレージ残高 5 分 / EPG 10 分で、[docs/api/sse.md](../../../docs/api/sse.md) §レベルトリガーの対称性に書いてある。時計は `page.clock.runFor` で進めるので 10 分待たない。`design.mjs` と同じく `/api/**` を丸ごと差し替えるため、mirakc も DB も Go サーバーも要らない。
+SSE の通知を 1 通も届けないまま接続だけ維持したとき、**定めた周期で REST 再取得が実際に起きるか**を、リクエスト数を数えて判定する。周期と対象は運用状態 60 秒 / ストレージ残高 5 分 / EPG 10 分で、[docs/api/sse.md](../../../docs/api/sse.md) §レベルトリガーの対称性に書いてある。時計は `page.clock.runFor` で進めるので 10 分待たない。`lib.mjs` の `installApiStubs` と同じく `/api/**` を丸ごと差し替えるため、mirakc も DB も Go サーバーも要らない。
 
 **接続断バナー（`components/connection-banner.tsx`、issue #456）もここで見る**。 `/api/events` を `page.route` で abort し、`disconnectedBannerDelayMs`（10 秒。`page.clock` の仮想時計で進める）後に帯が出る。
 
@@ -32,7 +32,7 @@ E2E_URL=http://localhost:4173 node e2e/run.mjs sse-refresh
 - ③ タッチ / 粗いポインタ（hasTouch + isMobile = hover:none + pointer:coarse）: 通常行と放送中行の折りたたみ行は畳み、展開行はそれぞれ 97px / 141px まで開く。加えて外付けキーボード想定で `:focus-visible` だけでも開く（WCAG 2.4.7 / 2.4.11）
 - ④ 折りたたみ行の操作列を実座標へ `page.touchscreen.tap()` で生タップ（ロケータのアクショナビリティ判定を迂回する）しても PUT が飛ばない・トーストも出ない。**これがレビューで見つかった欠陥そのもの**である。`opacity-0` では見えない 80×56px がヒットテストに残って予約が成立していた。幅 0 + `overflow-hidden` は列そのものを畳むので飛ばない。放送中行は操作列に遷移する `<a>`（ライブボタン）が入っているため、同じ生タップの後も URL が `/programs` のままで `/live` へ遷移していないことも測る
 
-`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は `page.clock.setFixedTime` で固定）で mirakc も DB も要らない。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
+`design-support.mjs` の `createOpen` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は `page.clock.setFixedTime` で固定）で mirakc も DB も要らない。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
@@ -68,7 +68,7 @@ E2E_URL=http://localhost:4173 node e2e/run.mjs reserve-visibility
 
 **ボトムタブは `nav[aria-label="主ナビゲーション"].fixed` で指す**。この `aria-label` の `<nav>` はサイドバーとボトムタブの 2 本あり、`.last()` で当てると `AppShell` の DOM 順に依存する。順が入れ替わると 390px でも `hidden md:flex` のサイドバー側を指して矩形が null になり、**重なり判定が何も出さずに消えて全体は green のまま**になる。`md` 未満で矩形が取れないことは NG として報告する（スキップしない）。
 
-`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え）で mirakc も DB も要らない。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
+`lib.mjs` の `installApiStubs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え）で mirakc も DB も要らない。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
@@ -94,7 +94,7 @@ E2E_URL=http://localhost:4173 node e2e/run.mjs search-form-interactions
 - ② 副情報の各子要素の右端がシェブロン（`[data-testid="reservation-chevron"]`）の左端を超えていない。①はコンテナが中身を外に漏らしていないことしか見ないので、コンテナの外形自体が食い込む場合を捕まえるにはこちらが要る
 - ③ ページ全体が横スクロールしない（退行の網。単体では①②の代わりにならない）
 
-`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え）で mirakc も DB も要らない。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
+`lib.mjs` の `installApiStubs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え）で mirakc も DB も要らない。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &

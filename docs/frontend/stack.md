@@ -112,6 +112,6 @@ Noto Sans JP の追加でサイズが増えるが、このサイズ増は受け�
 - 配信物: `dist/`
 - メイン CSS: `index.css`
 - 分割の宣言: `unicode-range`
-- 計測に使ったスタブ機構: `e2e/design.mjs`
+- 計測に使ったスタブ機構: `e2e/design-fixtures.mjs`
 
 </details>

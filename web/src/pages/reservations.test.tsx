@@ -1053,7 +1053,7 @@ describe('多サイトの予約一覧（issue #218）', () => {
 
 /**
  * 警告の信号色。jsdom は色を計算しないので、当たっているクラスだけを見る
- * （実画素での判定は `web/e2e/design.mjs`。docs/frontend/design.md）。
+ * （チューナー不足の実画素は `web/e2e/design-appearance.mjs`。docs/frontend/design.md）。
  */
 describe('予約一覧の信号色', () => {
   it('チューナー不足は琥珀（--warning）で、Tailwind 標準パレットを直接使わない', async () => {

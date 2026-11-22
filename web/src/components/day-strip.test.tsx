@@ -64,7 +64,7 @@ describe('DayStrip', () => {
 
 /**
  * 週末の表し方。jsdom は色を計算しないのでクラス名を見る
- * （実画素での判定は web/e2e/design.mjs。docs/frontend/design.md）。
+ * （docs/frontend/design.md）。
  */
 describe('DayStrip の週末', () => {
   /** 2026-08-01(土) 起点なので index 0 = 土、1 = 日、2 = 月。 */

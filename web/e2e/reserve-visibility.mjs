@@ -44,13 +44,13 @@
 //      あわせて `elementFromPoint` で、その座標のヒットテスト標的が予約ボタン
 //      ではない（畳んでいるので行トグル側に属する）ことも確かめる
 //
-// 別ファイルにしたのは、design.mjs が既に ⑥（Button のフォーカスリング遷移。
+// 別ファイルにしたのは、design-interactions.mjs が既に ⑥（Button のフォーカスリング遷移。
 // issue #294）を持ち、他 PR がそこを編集している可能性があるため
 // （web/e2e/README.md 冒頭のブリーフ参照）。この判定は Button ではなく
-// ProgramRow 固有の関心なので、独立させても design.mjs の合否には影響しない。
+// ProgramRow 固有の関心なので、独立させても design-interactions.mjs の合否には影響しない。
 //
 // mirakc も実チューナーも DB も要らない。API は `page.route` で丸ごと差し替える
-// （design.mjs / live.mjs と同じ手）。
+// （lib.mjs の installApiStubs / live.mjs と同じ手）。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 node e2e/run.mjs reserve-visibility
@@ -205,7 +205,7 @@ log('\n=== ① 細ポインタ（hover:hover かつ pointer:fine） ===')
   // していない時点で確認する。**この順序が要る** --- Chromium の
   // :focus-visible ヒューリスティックは「直近の入力手段」を見るため、
   // 先にマウスで hover / click した後だとプログラムからの `.focus()` が
-  // :focus-visible を伴わなくなる（design.mjs ⑥ の同じ注記と同じ理由）。
+  // :focus-visible を伴わなくなる（design-interactions.mjs ⑥ の同じ注記と同じ理由）。
   // 開閉を `group-focus-within`（ANY フォーカス）ではなく
   // `group-has-[:focus-visible]` にしているのは、行トグルをマウスで
   // クリック / タップした直後に残る「見た目の無いフォーカス」で

@@ -37,7 +37,7 @@
 //     E. その状態でも番組リストの最初の行がヘッダの下に見えている
 //
 // **mirakc も実チューナーも DB も要らない。** `/api/**` を `page.route` で
-// ブラウザ側から丸ごと差し替える（design.mjs / grid-reserved.mjs と同じ手）。
+// ブラウザ側から丸ごと差し替える（lib.mjs の installApiStubs / grid-reserved.mjs と同じ手）。
 // `/api/reservations` だけを毎回 500 で返す（react-query のリトライも含めて
 // 常に失敗のまま）。
 //

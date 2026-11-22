@@ -44,7 +44,7 @@
 // 許容すると決めた。したがってホームに CLS の受け入れ判定は置かない。
 //
 // **mirakc も実チューナーも DB も要らない。** API は `page.route` で丸ごと
-// 差し替える（design.mjs と同じ手）。
+// 差し替える（design-support.mjs の createOpen と同じ手）。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 node e2e/run.mjs cls

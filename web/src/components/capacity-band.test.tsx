@@ -303,7 +303,7 @@ describe('CapacityBands と CapacityBandLabels は対で configure する', () =
 
 /**
  * 帯の色。jsdom は色を計算しないのでクラス名を見る（実画素とコントラストの判定は
- * web/e2e/design.mjs。docs/frontend/design.md）。
+ * web/e2e/design-appearance.mjs。docs/frontend/design.md）。
  */
 describe('CapacityBands の色', () => {
   it('警告の信号色（琥珀）を使い、Tailwind 標準パレットを直接使わない', () => {
@@ -329,7 +329,7 @@ describe('CapacityBands の色', () => {
 
 /**
  * 時間軸列のラベル配置。jsdom はレイアウトを計算しないので、実際に読めるかは
- * web/e2e/design.mjs が測る（scrollWidth <= clientWidth / 目盛りを隠さない）。
+ * web/e2e/design-appearance.mjs が測る（scrollWidth <= clientWidth / 目盛りを隠さない）。
  * ここで固定するのは「どの overage にどの top を割り当てるか」という純粋な
  * ロジックだけ --- avoidTickRow の分岐。
  *

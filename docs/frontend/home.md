@@ -193,7 +193,7 @@ flowchart TD
 <details><summary>根拠</summary>
 
 - 縮尺の帰還ループを観測した幅: 単一 site 592–598px、複数 site 660–676px
-- ラベルと pill の実幅測定、実ブラウザでの判定: `e2e/design.mjs`
+- ラベルと pill の実幅測定、実ブラウザでの判定: `e2e/design-home.mjs`
 
 </details>
 
@@ -221,7 +221,7 @@ flowchart TD
 
 - 容量超過の取得と列挙された種別: `GET /api/capacity/overages`、`jammedTypes`
 - 量子化と終了済み区間の除去: `dayOrigin(0, now)`、`dayOrigin(2, now)`、`endAt > now`
-- 行への重ね合わせの判定: `e2e/design.mjs`
+- 行への重ね合わせの判定: `e2e/design-home.mjs`
 
 </details>
 
@@ -249,7 +249,7 @@ flowchart TD
 
 <details><summary>根拠</summary>
 
-- 完了録画への実クリック判定: `e2e/design.mjs`「ホーム管理モード: 完了録画への到達」
+- 完了録画への実クリック判定: `e2e/design-home.mjs`「ホーム管理モード: 完了録画への到達」
 
 </details>
 

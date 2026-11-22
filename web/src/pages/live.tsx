@@ -768,7 +768,7 @@ export function LivePage() {
       ) : (
         <div className="flex flex-col gap-4 p-4 lg:flex-row lg:items-start lg:gap-5">
           {/* max-w の 25rem は映像の下に積む縦の予算: ページ見出し（約 72px）・p-4 の上下・
-              局名/番組名/時刻の 3 行。映像と 3 行が初期 viewport に収まることは e2e/design.mjs が測る */}
+              局名/番組名/時刻の 3 行。映像と 3 行が初期 viewport に収まることは e2e/design-layout.mjs が測る */}
           <div
             className="flex min-w-0 flex-1 flex-col gap-2 lg:sticky lg:w-[calc(100%-18rem-1.25rem)] lg:max-w-[max(24rem,calc((100dvh-25rem)*16/9))] lg:flex-none"
             style={{
@@ -988,7 +988,7 @@ function LiveSelectionPreview({
  * **走査線の 2 箇所のうちの 1 つ**（ON AIR。docs/frontend/design.md
  * 「走査線は読み込み中・ON AIR の 2 箇所限定」）。タリーレッドの塗り（`tally-scanlines` /
  * `text-tally-foreground`）は録画中バッジと同じ組み合わせをベースにしており、
- * AA を満たすことを確認済み（`e2e/design.mjs`）。選択中チャンネルに `nowPlaying`
+ * AA を満たすことを確認済み（`e2e/design-appearance.mjs`）。選択中チャンネルに `nowPlaying`
  * （いま放送中の番組）があるときだけ呼び出し側が描画する。
  */
 function OnAirBadge() {
