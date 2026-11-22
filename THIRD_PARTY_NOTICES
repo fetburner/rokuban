@@ -530,11 +530,11 @@ Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/aws/protocol/event
 
 
 Component: github.com/aws/aws-sdk-go-v2/config
-Version: v1.33.18
+Version: v1.33.20
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: Apache-2.0
-Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/config/@v/v1.33.18.zip
+Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/config/@v/v1.33.20.zip
 
 ----- LICENSE.txt (license text) -----
 
@@ -742,11 +742,11 @@ Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/config/@v/v1.33.18
 
 
 Component: github.com/aws/aws-sdk-go-v2/credentials
-Version: v1.21.0
+Version: v1.21.2
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: Apache-2.0
-Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/credentials/@v/v1.21.0.zip
+Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/credentials/@v/v1.21.2.zip
 
 ----- LICENSE.txt (license text) -----
 
@@ -2650,11 +2650,11 @@ Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/service/internal/s
 
 
 Component: github.com/aws/aws-sdk-go-v2/service/s3
-Version: v1.114.10
+Version: v1.116.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: Apache-2.0
-Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/service/s3/@v/v1.114.10.zip
+Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/service/s3/@v/v1.116.0.zip
 
 ----- LICENSE.txt (license text) -----
 
@@ -2862,11 +2862,11 @@ Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/service/s3/@v/v1.1
 
 
 Component: github.com/aws/aws-sdk-go-v2/service/signin
-Version: v1.13.1
+Version: v1.14.0
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Included license/notice files below
 License: Apache-2.0
-Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/service/signin/@v/v1.13.1.zip
+Source: https://proxy.golang.org/github.com/aws/aws-sdk-go-v2/service/signin/@v/v1.14.0.zip
 
 ----- LICENSE.txt (license text) -----
 
