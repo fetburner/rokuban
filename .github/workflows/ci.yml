@@ -242,8 +242,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      # go:embed の all:dist が存在しないと go list が落ちる。パッケージ一覧だけ要るので空の置き場で足りる。
-      - run: mkdir -p web/dist && touch web/dist/.keep
+      # 追跡済みの web/dist/.gitkeep が go:embed all:dist の置き場を満たすため、go list の前にフロントエンドのビルドは要らない。
       - uses: actions/cache/restore@v6
         with:
           path: timings
@@ -287,19 +286,7 @@ jobs:
         with:
           go-version-file: go.mod
       - uses: ./.github/actions/install-apt-cached
-      - uses: pnpm/action-setup@v6
-        with:
-          package_json_file: web/package.json
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      # web/dist/ を go:embed するため、Go ビルド前にフロントエンドをビルド
-      - run: pnpm install --frozen-lockfile
-        working-directory: web
-      - run: pnpm build
-        working-directory: web
+      # API / streamer のテストは DistFS に fstest.MapFS を渡し、go:embed all:dist の置き場は追跡済みの web/dist/.gitkeep が満たす。そのためフロントエンドのビルドは要らない。
       # DB を使うテストはパッケージごとに専用データベースを作るため（internal/testutil.SetupDB）、
       # 待ち合わせも踏み合いもなく並行実行できる。
       # POSTGRES_USER はこのインスタンスの initdb 時に作られる初期ロールなので CREATE DATABASE 権限を持つ。
@@ -570,14 +557,19 @@ jobs:
 
   # 生成物（sqlc/oapi-codegen/orval）が openapi.yaml / マイグレーションからの再生成と一致するかを
   # 検証する。生成物はコミット済みなので他 job（build/test）は再生成漏れがあっても普通に緑になる。
-  # ツール版は CLAUDE.md §ビルド・テストに固定した版に合わせる（版がずれると偽陽性で赤くなる）。
+  # ツールの版は go.mod の tool ディレクティブが固定し、手元と CI は同じ版を使う。
   generated-diff:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # このジョブだけが `go tool` で sqlc / oapi-codegen をビルドするため、専用のキャッシュキーにする。
+      # go.sum だけのキーは他ジョブと共有され、先に保存したジョブの中身になるため、ツールのビルド結果がキャッシュに乗らない。
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            sqlc.yaml
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: web/package.json
@@ -588,19 +580,12 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
         working-directory: web
-      # go:embed と実ビルド依存の棚卸しに web/dist が必要。
-      - run: pnpm build
-        working-directory: web
       # 公式 Go バイナリと web/dist に入る本番依存の LICENSE / NOTICE / PATENTS を
       # lockfile と実ビルド依存から再生成し、コミット済み notice との差分を検出する。
+      # Go の依存は go list -deps で、Web の依存は pnpm install 後の node_modules から辿るので、pnpm build は要らない。
       - name: Check third-party notices
         run: npm run third-party-notices -- --check
-      # sqlc / oapi-codegen は go.mod の依存に入れず、golangci-lint と同じくローカルバイナリ
-      # 前提（CLAUDE.md）。CI では都度その版をインストールして GOPATH/bin を PATH に足す。
-      - run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
-      - run: go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.0
-      - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - run: sqlc generate
+      - run: go tool sqlc generate
       # internal/api/gen.go の //go:generate directive をそのまま踏む。ここで直接
       # oapi-codegen を呼ぶと directive の増減・フラグ変更を検知できないまま緑になる。
       - run: go generate ./internal/api/
@@ -620,7 +605,7 @@ jobs:
         run: |
           git add -A
           git diff --cached --exit-code \
-            || { echo "::error::生成物が古い。sqlc generate / go generate ./internal/api/ / (cd web && pnpm exec orval) / scripts/schemadump.sh を実行してコミットしてください"; exit 1; }
+            || { echo "::error::生成物が古い。go tool sqlc generate / go generate ./internal/api/ / (cd web && pnpm exec orval) / scripts/schemadump.sh を実行してコミットしてください"; exit 1; }
 
   lint:
     runs-on: ubuntu-latest
@@ -639,13 +624,12 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
         working-directory: web
-      - run: pnpm build
-        working-directory: web
       - run: pnpm lint
         working-directory: web
       # トークン外の生の色値の検出（docs/frontend/design.md）。実ブラウザを要しないのでここで回す。
       - run: pnpm check:colors
         working-directory: web
+      # golangci-lint は本物の dist を読まず、go:embed の置き場は追跡済みの web/dist/.gitkeep が満たす。そのためフロントエンドのビルドは要らない。
       # go.mod より古い Go でビルドされた golangci-lint は起動を拒む。v2.12.2 は
       # go1.26 ビルドなので go.mod の go 1.27.1 では動かない。v2.13.2 は go1.27.0
       # ビルド（比較は major.minor なので 1.27.1 を通す）。

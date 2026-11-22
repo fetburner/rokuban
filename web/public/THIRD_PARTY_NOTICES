@@ -7796,11 +7796,11 @@ Source: https://proxy.golang.org/github.com/spf13/cobra/@v/v1.10.2.zip
 
 
 Component: github.com/spf13/pflag
-Version: v1.0.9
+Version: v1.0.10
 Included in: Official Go binary built with CGO_ENABLED=0
 Copyright: Copyright (c) 2012 Alex Ogier. All rights reserved. / Copyright (c) 2012 The Go Authors. All rights reserved.
 License: BSD-3-Clause
-Source: https://proxy.golang.org/github.com/spf13/pflag/@v/v1.0.9.zip
+Source: https://proxy.golang.org/github.com/spf13/pflag/@v/v1.0.10.zip
 
 ----- LICENSE (license text) -----
 Copyright (c) 2012 Alex Ogier. All rights reserved.
