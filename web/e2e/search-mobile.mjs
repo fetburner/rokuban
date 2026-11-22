@@ -31,7 +31,7 @@
 // `checkResultReservation` のコメント）。
 //
 // **mirakc も実チューナーも DB も要らない。** API は `page.route` で丸ごと
-// 差し替える（design.mjs と同じ手）。
+// 差し替える（lib.mjs の installApiStubs と同じ手）。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 node e2e/run.mjs search-mobile
@@ -155,7 +155,7 @@ async function apiHandler({ path: p, json, route }) {
 }
 
 // 検索スタブが orval 生成の zod スキーマ（`SearchProgramsResponseItem`）から
-// 遅れていないかを design.mjs と同じ手で確認する（issue #468 と同じ理由）。
+// 遅れていないかを lib.mjs の `validateFixturesOrExit` で確認する（issue #468 と同じ理由）。
 // `validateFixturesOrExit` はブラウザ・preview サーバーなしで CI から回るため、
 // ブラウザ起動・`verifyBundleMatchesOrExit` より前に置く。
 log('\n=== 契約検証: フィクスチャの zod parse ===')

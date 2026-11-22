@@ -56,7 +56,7 @@ E2E_URL=http://127.0.0.1:4173 E2E_BROWSER=webkit E2E_TIMELINE_RAW_SEEK_ONLY=1 \
 - ② 最下端までスクロールしたとき、`main` の内容ボックスの下端がタブの上端より下に来ていないこと。①に加えて「`main` が文書の最下端の箱である」ことも見る。同じ変異で 780px 対 779px で落ちる
 - ③ 最下端でタブの上端をまたいでいる行が無いこと。**これは余裕ゼロの回帰確認で、境界線落ちに対する検出力は無い**（上記のとおり修正前も余白 0px で通る）。①②が捉えない別種の失敗に対する網として置いてある。`min-h-14` → `min-h-16` の変異では①②③すべてが落ちることを確認済み
 
-`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は `page.clock.setFixedTime` で固定）。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
+`design-support.mjs` の `createOpen` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は `page.clock.setFixedTime` で固定）。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
@@ -114,7 +114,7 @@ CLS（Cumulative Layout Shift）はレイアウトそのものの指標なので
 
 **ホーム（`/`）はここでは見ない**。ラボ計測はホームのデスクトップでも 0.111（スロットル時のみ）を報告している。原因は「4 セクションの表示順は固定なのに解決順は不定で、後続セクションが先に見えている状態で先行セクションが実データごと上に挿し込まれる」形である。対策には `docs/frontend/home.md`「セクションの可視性は個別に」を変える設計判断が要る。判定手段（この形のフィクスチャ）ごとその判断のあとに足す --- しきい値を超えたまま緑にできない判定を置くと、この受け入れ全体が「常に赤いので誰も見ない」ものになる。
 
-`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え）で mirakc も DB も要らない。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
+`lib.mjs` の `installApiStubs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え）で mirakc も DB も要らない。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &

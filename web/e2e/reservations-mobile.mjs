@@ -22,7 +22,7 @@
 // 長い局名 + orphaned バッジ）。
 //
 // **mirakc も実チューナーも DB も要らない。** `/api/**` を `page.route` で
-// ブラウザ側から丸ごと差し替える（e2e/design.mjs と同じ手）。
+// ブラウザ側から丸ごと差し替える（design-support.mjs の createOpen と同じ手）。
 //
 //   cd web && pnpm build && pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 node e2e/run.mjs reservations-mobile
@@ -100,7 +100,7 @@ const reservations = [
   },
 ]
 
-/** apiHandler は `/api/**` の応答を作る（design.mjs と同じ手）。 */
+/** apiHandler は `/api/**` の応答を作る（design-fixtures.mjs の apiHandler と同じ手）。 */
 async function apiHandler({ path: p, json }) {
   if (p === '/api/sites') return json([SITE])
   if (p === '/api/capabilities') return json({ live: true })
@@ -115,7 +115,7 @@ async function apiHandler({ path: p, json }) {
 log(`URL: ${URL_BASE}`)
 
 // 契約検証: フィクスチャが orval 生成の zod スキーマと一致するか
-// （`validateFixturesOrExit`。design.mjs / e2e/README.md §デザイン 参照）。
+// （`validateFixturesOrExit`。lib.mjs / e2e/README.md §デザイン 参照）。
 log('\n=== 契約検証: フィクスチャの zod parse ===')
 await validateFixturesOrExit(
   reservations.map((r, i) => [`reservations[${i}]`, ListReservationsResponseItem, r]),

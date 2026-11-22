@@ -15,7 +15,7 @@
 //      「予約」があり、選択中だけに太い ring がある
 //   ⑤ 予約の印はタリー / 琥珀 / destructive ではない（色は信号のみ）
 //
-// 別ファイルにしたのは、design.mjs が既にグリッドの現在時刻線・容量帯を持ち、
+// 別ファイルにしたのは、design-appearance.mjs が既にグリッドの現在時刻線・容量帯を持ち、
 // 他 PR がそこを編集している可能性があるため（reserve-visibility.mjs と同じ理由）。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
@@ -167,7 +167,7 @@ async function apiHandler({ path: p, json }) {
 }
 
 /**
- * readColor は oklch の計算値を 1px 塗って sRGB に落とす（design.mjs と同じ手）。
+ * readColor は oklch の計算値を 1px 塗って sRGB に落とす（design-support.mjs と同じ手）。
  * getComputedStyle の文字列を正規表現で読んではいけない。
  */
 const readColor = (el, prop) => {
@@ -245,7 +245,7 @@ const inspectCell = (el) => {
 }
 
 // 契約検証: フィクスチャが orval 生成の zod スキーマと一致するか
-// （`validateFixturesOrExit`。design.mjs / e2e/README.md §デザイン 参照）。
+// （`validateFixturesOrExit`。lib.mjs / e2e/README.md §デザイン 参照）。
 log('\n=== 契約検証: フィクスチャの zod parse ===')
 await validateFixturesOrExit(
   [

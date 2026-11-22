@@ -172,7 +172,7 @@
     --tally-foreground: var(--paper);
     /* 琥珀は「文字 + 淡い地（bg-warning/10）」で使うので、地ではなくその淡い地の上で
        AA を満たす明度にする。Tailwind の amber-700 相当（0.555）だと自分の 10% の
-       上で 4.22 しかない（e2e/design.mjs のコントラスト判定が落ちる） */
+       上で 4.22 しかない（e2e/design-appearance.mjs のコントラスト判定が落ちる） */
     --warning: oklch(0.52 0.15 46);
     --border: var(--tone-200);
     --input: var(--tone-200);
@@ -323,7 +323,7 @@
  * `Skeleton`）は `50%` にだけ `opacity: .5` を持ち、0%/100% は素の
  * 不透明度（1）に戻る --- `iteration-count` を 1 に固定すれば、`infinite`
  * の明滅が 1 周だけ一瞬で終わり、素の不透明度（1 = 判読できる）に落ち着く。
- * `e2e/design.mjs` ⑦ が縮退後の `Skeleton` の `opacity` を実測し、
+ * `e2e/design-interactions.mjs` ⑦ が縮退後の `Skeleton` の `opacity` を実測し、
  * 判読できない値に落ちていないかを機械判定する（実測値そのものはその
  * 出力が権威。ここには書かない）。
  *
@@ -352,7 +352,7 @@
  *
  * `--scan-gap` と `--scan-lit` は別のカスタムプロパティに出す。
  * `background-image` のグラデーションに直接書いた色は `getComputedStyle` で
- * 読めないため、`e2e/design.mjs` が読み込み用 Skeleton の 2 色を個別に確かめる
+ * 読めないため、`e2e/design-appearance.mjs` が読み込み用 Skeleton の 2 色を個別に確かめる
  * ためである。Skeleton は `aria-hidden` で文字を載せない。EmptyState にこの
  * ユーティリティを使うと、空と読み込み中の見分けが薄れる。
  */

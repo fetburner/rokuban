@@ -48,7 +48,7 @@
 
 <details><summary>根拠</summary>
 
-- 到達距離の合否と実測値の権威: `e2e/design.mjs`「視聴対象への到達距離」
+- 到達距離の合否と実測値の権威: `e2e/design-layout.mjs`「視聴対象への到達距離」
 
 </details>
 

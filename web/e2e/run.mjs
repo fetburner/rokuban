@@ -2,11 +2,15 @@
 // e2e-needs がない判定を既定で回す。CI の対象は各ファイルの要件宣言から導出する。
 // `finish(` の有無では判別しない。呼ばない実行判定があり、実行判定ではない fixture builder などの
 // 部品もあるため、他の .mjs から相対 import されているファイルを部品として除く。run.mjs 自身も除く。
-// 2026-11-14 の CI 相当実測は 5 shard で 236 / 147 / 113 / 180 / 112 秒（最長は design.mjs 単独）。
-// 準備は約 110 秒で、最長 shard と合わせた経路は約 346 秒。
-// main の旧 browser-e2e は 375 秒、Go test は matrix 27 秒 + 最長 shard 280 秒だった。最長 shard は
-// design.mjs 単独で、各 shard の判定時間は 280 秒を下回る。n=5 なら旧 browser-e2e より短く、
-// これ以上 shard を増やしても design.mjs 自体の時間は縮まらない。
+// 2026-11-14 の CI 相当実測は 5 shard で 236 / 147 / 113 / 180 / 112 秒。
+// 最長 shard は分割前の design.mjs 単独だった。準備は約 110 秒で、最長 shard と合わせた経路は約 346 秒。
+// main の旧 browser-e2e は 375 秒。Go test は matrix 27 秒 + 最長 shard 280 秒だった。
+// この実測では各 shard の判定時間は 280 秒を下回り、n=5 で旧 browser-e2e より短かった。
+// 分割前は design.mjs 1 本の所要時間が最長 shard の下限だった。この下限を縮めるために分割した。
+// 2026-11-22 のローカル実測（macOS、pnpm preview）は分割前の design.mjs が 236.9 秒。
+// 分割後は design-screenshots 36.0 / design-home 34.8 / design-layout 60.2 /
+// design-appearance 45.6 / design-interactions 60.8 秒で、すべて PASS。
+// 分割後の CI 所要時間は未計測。
 // 2026-11-13 の測定では、ソース byte 数と実行時間の順位相関は Spearman 0.58 で、50 秒超の判定は
 // byte 数上位 5 本にすべて含まれた。固定の所要時間表を増やさずに重い判定を分散するため、
 // .mjs の byte 数を降順に並べ、現在の合計 byte 数が最小の shard へ貪欲に割り当てる。

@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
  *
  * **色そのものの合否は jsdom では出せない**（レイアウトと同じで、jsdom は
  * Tailwind のクラスを解決しないし oklch も計算しない）。実際の画素での判定は
- * `web/e2e/design.mjs` にある。ここで見るのは、実ブラウザを起動しなくても
+ * `web/e2e/design-appearance.mjs` にある。ここで見るのは、実ブラウザを起動しなくても
  * 文字列として確かめられることだけ:
  *
  *   1. 地の 3 値がファビコンの 3 値と一致しているか（別々のファイルにある同じ

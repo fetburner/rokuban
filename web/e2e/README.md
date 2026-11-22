@@ -103,7 +103,7 @@ cd web && E2E_URL=http://localhost:40773 node e2e/run.mjs channel-and-more-sheet
 | 節 | ファイル |
 |---|---|
 | ホームの保存位置フレーム（`home-resume-frame.mjs`） | [checks/layout.md](checks/layout.md) |
-| デザイン（`design.mjs`） | [checks/design.md](checks/design.md) |
+| デザイン（`design-*.mjs`） | [checks/design.md](checks/design.md) |
 | README のスクリーンショット（`readme-screenshots.mjs`） | [checks/design.md](checks/design.md) |
 | フォントスケール（`font-scale.mjs`） | [checks/design.md](checks/design.md) |
 | SSE 抜きでの定期再取得・接続断バナー（`sse-refresh.mjs`） | [checks/reservations-search.md](checks/reservations-search.md) |
@@ -158,7 +158,7 @@ cd web && E2E_URL=http://localhost:40773 node e2e/run.mjs channel-and-more-sheet
 | jsdom が測れないもの | [README.md](README.md) |
 | 判定を足すときの規律 | [README.md](README.md) |
 | デザイン | [checks/design.md](checks/design.md) |
-| ⓪ 配っている bundle と dist/ の一致（lib.mjs・checks.mjs・live.mjs・design.mjs の「README.md 参照」） | [checks/programs.md](checks/programs.md) §参照バッジのリンク |
+| ⓪ 配っている bundle と dist/ の一致（lib.mjs・checks.mjs・live.mjs・デザインの各判定の「README.md 参照」） | [checks/programs.md](checks/programs.md) §参照バッジのリンク |
 
 ## CI 判定の要件宣言
 
@@ -177,18 +177,18 @@ cd web && E2E_URL=http://localhost:40773 node e2e/run.mjs channel-and-more-sheet
 
 ffmpeg と Go は browser-e2e が既に用意するので宣言しない。`E2E_BROWSER=webkit` など任意の診断モードを持つだけなら追加要件ではない。`lib.mjs` などの共有部品は別スクリプトからの import で除く。`finish(` を呼ばない実行判定があり、実行判定ではない fixture builder のような部品もあるため、`finish(` の有無では判別しない。
 
-CI は `design.mjs` の全体を実行する。部分実行だけでは状態色・画素・タイムラインの判定が欠けるためである。`E2E_RULE_CARD_ONLY=1` はルールカードだけを調べるローカル診断用で、CI では使わない。実ブラウザ不要の `pnpm check:colors` は lint job に入っている。判定スクリプト全部を回す定期ジョブは、回す主体と失敗の受け手が決まっていないため作らない。
+CI はデザインの判定をすべて実行する。部分実行だけでは状態色・画素・タイムラインの判定が欠けるためである。`design-interactions.mjs` の `E2E_RULE_CARD_ONLY=1` はルールカードだけを調べるローカル診断用で、CI では使わない。実ブラウザ不要の `pnpm check:colors` は lint job に入っている。判定スクリプト全部を回す定期ジョブは、回す主体と失敗の受け手が決まっていないため作らない。
 
 ## 判定を足すときの規律
 
 **足した判定が、直す前の実装で実際に落ちることを確認すること。** 落ちない判定は何も判定していない（CLAUDE.md「テスト規律」のユニットテストと同じ）。
 
-**時計を固定した判定は、時計が動くことに起因する欠陥を検出できない。** `page.clock.setFixedTime`（`checks/` の各判定）も jsdom の `vi.setSystemTime`（`pnpm test`）も時計を止めている。その代償として、時計が動くことで露呈する欠陥はどちらの経路でも原理的に見えない。たとえば「レンダーのたびに変わる値（生の `Date.now()` 等）をキャッシュキーに載せて無限再取得になる」欠陥は、時計を止めた構成では再現しない（`pages/home.tsx` の容量超過クエリで実際に踏んだ）。時計に起因する挙動を判定したいときは、時計を止めない経路を別に用意すること（`design.mjs`・`pages/home.test.tsx` の「実時計でのクエリキー安定性」参照）。
+**時計を固定した判定は、時計が動くことに起因する欠陥を検出できない。** `page.clock.setFixedTime`（`checks/` の各判定）も jsdom の `vi.setSystemTime`（`pnpm test`）も時計を止めている。その代償として、時計が動くことで露呈する欠陥はどちらの経路でも原理的に見えない。たとえば「レンダーのたびに変わる値（生の `Date.now()` 等）をキャッシュキーに載せて無限再取得になる」欠陥は、時計を止めた構成では再現しない（`pages/home.tsx` の容量超過クエリで実際に踏んだ）。時計に起因する挙動を判定したいときは、時計を止めない経路を別に用意すること（`design-home.mjs`・`pages/home.test.tsx` の「実時計でのクエリキー安定性」参照）。
 
 **`waitFor` の失敗を `.catch(() => {})` で飲むときは、後段が飲んで良い理由になっているかを確かめる**。後段が「待っていた条件そのもの」を直接読み直して合否を出す形（例: `document.activeElement === el` を評価し直す）なら、待ちの成否を経由しないので飲んでよい。
 
 そうでない形（後段が別の要素・別の状態を測る）で飲むと、「待ちが失敗した」ことがその別の判定の NG 文言に化けて出る --- スタイル回帰と区別が付かず、しかもタイミング依存で再実行すると消える。この規律自体はまだこのリポジトリで踏み抜いたことを実測で示せていない（予防的なもの）--- 下記 ChannelOption の一件は、調べる過程でこの形の失敗ではないと分かった。
 
-**before/after diff を取る共有ヘルパーは、before の基準を自分で制御しないと正しく動かない**。`design.mjs` の `checkExplicitFocusRing`（ChannelOption 呼び出し）で実際に起きた。base-ui の Popover は開いた直後、先頭候補へ非同期に既定フォーカスを当てる（queueMicrotask → requestAnimationFrame 1 回）。この既定フォーカスが「まだ来ていない」か「もう来た」かで before の box-shadow が実行のたびに割れ、before/after の差分判定（before と after が同じなら NG）が偽陽性を出していた。
+**before/after diff を取る共有ヘルパーは、before の基準を自分で制御しないと正しく動かない**。`design-interactions.mjs` の `checkExplicitFocusRing`（ChannelOption 呼び出し）で実際に起きた。base-ui の Popover は開いた直後、先頭候補へ非同期に既定フォーカスを当てる（queueMicrotask → requestAnimationFrame 1 回）。この既定フォーカスが「まだ来ていない」か「もう来た」かで before の box-shadow が実行のたびに割れ、before/after の差分判定（before と after が同じなら NG）が偽陽性を出していた。
 
 ポップアップの開閉待ち自体は 5000ms の予算に対し 1〜3ms で毎回成功しており、swallow とは無関係だった（4 回計測、8/8 で `beforeShadow !== 'none'` と NG が一致）。直すには before を測る前に明示的に `blur()` して基準を確定させ、かつ相手の既定フォーカスが済むのを待ってから呼ぶ（rAF 2 回。フレーム数は負荷で増えないので固定回数で足りる）。

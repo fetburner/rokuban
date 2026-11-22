@@ -118,7 +118,7 @@ DOM 計測が 0 のとき（未計測）は、全部描く方を選ぶ。jsdom �
 <details><summary>根拠</summary>
 
 - グリッドとリストで共有する番組操作: `ProgramRow`、予約モデル、encode 規則
-- 操作列の配置: `web/e2e/design.mjs` の操作標的判定
+- 操作列の配置: `web/e2e/programs-dialog.mjs` の操作列の判定
 - グリッドから選択ダイアログを開く: `ProgramRow` と `ProgramGrid`
 
 </details>

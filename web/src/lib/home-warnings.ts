@@ -334,5 +334,5 @@ function failureReasonText(recording: Recording): string | undefined {
  * warning（琥珀）
  * （docs/frontend/design.md「色は信号のみ」。同じ事実は同じ色で言う）。
  * 種別 × 色は `pages/home.test.tsx`「警告項目は種別ごとに固定の色クラスを持つ」と
- * `e2e/design.mjs` ①'' が固定する。
+ * `e2e/design-home.mjs` ①'' が固定する。
  */

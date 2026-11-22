@@ -1146,7 +1146,7 @@ describe('ホーム: 警告セクション', () => {
 
   it('警告項目は種別ごとに固定の色クラスを持つ（チューナー不足=warning、失われた録画/失敗録画/ドロップ=destructive）', async () => {
     // jsdom は実描画色を計算しないので、当たっているクラスだけを見る
-    // （実画素は e2e/design.mjs が見る。`pages/reservations.test.tsx` の
+    // （実画素は e2e/design-home.mjs が見る。`pages/reservations.test.tsx` の
     // 「警告の信号色」と同じ流儀）。文字列 key の前方一致で種別を推測する
     // 実装は、key の書式を変えただけで色が黙って壊れる（レビュー指摘）ので、
     // `WarningItem.kind` を経由していることをここで固定する。
@@ -1717,7 +1717,7 @@ describe('ホーム管理モード: 時間軸の読み込み', () => {
  * `beforeEach` の `vi.setSystemTime` で時計を固定しているが、時計を止めた
  * 構成では `Date.now()` が常に同じ値を返すため、この種の欠陥（レンダーごとに
  * 変わる生ミリ秒がキャッシュキーに入る）を原理的に検出できない
- * （`e2e/design.mjs` の `page.clock.setFixedTime` も同じ盲点を持つ ---
+ * （`e2e/design-home.mjs` の `page.clock.setFixedTime` も同じ盲点を持つ ---
  * そちらには時計を止めない別の判定を足してある）。
  */
 describe('ホーム: 実時計でのクエリキー安定性（無限再取得の回帰検出）', () => {

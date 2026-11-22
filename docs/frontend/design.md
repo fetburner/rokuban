@@ -4,7 +4,7 @@
 
 この文書は以後の UI PR のレビュー判定基準である。新しい画面やコンポーネントを足すときは、ここを満たしているかで見る。
 
-形（トークン名と実際の値）の権威は `web/src/index.css`。ここには判断（なぜ）だけを書く。**合否は実ブラウザで測る**（`node e2e/run.mjs design`。下記「合否は画素で測る」）。
+形（トークン名と実際の値）の権威は `web/src/index.css`。ここには判断（なぜ）だけを書く。**合否は実ブラウザで測る**（`node e2e/run.mjs design-appearance`。下記「合否は画素で測る」）。
 
 ## テーゼは「副調整室の計器盤」
 
@@ -154,7 +154,7 @@ Rokuban が扱うのは放送波と有限のチューナーである。装飾で
 
 <details><summary>根拠</summary>
 
-- コントラストの実ブラウザ判定: `node e2e/run.mjs design`、`web/e2e/design.mjs`
+- コントラストの実ブラウザ判定: `node e2e/run.mjs design-appearance`、`web/e2e/design-appearance.mjs`
 - 半透明の地を合成して測る（地だけだと 0.5〜0.7 甘い）: `text-warning`、`bg-warning/10`
 - 合成が恒等関数になる失敗: 祖先を遡って最初に不透明な面まで重ねる、背景が透明なら落とす
 
@@ -198,7 +198,7 @@ chip と day-strip は、hover のときだけ muted の地が乗る形である
 
 一覧行の hover 中の副情報は、ミュート色を維持する。hover の実測は代表として録画一覧の行だけで行い、4 画面すべては測っていない。
 
-4 画面（録画一覧・予約一覧・ホーム・番組リスト）の hover の面は、最も近い薄さへ揃え、通常時の「本文 = 前景色 / 副情報 = ミュート色」の階層を崩さない。実測は、録画一覧の行を `node e2e/run.mjs design` が実際に hover して行い、ライト・ダークの両テーマで測る。録画一覧の選択モードで選んだ行も、同じ薄さの面に揃えてある。こちらは常時見える面で Lighthouse の監査対象なので、hover と同じ理屈で `node e2e/run.mjs design` が実測する。
+4 画面（録画一覧・予約一覧・ホーム・番組リスト）の hover の面は、最も近い薄さへ揃え、通常時の「本文 = 前景色 / 副情報 = ミュート色」の階層を崩さない。実測は、録画一覧の行を `node e2e/run.mjs design-appearance` が実際に hover して行い、ライト・ダークの両テーマで測る。録画一覧の選択モードで選んだ行も、同じ薄さの面に揃えてある。こちらは常時見える面で Lighthouse の監査対象なので、hover と同じ理屈で `node e2e/run.mjs design-appearance` が実測する。
 
 <details><summary>根拠</summary>
 
@@ -211,7 +211,7 @@ chip と day-strip は、hover のときだけ muted の地が乗る形である
 
 上の列挙は、muted の面にミュート色の文字が乗る箇所の網羅ではない。網羅の権威は実ブラウザ判定の出力に置く。そこに出ていない組み合わせは「測っていない」であって「通っている」ではない。いま分かっている残りは次の通り。
 
-- 測ってあり、下限を満たす: 録画詳細の説明文・見出し語の一群・品質イベントのミュート文字。詳細本体はページ地へ直接置き、`node e2e/run.mjs design` は見出し語「チャンネル」の文字色をページ地に対して測る。同じ色トークンを使う説明文・品質イベントも同じコントラストになる。常時見えるため Lighthouse の監査対象に入る。
+- 測ってあり、下限を満たす: 録画詳細の説明文・見出し語の一群・品質イベントのミュート文字。詳細本体はページ地へ直接置き、`node e2e/run.mjs design-appearance` は見出し語「チャンネル」の文字色をページ地に対して測る。同じ色トークンを使う説明文・品質イベントも同じコントラストになる。常時見えるため Lighthouse の監査対象に入る。
 - 未検証: 検索のルール由来バナーの読み込み中の枝（薄い muted の地）。ここではルールが解決した本体がミュート文字を持たず、エラーの枝は destructive の文字である。
 - 未検証: エンコード対象プロファイルの行の hover（薄い muted の地）。コンテナ名がミュート文字である。
 - 未検証: destructive 側のボタンの hover（基底より濃い面）。
@@ -264,7 +264,7 @@ chip と day-strip は、hover のときだけ muted の地が乗る形である
 <details><summary>根拠</summary>
 
 - 寸法の基準を先に決める: [不変条件 11](../invariants.md)
-- 要素の列挙と `getBoundingClientRect()` の測定: `web/e2e/design.mjs` の ④-A、Playwright
+- 要素の列挙と `getBoundingClientRect()` の測定: `web/e2e/design-interactions.mjs` の ④-A、Playwright
 - 測定画面: 番組、検索、予約、録画、ルール、ライブ
 - visual / hit 寸法、最小エッジ間隔、意図的な重なり件数を出力する
 - 対象 selector: `button, a[href], [role="button"], [role="switch"], input, select, summary`
@@ -421,11 +421,11 @@ ON AIR の文字は塗りの上の前景色とし、縞の両方とのコント�
 
 色相を変える手段（oklch で墨と混ぜる補間など）は使わない。oklch の補間が色相を極座標の最短弧で結ぶため、タリーの色相から外れた第 5 の信号色（マゼンタ寄り）を生みかねない。色相・彩度を変えずに明度だけ動かすため、相対カラー構文を使う。
 
-縞の 2 色は、背景色用と背景画像のグラデーション用に分けたカスタムプロパティにする。背景画像の中に直接置いた色は測れないが、分けると `node e2e/run.mjs design` が両方を測れる。
+縞の 2 色は、背景色用と背景画像のグラデーション用に分けたカスタムプロパティにする。背景画像の中に直接置いた色は測れないが、分けると `node e2e/run.mjs design-appearance` が両方を測れる。
 
 <details><summary>根拠</summary>
 
-- ON AIR の文字色と縞の両方を測る判定: `web/e2e/design.mjs`、`text-tally-foreground`
+- ON AIR の文字色と縞の両方を測る判定: `web/e2e/design-appearance.mjs`、`text-tally-foreground`
 - 骨組み表示の装飾指定: `Skeleton`、`aria-hidden`
 - 色相を変える手段の禁止: `color-mix(in oklch, ...)`
 - 明度だけ動かす構文: `oklch(from var(--tally) calc(l * ...) c h)`
@@ -456,7 +456,7 @@ ON AIR の文字は塗りの上の前景色とし、縞の両方とのコント�
 
 - 動きのクラスとコンポーネント: `animate-pulse`、`Skeleton`、`slide-in-from-*`、`zoom-in-95`、`fade-in-0`、`Button`、`translate`
 - 集約先と animation を消さない理由: `web/src/index.css`、`@media (prefers-reduced-motion: reduce)`、`animation-duration`、`transition-duration`
-- 通常時と縮退時の実ブラウザ判定: `web/e2e/design.mjs`
+- 通常時と縮退時の実ブラウザ判定: `web/e2e/design-interactions.mjs`
 - 動きの全般方針: `html`、`tabular-nums`、`animation: none` は使わない
 
 </details>
@@ -547,11 +547,11 @@ Tailwind のクラスは解決されないし、oklch も計算されない。�
 
 | 手段 | 見るもの | CI |
 |---|---|---|
-| `node e2e/run.mjs design` | 実ブラウザの実画素 | 全体を実行 |
+| `design-*.mjs`（[デザイン](../../web/e2e/checks/design.md)の実行手順） | 実ブラウザの実画素 | 全体を実行 |
 | `pnpm check:colors` | トークン外の生の色値 | lint job |
 | `pnpm test` | 文字列として言えること | web-test job |
 
-全体の `design.mjs` は、主要画面 × ライト / ダーク × デスクトップ / モバイルのスクリーンショットと、状態色・地の無彩性・コントラストの機械判定で見る。CI も全体を実行する。部分実行では状態色・画素・タイムラインの判定が欠ける。実行時間と shard 分割の判断根拠は `web/e2e/run.mjs` のコメントに記録する。`E2E_RULE_CARD_ONLY=1` はローカルのルールカード診断用に残す。check:colors は実ブラウザ不要である。`pnpm test` は、実ブラウザ無しで文字列として言えることだけを見る。「3 値がファビコンと一致」「地と字が 3 値を参照している」「信号色がライト・ダーク両方にある」「どのトークンのクラスが当たっているか」がこれに当たる。
+デザインの判定は、主要画面 × ライト / ダーク × デスクトップ / モバイルのスクリーンショットと、状態色・地の無彩性・コントラストの機械判定で見る。CI も全体を実行する。部分実行では状態色・画素・タイムラインの判定が欠ける。shard 分割の判断根拠は `web/e2e/run.mjs` のコメントに記録する。`design-interactions.mjs` の `E2E_RULE_CARD_ONLY=1` はローカルのルールカード診断用に残す。check:colors は実ブラウザ不要である。`pnpm test` は、実ブラウザ無しで文字列として言えることだけを見る。「3 値がファビコンと一致」「地と字が 3 値を参照している」「信号色がライト・ダーク両方にある」「どのトークンのクラスが当たっているか」がこれに当たる。
 
 <details><summary>根拠</summary>
 
@@ -567,7 +567,7 @@ Tailwind のクラスは解決されないし、oklch も計算されない。�
 
 <details><summary>根拠</summary>
 
-- トーストの縦中央判定: `web/e2e/design.mjs`
+- トーストの縦中央判定: `web/e2e/design-interactions.mjs`
 - リングの不透明度修飾の禁止: `ring-ring/NN`、`outline-ring/NN`
 
 </details>
@@ -576,7 +576,7 @@ Tailwind のクラスは解決されないし、oklch も計算されない。�
 
 変更前の実装で判定が落ちることを確かめてから追加する。
 
-全体の `design.mjs` はローカルで `node e2e/run.mjs design` を実行して exit code を見る。CI でも全体を shard の一部として実行する。手順は [web/e2e/README.md](../../web/e2e/README.md) §デザイン。
+ローカルではデザインの判定をファイルごとに実行して exit code を見る。CI ではデザインの判定をすべて shard に分けて実行する。手順は [デザイン](../../web/e2e/checks/design.md)。
 
 判定側が DOM の変化（バッジが `<span>` から `<a>` に変わる等）に追随できていないと、locator が空の要素を取得して赤くなる。しかし誰も走らせなければ数マイルストーン気付かれない（実際に起きた）。
 
@@ -584,7 +584,7 @@ Tailwind のクラスは解決されないし、oklch も計算されない。�
 
 <details><summary>根拠</summary>
 
-- 検査スクリプト: `e2e/design.mjs`
+- 検査スクリプト: [デザイン](../../web/e2e/checks/design.md)
 
 </details>
 
@@ -592,7 +592,7 @@ Tailwind のクラスは解決されないし、oklch も計算されない。�
 
 ダークへの到達手段は、OS 設定への自動追従とする。明示的な切り替え UI は持たない（下記「端末ごとの個人設定は localStorage に置く」）。
 
-初回フレームだけライトになることを避けるため、HTML に埋め込んだスクリプトが React の起動前にダーククラスを付ける。起動後は、アプリの起動ファイルが OS 設定の変更を購読して同じクラスを同期する。ダーククラスの経路は、実ブラウザ判定（`node e2e/run.mjs design`）で使うために残す。
+初回フレームだけライトになることを避けるため、HTML に埋め込んだスクリプトが React の起動前にダーククラスを付ける。起動後は、アプリの起動ファイルが OS 設定の変更を購読して同じクラスを同期する。ダーククラスの経路は、実ブラウザ判定（`node e2e/run.mjs design-appearance`）で使うために残す。
 
 <details><summary>根拠</summary>
 

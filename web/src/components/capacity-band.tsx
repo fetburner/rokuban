@@ -104,7 +104,7 @@ function CapacityBand({
       // 罫線の濃さ（/80）は「境界を伝える」役割から決めた実測値 --- これ未満だと
       // ライトで、帯が重なりうる面のうち最も不利なものに対して 3:1 を割る
       // （旧実装の淡い琥珀の罫線は 1.51 で、ライトでは境界がほぼ見えていなかった）。
-      // e2e/design.mjs が毎回、グリッドのセルの面まで含めて測る
+      // e2e/design-appearance.mjs が毎回、グリッドのセルの面まで含めて測る
       className="absolute inset-x-0 border-y border-warning/80 bg-warning/10"
       style={{ top: rect.topPx, height: rect.heightPx }}
     >
@@ -127,7 +127,7 @@ function CapacityBand({
 const labelHeightPx = 16
 
 /**
- * 目盛りを避けるために見る高さの目安（px）。実測（e2e/design.mjs）で目盛り
+ * 目盛りを避けるために見る高さの目安（px）。実測（e2e/design-appearance.mjs）で目盛り
  * 1 行はおよそ 18.5px --- 端数を避けるためここでは少し余裕を持たせて丸める。
  * 「本当に避けられているか」はこの定数の精度ではなく e2e が実ブラウザで測る
  * （目盛りの rect とラベルの rect が交差しないこと）。

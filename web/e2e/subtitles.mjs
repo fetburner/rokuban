@@ -6,7 +6,7 @@
 // TextTrack 読み込みも hls.js の実処理も行わない）。
 //
 // **mirakc も実チューナーも DB も要らない。** VOD は録画詳細ページの
-// `/api/**` を丸ごと `page.route` で差し替え（design.mjs と同じ手）、ライブは
+// `/api/**` を丸ごと `page.route` で差し替え（lib.mjs の installApiStubs と同じ手）、ライブは
 // `live.mjs` と違って `resolveServiceId` で実サーバーの DB へ問い合わせる経路を
 // 使わず、`/api/sites` / `/api/sites/{site}/services` も自前で差し替える
 // （このスクリプトは preview サーバー1つだけで完結する）。

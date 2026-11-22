@@ -34,7 +34,7 @@ E2E_URL=http://localhost:4173 node e2e/run.mjs programs-grid-hour-boundary
 
 ②・②' はスクロール位置そのものの判定なので、jsdom（`pnpm test`）では原理的に確認できない。
 
-`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は `page.clock.setFixedTime` で固定）で、mirakc も実チューナーも DB も要らない。
+`design-support.mjs` の `createOpen` と同じ手で `/api/**` を `page.route` で丸ごと差し替える。時刻は `page.clock.setFixedTime` で固定する。mirakc も実チューナーも DB も要らない。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
@@ -85,7 +85,7 @@ jsdom は色も要素の大きさも測れないので、ここが唯一の判�
 - ④ 予約済み（未選択）と選択中（未予約）は別の形。予約済みだけに見える「予約」がある
 - ⑤ 印の色はタリー / 琥珀 / destructive ではない（色は信号のみ）
 
-`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は `page.clock.setFixedTime` で固定）。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
+`design-support.mjs` の `createOpen` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は `page.clock.setFixedTime` で固定）。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
@@ -137,7 +137,7 @@ E2E_URL=http://localhost:4173 node e2e/run.mjs programs-empty-window
   - D. 失敗バナーを飲み込んだ `<header>` の実測高さ（`offsetHeight`）。合否ではなく測定値（sticky に入れた代償の定量化）。緩い上限（viewport 高さの半分未満）だけ置く。実測は平常 121px / 1 行の帯 170px（`ErrorState` を使っていた案では 281px）
   - E. その状態でも番組リストの先頭行がヘッダの下に見えていること
 
-`design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は `page.clock.setFixedTime` で固定）。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
+`design-support.mjs` の `createOpen` と同じ手（`/api/**` を `page.route` で丸ごと差し替え、時刻は `page.clock.setFixedTime` で固定）。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
 
 `checks.mjs` は番組リストの日付ジャンプだけを見る独立した判定である。実データベース上で番組行を待つため、冒頭の `e2e-needs: db-state` で通常の CI 対象から除く。`node e2e/run.mjs checks` で個別に実行できるので、`package.json` にファイルごとの別名を増やさない。
 

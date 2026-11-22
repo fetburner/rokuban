@@ -119,7 +119,7 @@ const storageItem = {
 }
 
 // 契約検証: フィクスチャが orval 生成の zod スキーマと一致するか
-// （`validateFixturesOrExit`。design.mjs / e2e/README.md §デザイン 参照）。
+// （`validateFixturesOrExit`。lib.mjs / e2e/README.md §デザイン 参照）。
 log('\n=== 契約検証: フィクスチャの zod parse ===')
 await validateFixturesOrExit(
   [

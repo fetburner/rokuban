@@ -1485,8 +1485,7 @@ describe('SearchPage', () => {
 
     /**
      * 期間指定の副作用の注意書きは警告なので琥珀（`--warning`）。jsdom は色を
-     * 計算しないのでクラス名を見る（実画素の判定は web/e2e/design.mjs。
-     * docs/frontend/design.md「色は信号のみ」）。
+     * 計算しないのでクラス名を見る（docs/frontend/design.md「色は信号のみ」）。
      */
     it('期間指定の注意書きは警告の信号色（琥珀）で出る', async () => {
       stubApi()

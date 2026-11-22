@@ -10,7 +10,7 @@ import ts from 'typescript'
  *
  * **フォントが実際に描画に使われるかは jsdom では測れない**（design-tokens.test.ts
  * と同じ理由 --- Tailwind のクラスは解決されず、フォントファイルも取得されない）。
- * 実描画の判定は `web/e2e/design.mjs`「③ フォントの判定」にある（CDP
+ * 実描画の判定は `web/e2e/design-appearance.mjs`「③ フォントの判定」にある（CDP
  * `CSS.getPlatformFontsForNode` で番組リストの行の実使用フォントに Noto Sans JP
  * と Geist が両方出ることと、和文まじりの文字列で `font-variant-numeric:
  * tabular-nums` が実際に等幅を作ることを DOM の実測幅で見る）。ここで見るのは
