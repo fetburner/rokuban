@@ -45,8 +45,8 @@ const (
 	//
 	// **モードで目印が違う。** 常駐 worker は `eg.Wait()` が戻って
 	// `slog.Info("shutting down")` に達するが、1 件消化モードでは drain が
-	// errgroup の中（stopOnceProcess）で走るので、そこには**まだ到達しない**。
-	// あちらの観測点は OnceGate が cancel を観測した行になる。
+	// `eg.Wait` より先（RunOnce の中）に走るので、そこには**まだ到達しない**。
+	// あちらの観測点は RunOnce が cancel を観測した行になる。
 	shutdownLogMarker  = "shutting down"
 	onceCanceledMarker = "once mode finished"
 )

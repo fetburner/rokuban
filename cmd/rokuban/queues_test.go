@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -298,31 +297,31 @@ func TestResolveOnceIdleTimeout(t *testing.T) {
 	}
 }
 
-// resolveOnce: --once が無ければ gate を作らないこと、あれば作ること、
+// resolveOnce: --once が無ければ モードが無効で、あれば有効になること、
 // そして **--once-idle-timeout だけを書いた argv を弾くこと**。
 // 弾かないと、Job は永久に終わらないのに argv は「1 件で終わるつもり」に見える。
 func TestResolveOnce(t *testing.T) {
-	// --once 無し: gate なし
+	// --once 無し: モード無効
 	cmd := newQueuesTestCmd(t)
-	gate, idle, err := resolveOnce(cmd, []string{"worker"})
+	once, idle, err := resolveOnce(cmd, []string{"worker"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if gate != nil || idle != 0 {
-		t.Errorf("gate = %v, idle = %s, want nil / 0", gate, idle)
+	if once || idle != 0 {
+		t.Errorf("once = %v, idle = %s, want false / 0", once, idle)
 	}
 
-	// --once あり: gate と既定のタイムアウト
+	// --once あり: モード有効と既定のタイムアウト
 	cmd = newQueuesTestCmd(t)
 	if err := cmd.Flags().Set(onceFlagName, "true"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	gate, idle, err = resolveOnce(cmd, []string{"worker"})
+	once, idle, err = resolveOnce(cmd, []string{"worker"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if gate == nil {
-		t.Error("gate = nil, want non-nil")
+	if !once {
+		t.Error("once = false, want true")
 	}
 	// **実装の定数と比べない**（定数を変えても通るテストになる）。
 	if idle != 30*time.Second {
@@ -349,46 +348,6 @@ func TestResolveOnce(t *testing.T) {
 	}
 	if _, _, err := resolveOnce(cmd, []string{"worker", "api"}); err == nil {
 		t.Fatal("expected error, got nil")
-	}
-}
-
-// **1 件消化モードの停止は「River を graceful に止めてからプロセスを畳む」順序で
-// あること。** 逆順にすると、掴んでいたジョブが完走に使える時間が
-// `--soft-stop-timeout` の猶予まで縮む（プロセスの畳み = signal ctx の cancel が
-// soft stop を開始させるため）。数時間のエンコードを打ち切らないことが ScaledJob
-// を選んだ理由そのものなので、猶予を消費せずに完走できる順序を選ぶ。
-//
-// **順序の理由は SoftStopTimeout の導入で変わった（危険度が下がった）。**
-// かつては work ctx が start ctx を継いでいたため、逆順は即座のハードストップ
-// だった。テストの主張（順序と ctx 未 cancel）は変えていない。
-//
-// **この順序は振る舞いのテストでは守れない** --- 実行中のジョブが
-// 残る窓は実測 0/25 で踏めなかったので、順序を入れ替えても
-// TestServerCmd_OnceMode* は緑のままになる。だからここで直接固定する。
-//
-// あわせて、stopRiver に渡る ctx が cancel 済みでないことも見る。cancel 済みの
-// ctx を渡すと River の Stop は即座に戻り（ctx.Err()）、実行中を待たない。
-func TestStopOnceProcess(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	// 呼び出し側の ctx が既に終わっていても、graceful stop は待てなければならない。
-	cancel()
-
-	var order []string
-	var riverCtxAlive bool
-	stopRiver := func(stopCtx context.Context) error {
-		order = append(order, "river")
-		riverCtxAlive = stopCtx.Err() == nil
-		return nil
-	}
-	cancelProcess := func() { order = append(order, "process") }
-
-	stopOnceProcess(ctx, stopRiver, cancelProcess)
-
-	if strings.Join(order, ",") != "river,process" {
-		t.Errorf("停止の順序 = %v, want [river process]", order)
-	}
-	if !riverCtxAlive {
-		t.Error("stopRiver に cancel 済みの ctx が渡っている（Stop が実行中を待たずに戻る）")
 	}
 }
 

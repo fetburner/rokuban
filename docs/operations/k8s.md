@@ -198,12 +198,12 @@ Job は 1 件消化して自分で終了させる。ScaledJob は Job の自己�
 - `--once-idle-timeout`（既定 30 秒）は実行中のジョブを打ち切らない。「1 件も取れないまま待った時間」にしか効かず、KEDA が滞留を過大評価して起こした空振りの Job を終了させる値である。
 - ノード退避・ローリング更新で SIGTERM を受けた Job は、`--soft-stop-timeout`（既定 5 秒）を超えた時点で実行中のジョブの ctx を切る。**長時間キュー（`encode` / `ingest`）の ScaledJob では `--soft-stop-timeout` を明示する。** 既定のままだと、猶予を 300 秒に取った ScaledJob でも drain は 5 秒で終わる。`terminationGracePeriodSeconds` と対で引き上げること（下記「Deployment 併用時」の足し算）。上限を外すつもりで `0` と書くと起動エラーになる。
 
-1 件消化モードでは、先に River の graceful stop を実行し、そのあとプロセスを畳む。前者は producer の fetch を止めて実行中の仕事を待ち、後者は Start に渡した ctx を cancel する。逆順にすると、取っていたジョブが完走に使える時間が `--soft-stop-timeout` の猶予まで縮む（下記「Deployment 併用時」）。graceful stop を先に出すほうが、猶予を消費せずに完走できる。
+1 件消化モードの adapter は終了理由を得たあと、先に River の graceful stop を実行し、そのあとプロセスを畳む。前者は producer の fetch を止めて実行中の仕事を待ち、後者は Start に渡した ctx を cancel する。逆順にすると、取っていたジョブが完走に使える時間が `--soft-stop-timeout` の猶予まで縮む（下記「Deployment 併用時」）。graceful stop を先に出すほうが、猶予を消費せずに完走できる。
 
 <details><summary>根拠</summary>
 
-- `--once-idle-timeout` が実行中のジョブを打ち切らない: `riveradapter.OnceGate` / `TestOnceGate_IdleTimeoutDoesNotCutRunningJob`
-- 1 件消化後に graceful stop を先行する: `TestStopOnceProcess`
+- `--once-idle-timeout` が実行中のジョブを打ち切らない: `TestOnceGate_IdleTimeoutDoesNotCutRunningJob`
+- 1 件消化後に graceful stop を先行する: `TestFinishOnce`
 
 </details>
 
@@ -221,7 +221,7 @@ Work を抜けてから producer が止まるまでの間に次のジョブが f
 
 - 失敗したジョブも exit 0 でプロセスを終了する: `TestServerCmd_OnceModeExitsZeroOnJobFailure`
 - 停止処理: `Stop`
-- 未登録 kind のジョブを検出して終了する: `riveradapter.SubscribeOnceEvents` / `TestServerCmd_OnceModeExitsOnUnhandledJobKind`
+- 未登録 kind のジョブを検出して終了する: `TestServerCmd_OnceModeExitsOnUnhandledJobKind`
 
 </details>
 

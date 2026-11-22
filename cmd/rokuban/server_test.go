@@ -1174,9 +1174,9 @@ func runServerCmdBounded(t *testing.T, limit time.Duration, configPath string, a
 // 「0 → 1 → 0」の 0 に戻る側そのもので、これが無いと KEDA が起こした Job は
 // succeeded に到達しない。
 //
-// 実 DB を使って RunE を丸ごと走らせるのが要点 --- OnceGate の単体テストは
+// 実 DB を使って RunE を丸ごと走らせるのが要点 --- adapter の gate の単体テストは
 // gate の論理しか見ておらず、**gate を River に登録して待つ配線**（server.go の
-// eg.Go）を検証できない。
+// RunOnce 呼び出し）を検証できない。
 //
 // 両方向を見る:
 //   - 空キュー: --once-idle-timeout で終了する
@@ -1242,7 +1242,7 @@ func (e2eProbeArgs) Spec() jobq.Spec {
 // TestServerCmd_OnceModeExitsOnUnhandledJobKind は**未登録 kind のジョブを
 // 掴んでも Job が終わること**を確認する。River の executor は登録されていない
 // kind を WorkUnit == nil で早期 return し、その時点では WorkerMiddleware の
-// チェーンをまだ組み立てていない（riveradapter.SubscribeOnceEvents）。
+// チェーンをまだ組み立てていない（River adapter の subscribeOnceEvents）。
 // middleware だけを見ていると、Job は「1 件も claim していない」と誤認したまま
 // idleTimeout の間そのキューを掴み続け、試行回数を潰す。
 //
@@ -1581,7 +1581,7 @@ live:
 // 終了コードで失敗を表すと二重にリトライする形になる。
 //
 // 到達不能な mirakc への epg_sync で失敗させる（RunE を丸ごと通すので、
-// 「gate goroutine が nil を返す」だけでなく errgroup の畳み方も含めて見る）。
+// 「RunOnce が nil エラーを返す」だけでなく errgroup の畳み方も含めて見る）。
 func TestServerCmd_OnceModeExitsZeroOnJobFailure(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
