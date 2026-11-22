@@ -47,6 +47,9 @@ func Run(t *testing.T, newStore func(*testing.T) objstore.Store) {
 		t.Run("resumable upload rejects short and long sources", func(t *testing.T) {
 			checkResumableSourceLength(t, newStore(t))
 		})
+		t.Run("resumable upload checks source length from saved size", func(t *testing.T) {
+			checkResumableSourceLengthAtSavedSize(t, newStore(t))
+		})
 		t.Run("range reader starts at offset", func(t *testing.T) {
 			checkRangeReaderStartsAtOffset(t, newStore(t))
 		})
@@ -364,6 +367,66 @@ func checkResumableSourceLength(t *testing.T, objects objstore.Store) {
 		t.Fatalf("ContinueUpload with a long source error = %v, want ErrChecksumMismatch", err)
 	}
 	abortUntilGone(t, resumable, long)
+}
+
+// checkResumableSourceLengthAtSavedSize は、size まで送った state から続けても余分なバイトを拒み、EOF なら完了できることを確かめる。
+func checkResumableSourceLengthAtSavedSize(t *testing.T, objects objstore.Store) {
+	t.Helper()
+	resumable := objects.(objstore.Resumable)
+	data := []byte("saved at declared size")
+
+	startAtSize := func() (string, []byte) {
+		t.Helper()
+		key := testKey(t)
+		state, err := resumable.StartUpload(t.Context(), key, int64(len(data)), sha256.Sum256(data), "application/octet-stream")
+		if err != nil {
+			t.Fatalf("StartUpload: %v", err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		stopped := &cancelAfterPayloadReader{ctx: ctx, cancel: cancel, reader: bytes.NewReader(data)}
+		state, offset, err := resumable.ContinueUpload(ctx, state, stopped)
+		cancel()
+		if offset != int64(len(data)) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("ContinueUpload stopped at declared size = offset %d, err %v; want offset %d and context.Canceled", offset, err, len(data))
+		}
+		return key, state
+	}
+
+	key, state := startAtSize()
+	longState, offset, err := resumable.ContinueUpload(t.Context(), state, bytes.NewReader([]byte{'x'}))
+	if offset != int64(len(data)) || !errors.Is(err, objstore.ErrChecksumMismatch) {
+		t.Fatalf("ContinueUpload from saved size with an extra byte = offset %d, err %v; want offset %d and ErrChecksumMismatch", offset, err, len(data))
+	}
+	abortUntilGone(t, resumable, longState)
+	if _, err := objects.Head(t.Context(), key); !errors.Is(err, objstore.ErrNotFound) {
+		t.Fatalf("Head after aborting the long source check = %v, want ErrNotFound", err)
+	}
+
+	key, state = startAtSize()
+	state, offset, err = resumable.ContinueUpload(t.Context(), state, bytes.NewReader(nil))
+	if offset != int64(len(data)) || err != nil {
+		t.Fatalf("ContinueUpload from saved size at EOF = offset %d, err %v; want offset %d and nil", offset, err, len(data))
+	}
+	if err := resumable.CompleteUpload(t.Context(), state); err != nil {
+		t.Fatalf("CompleteUpload after EOF at saved size: %v", err)
+	}
+	if got := readObject(t, objects, key); !bytes.Equal(got, data) {
+		t.Fatalf("completed object = %q, want %q", got, data)
+	}
+}
+
+type cancelAfterPayloadReader struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	reader *bytes.Reader
+}
+
+func (r *cancelAfterPayloadReader) Read(p []byte) (int, error) {
+	if r.reader.Len() == 0 {
+		r.cancel()
+		return 0, r.ctx.Err()
+	}
+	return r.reader.Read(p)
 }
 
 // checkRangeReaderStartsAtOffset は、GetFrom(offset) が data[offset:] を返すことを確かめる。

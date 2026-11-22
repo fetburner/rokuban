@@ -67,6 +67,7 @@ type Resumable interface {
 	StartUpload(ctx context.Context, key string, size int64, sha256 [32]byte, contentType string) (state []byte, err error)
 	// ContinueUpload は state が記録する offset から始まる src を読み、size に達するか ctx が終わるまで送る。
 	// 返す newState と offset は、置き場に確実に残ったバイトだけを表す。err が非 nil でも呼び出し側は両方を保存してよい。
+	// size に達した後に src に余分なバイトがあれば ErrChecksumMismatch を返す。state の offset が既に size の場合も同じ検査をする（checkResumableSourceLengthAtSavedSize）。
 	ContinueUpload(ctx context.Context, state []byte, src io.Reader) (newState []byte, offset int64, err error)
 	// CompleteUpload は、size バイトすべてを送り終え、送りながら計算した SHA-256 が一致したときだけ公開する。
 	CompleteUpload(ctx context.Context, state []byte) error

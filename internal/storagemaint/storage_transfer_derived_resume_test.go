@@ -31,14 +31,17 @@ import (
 // 埋め込みで Store / Reader / RangeReader / Resumable を全部委譲するので、worker は本物と同じ経路を通る。
 type fakeResumableStore struct {
 	*fsstore.Store
-	getOffsets    []int64          // GetFrom が呼ばれた offset の列
-	beforeGetFrom func()           // GetFrom の最初に呼ぶ。テストが読みの途中で論理資産の世代を変えるのに使う。
-	completeErr   []error          // CompleteUpload が先頭から返す。nil の要素は本物の完了。尽きたら本物。
-	abortResult   []fakeAbort      // AbortUpload が先頭から返す。尽きたら本物。
-	abortCalls    int              // AbortUpload が呼ばれた回数
-	beforeAbort   func()           // AbortUpload の最初に呼ぶ。テストが掃除の途中で締切を切るのに使う。
-	afterComplete func()           // CompleteUpload が本物で成功した後に呼ぶ。別の試行が同じコピーを先に完了した状態を作るのに使う。
-	afterPut      func(key string) // Put が本物で成功した後に key で呼ぶ。
+	getOffsets                   []int64          // GetFrom が呼ばれた offset の列
+	waitAtSize                   int64            // 非ゼロなら、そのサイズまで読んだ次の Read を ctx 終了まで待たせる（TestStorageTransferWorkerRestartsAfterSourceLengthMismatch）。
+	waitForChecksumUntilSliceEnd bool             // ContinueUpload の checksum mismatch を slice 終了まで保留する（同テストで使用）。
+	checksumReachedSliceEnd      bool             // checksum mismatch と slice 終了が重なったことを表す（同テストで確認）。
+	beforeGetFrom                func()           // GetFrom の最初に呼ぶ。テストが読みの途中で論理資産の世代を変えるのに使う。
+	completeErr                  []error          // CompleteUpload が先頭から返す。nil の要素は本物の完了。尽きたら本物。
+	abortResult                  []fakeAbort      // AbortUpload が先頭から返す。尽きたら本物。
+	abortCalls                   int              // AbortUpload が呼ばれた回数
+	beforeAbort                  func()           // AbortUpload の最初に呼ぶ。テストが掃除の途中で締切を切るのに使う。
+	afterComplete                func()           // CompleteUpload が本物で成功した後に呼ぶ。別の試行が同じコピーを先に完了した状態を作るのに使う。
+	afterPut                     func(key string) // Put が本物で成功した後に key で呼ぶ。
 	// lastAbortDeadline は直近の AbortUpload に渡された ctx の締切（無ければ零値）。
 	lastAbortDeadline time.Time
 }
@@ -53,7 +56,46 @@ func (s *fakeResumableStore) GetFrom(ctx context.Context, key string, offset int
 	if s.beforeGetFrom != nil {
 		s.beforeGetFrom()
 	}
-	return s.Store.GetFrom(ctx, key, offset)
+	r, err := s.Store.GetFrom(ctx, key, offset)
+	if err != nil || s.waitAtSize == 0 || offset >= s.waitAtSize {
+		return r, err
+	}
+	remaining := s.waitAtSize - offset
+	return &waitAfterBytesReader{ctx: ctx, reader: r, remaining: remaining, clear: func() { s.waitAtSize = 0 }}, nil
+}
+
+type waitAfterBytesReader struct {
+	ctx       context.Context
+	reader    io.ReadCloser
+	remaining int64
+	clear     func()
+}
+
+func (r *waitAfterBytesReader) Read(p []byte) (int, error) {
+	if r.remaining == 0 {
+		<-r.ctx.Done()
+		return 0, r.ctx.Err()
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	n, err := r.reader.Read(p)
+	r.remaining -= int64(n)
+	if r.remaining == 0 {
+		r.clear()
+	}
+	return n, err
+}
+
+func (r *waitAfterBytesReader) Close() error { return r.reader.Close() }
+
+func (s *fakeResumableStore) ContinueUpload(ctx context.Context, state []byte, src io.Reader) ([]byte, int64, error) {
+	state, offset, err := s.Store.ContinueUpload(ctx, state, src)
+	if s.waitForChecksumUntilSliceEnd && errors.Is(err, objstore.ErrChecksumMismatch) {
+		s.checksumReachedSliceEnd = true
+		<-ctx.Done()
+	}
+	return state, offset, err
 }
 
 func (s *fakeResumableStore) CompleteUpload(ctx context.Context, state []byte) error {
@@ -276,8 +318,9 @@ func TestStorageTransferWorkerResumesDerivedUploadAcrossSlices(t *testing.T) {
 SELECT handed_off, offset_bytes, upload_store, upload_state FROM media_asset_copy_transfer_progress WHERE copy_id = $1`, f.copyID(t)).Scan(&handedOff, &offset, &uploadStore, &uploadState); err != nil {
 			t.Fatalf("reading saved progress after a slice: %v", err)
 		}
-		if !handedOff || offset <= 0 || offset >= int64(len(f.content)) || uploadStore == nil || *uploadStore != "archive" || len(uploadState) == 0 {
-			t.Fatalf("saved progress after slice %d = handed_off %t offset %d upload store %v upload state %d bytes; want a handed-off upload with 0 < offset < %d",
+		// slice がサイズ境界で終わると offset == size で保存される（TestStorageTransferWorkerRestartsAfterSourceLengthMismatch がその状態を作る）。
+		if !handedOff || offset <= 0 || offset > int64(len(f.content)) || uploadStore == nil || *uploadStore != "archive" || len(uploadState) == 0 {
+			t.Fatalf("saved progress after slice %d = handed_off %t offset %d upload store %v upload state %d bytes; want a handed-off upload with 0 < offset <= %d",
 				snoozes, handedOff, offset, uploadStore, len(uploadState), len(f.content))
 		}
 	}
@@ -472,6 +515,7 @@ func uploadStateOf(t *testing.T, f derivedResumeFixture) []byte {
 // TestStorageTransferWorkerRestartsAfterSourceLengthMismatch は、転送元が宣言より長くなって送信が ErrChecksumMismatch になったとき、
 // ずれた転送元のバイトを含む送信状態を保存せず、次の試行が新しいアップロード（新しい staging）から始まることを確かめる。
 // 送った slice の区切りで止まる場合は、保存された状態から続くこと（TestStorageTransferWorkerResumesDerivedUploadAcrossSlices）と対になる。
+// サイズ境界での slice 終了と、不一致の検出と slice 終了の重なりを決定的に作る。
 func TestStorageTransferWorkerRestartsAfterSourceLengthMismatch(t *testing.T) {
 	f := newDerivedResumeFixture(t)
 	requireSliceSnooze(t, f.work(t), "first slice")
@@ -483,14 +527,26 @@ func TestStorageTransferWorkerRestartsAfterSourceLengthMismatch(t *testing.T) {
 	// 宣言より 1 バイト長い転送元にする。送信は宣言の長さを超えたところで ErrChecksumMismatch になる。
 	sourcePath := filepath.Join(f.roots["test-store"], filepath.FromSlash(f.relPath))
 	testutil.RequireNoError(t, os.WriteFile(sourcePath, append(bytes.Clone(f.content), '!'), 0o644), "lengthening the source")
+	// 決定的に slice をサイズ境界で止める。期待サイズ分を読んだ直後の次の Read を
+	// slice ctx の終了まで待たせ、追加バイトの検査より先に進捗が保存される経路を作る。
+	f.source(t).waitAtSize = int64(len(f.content))
+	f.target(t).waitForChecksumUntilSliceEnd = true
 	var prev []byte
 	var err error
 	for range 300 {
 		prev = uploadStateOf(t, f)
 		err = f.work(t)
+		if f.target(t).checksumReachedSliceEnd {
+			if _, snooze := jobq.SnoozeDelay(err); snooze {
+				t.Fatal("Work snoozed after ContinueUpload reported ErrChecksumMismatch at the slice deadline")
+			}
+		}
 		if _, snooze := jobq.SnoozeDelay(err); !snooze {
 			break
 		}
+	}
+	if !f.target(t).checksumReachedSliceEnd {
+		t.Fatal("failed to create the overlap between source mismatch detection and slice end")
 	}
 	if err != nil {
 		t.Fatalf("mismatched attempt = %v, want nil after recording the failure", err)

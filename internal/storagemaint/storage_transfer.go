@@ -995,7 +995,7 @@ func (w *StorageTransferWorker) putDerivedResumable(
 	}
 
 	size := transfer.SizeBytes
-	if offset < size {
+	if offset < size || (progress.Resumed && offset == size) {
 		if err := w.requireDestinationMarker(targetRoot, args.Store, "writing derived upload"); err != nil {
 			return false, true, err
 		}
@@ -1010,6 +1010,10 @@ func (w *StorageTransferWorker) putDerivedResumable(
 		switch {
 		case sendErr == nil:
 			// 全部送り終えた。保存せずに、続けて完了する。
+		case errors.Is(sendErr, objstore.ErrChecksumMismatch):
+			// 転送元の長さが宣言と違う。ずれていると判定した転送元のバイトを含む送信状態は保存しない。
+			// saved は偽のまま defer で lease を切り、次の試行は新しいアップロードから始まる。
+			return false, true, w.handleTransferMismatch(ctx, transfer, log)
 		case sliceEnded:
 			if err := w.saveDerivedProgress(transfer.CopyID, owner, progress.WriterGeneration, state, offset); err != nil {
 				if errors.Is(err, store.ErrTransferLeaseLost) {
@@ -1019,10 +1023,6 @@ func (w *StorageTransferWorker) putDerivedResumable(
 			}
 			saved = true
 			return false, true, jobq.Snooze(0)
-		case errors.Is(sendErr, objstore.ErrChecksumMismatch):
-			// 転送元の長さが宣言と違う。ずれていると判定した転送元のバイトを含む送信状態は保存しない。
-			// saved は偽のまま defer で lease を切り、次の試行は新しいアップロードから始まる。
-			return false, true, w.handleTransferMismatch(ctx, transfer, log)
 		case errors.Is(sendErr, objstore.ErrUploadInvalid):
 			// 続けられない送信状態を掃除待ちに移せるよう保存してから、defer で lease を切る（saved は偽のまま）。
 			w.keepDerivedProgress(transfer, owner, progress.WriterGeneration, state, offset, log)
