@@ -8684,11 +8684,11 @@ SOFTWARE.
 
 
 Component: @tanstack/query-core
-Version: 5.107.1
+Version: 5.108.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/query-core/-/query-core-5.107.1.tgz
+Source: https://registry.npmjs.org/@tanstack/query-core/-/query-core-5.108.0.tgz
 Upstream: https://github.com/TanStack/query
 
 ----- LICENSE (license text) -----
@@ -8716,11 +8716,11 @@ SOFTWARE.
 
 
 Component: @tanstack/react-query
-Version: 5.107.1
+Version: 5.108.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2021-present Tanner Linsley
 License: MIT
-Source: https://registry.npmjs.org/@tanstack/react-query/-/react-query-5.107.1.tgz
+Source: https://registry.npmjs.org/@tanstack/react-query/-/react-query-5.108.0.tgz
 Upstream: https://github.com/TanStack/query
 
 ----- LICENSE (license text) -----
@@ -9276,11 +9276,11 @@ For more information, please refer to <http://unlicense.org/>
 
 
 Component: lucide-react
-Version: 1.73.0
+Version: 1.75.0
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2026 Lucide Icons and Contributors / Copyright (c) 2013-present Cole Bemis
 License: ISC
-Source: https://registry.npmjs.org/lucide-react/-/lucide-react-1.73.0.tgz
+Source: https://registry.npmjs.org/lucide-react/-/lucide-react-1.75.0.tgz
 Upstream: https://github.com/lucide-icons/lucide
 
 ----- LICENSE (license text) -----
