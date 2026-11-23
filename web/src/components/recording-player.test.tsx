@@ -1196,6 +1196,54 @@ describe('RecordingPlayer のチャプター', () => {
     expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"]')).not.toBeNull()
   })
 
+  it.each([
+    ['最初', 5, 'ArrowRight', '前の境界', '次の境界', '0:20.000', 20.0033166667],
+    ['最後', 25, 'ArrowLeft', '次の境界', '前の境界', '0:10.000', 10.0266833333],
+  ] as const)('編集バーと矢印キーが同じ境界へ移り、%sの境界では外側へ移らない',
+    (_edge, start, inwardKey, outwardName, inwardName, destination, frameCenter) => {
+      const { container, getByRole, getByTestId } = render(
+        <RecordingPlayer
+          recordingId={102}
+          encodedAssets={asset}
+          chapters={[cmSpan]}
+          chapterVersion="v1"
+          chapterEditing
+          onSaveChapters={() => Promise.resolve()}
+          onResetChapters={() => {}}
+        />,
+      )
+      const video = container.querySelector('video')!
+      setMediaProps(video, { duration: 60, paused: false })
+      video.currentTime = start
+      fireEvent.loadedMetadata(video)
+      fireEvent.timeUpdate(video)
+      const seek = vi.spyOn(video, 'currentTime', 'set')
+      const pause = vi.spyOn(video, 'pause').mockImplementation(() => setMediaProps(video, { paused: true }))
+
+      fireEvent.keyDown(document.body, { key: inwardKey })
+      expect(seek).toHaveBeenCalledExactlyOnceWith(expect.closeTo(frameCenter, 8))
+      expect(pause).toHaveBeenCalledOnce()
+      expect(getByTestId('chapter-selected-boundary')).toHaveTextContent(destination)
+      seek.mockClear()
+      fireEvent.keyDown(document.body, { key: inwardKey })
+      expect(seek).not.toHaveBeenCalled()
+
+      const outward = getByRole('button', { name: outwardName })
+      const inward = getByRole('button', { name: inwardName })
+      expect(outward).toBeEnabled()
+      expect(inward).toBeDisabled()
+      fireEvent.click(outward)
+      expect(outward).toBeDisabled()
+      expect(inward).toBeEnabled()
+      seek.mockClear()
+      fireEvent.click(outward)
+      expect(seek).not.toHaveBeenCalled()
+      fireEvent.click(inward)
+      expect(seek).toHaveBeenCalledExactlyOnceWith(expect.closeTo(frameCenter, 8))
+      expect(getByTestId('chapter-selected-boundary')).toHaveTextContent(destination)
+    },
+  )
+
   it('自動スキップは直前位置が区間の手前のときだけ飛ばす', () => {
     const { container } = render(
       <RecordingPlayer recordingId={97} encodedAssets={asset} chapters={[cmSpan]} />,
