@@ -221,7 +221,7 @@ jobs:
             sleep 1
           done
           exit 1
-      - name: Run S3 browser conformance (302 and proxy)
+      - name: Run S3 browser conformance (302, proxy, and encrypted proxy)
         run: node e2e/run.mjs --needs s3
         working-directory: web
         env:
@@ -594,6 +594,8 @@ jobs:
         run: go test -tags s3conformance ./internal/objstore/conformance -count=1 -timeout 5m -v
       - name: Run shared object store contract and upload token tests against RustFS
         run: go test -tags s3conformance ./internal/objstore/s3store -run '^(TestStoreContract|TestPutStoresUploadToken)$' -count=1 -timeout 5m -v
+      - name: Run encrypted S3 contract and rclone compatibility tests
+        run: go test -tags s3conformance ./internal/objstore/s3store -run '^(TestCryptStoreRustFSContract|TestCryptRcloneRoundTrip|TestCryptRcloneNames)$' -count=1 -timeout 5m -v
       - name: Run S3 publication and recovery tests
         run: go test -tags s3conformance ./internal/storagemaint -run '^TestS3DerivedObjectPublicationAndRecovery$' -count=1 -timeout 5m -v
       - name: Run S3 encode retry and generation test

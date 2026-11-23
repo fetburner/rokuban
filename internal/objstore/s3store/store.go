@@ -15,6 +15,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,10 +67,11 @@ type presigner interface {
 
 // Store implements objstore.Store using S3 API operations.
 type Store struct {
-	client    api
-	presigner presigner
-	bucket    string
-	readOnly  bool
+	client         api
+	presigner      presigner
+	bucket         string
+	readOnly       bool
+	declaredSHA256 bool
 }
 
 // New builds a store for one bucket from the AWS default provider chain without contacting S3.
@@ -93,6 +95,21 @@ func NewReader(ctx context.Context, cfg Config) (*Store, error) {
 		return nil, err
 	}
 	return newReaderWithClient(client, signer, cfg.Bucket)
+}
+
+// declaredStore だけが、受信したバイトと SHA-256 を照合しない能力を公開する。
+type declaredStore struct{ *Store }
+
+func (*declaredStore) StoresDeclaredSHA256() {}
+
+// NewDeclaredSHA256 は宣言値を保存する S3 置き場を作る。接続は初回の操作まで行わない。
+// readOnly の場合は書き込みと未完了アップロードの操作を拒む。
+func NewDeclaredSHA256(ctx context.Context, cfg Config, readOnly bool) (objstore.DeclaredSHA256Store, error) {
+	client, signer, err := newClient(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &declaredStore{&Store{client: client, presigner: signer, bucket: cfg.Bucket, readOnly: readOnly, declaredSHA256: true}}, nil
 }
 
 func newClient(ctx context.Context, cfg Config) (api, presigner, error) {
@@ -135,7 +152,8 @@ func newReaderWithClient(client api, signer presigner, bucket string) (*Store, e
 	return &Store{client: client, presigner: signer, bucket: bucket, readOnly: true}, nil
 }
 
-// Put uploads a complete object through the S3 API and verifies its exact size and SHA-256.
+// Put uploads a complete object through the S3 API and verifies its exact size.
+// SHA-256 is also verified unless the store was created in declared SHA-256 mode.
 func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, wantSHA [32]byte, contentType string) error {
 	if s.readOnly {
 		return objstore.ErrReadOnly
@@ -160,8 +178,10 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		if n, readErr := io.ReadFull(src, extra[:]); n != 0 || !errors.Is(readErr, io.EOF) {
 			return fmt.Errorf("S3 object source for %q contains bytes beyond declared size 0", key)
 		}
-		if err := checkEmptySHA(wantSHA); err != nil {
-			return err
+		if !s.declaredSHA256 {
+			if err := checkEmptySHA(wantSHA); err != nil {
+				return err
+			}
 		}
 		if err := s.putEmptyObject(ctx, key, contentType, wantSHA, uploadToken); err != nil {
 			return s.resolveOwnPut(ctx, key, 0, wantSHA, uploadToken, err, "putting empty S3 object")
@@ -196,8 +216,8 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		if _, err := io.ReadFull(src, body); err != nil {
 			return abort(fmt.Errorf("reading S3 multipart part %d for %q: %w", partNumber, key, err))
 		}
-		if _, err := hasher.Write(body); err != nil {
-			return abort(fmt.Errorf("hashing S3 multipart part %d for %q: %w", partNumber, key, err))
+		if !s.declaredSHA256 {
+			_, _ = hasher.Write(body) // hash.Hash の Write は error を返さない。
 		}
 		out, err := s.client.UploadPart(ctx, &s3.UploadPartInput{
 			Bucket: aws.String(s.bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
@@ -209,13 +229,21 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 		parts = append(parts, types.CompletedPart{ETag: out.ETag, PartNumber: aws.Int32(partNumber)})
 		remaining -= length
 	}
-	var extra [1]byte
-	if n, err := io.ReadFull(src, extra[:]); n != 0 || (err != nil && !errors.Is(err, io.EOF)) {
-		return abort(fmt.Errorf("S3 object source for %q contains more than %d bytes", key, size))
+	if s.declaredSHA256 {
+		if err := checkNoExtraByte(ctx, src, key, size); err != nil {
+			return abort(err)
+		}
+	} else {
+		// 通常の Put は、余分なバイトと末尾の読み取りエラーを同じ長さエラーに
+		// してきた。宣言記録モードは暗号化層が末尾で返す検証エラーも保持する。
+		var extra [1]byte
+		if n, err := io.ReadFull(src, extra[:]); n != 0 || (err != nil && !errors.Is(err, io.EOF)) {
+			return abort(fmt.Errorf("S3 object source for %q contains more than %d bytes", key, size))
+		}
 	}
 	var gotSHA [32]byte
 	copy(gotSHA[:], hasher.Sum(nil))
-	if gotSHA != wantSHA {
+	if !s.declaredSHA256 && gotSHA != wantSHA {
 		return abort(fmt.Errorf("S3 object %q: %w", key, objstore.ErrChecksumMismatch))
 	}
 
@@ -501,7 +529,8 @@ func checkEmptySHA(wantSHA [32]byte) error {
 	return nil
 }
 
-// putEmptyObject は 0 バイトの object を条件付きで PutObject する。条件付き書き込みに未対応なら条件を外して送り直す。
+// putEmptyObject は 0 バイトの object を条件付きで PutObject する。
+// 条件付き書き込みに未対応なら、通常モードに限って条件を外して送り直す。
 // 失敗はそのまま返す。412 や応答の喪失からの回復は呼び出し側が決める。
 func (s *Store) putEmptyObject(ctx context.Context, key, contentType string, wantSHA [32]byte, uploadToken string) error {
 	newInput := func(conditional bool) *s3.PutObjectInput {
@@ -519,7 +548,8 @@ func (s *Store) putEmptyObject(ctx context.Context, key, contentType string, wan
 		return input
 	}
 	_, err := s.client.PutObject(ctx, newInput(true))
-	if err != nil && isConditionalUnsupported(err) {
+	if err != nil && !s.declaredSHA256 && isConditionalUnsupported(err) {
+		// 宣言値を記録するモードでは、初回に作る鍵の目印の競合を S3 の条件付き書き込みで防ぐ。
 		// 呼び出し側は key を使い回さないので、既存の object が無い前提で条件を外す。
 		_, err = s.client.PutObject(ctx, newInput(false))
 	}
@@ -692,7 +722,9 @@ func (s *Store) sendNextPart(ctx context.Context, st *uploadState, h hash.Hash, 
 		return fmt.Errorf("uploading S3 multipart part %d for %q: server returned no ETag", number, st.Key)
 	}
 	st.Parts = append(st.Parts, uploadPart{Number: number, ETag: *out.ETag})
-	_, _ = h.Write(body) // hash.Hash の Write は error を返さない。
+	if !s.declaredSHA256 {
+		_, _ = h.Write(body) // hash.Hash の Write は error を返さない。
+	}
 	st.Offset += length
 	return nil
 }
@@ -714,7 +746,8 @@ func checkNoExtraByte(ctx context.Context, src io.Reader, key string, size int64
 }
 
 // CompleteUpload は state のパート一覧で multipart upload を完了する。
-// 送りながら計算した SHA-256 が一致したときだけ公開し、同じ key に同じ内容があれば成功、違えば ErrAlreadyExists。
+// 通常は送りながら計算した SHA-256 の一致を確認してから公開する。
+// 同じ key に同じ内容があれば成功、違えば ErrAlreadyExists。
 // 412 で既存を採用したときは UploadId を Abort する。
 func (s *Store) CompleteUpload(ctx context.Context, raw []byte) error {
 	if s.readOnly {
@@ -731,21 +764,25 @@ func (s *Store) CompleteUpload(ctx context.Context, raw []byte) error {
 	if err != nil {
 		return err
 	}
-	h, err := restoreHash(st.Hash)
-	if err != nil {
-		return err
-	}
-	var got [32]byte
-	copy(got[:], h.Sum(nil))
-	if got != want {
-		return fmt.Errorf("S3 object %q: %w", st.Key, objstore.ErrChecksumMismatch)
+	if !s.declaredSHA256 {
+		h, err := restoreHash(st.Hash)
+		if err != nil {
+			return err
+		}
+		var got [32]byte
+		copy(got[:], h.Sum(nil))
+		if got != want {
+			return fmt.Errorf("S3 object %q: %w", st.Key, objstore.ErrChecksumMismatch)
+		}
 	}
 	if err := s.existingObject(ctx, st); err == nil || !errors.Is(err, objstore.ErrNotFound) {
 		return err
 	}
 	if st.UploadID == "" {
-		if err := checkEmptySHA(want); err != nil {
-			return err
+		if !s.declaredSHA256 {
+			if err := checkEmptySHA(want); err != nil {
+				return err
+			}
 		}
 		err := s.putEmptyObject(ctx, st.Key, st.ContentType, want, "")
 		if err == nil {
@@ -817,16 +854,47 @@ func (s *Store) AbortUpload(ctx context.Context, raw []byte) (bool, error) {
 
 // GetFrom は completed object の offset から読める body を返す。offset が 0 のときは Range を付けない。
 func (s *Store) GetFrom(ctx context.Context, key string, offset int64) (io.ReadCloser, error) {
-	if err := validateKey(key); err != nil {
-		return nil, fmt.Errorf("invalid S3 object key %q: %w", key, err)
-	}
 	if offset < 0 {
 		return nil, fmt.Errorf("negative read offset %d", offset)
 	}
-	input := &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)}
+	var byteRange *string
 	if offset > 0 {
-		input.Range = aws.String(fmt.Sprintf("bytes=%d-", offset))
+		byteRange = aws.String(fmt.Sprintf("bytes=%d-", offset))
 	}
+	output, err := s.getObject(ctx, key, byteRange)
+	if err != nil {
+		return nil, err
+	}
+	return output.Body, nil
+}
+
+// ReadPrefix は bounded Range GET で先頭を取得し、Content-Range から全長を返す。
+func (s *declaredStore) ReadPrefix(ctx context.Context, key string, dst []byte) (int64, error) {
+	if len(dst) == 0 {
+		return 0, errors.New("S3 object prefix buffer is empty")
+	}
+	output, err := s.getObject(ctx, key, aws.String(fmt.Sprintf("bytes=0-%d", len(dst)-1)))
+	if err != nil {
+		return 0, err
+	}
+	_, err = io.ReadFull(output.Body, dst)
+	if err := errors.Join(err, output.Body.Close()); err != nil {
+		return 0, fmt.Errorf("reading S3 object prefix for %q: %w", key, err)
+	}
+	contentRange := aws.ToString(output.ContentRange)
+	length, ok := strings.CutPrefix(contentRange, fmt.Sprintf("bytes 0-%d/", len(dst)-1))
+	size, err := strconv.ParseInt(length, 10, 64)
+	if !ok || err != nil || size < int64(len(dst)) {
+		return 0, fmt.Errorf("invalid S3 Content-Range for %q: %q", key, contentRange)
+	}
+	return size, nil
+}
+
+func (s *Store) getObject(ctx context.Context, key string, byteRange *string) (*s3.GetObjectOutput, error) {
+	if err := validateKey(key); err != nil {
+		return nil, fmt.Errorf("invalid S3 object key %q: %w", key, err)
+	}
+	input := &s3.GetObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key), Range: byteRange}
 	output, err := s.client.GetObject(ctx, input)
 	if err != nil {
 		if isMissingObject(err) {
@@ -837,7 +905,7 @@ func (s *Store) GetFrom(ctx context.Context, key string, offset int64) (io.ReadC
 	if output.Body == nil {
 		return nil, fmt.Errorf("getting S3 object %q: server returned an empty body", key)
 	}
-	return output.Body, nil
+	return output, nil
 }
 
 // existingObject は key の object が st と同じ内容なら nil、違えば ErrAlreadyExists、無ければ ErrNotFound を返す。

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -961,6 +962,68 @@ func TestNewStreamerObjectStoresIncludesMountedFSAndAllS3(t *testing.T) {
 	}
 	if _, ok := objects["unmounted-fs"]; ok {
 		t.Fatal("unmounted FS store was registered for streamer")
+	}
+}
+
+func TestCryptObjectStoreWiringKeepsCredentialsOutOfPolicyAndLogs(t *testing.T) {
+	const password, salt = "test private password value", "test private salt value"
+	const name = "encrypted-s3"
+	ctx := t.Context()
+	storage := config.StorageConfig{
+		Stores:  map[string]config.StoreConfig{name: {Kind: "s3", Bucket: "encrypted", Crypt: true}},
+		Derived: name,
+	}
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	t.Setenv("ROKUBAN_CRYPT_ENCRYPTED_S3_PASSWORD", password)
+	t.Setenv("ROKUBAN_CRYPT_ENCRYPTED_S3_SALT", "")
+	_, missingSalt := newDerivedObjects(ctx, storage, nil)
+	if missingSalt == nil || !strings.Contains(missingSalt.Error(), "ROKUBAN_CRYPT_ENCRYPTED_S3_SALT") {
+		t.Fatalf("newDerivedObjects without salt = %v", missingSalt)
+	}
+	t.Setenv("ROKUBAN_CRYPT_ENCRYPTED_S3_SALT", salt)
+	base, err := storage.PolicyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := newDerivedObjects(ctx, storage, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ROKUBAN_CRYPT_ENCRYPTED_S3_PASSWORD", "another private password value")
+	t.Setenv("ROKUBAN_CRYPT_ENCRYPTED_S3_SALT", "another private salt value")
+	readers, err := newStreamerObjectStores(ctx, storage, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := storage.PolicyFingerprint()
+	if err != nil || after != base {
+		t.Fatalf("changing secret values changed the policy fingerprint: %v", err)
+	}
+	for _, objects := range []objstore.Store{writer, readers[name]} {
+		if _, ok := objects.(objstore.Resumable); !ok {
+			t.Fatalf("%T lacks Resumable", objects)
+		}
+		if _, ok := objects.(objstore.Reader); !ok {
+			t.Fatalf("%T lacks Reader", objects)
+		}
+		if _, ok := objects.(objstore.RangeReader); !ok {
+			t.Fatalf("%T lacks RangeReader", objects)
+		}
+		if _, ok := objects.(objstore.SignedURL); ok {
+			t.Fatalf("%T provides SignedURL", objects)
+		}
+		if _, ok := objects.(objstore.Local); ok {
+			t.Fatalf("%T provides Local", objects)
+		}
+	}
+	for _, secret := range []string{password, salt, "another private password value", "another private salt value"} {
+		if strings.Contains(logs.String(), secret) || strings.Contains(missingSalt.Error(), secret) {
+			t.Fatal("crypt credential appeared in a log or error")
+		}
 	}
 }
 

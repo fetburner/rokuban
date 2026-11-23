@@ -53,6 +53,16 @@ linters:
               desc: AWS SDK imports are limited to the S3 object-store adapter
             - pkg: github.com/aws/smithy-go
               desc: Smithy imports are limited to the S3 object-store adapter
+        crypt-decorator-only:
+          list-mode: lax
+          files:
+            - "${config-path}/**"
+            - "!${config-path}/internal/objstore/cryptstore/**"
+          deny:
+            - pkg: github.com/rfjakob/eme
+              desc: EME is limited to the crypt object-store decorator
+            - pkg: golang.org/x/crypto
+              desc: crypt format dependencies are limited to the object-store decorator
         api-role:
           # API のテストは worker の実ジョブを使う統合テストなので、ここでは
           # 本番コードの import 境界だけを判定する。

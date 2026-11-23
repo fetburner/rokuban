@@ -53,6 +53,19 @@ type Store interface {
 	List(ctx context.Context, prefix string) ([]Object, error)
 }
 
+// DeclaredSHA256Store は宣言された SHA-256 をメタデータに保存し、受け取った
+// バイトとは照合しない内側の置き場である。サイズ検査と上書き防止は Store と同じ。
+// Put と CompleteUpload の前に、呼び出し側が宣言と元のバイトを照合する。
+type DeclaredSHA256Store interface {
+	Store
+	Reader
+	RangeReader
+	Resumable
+	StoresDeclaredSHA256()
+	// ReadPrefix は dst を先頭のバイトで満たし、完了済みオブジェクトの全長を返す。
+	ReadPrefix(ctx context.Context, key string, dst []byte) (size int64, err error)
+}
+
 // Reader is implemented by stores that can stream a completed object's contents.
 type Reader interface {
 	Get(ctx context.Context, key string) (io.ReadCloser, error)

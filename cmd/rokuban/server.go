@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"os"
 	"os/signal"
 	"slices"
 	"strings"
@@ -31,6 +32,7 @@ import (
 	"github.com/fetburner/rokuban/internal/notifier"
 	"github.com/fetburner/rokuban/internal/notifier/pgsource"
 	"github.com/fetburner/rokuban/internal/objstore"
+	"github.com/fetburner/rokuban/internal/objstore/cryptstore"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 	"github.com/fetburner/rokuban/internal/objstore/s3store"
 	"github.com/fetburner/rokuban/internal/role"
@@ -317,7 +319,7 @@ func newStreamerObjectStores(ctx context.Context, storage config.StorageConfig, 
 			return nil, err
 		}
 		if objectStore != nil {
-			if configured.Kind == "s3" && configured.Delivery == "proxy" {
+			if configured.Kind == "s3" && !configured.Crypt && configured.Delivery == "proxy" {
 				objectStore, err = objstore.NewProxyDelivery(objectStore)
 				if err != nil {
 					return nil, fmt.Errorf("creating streamer object store %q: %w", name, err)
@@ -345,6 +347,21 @@ func newObjectStore(ctx context.Context, name string, configured config.StoreCon
 	case "s3":
 		// S3 は接続せずに作る（資格情報の取得・確認は各操作で行う）。
 		cfg := s3store.Config{Endpoint: configured.Endpoint, Region: configured.Region, Bucket: configured.Bucket}
+		if configured.Crypt {
+			prefix, err := config.CryptEnvPrefix(name)
+			if err != nil {
+				return nil, err
+			}
+			password, salt := os.Getenv(prefix+"_PASSWORD"), os.Getenv(prefix+"_SALT")
+			if password == "" || salt == "" {
+				return nil, fmt.Errorf("encrypted object store %q requires %s_PASSWORD and %s_SALT", name, prefix, prefix)
+			}
+			inner, err := s3store.NewDeclaredSHA256(ctx, cfg, readOnly)
+			if err != nil {
+				return nil, fmt.Errorf("creating encrypted S3 object store %q: %w", name, err)
+			}
+			return cryptstore.New(inner, name, password, salt, readOnly)
+		}
 		if readOnly {
 			objectStore, err := s3store.NewReader(ctx, cfg)
 			if err != nil {
