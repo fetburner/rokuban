@@ -14,6 +14,20 @@ pgstore はドメインごとの struct（pool を持つ）で、そのドメイ
 
 置き場は `internal/store` である。1 パッケージにするのは、エラーとドメイン型を全ドメインで共有するためである。契約パッケージは pgx と `sqlcgen` を import せず、depguard がこれを検査する。
 
+実装は方言ごとの `internal/store/pgstore` と `internal/store/mysqlstore` に置く。MySQL の接続プール作成と goose migration は `internal/mysqldb` に集め、初期 migration は同パッケージ内に置く。これにより、接続設定や migration 処理をドメインごとのパッケージに重複して持たせない。MySQL のクエリは `database/sql` の手書き SQL を基本にする。
+
+MySQL は分離レベル・`sql_mode`・接続の照合順序・タイムゾーンを接続ごとに設定し、作成時に接続上の値を検査する。サーバーや DB の既定照合順序だけでは接続の照合順序が決まらないため、`@@collation_connection` を確認する。
+
+通常の契約テストでは、テストごとに DB を作成して migration を流す。テスト間の状態を分離し、並列実行できるためである。パッケージ内で共有する DB に切り替えるかは、テストごとに DB を作成して DDL を流す時間と、共有 DB で各テスト前に全表を `TRUNCATE` する時間を比べて決める。後者には、共有 DB の作成時間をテスト回数で割った分も含める。
+
+MySQL のデッドロックと lock wait timeout は自動再試行しない。再実行には Go 側の副作用が無いことが必要だが、各メソッドの処理がその条件を満たすかは、共通の tx ヘルパーからは分からない。
+
+<details><summary>根拠</summary>
+
+- テスト DB 作成方式の計測: `TestMeasureDatabaseSetupStrategies`
+
+</details>
+
 ### メソッドの単位
 
 読み取りは複数のドメインをまたいでもよい。複数ドメインの表を原子的に書く必要があるときだけ、その書き込みを一つのメソッドに束ねる。
@@ -33,6 +47,8 @@ River の `InsertTx` のように同じ tx でジョブを投入すると、DB �
 文が失敗したら、tx をロールバックしてからエラーを返す。MySQL は文が失敗した後も tx が続くので、ロールバックせずに返すと途中までの書き込みが commit されうる。
 
 一意違反・排他制約違反は `ErrConflict`、対象が無いときは `ErrNotFound` に写す。DB 固有のエラーコードや `pgx.ErrNoRows` を呼び出し側へ漏らすと、別の実装が同じ契約を満たせなくなる。
+
+MySQL の `RETURNING` は使わず、書き込み後に同じ tx で必要な値を読み直す。`ON DUPLICATE KEY UPDATE` はどの一意キーの衝突でも発火するため、upsert で狙うキーのほかに一意キーがある表では使わない。
 
 ### 述語の置き場
 
@@ -69,6 +85,8 @@ SQL で評価する述語は、view に置いてもクエリに直接書いて�
 store が記録する時刻は DB の時計で付け、呼び出し側の時計を使わない。api と worker は別ホストなので、時計がずれると、書き手をまたぐ時刻の大小比較が反転しうる。
 
 ごみ箱の猶予だけが例外である。api が DB の時計で付けた `deleted_at` を、worker の時計の cutoff と比べている。猶予が日単位でずれが効かないので、今の形のままにする。
+
+MySQL の `NOW()` は文ごとに評価される。同じ tx の複数文で同じ時刻を使う必要がある場合は、最初に DB の時刻を読み、その値を後続の文へ渡す。
 
 <details><summary>根拠</summary>
 
