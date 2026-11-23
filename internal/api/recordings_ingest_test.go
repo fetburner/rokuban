@@ -166,8 +166,8 @@ func TestListRecordingsIngestNoJobComing(t *testing.T) {
 
 	base := time.Now().Truncate(time.Second)
 
-	// recordings.status と record_sync.status の対応は watcher の
-	// normalizeRecordingStatus のとおり（既知の値はそのまま）。
+	// recordings.status と record_sync.status の対応は
+	// store.NormalizeRecordingStatus のとおり（既知の値はそのまま）。
 	failed := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "失敗した録画", base.Add(-time.Hour), "failed", 1
 	})

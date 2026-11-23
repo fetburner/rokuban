@@ -325,6 +325,8 @@ store は tx の中で、その関数をロック後の値に対して 1 回だ�
 
 設定に依存しない純粋な判定（`internal/chapters`・`internal/reservation` の関数など）は、pgstore が直接呼ぶ。
 
+方言に依らない判定は方言の実装の中に書かず `internal/store` に置き、各方言の実装が呼ぶ。方言ごとに写しを持つと、片方だけが直るからである。
+
 関数を引数にしても、tx を呼び出し側へ渡さない規則とは矛盾しない。関数は DB に触れず store の状態を変えないので、呼び出し側は書き込みを束ねられない。
 
 Dex の updater 関数（`UpdateClient(id, func(old) (new, error))`）も同じ形である。

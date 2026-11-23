@@ -270,7 +270,7 @@ func reservationDetails(r sqlcgen.Reservation, snapshot sqlcgen.ProgramSnapshot,
 // persistOverrides はマージ結果（marshal 済み）を書き戻す。結果が空（{}）なら行そのものを
 // 消す（不変条件 10: 空の上書き = 行が無い）。空でなければ upsert する。
 func persistOverrides(ctx context.Context, q *sqlcgen.Queries, site string, programID int64, finalJSON json.RawMessage) error {
-	if isEmptyOverridesJSON(finalJSON) {
+	if store.IsEmptyOverridesJSON(finalJSON) {
 		if _, err := q.DeleteProgramOverrides(ctx, sqlcgen.DeleteProgramOverridesParams{Site: site, ProgramID: programID}); err != nil {
 			return fmt.Errorf("deleting emptied overrides: %w", mapDatabaseError(err))
 		}
@@ -282,17 +282,6 @@ func persistOverrides(ctx context.Context, q *sqlcgen.Queries, site string, prog
 		return fmt.Errorf("upserting overrides: %w", mapDatabaseError(err))
 	}
 	return nil
-}
-
-// isEmptyOverridesJSON は jsonb の上書きが実質空（{}）かどうかを判定する。
-// reservation.Options の全フィールドが omitempty なので、json.Marshal の結果が {} であることと
-// 「型付き構造体に何も設定されていない」は同値になる（新しいフィールドを足しても自動的に正しく動く）。
-func isEmptyOverridesJSON(raw json.RawMessage) bool {
-	var values map[string]any
-	if json.Unmarshal(raw, &values) != nil {
-		return false
-	}
-	return len(values) == 0
 }
 
 var _ store.Reservations = (*Reservations)(nil)
