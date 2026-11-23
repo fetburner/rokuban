@@ -1,3 +1,4 @@
+// measure
 package main
 
 import (
