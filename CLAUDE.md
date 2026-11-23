@@ -13,6 +13,7 @@ go generate ./internal/api/   # openapi.yaml → 生成ハンドラ/型。生成
 go build ./...
 go test ./...
 golangci-lint run
+go tool actionlint            # ワークフローを検査。run: 内の ShellCheck 検査には PATH 上の shellcheck が必要（CI では実施）
 npm run third-party-notices  # Go/Web 本番依存の notice を生成
 npm run third-party-notices -- --check  # 生成済み notice が最新か検査
 ```

@@ -1,0 +1,6 @@
+paths:
+  .github/workflows/ci.yml:
+    ignore:
+      # ci.yml は services の rustfs に command を書いており、main の CI はこの定義で動いている。
+      # actionlint 1.7.12 は services の command を認識しないため、次の指摘だけ除外する。
+      - '^unexpected key "command" for "services" section\. expected one of "credentials", "env", "image", "options", "ports", "volumes"$'
