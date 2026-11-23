@@ -231,6 +231,22 @@ E2E_S3_VIDEO_TTL_SECONDS=2 node e2e/run.mjs s3-302     # 動画の署名の期�
 
 CI の `browser-s3-302` は実 Chrome で回す。Playwright WebKit はローカル診断用である。
 
+### S3 の中継（`s3-proxy.mjs`）
+
+中継での再生、バッファ外へのシーク、停止後の再開を実ブラウザで確認する。
+
+CI では RustFS の MP4 を `delivery: proxy` の streamer 経由で実 Chrome に再生させる。保存位置への移動と再生、一時停止を 3 分置いた後の再開も確認し、シーク開始から `seeked` までの時間を出力する。各シーク前に位置がバッファ外であることを確かめ、streamer の新しい Range 要求も数える。Playwright WebKit でも、ローカル診断として同じ判定を回せる。
+
+必要なのは `s3-302.mjs` と同じ RustFS、PostgreSQL、ffmpeg、ブラウザの準備である。CI の `browser-s3-302` は同じ S3 streamer conformance バイナリを用意し、`node e2e/run.mjs --needs s3` で両方を確認する。ローカルではその CI のサービスを起動し、次を実行する。
+
+```sh
+go build -tags s3conformance -o /tmp/rokuban-s3streamer-conformance ./internal/streamer/conformance
+E2E_STREAMER_FIXTURE_BINARY=/tmp/rokuban-s3streamer-conformance node e2e/run.mjs s3-proxy
+E2E_BROWSER=webkit E2E_STREAMER_FIXTURE_BINARY=/tmp/rokuban-s3streamer-conformance node e2e/run.mjs s3-proxy
+```
+
+CI は実 Chrome で回し、Playwright WebKit は `E2E_BROWSER=webkit` を付けたローカル診断用である。
+
 ### シークバーのプレビュー（`seek-tiles.mjs`）
 
 動画の下のスクラブ帯でポインタを動かしたとき、その位置に対応するタイル画像が出ることを実ブラウザで見る。位置は「ポインタの x → 帯の中の割合 → 再生位置 → タイルの格子位置」で決まるが、**jsdom の `getBoundingClientRect()` は常に 0 を返すので、この経路は単体テストでは 1 歩も進まない**。`recording-player.test.tsx` が見るのは「タイルの問い合わせが始まること」「タッチでは始めないこと」だけで、位置の正しさはここが唯一の判定手段になる。

@@ -198,17 +198,21 @@ S3 の置き場は、AWS S3 と S3 互換サーバー（RustFS、Cloudflare R2 �
 接続には AWS の標準の資格情報の探索（環境変数・workload identity・共有の資格情報ファイル）を使う。worker と streamer の実行環境へ、いずれかで資格情報を渡す。資格情報は設定ファイルへ書かない。
 
 - worker: `PutObject`、`GetObject`、`HeadObject`、`ListBucket`、`DeleteObject` が要る。さらに `AbortMultipartUpload` と `ListMultipartUploadParts` が要る。後者は ListParts の権限で、Abort のあとの確認に使う。
-- streamer: `HeadObject` と署名付き URL の作成だけでよい。派生物の置き場を切り替えた後は、転送が終わるまで古い S3 コピーを選ぶことがあるため、`storage.stores` に設定されたすべての S3 置き場で使える資格情報が要る。
+- streamer: 既定の 302 配信では `HeadObject` と署名付き URL の作成だけでよい。`delivery: proxy` では `HeadObject` と `GetObject` が要り、メディアの帯域は streamer が運ぶ。派生物の置き場を切り替えた後は、転送が終わるまで古い S3 コピーを選ぶことがあるため、選択されうる S3 置き場で必要な操作ができる資格情報が要る。
 
 派生物の置き場が S3 のときは、S3 へ送るのは転送元の FS 置き場の転送 worker である（[転送](../storage/transfer.md) の「宛先が S3 の派生物」）。その worker にも上記の資格情報と権限が要る。deploy/k8s では、転送の ScaledJob（`rokuban-worker-transfer`）が encode と同じ Secret を `envFrom` で受け取るので、追加の設定は要らない。
 
 worker は起動時に S3 へ接続しない。S3 に繋がらなくても、資格情報が失効していても worker は起動する。S3 のコードを通らないジョブ（ingest など）は、S3 の状態に左右されない。S3 を使うジョブ（派生物の公開と削除）だけが失敗し、`rokuban_object_store_errors_total{operation}` に数える。資格情報の失効と取得失敗は `rokuban_object_store_credential_errors_total` にも数えるので、権限や接続の失敗と区別できる。S3 へ書けない間は、派生物の置き場に encoded のコピーが揃わず、`until_encoded` の原本は消えない。
 
-署名付き URL の寿命は 24 時間で固定し、設定からは変えられない。SigV4 の上限は 7 日である。`web/e2e/s3-302.mjs` の Chrome 156.0.8078.48 と Safari 27.0.1 の測定では、Range 要求は署名付き URL に送られ、期限切れ後に元の URL へ戻らなかった。24 時間を超える 1 回の再生は、途中で止まりうる。再生の途中で期限が切れる場合は測っていない（未検証）。
+署名付き URL の寿命は 24 時間で固定し、設定からは変えられない。SigV4 の上限は 7 日である。この寿命と、streamer に 24 時間以上有効な資格情報が要る制約は既定の 302 配信だけに当たる。`web/e2e/s3-302.mjs` の Chrome 156.0.8078.48 と Safari 27.0.1 の測定では、Range 要求は署名付き URL に送られ、期限切れ後に元の URL へ戻らなかった。24 時間を超える 1 回の再生は、途中で止まりうる。再生中に期限が切れる場合は未検証である。中継では署名 URL の期限を使わないが、S3 の読み取り通信と動画帯域を streamer が負担する。
 
-署名する資格情報の有効期間が 24 時間より短いと、URL はその期間で先に無効になる。署名するのは streamer だけなので、24 時間以上有効な資格情報が要るのは streamer である。workload identity や STS の一時的な資格情報はセッションが失効するので、streamer には使わない。IAM ユーザーの長期のアクセスキーと、S3 互換サーバーの静的なキーは、24 時間以上有効な資格情報に当たる。worker の書き込みは、一時的な資格情報でもよい。この制約は AWS の仕様から書いたもので、この設計では測っていない（未検証）。
+中継のシーク待ち時間は `web/e2e/s3-proxy.mjs` で測る。バッファ外の位置へシークし、streamer に新しい Range 要求が届いたことも確かめる。実 S3 など他の環境は未検証である。
 
-動画の再生そのものに CORS が要る。プレイヤーの `<video>` は `crossorigin="anonymous"` を付けて S3 の URL を読むためである。bucket の CORS では、UI の origin からの GET と HEAD、`Range` request header を許可する。`Content-Range` と `Accept-Ranges` は expose する。字幕の取得も同じ設定を使う。bucket の CORS を変えたときは、実ブラウザの S3 配信判定（`web/e2e/s3-302.mjs`）も通す。
+署名する資格情報の有効期間が 24 時間より短いと、URL はその期間で先に無効になる。署名するのは streamer だけなので、24 時間以上有効な資格情報が要るのは 302 配信の streamer である。workload identity や STS の一時的な資格情報はセッションが失効するので、302 配信には使わない。IAM ユーザーの長期のアクセスキーと、S3 互換サーバーの静的なキーは、24 時間以上有効な資格情報に当たる。中継にも streamer が S3 を読む資格情報が要るが、24 時間以上の有効期間は条件にならない（未検証）。worker の書き込みは、一時的な資格情報でもよい。
+
+S3 へブラウザを直接送る 302 配信では、動画再生のため bucket CORS が要る。UI の origin からの GET と HEAD、`Range` request header を許可し、`Content-Range` と `Accept-Ranges` を expose する。字幕も S3 から直接読むため、302 配信では字幕サイドカーにも CORS が要る。
+
+中継では動画と字幕の両方を streamer が読むため、ブラウザから S3 への CORS は要らない。302 配信の CORS は `web/e2e/s3-302.mjs`、中継の再生は `web/e2e/s3-proxy.mjs` で確認する。
 
 #### 適合テストが測る機能
 

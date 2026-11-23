@@ -31,9 +31,11 @@ type StoreConfig struct {
 	// 転送元をどこから読むかを決めるだけで宛先の判断に使わず、worker は実行のたびに今の設定から
 	// 転送元を選び直すので、規則の指紋に入れない（json:"-"）。
 	InternalURL string `yaml:"internal_url,omitempty" json:"-"`
-	Endpoint    string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
-	Region      string `yaml:"region,omitempty" json:"region,omitempty"`
-	Bucket      string `yaml:"bucket,omitempty" json:"bucket,omitempty"`
+	// Delivery は streamer の配信方式を選ぶ。配置規則には影響しない。
+	Delivery string `yaml:"delivery,omitempty" json:"-"`
+	Endpoint string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
+	Region   string `yaml:"region,omitempty" json:"region,omitempty"`
+	Bucket   string `yaml:"bucket,omitempty" json:"bucket,omitempty"`
 }
 
 // IsFilesystem は StoreConfig がファイルシステム置き場を表すか返す。
@@ -240,10 +242,16 @@ func (c StorageConfig) validateStoreDefinitions() []string {
 		}
 		switch store.Kind {
 		case "fs":
+			if store.Delivery != "" {
+				errs = append(errs, fmt.Sprintf("storage.stores.%s.delivery is only valid for kind s3", name))
+			}
 			if store.Endpoint != "" || store.Region != "" || store.Bucket != "" {
 				errs = append(errs, fmt.Sprintf("storage.stores.%s: endpoint, region, and bucket are only valid for kind s3", name))
 			}
 		case "s3":
+			if store.Delivery != "" && store.Delivery != "proxy" {
+				errs = append(errs, fmt.Sprintf("storage.stores.%s.delivery must be proxy when set", name))
+			}
 			if store.Root != "" {
 				errs = append(errs, fmt.Sprintf("storage.stores.%s.root is only valid for kind fs", name))
 			}

@@ -25,7 +25,7 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、�
 原本の `storage.media_dir` とローカル `scratch_dir` には、強い POSIX FS を使う。ingest はファイル `fsync`、`Close` のエラー報告、hard link、親ディレクトリ `fsync` に依存する。ローカル FS、JuiceFS、条件を満たす NFS は対象内で、FUSE S3 は対象外とする。派生物は次の共通契約で扱い、呼び出し側は POSIX rename や lock を前提にしない。
 
 1. ffmpeg などの生成処理はワーカーのローカル scratch で行い、完成した出力だけを `objstore.Store.Put` に渡す。書き込みはシーケンシャルにし、Put には正確なサイズと SHA-256 を渡す
-2. `Store.Put` は全バイトを検証し、同じキーを上書きせず、完全なオブジェクトが durable になった後にだけ成功を返す。キーが無いことは `Head`、`Get`、`Open` が `ErrNotFound` で返し、一時的なエラーと区別する。`Delete` は冪等で、無いキーの削除も成功にする。`List` は完成したキーだけを返し、載るのが遅れてもよい。`Get`・`Open`・署名付き URL は、実装が持つ能力に応じて `objstore.Reader`・`Local`・`SignedURL` の別のインターフェースとして提供する
+2. `Store.Put` は全バイトを検証し、同じキーを上書きせず、完全なオブジェクトが durable になった後にだけ成功を返す。キーが無いことは `Head`、`Get`、`Open`、`GetFrom` が `ErrNotFound` で返し、一時的なエラーと区別する。`Delete` は冪等で、無いキーの削除も成功にする。`List` は完成したキーだけを返し、載るのが遅れてもよい。`Get`・`Open`・署名付き URL・範囲読みは、実装が持つ能力に応じて `objstore.Reader`・`Local`・`SignedURL`・`RangeReader` の別のインターフェースとして提供する。`RangeReader` は途中で `Close` しても速やかに返り、接続を残さない
 3. **派生物の公開点は DB commit** とする。キーへの Put が成功した後、同じ transaction でコピーを `active` にして論理メタデータを記録する。DB commit 前のキーは配信対象にせず、失敗した `pending` のコピーと孤立したキーは reconcile が回収する
 4. 派生物のキーは世代ごとに一度だけ使う。差し替えは新世代のキーを作り旧世代を保持する。置き場間転送のコピーにも INSERT 時に新しい `rel_path` を割り当て、pending の再試行ではその値を保つ。DB の現行 active 行だけが配信を許し、旧世代は `storage.transfer.overlap` 後に削除する
 
@@ -37,7 +37,13 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、�
 
 `CompleteUpload` は、内容が同じ既存キーを成功として扱う。公開した後に止まった送信（FS は staging を消す前、S3 は完了の応答を失ったとき）を、再試行で完了させるためである。
 
-配信側も置き場の能力で経路を選ぶ。seekable な `objstore.Local` は Range 対応のローカル配信に使い、`storage.accel_location` が設定されていれば `Open` で存在を確認してから `X-Accel-Redirect` を返す。そうでなければ `objstore.SignedURL` で署名付き URL へ redirect する。原本の配信は引き続き POSIX file を開き、同じ `X-Accel-Redirect` 設定を使う。
+配信側は `objstore.Local`、`objstore.SignedURL`、`objstore.RangeReader` の順で能力を調べる。`Local` はリバースプロキシが同じ `rel_path` のファイルを読める置き場だけが実装し、Range 対応のローカル配信に使う。`storage.accel_location` が設定されていれば `Open` で存在を確認してから `X-Accel-Redirect` を返す。
+
+`SignedURL` は署名付き URL へ redirect する。`RangeReader` は `Head` で確認したサイズを使い、streamer が Range 読みを中継する。
+
+S3 置き場では、組み立て関数が `delivery` の設定に応じて公開する能力を選ぶ。省略時は streamer が `SignedURL` を使って 302 し、`storage.stores.<name>.delivery: proxy` では `RangeReader` を使って中継する。
+
+原本の配信は POSIX file を開き、同じ `X-Accel-Redirect` 設定を使う。
 
 ### scratch と temp の置き場所
 

@@ -95,6 +95,7 @@ cd web && E2E_URL=http://localhost:40773 node e2e/run.mjs channel-and-more-sheet
 | 録画 HLS の時間軸・世代切替・再開（`recording-playback-timeline.mjs`） | [checks/playback.md](checks/playback.md) |
 | 録画 HLS の再起動境界（`recording-segmented-vod.mjs`） | [checks/playback.md](checks/playback.md) |
 | S3 の署名付き URL への 302（`s3-302.mjs`） | [checks/playback.md](checks/playback.md) |
+| S3 の streamer 中継（`s3-proxy.mjs`） | [checks/playback.md](checks/playback.md) |
 
 ### その他の判定
 

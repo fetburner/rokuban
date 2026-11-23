@@ -31,6 +31,7 @@
 | `mirakcs` | —（必須。既定なし） | mirakc の `{site, url}` 配列 |
 | `storage.media_dir` | —（FS 置き場を 1 つ以上定義し、そのすべてに `root` を書けば不要） | `root` を省略した FS 置き場の root |
 | `storage.stores` | —（必須になる条件は下記「置き場の規則」） | 名前付き置き場の定義（FS は任意で `root`） |
+| `storage.stores.<name>.delivery` | 省略（S3 は 302） | S3 派生物を streamer で中継する場合は `proxy` |
 | `storage.originals` | —（`stores` / `derived` と一緒に書く） | 上から評価する原本の置き場の規則 |
 | `storage.derived` | —（`stores` / `originals` と一緒に書く） | 派生物の共通の置き場 |
 | `storage.transfer.bandwidth` | なし | 転送元の置き場ごとの帯域の上限 |
@@ -130,6 +131,8 @@ S3 が宛先なら、録画ごとに各プロファイルの encode 出力とサ
 置き場の種類によって、参照できる規則が決まる。マウントする置き場はプロセスの引数で選び、成り立たない組み合わせは起動時に拒否する。マウントしていない転送元は、その置き場をマウントした streamer から読む。
 
 `storage.originals` の参照先は FS 置き場に限る。FS 置き場は何個でも定義でき、規則ごとに別の置き場を指せる。`storage.derived` は、FS 置き場か S3 置き場を指定できる。S3 置き場の定義は、どの規則も参照しなければ受け付ける。
+
+`storage.stores.<name>.delivery` は S3 置き場だけに指定でき、省略時は署名付き URL へ 302 する。`proxy` は streamer が S3 の Range 読みを中継する実験的な方式である。配信方式は配置規則ではないため規則の指紋に含めず、切り替えても転送ジョブの規則判定を変えない。
 
 FS 置き場の root は `storage.stores.<名前>.root` で指定する。省略した置き場は `storage.media_dir` を root にするので、1 つの置き場だけのプロセスは `media_dir` のままでよい。省略した置き場は 1 つのプロセスに 1 つまでしかマウントできない。2 つ目以降の置き場には `root` を書く。`root` は規則の指紋に含めない。マウント先の違いで積み済みの転送ジョブを捨てさせないためである。
 

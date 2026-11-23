@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -69,6 +70,13 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("creating conformance object store: %w", err)
 	}
+	var streamObjects objstore.Store = objects
+	if os.Getenv("E2E_S3_DELIVERY") == "proxy" {
+		streamObjects, err = objstore.NewProxyDelivery(objects)
+		if err != nil {
+			return fmt.Errorf("configuring proxy delivery for conformance: %w", err)
+		}
+	}
 	queries := sqlcgen.New(pool)
 	startAt := time.Now().Truncate(time.Second)
 	recordingID, err := queries.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
@@ -101,10 +109,21 @@ func run(ctx context.Context) error {
 		_ = json.NewEncoder(w).Encode(map[string]int64{"recordingId": recordingID})
 	})
 	streamer.New(media, streamer.Config{
-		ObjectStores:    map[string]objstore.Store{storeName: objects},
+		ObjectStores:    map[string]objstore.Store{storeName: streamObjects},
 		SignedURLExpiry: 24 * time.Hour,
 	}).Mount(router)
-	server := &http.Server{Addr: "127.0.0.1:4176", Handler: router, ReadHeaderTimeout: 5 * time.Second}
+	var mediaRequests atomic.Int64
+	server := &http.Server{Addr: "127.0.0.1:4176", Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/media/recordings/") && r.Method == http.MethodGet && r.Header.Get("Range") != "" {
+			mediaRequests.Add(1)
+		}
+		if r.URL.Path == "/__stats" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]int64{"mediaRangeGetRequests": mediaRequests.Load()})
+			return
+		}
+		router.ServeHTTP(w, r)
+	}), ReadHeaderTimeout: 5 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.ListenAndServe() }()
 	select {

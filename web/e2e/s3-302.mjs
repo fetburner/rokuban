@@ -1,20 +1,25 @@
 // e2e-needs: s3
-import { execFileSync, spawn } from 'node:child_process'
-import { createHash, createHmac, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { createServer, request as httpRequest } from 'node:http'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 import path from 'node:path'
-import { Transform, pipeline } from 'node:stream'
 import { setTimeout as delay } from 'node:timers/promises'
 
 import { createPlaywrightAdapter } from './lib.mjs'
+import {
+  S3_URL,
+  createS3ThrottleProxyServer,
+  createS3FixtureClient,
+  listenFixtureServer as listen,
+  makeS3Video,
+  startStreamerFixture as startSharedStreamerFixture,
+  stopStreamerFixture,
+  waitForRustFS,
+} from './s3-fixture.mjs'
 
-const S3_URL = new URL(process.env.E2E_S3_URL ?? 'http://127.0.0.1:9000')
-const ACCESS_KEY = process.env.E2E_S3_ACCESS_KEY ?? 'rokuban'
-const SECRET_KEY = process.env.E2E_S3_SECRET_KEY ?? 'rokuban-test-secret'
-const REGION = 'us-east-1'
+const { request: signedS3Request, presignedGetUrl } = createS3FixtureClient()
 const RUN_ID = randomUUID().replace(/-/g, '').slice(0, 12)
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const GOOD_BUCKET = 'rokuban-1614-cors-' + RUN_ID
@@ -26,7 +31,6 @@ const VIDEO_TTL_SECONDS = Number(process.env.E2E_S3_VIDEO_TTL_SECONDS ?? 600)
 const EXPIRED_TTL_SECONDS = 5
 const VIDEO_SECONDS = 90
 const STREAMER_PROFILE = 's3conformance'
-const STREAMER_PORT = 4176
 // このオリジンを正例 bucket の PutBucketCors に設定する。
 const FIXTURE_PORT = 4174
 const S3_PROXY_PORT = 4175
@@ -51,211 +55,9 @@ if (BROWSER !== 'chrome' && BROWSER !== 'webkit') {
   throw new Error('E2E_BROWSER must be chrome or webkit')
 }
 
-function sha256(data) {
-  return createHash('sha256').update(data).digest('hex')
-}
-
-function hmac(key, value, encoding) {
-  return createHmac('sha256', key).update(value).digest(encoding)
-}
-
-function awsEncode(value) {
-  return encodeURIComponent(value).replace(/[!'()*]/g, (char) => '%' + char.charCodeAt(0).toString(16).toUpperCase())
-}
-
-function canonicalQuery(searchParams) {
-  return [...searchParams.entries()]
-    .map(([key, value]) => [awsEncode(key), awsEncode(value)])
-    .sort((left, right) => left[0] === right[0]
-      ? (left[1] < right[1] ? -1 : left[1] > right[1] ? 1 : 0)
-      : (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0))
-    .map(([key, value]) => key + '=' + value)
-    .join('&')
-}
-
-function amzTimestamp(date) {
-  return date.toISOString().replace(/[:-]|\.\d{3}/g, '')
-}
-
-function signingKey(dateStamp) {
-  const dateKey = hmac('AWS4' + SECRET_KEY, dateStamp)
-  const regionKey = hmac(dateKey, REGION)
-  const serviceKey = hmac(regionKey, 's3')
-  return hmac(serviceKey, 'aws4_request')
-}
-
-function authorizationHeaders(method, url, body, extraHeaders = {}) {
-  const date = new Date()
-  const timestamp = amzTimestamp(date)
-  const payloadHash = sha256(body)
-  const headers = {
-    host: url.host,
-    'x-amz-content-sha256': payloadHash,
-    'x-amz-date': timestamp,
-    ...extraHeaders,
-  }
-  const signedNames = Object.keys(headers).map((name) => name.toLowerCase()).sort()
-  const canonicalHeaders = signedNames
-    .map((name) => name + ':' + String(headers[name]).trim().replace(/\s+/g, ' ') + '\n')
-    .join('')
-  const canonicalRequest = [
-    method,
-    url.pathname,
-    canonicalQuery(url.searchParams),
-    canonicalHeaders,
-    signedNames.join(';'),
-    payloadHash,
-  ].join('\n')
-  const dateStamp = timestamp.slice(0, 8)
-  const scope = dateStamp + '/' + REGION + '/s3/aws4_request'
-  const stringToSign = [
-    'AWS4-HMAC-SHA256',
-    timestamp,
-    scope,
-    sha256(canonicalRequest),
-  ].join('\n')
-  const signature = hmac(signingKey(dateStamp), stringToSign, 'hex')
-  return {
-    ...headers,
-    Authorization: 'AWS4-HMAC-SHA256 Credential=' + ACCESS_KEY + '/' + scope
-      + ', SignedHeaders=' + signedNames.join(';')
-      + ', Signature=' + signature,
-  }
-}
-
-async function signedS3Request(method, pathName, body = Buffer.alloc(0), extraHeaders = {}) {
-  const url = new URL(pathName, S3_URL)
-  const headers = authorizationHeaders(method, url, body, extraHeaders)
-  const response = await fetch(url, { method, headers, body: body.length === 0 ? undefined : body })
-  const responseText = await response.text()
-  if (!response.ok && !(method === 'PUT' && response.status === 409 && responseText.includes('BucketAlreadyOwnedByYou'))) {
-    throw new Error(method + ' ' + url.pathname + url.search + ' failed (' + response.status + '): ' + responseText)
-  }
-  return response
-}
-
-function presignedGetUrl(bucket, key, expiresIn, publicOrigin) {
-  const now = new Date()
-  const timestamp = amzTimestamp(now)
-  const dateStamp = timestamp.slice(0, 8)
-  const scope = dateStamp + '/' + REGION + '/s3/aws4_request'
-  const url = new URL('/' + bucket + '/' + key, publicOrigin)
-  url.searchParams.set('X-Amz-Algorithm', 'AWS4-HMAC-SHA256')
-  url.searchParams.set('X-Amz-Credential', ACCESS_KEY + '/' + scope)
-  url.searchParams.set('X-Amz-Date', timestamp)
-  url.searchParams.set('X-Amz-Expires', String(expiresIn))
-  url.searchParams.set('X-Amz-SignedHeaders', 'host')
-  const canonicalRequest = [
-    'GET',
-    url.pathname,
-    canonicalQuery(url.searchParams),
-    'host:' + url.host + '\n',
-    'host',
-    'UNSIGNED-PAYLOAD',
-  ].join('\n')
-  const stringToSign = [
-    'AWS4-HMAC-SHA256',
-    timestamp,
-    scope,
-    sha256(canonicalRequest),
-  ].join('\n')
-  const signature = hmac(signingKey(dateStamp), stringToSign, 'hex')
-  url.searchParams.set('X-Amz-Signature', signature)
-  return { url: url.toString(), issuedAt: now.getTime(), expiresAt: now.getTime() + expiresIn * 1000 }
-}
-
-/**
- * throttle は各チャンクを、前のチャンクの送り出し予定（過ぎていれば今）から chunk.length / bytesPerSecond 後に流す。
- * 起点を開始時刻に固定すると、ブラウザが読むのを止めていた分をまとめて流せてしまう。
- */
-function throttle(bytesPerSecond) {
-  let nextAt = Date.now()
-  return new Transform({
-    transform(chunk, _encoding, done) {
-      nextAt = Math.max(Date.now(), nextAt) + chunk.length / bytesPerSecond * 1000
-      setTimeout(() => done(null, chunk), nextAt - Date.now())
-    },
-  })
-}
-
 function logFailure(message) {
   failures.push(message)
   console.error('NG: ' + message)
-}
-
-async function listen(server, port) {
-  await new Promise((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(port, '127.0.0.1', resolve)
-  })
-  return 'http://127.0.0.1:' + server.address().port
-}
-
-async function waitForRustFS() {
-  const healthUrl = new URL('/health', S3_URL)
-  const deadline = Date.now() + 30000
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(healthUrl)
-      if (response.ok) return
-    } catch {}
-    await delay(250)
-  }
-  throw new Error('RustFS did not become ready at ' + healthUrl)
-}
-
-async function startStreamerFixture(videoKey, videoSize, s3Origin) {
-  const binary = process.env.E2E_STREAMER_FIXTURE_BINARY
-  if (!binary) {
-    if (process.env.E2E_S3_APP_REQUIRED === '1') throw new Error('E2E_STREAMER_FIXTURE_BINARY is required for the application S3 browser test')
-    return null
-  }
-  const child = spawn(binary, [], {
-    cwd: REPO_ROOT,
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      AWS_ACCESS_KEY_ID: ACCESS_KEY,
-      AWS_SECRET_ACCESS_KEY: SECRET_KEY,
-      AWS_REGION: REGION,
-      ROKUBAN_S3_CONFORMANCE_ENDPOINT: s3Origin,
-      ROKUBAN_S3_CONFORMANCE_REGION: REGION,
-      ROKUBAN_S3_CONFORMANCE_BUCKET: GOOD_BUCKET,
-      E2E_S3_VIDEO_KEY: videoKey,
-      E2E_S3_VIDEO_SIZE: String(videoSize),
-    },
-  })
-  let spawnError
-  child.once('error', (error) => { spawnError = error })
-  const healthURL = 'http://127.0.0.1:' + STREAMER_PORT + '/__health'
-  const deadline = Date.now() + 60000
-  while (Date.now() < deadline) {
-    if (spawnError) throw new Error('could not start the application streamer fixture: ' + spawnError.message)
-    if (child.exitCode !== null) throw new Error('application streamer fixture exited early with code ' + child.exitCode)
-    try {
-      const response = await fetch(healthURL)
-      if (response.ok) {
-        const body = await response.json()
-        streamerOrigin = 'http://127.0.0.1:' + STREAMER_PORT
-        streamerRecordingID = body.recordingId
-        return child
-      }
-    } catch {}
-    await delay(250)
-  }
-  child.kill('SIGTERM')
-  throw new Error('application streamer fixture did not become ready at ' + healthURL)
-}
-
-async function stopStreamerFixture(child) {
-  if (!child) return
-  if (child.exitCode === null) child.kill('SIGTERM')
-  await new Promise((resolve) => {
-    if (child.exitCode !== null) resolve()
-    else child.once('exit', resolve)
-  })
-  streamerOrigin = ''
-  streamerRecordingID = 0
 }
 
 async function createBucket(bucket) {
@@ -280,20 +82,7 @@ async function configureBucketCors(bucket) {
 }
 
 function makeVideo(tempDir) {
-  const file = path.join(tempDir, 's3-302-fixture.mp4')
-  execFileSync('ffmpeg', [
-    '-hide_banner', '-loglevel', 'error', '-y',
-    '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=24',
-    '-f', 'lavfi', '-i', 'sine=frequency=660:sample_rate=44100',
-    '-t', String(VIDEO_SECONDS),
-    '-c:v', 'libx264', '-profile:v', 'baseline', '-level:v', '3.0', '-pix_fmt', 'yuv420p',
-    '-preset', 'veryfast', '-b:v', '1000k', '-maxrate', '1000k', '-bufsize', '2000k',
-    '-g', '48', '-keyint_min', '48', '-sc_threshold', '0',
-    '-c:a', 'aac', '-b:a', '96k',
-    '-movflags', '+faststart',
-    file,
-  ], { stdio: 'ignore' })
-  return file
+  return makeS3Video(tempDir, { fileName: 's3-302-fixture.mp4', duration: VIDEO_SECONDS })
 }
 
 function parseExpiresAt(searchParams) {
@@ -441,56 +230,31 @@ function startFixtureServers(videoKey, subtitleKey) {
     res.writeHead(404, { 'Cache-Control': 'no-store' }).end('not found')
   })
 
-  const s3Host = S3_URL.hostname
-  const s3Port = Number(S3_URL.port || 80)
-  const proxyServer = createServer((req, res) => {
-    const url = new URL(req.url, s3Origin)
-    const bucket = url.pathname.split('/')[1]
-    if (![GOOD_BUCKET, BAD_BUCKET].includes(bucket)) {
-      res.writeHead(404).end('unknown bucket')
-      return
-    }
-    const record = {
-      route: 's3',
-      at: Date.now(),
-      method: req.method,
-      bucket,
-      path: url.pathname,
-      range: req.headers.range ?? null,
-      origin: req.headers.origin ?? null,
-      expiresAt: parseExpiresAt(url.searchParams),
-      status: null,
-      allowOrigin: null,
-    }
-    requests.push(record)
-    const headers = { ...req.headers, host: req.headers.host }
-    const isSubtitle = url.pathname.endsWith('/' + subtitleKey)
-    delete headers.connection
-    delete headers['proxy-connection']
-    const upstream = httpRequest({
-      hostname: s3Host,
-      port: s3Port,
-      method: req.method,
-      path: req.url,
-      headers,
-    }, (upstreamResponse) => {
-      record.status = upstreamResponse.statusCode ?? 502
-      record.allowOrigin = upstreamResponse.headers['access-control-allow-origin'] ?? null
-      // 応答の頭が届く前にブラウザが切った接続には書けない（pipeline が同期に投げる）。
-      if (res.destroyed) {
-        upstreamResponse.destroy()
-        return
+  const proxyServer = createS3ThrottleProxyServer({
+    buckets: [GOOD_BUCKET, BAD_BUCKET],
+    bytesPerSecond: VIDEO_BYTES_PER_SECOND,
+    shouldThrottle: (url) => !url.pathname.endsWith('/' + subtitleKey),
+    onRequest: ({ request: req, url, bucket }) => {
+      const record = {
+        route: 's3',
+        at: Date.now(),
+        method: req.method,
+        bucket,
+        path: url.pathname,
+        range: req.headers.range ?? null,
+        origin: req.headers.origin ?? null,
+        expiresAt: parseExpiresAt(url.searchParams),
+        status: null,
+        allowOrigin: null,
       }
-      res.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers)
-      // ブラウザがシークで接続を切ったら上流も切る。pipeline の早期終了のエラーは記録に要らない。
-      const streams = isSubtitle ? [upstreamResponse, res] : [upstreamResponse, throttle(VIDEO_BYTES_PER_SECOND), res]
-      pipeline(...streams, () => {})
-    })
-    upstream.on('error', (error) => {
-      record.status = 502
-      res.writeHead(502, { 'Content-Type': 'text/plain' }).end(String(error))
-    })
-    req.pipe(upstream)
+      requests.push(record)
+      return record
+    },
+    onResponse: (record, response) => {
+      record.status = response.statusCode ?? 502
+      record.allowOrigin = response.headers['access-control-allow-origin'] ?? null
+    },
+    onError: (record) => { record.status = 502 },
   })
 
   return {
@@ -593,7 +357,23 @@ async function main() {
 
     fixture = startFixtureServers(videoKey, subtitleKey)
     const origins = await fixture.start()
-    streamerFixture = await startStreamerFixture(applicationVideoKey, video.length, origins.s3Origin)
+    const streamerBinary = process.env.E2E_STREAMER_FIXTURE_BINARY
+    if (!streamerBinary && process.env.E2E_S3_APP_REQUIRED === '1') {
+      throw new Error('E2E_STREAMER_FIXTURE_BINARY is required for the application S3 browser test')
+    }
+    if (streamerBinary) {
+      const started = await startSharedStreamerFixture({
+        binary: streamerBinary,
+        repoRoot: REPO_ROOT,
+        bucket: GOOD_BUCKET,
+        key: applicationVideoKey,
+        size: video.length,
+        endpoint: origins.s3Origin,
+      })
+      streamerFixture = started.child
+      streamerOrigin = started.origin
+      streamerRecordingID = started.recordingID
+    }
 
     browser = await createPlaywrightAdapter(BROWSER)
     console.log('Browser: ' + BROWSER + ' ' + browser.version)
@@ -783,6 +563,8 @@ async function main() {
   } finally {
     if (browser) await browser.close().catch((error) => console.error('Could not close browser: ' + error.message))
     await stopStreamerFixture(streamerFixture).catch((error) => console.error('Could not stop application streamer fixture: ' + error.message))
+    streamerOrigin = ''
+    streamerRecordingID = 0
     if (fixture) await fixture.close()
     for (const object of createdObjects.reverse()) {
       await signedS3Request('DELETE', '/' + object.bucket + '/' + object.key).catch(() => {})

@@ -9,6 +9,7 @@ package streamer
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -256,6 +257,10 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 			s.serveSignedAsset(w, r, recordingID, asset, objects)
 			return
 		}
+		if rangeReader, ok := objects.(objstore.RangeReader); ok {
+			s.serveRangeAsset(w, r, recordingID, asset, objects, rangeReader)
+			return
+		}
 		slog.Error("streamer: derived object store cannot serve objects", "recording_id", recordingID, "store", asset.store)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -377,26 +382,9 @@ func (s *Streamer) serveLocalObjectAsset(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *Streamer) serveSignedAsset(w http.ResponseWriter, r *http.Request, recordingID int64, asset serveAsset, objects objstore.Store) {
-	object, err := objects.Head(r.Context(), asset.relPath)
-	if err != nil {
-		if errors.Is(err, objstore.ErrNotFound) {
-			if !asset.sidecar {
-				slog.Warn("streamer: media asset row exists but the derived object is missing",
-					"recording_id", recordingID, "store", asset.store, "rel_path", asset.relPath)
-			}
-			http.NotFound(w, r)
-			return
-		}
-		objstore.RecordError("head", err)
-		slog.Error("streamer: checking derived object", "recording_id", recordingID, "store", asset.store,
-			"rel_path", asset.relPath, "err", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+	_, ok := s.headDerivedObject(w, r, recordingID, asset, objects)
+	if !ok {
 		return
-	}
-	if !asset.sidecar && object.Size != asset.sizeBytes {
-		slog.Warn("streamer: derived object size differs from the committed size",
-			"recording_id", recordingID, "store", asset.store, "rel_path", asset.relPath,
-			"committed", asset.sizeBytes, "actual", object.Size)
 	}
 	signer, ok := objects.(objstore.SignedURL)
 	if !ok {
@@ -419,6 +407,142 @@ func (s *Streamer) serveSignedAsset(w http.ResponseWriter, r *http.Request, reco
 	w.Header().Set("Content-Type", asset.contentType)
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
 	http.Redirect(w, r, target, http.StatusFound)
+}
+
+func (s *Streamer) serveRangeAsset(w http.ResponseWriter, r *http.Request, recordingID int64, asset serveAsset, objects objstore.Store, rangeReader objstore.RangeReader) {
+	object, ok := s.headDerivedObject(w, r, recordingID, asset, objects)
+	if !ok {
+		return
+	}
+	w.Header().Set("Content-Type", asset.contentType)
+	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	w.Header().Set("X-Accel-Buffering", "no")
+	reader := &rangeReadSeeker{
+		ctx: r.Context(), rangeReader: rangeReader, key: asset.relPath,
+		size: object.Size, recordingID: recordingID, store: asset.store,
+	}
+	defer func() { _ = reader.Close() }()
+	http.ServeContent(w, r, "", object.LastModified, reader)
+}
+
+func (s *Streamer) headDerivedObject(w http.ResponseWriter, r *http.Request, recordingID int64, asset serveAsset, objects objstore.Store) (objstore.Object, bool) {
+	object, err := objects.Head(r.Context(), asset.relPath)
+	if err != nil {
+		if errors.Is(err, objstore.ErrNotFound) {
+			if !asset.sidecar {
+				slog.Warn("streamer: media asset row exists but the derived object is missing",
+					"recording_id", recordingID, "store", asset.store, "rel_path", asset.relPath)
+			}
+			http.NotFound(w, r)
+			return objstore.Object{}, false
+		}
+		objstore.RecordError("head", err)
+		slog.Error("streamer: checking derived object", "recording_id", recordingID, "store", asset.store,
+			"rel_path", asset.relPath, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return objstore.Object{}, false
+	}
+	logDerivedSizeMismatch(recordingID, asset, object)
+	return object, true
+}
+
+func logDerivedSizeMismatch(recordingID int64, asset serveAsset, object objstore.Object) {
+	if !asset.sidecar && object.Size != asset.sizeBytes {
+		slog.Warn("streamer: derived object size differs from the committed size",
+			"recording_id", recordingID, "store", asset.store, "rel_path", asset.relPath,
+			"committed", asset.sizeBytes, "actual", object.Size)
+	}
+}
+
+// rangeReadSeeker は最初の Read まで置き場を開かずに範囲読みを ServeContent へ渡す。
+type rangeReadSeeker struct {
+	ctx         context.Context
+	rangeReader objstore.RangeReader
+	key         string
+	size        int64
+	recordingID int64
+	store       string
+	offset      int64
+	body        io.ReadCloser
+	failed      bool
+}
+
+func (r *rangeReadSeeker) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.offset >= r.size {
+		return 0, io.EOF
+	}
+	if r.body == nil {
+		body, err := r.rangeReader.GetFrom(r.ctx, r.key, r.offset)
+		if err != nil {
+			r.recordReadError(err)
+			return 0, err
+		}
+		r.body = body
+	}
+	if remaining := r.size - r.offset; int64(len(p)) > remaining {
+		p = p[:remaining]
+	}
+	n, err := r.body.Read(p)
+	r.offset += int64(n)
+	if r.offset >= r.size {
+		_ = r.body.Close()
+		r.body = nil
+	}
+	if err == io.EOF && r.offset < r.size {
+		err = io.ErrUnexpectedEOF
+	}
+	if err != nil && err != io.EOF && !r.failed {
+		r.recordReadError(err)
+	}
+	return n, err
+}
+
+func (r *rangeReadSeeker) recordReadError(err error) {
+	if r.failed {
+		return
+	}
+	r.failed = true
+	if r.ctx.Err() != nil {
+		return
+	}
+	objstore.RecordError("get", err)
+	slog.Error("streamer: reading derived object", "recording_id", r.recordingID, "store", r.store,
+		"rel_path", r.key, "err", err)
+}
+
+func (r *rangeReadSeeker) Seek(offset int64, whence int) (int64, error) {
+	var next int64
+	switch whence {
+	case io.SeekStart:
+		next = offset
+	case io.SeekCurrent:
+		next = r.offset + offset
+	case io.SeekEnd:
+		next = r.size + offset
+	default:
+		return r.offset, errors.New("invalid seek whence")
+	}
+	if next < 0 {
+		return r.offset, errors.New("negative seek offset")
+	}
+	if r.body != nil {
+		_ = r.body.Close()
+		r.body = nil
+	}
+	r.offset = next
+	return next, nil
+}
+
+func (r *rangeReadSeeker) Close() error {
+	if r.body == nil {
+		return nil
+	}
+	err := r.body.Close()
+	r.body = nil
+	return err
 }
 
 // lookupAsset は profile の有無で original / encoded を解決する。

@@ -143,7 +143,7 @@ jobs:
     steps:
       - run: test "${{ needs.browser-e2e-shard.result }}" = success
 
-  # S3 の署名付き URL への 302 を実 Chrome で測る。`browser-e2e` と別ジョブにしている
+  # S3 の 302 と中継を実 Chrome で測る。`browser-e2e` と別ジョブにしている
   # のは、RustFS の固定イメージと実 Chrome（`playwright install chrome`）を用意するため。
   # 実 Safari の測定は macOS のローカルで行い、CI には載せない。
   browser-s3-302:
@@ -213,7 +213,8 @@ jobs:
             sleep 1
           done
           exit 1
-      - run: node e2e/run.mjs --needs s3
+      - name: Run S3 browser conformance (302 and proxy)
+        run: node e2e/run.mjs --needs s3
         working-directory: web
         env:
           E2E_S3_URL: http://127.0.0.1:9000

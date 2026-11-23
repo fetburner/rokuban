@@ -936,13 +936,14 @@ func TestNewStreamerObjectStoresIncludesMountedFSAndAllS3(t *testing.T) {
 		"unmounted-fs": {Kind: "fs"},
 		"old-s3":       {Kind: "s3", Bucket: "old-derived"},
 		"new-s3":       {Kind: "s3", Bucket: "new-derived"},
+		"proxy-s3":     {Kind: "s3", Bucket: "proxy-derived", Delivery: "proxy"},
 	}}
 	objects, err := newStreamerObjectStores(context.Background(), storage, map[string]string{"mounted-fs": t.TempDir()})
 	if err != nil {
 		t.Fatalf("newStreamerObjectStores: %v", err)
 	}
-	if len(objects) != 3 {
-		t.Fatalf("object store count = %d, want mounted FS plus both S3 stores", len(objects))
+	if len(objects) != 4 {
+		t.Fatalf("object store count = %d, want mounted FS plus three S3 stores", len(objects))
 	}
 	if _, ok := objects["mounted-fs"].(objstore.Local); !ok {
 		t.Fatalf("mounted FS store has type %T, want objstore.Local", objects["mounted-fs"])
@@ -951,6 +952,12 @@ func TestNewStreamerObjectStoresIncludesMountedFSAndAllS3(t *testing.T) {
 		if _, ok := objects[name].(objstore.SignedURL); !ok {
 			t.Fatalf("S3 store %q has type %T, want objstore.SignedURL", name, objects[name])
 		}
+	}
+	if _, ok := objects["proxy-s3"].(objstore.RangeReader); !ok {
+		t.Fatalf("proxy S3 store type %T does not expose RangeReader", objects["proxy-s3"])
+	}
+	if _, ok := objects["proxy-s3"].(objstore.SignedURL); ok {
+		t.Fatalf("proxy S3 store type %T exposes SignedURL", objects["proxy-s3"])
 	}
 	if _, ok := objects["unmounted-fs"]; ok {
 		t.Fatal("unmounted FS store was registered for streamer")

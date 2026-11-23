@@ -449,6 +449,16 @@ func TestStoragePolicyFingerprint(t *testing.T) {
 		t.Fatalf("fingerprint changed after changing only internal_url: got %s want %s", internalURLFingerprint, want)
 	}
 
+	changedDelivery := newStorage()
+	changedDelivery.Stores["s3main"] = StoreConfig{Kind: "s3", Endpoint: "https://s3.example.com", Bucket: "derived", Delivery: "proxy"}
+	deliveryFingerprint, err := changedDelivery.PolicyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deliveryFingerprint != want {
+		t.Fatalf("fingerprint changed after changing only delivery: got %s want %s", deliveryFingerprint, want)
+	}
+
 	changedTransfer := newStorage()
 	changedTransfer.Transfer.Bandwidth = map[string]string{"main": "10Mbps"}
 	changedTransfer.Transfer.Overlap = 72 * time.Hour
@@ -499,6 +509,40 @@ func TestStoragePolicyFingerprint(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("fingerprint depends on equivalent duration spelling: got %s want %s", got, want)
+	}
+}
+
+func TestStoreDeliveryValidation(t *testing.T) {
+	base := StorageConfig{
+		Stores: map[string]StoreConfig{
+			"main":  {Kind: "fs"},
+			"cloud": {Kind: "s3", Bucket: "derived"},
+		},
+		Originals: []OriginalStoreRule{{Store: "main"}},
+		Derived:   "cloud",
+		Transfer:  StorageTransferConfig{Overlap: DefaultTransferOverlap},
+	}
+	for _, tc := range []struct {
+		name      string
+		stores    map[string]StoreConfig
+		wantError string
+	}{
+		{name: "default keeps existing delivery", stores: base.Stores},
+		{name: "proxy is valid for s3", stores: map[string]StoreConfig{"main": {Kind: "fs"}, "cloud": {Kind: "s3", Bucket: "derived", Delivery: "proxy"}}},
+		{name: "proxy is not valid for fs", stores: map[string]StoreConfig{"main": {Kind: "fs", Delivery: "proxy"}, "cloud": {Kind: "s3", Bucket: "derived"}}, wantError: "delivery is only valid for kind s3"},
+		{name: "unknown s3 delivery is rejected", stores: map[string]StoreConfig{"main": {Kind: "fs"}, "cloud": {Kind: "s3", Bucket: "derived", Delivery: "direct"}}, wantError: "delivery must be proxy when set"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			cfg.Stores = tc.stores
+			err := cfg.validate(nil, DefaultMissingAssetAge)
+			if tc.wantError == "" && err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			if tc.wantError != "" && (err == nil || !strings.Contains(err.Error(), tc.wantError)) {
+				t.Fatalf("validate error = %v, want containing %q", err, tc.wantError)
+			}
+		})
 	}
 }
 
