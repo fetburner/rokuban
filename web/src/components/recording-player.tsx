@@ -12,6 +12,7 @@ import {
 import type { ChapterSpan, EncodedAsset, KeepRange, RecordingChaptersSource, RecordingMedia } from '@/api/generated'
 import {
   RecordingChapterEditor,
+  type ChapterBoundaryNavigation,
   type ChapterEditorCommands,
   type ChapterEditorStatus,
 } from '@/components/recording-chapter-editor'
@@ -217,6 +218,7 @@ export function RecordingPlayer({
   const getDisplayedFrameSeconds = useDisplayedFrameSeconds(videoRef, chapterEditing, videoKey)
   const frameRef = useRef<HTMLDivElement>(null)
   const [editorSelected, setEditorSelected] = useState<number | null>(null)
+  const [editorBoundaryNavigation, setEditorBoundaryNavigation] = useState<ChapterBoundaryNavigation>({})
   const localChapterEditorCommandsRef = useRef<ChapterEditorCommands | null>(null)
   const resolvedChapterEditorCommandsRef = chapterEditorCommandsRef ?? localChapterEditorCommandsRef
   const jumpToRef = useRef<(seconds: number) => void>(() => {})
@@ -452,10 +454,15 @@ export function RecordingPlayer({
     void persistPlaybackPosition(recordingId, write, keepalive)
   }, [currentWrite, recordingId, rememberPosition])
 
+  const editorOpen =
+    chapterEditing && !playingCut && chapterVersion !== undefined &&
+    onSaveChapters !== undefined && onResetChapters !== undefined
+
   // 同じキーバインドと frame 操作を HLS / ファイルの両方で使い、シークの意味だけを
   // この player の章境界・CM 区間つき jumpTo に委ねる。
   const frame = usePlayerFrame(videoRef, frameRef, videoKey, {
     fullscreenContainerRef,
+    suppressArrowSeek: editorOpen,
     onSeekBy: (seconds) => {
       const video = videoRef.current
       if (!video) return
@@ -576,6 +583,8 @@ export function RecordingPlayer({
           onSaveChapters !== undefined && onResetChapters !== undefined
         }
         onEnterChapterEditing={onEnterChapterEditing}
+        onPreviousBoundary={editorOpen ? editorBoundaryNavigation.previous : undefined}
+        onNextBoundary={editorOpen ? editorBoundaryNavigation.next : undefined}
         onPlayAround={editorSelected === null ? undefined : () => chapterPlayback.playAround(Math.round(editorSelected * 1000))}
         onPlayToBoundary={editorSelected === null ? undefined : () => chapterPlayback.playAround(Math.round(editorSelected * 1000), 'to')}
         onPlayFromBoundary={editorSelected === null ? undefined : () => chapterPlayback.playAround(Math.round(editorSelected * 1000), 'from')}
@@ -737,10 +746,6 @@ export function RecordingPlayer({
       />
   )
 
-  const editorOpen =
-    chapterEditing && !playingCut && chapterVersion !== undefined &&
-    onSaveChapters !== undefined && onResetChapters !== undefined
-
   // **`playbackControls`（`<video>` を含む）は編集の出入りで同じ木の位置に置く。** 編集用に別の木へ
   // 描き直すと `<video>` が作り直され、再生位置が 0 に戻って止まる。編集の部品は兄弟として足すだけ。
   return (
@@ -770,6 +775,7 @@ export function RecordingPlayer({
             jumpTo={jumpTo}
             onBoundaryAction={chapterPlayback.selectBoundary}
             onSelectedBoundaryChange={setEditorSelected}
+            onBoundaryNavigationChange={setEditorBoundaryNavigation}
             onDraftChange={setEditorDraftSpans}
             onSave={onSaveChapters}
             onReset={async () => await onResetChapters()}

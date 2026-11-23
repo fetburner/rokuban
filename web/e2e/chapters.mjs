@@ -5,7 +5,7 @@
 // 前後再生は `<video>` の実再生と `currentTime` の推移でしか観測できない。
 // CLAUDE.md §テスト規律のとおり、実装より先にここで判定手段を作る。
 //
-// 見るのは次の 17 点:
+// 見るのは次の 19 点:
 //   ① 目盛りの位置が区間の割合と一致し、cut と ラベル付きが別の見た目で出る
 //   ② 通常の再生で cut 区間の先頭に差し掛かると、その終端へ飛ぶ
 //   ③ 手動のシークで区間の中に入ったときは飛ばない（cut / ラベル付きの両方）
@@ -24,6 +24,8 @@
 //   ⑮ 編集バーの区間名が下書きの CM 境界を越えて変わり、再生中の行が強調される
 //   ⑯ フィルムストリップと概観の再生位置線が実寸の時刻位置に合う
 //   ⑰ 表示範囲外へ追従し、一時停止・シーク・境界選択後も範囲を保ってズームできる
+//   ⑱ 編集中の → と次の境界ボタンが 1 回だけ移動し、選んだフレームから再生できる
+//   ⑲ 録画 HLS の編集中に → が 1 回だけシークし、次の境界ボタンでも次の境界を選べる
 //
 // フィクスチャは ffmpeg で作る（再生位置の推移が判定に要る）。無い環境では
 // この判定だけを skip として終了する。
@@ -896,6 +898,89 @@ if ((await narrowStart.count()) !== 1 || (await narrowEnd.count()) !== 1) {
     ng.push(`⑭ 区間の開始付近から「終了」の前後再生が40秒境界の3秒前に始まらない（位置=${endPlaybackPosition.toFixed(2)}秒）`)
   }
 }
+
+log('\n=== ⑱ 編集バーの境界移動と選んだ境界からの再生 ===')
+if (await narrowStart.count() === 1) {
+  const editBar = page.getByTestId('chapter-edit-playback-controls')
+  const previousBoundaryButton = editBar.getByRole('button', { name: '前の境界', exact: true })
+  const nextBoundaryButton = editBar.getByRole('button', { name: '次の境界', exact: true })
+  const selectedBoundary = page.getByTestId('chapter-selected-boundary')
+  await narrowStart.click()
+  await seek(33)
+  await page.evaluate(() => document.activeElement?.blur())
+  if (!(await page.evaluate(() => document.activeElement === document.body))) {
+    ng.push('⑱ → の前にフォーカスを body に戻せない')
+  }
+
+  // seeking イベントでは連続する指示がまとめられうる。ネイティブの setter に渡す値を全件記録する。
+  await video.evaluate((v) => {
+    const currentTime = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime')
+    const capture = { seeks: [], mediaTime: null, callbackId: null }
+    v.boundaryNavigationCapture = capture
+    Object.defineProperty(v, 'currentTime', {
+      configurable: true,
+      get: () => currentTime.get.call(v),
+      set: (seconds) => {
+        capture.seeks.push(seconds)
+        currentTime.set.call(v, seconds)
+      },
+    })
+    const onFrame = (_now, { mediaTime }) => {
+      capture.mediaTime = mediaTime
+      capture.callbackId = v.requestVideoFrameCallback(onFrame)
+    }
+    capture.callbackId = v.requestVideoFrameCallback(onFrame)
+  })
+  const waitForBoundaryFrame = async (label) => {
+    const reached = await page.waitForFunction(() => {
+      const v = document.querySelector('video')
+      return v.paused && !v.seeking && Math.abs((v.boundaryNavigationCapture.mediaTime ?? -1) - 40) < 0.01
+    }, undefined, { timeout: 5000 }).then(() => true, () => false)
+    const capture = await video.evaluate((v) => v.boundaryNavigationCapture)
+    const selected = (await selectedBoundary.textContent())?.trim()
+    // 40 秒境界の 29.97fps フレーム中央は約 40.023 秒。WebM fixture の表示フレームは 40 秒。
+    if (!reached || selected !== '0:40.000' || capture.seeks.length !== 1 ||
+        Math.abs(capture.seeks[0] - 40.0233166667) > 0.001) {
+      ng.push(`⑱ ${label} で40秒の境界フレームへ1回だけ移動して止まらない（選択=${selected} ${JSON.stringify(capture)}）`)
+    }
+  }
+  try {
+    await page.keyboard.press('ArrowRight')
+    await waitForBoundaryFrame('→')
+
+    if (await previousBoundaryButton.count() !== 1) ng.push('⑱ 編集バーに前の境界ボタンが無い')
+    await narrowStart.click()
+    await seek(33)
+    await video.evaluate(async (v) => {
+      await v.play()
+      v.boundaryNavigationCapture.seeks.length = 0
+      v.boundaryNavigationCapture.mediaTime = null
+    })
+    if (await safeClick(nextBoundaryButton, '次の境界', '⑱ 編集バーに次の境界ボタンが無いか押せない')) {
+      await waitForBoundaryFrame('次の境界')
+      await video.evaluate((v) => { v.boundaryNavigationCapture.seeks.length = 0 })
+      await editBar.getByRole('button', { name: '選択中の境界から再生' }).click()
+      const advanced = await page.waitForFunction(() => {
+        const v = document.querySelector('video')
+        const frame = v.boundaryNavigationCapture.mediaTime
+        return !v.paused && frame >= 40.5 && frame < 43
+      }, undefined, { timeout: 5000 }).then(() => true, () => false)
+      const capture = await video.evaluate((v) => v.boundaryNavigationCapture)
+      if (!advanced || capture.seeks.length !== 1 || Math.abs(capture.seeks[0] - 40.0233166667) > 0.001) {
+        ng.push(`⑱ 境界からの再生が選んだ40秒の境界フレームから始まらない（${JSON.stringify(capture)}）`)
+      }
+    }
+  } finally {
+    await video.evaluate((v) => {
+      v.pause()
+      v.cancelVideoFrameCallback(v.boundaryNavigationCapture.callbackId)
+      delete v.boundaryNavigationCapture
+      delete v.currentTime
+    })
+  }
+} else {
+  ng.push('⑱ 移動前に選ぶ30秒の境界が無い')
+}
 await page.setViewportSize({ width: 1280, height: 900 })
 const firstBoundary = page.locator('[data-testid="chapter-filmstrip-boundary"][data-time-ms="30000"]')
 if ((await firstBoundary.count()) !== 1) ng.push('④ 30 秒の境界が filmstrip に無い --- 判定の前提が崩れている')
@@ -1641,6 +1726,13 @@ async function editLayoutMetrics(viewport) {
       strip: box('[data-testid="chapter-filmstrip"]'),
       tuning: box('[data-testid="chapter-tuning-controls"]'),
       editBar: box('[data-testid="chapter-edit-playback-controls"]'),
+      editModeButtonsOneLine: (() => {
+        const buttons = document.querySelectorAll('[data-testid="chapter-edit-playback-modes"] button')
+        const bounds = Array.from(buttons, (button) => button.getBoundingClientRect())
+        return bounds.length === 6 && bounds.every((rect) =>
+          rect.width > 0 && rect.height > 0 && Math.abs(rect.top - bounds[0].top) < 1 &&
+          Math.abs(rect.bottom - bounds[0].bottom) < 1 && rect.left >= 0 && rect.right <= window.innerWidth)
+      })(),
       editBarOverflow: (() => {
         const bar = document.querySelector('[data-testid="chapter-edit-playback-controls"]')
         if (!bar) return true
@@ -1650,7 +1742,7 @@ async function editLayoutMetrics(viewport) {
           return rect.left < bounds.left - 0.5 || rect.right > bounds.right + 0.5
         })
       })(),
-      // 帯の中の要素（再生・時刻・3 つの再生型・速度）同士が重ならない。
+      // 帯の中の要素（再生・時刻・前後の境界・3 つの再生型・速度）同士が重ならない。
       editBarOverlaps: (() => {
         const bar = document.querySelector('[data-testid="chapter-edit-playback-controls"]')
         if (!bar) return ['帯が無い']
@@ -1702,6 +1794,9 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 400, height: 800 
       }
       if (!metrics.editBar || metrics.editBarOverflow) {
         ng.push(`#1123: 編集帯の要素が ${viewport.width}px 幅に収まらない（${JSON.stringify(metrics.editBar)} overflow=${metrics.editBarOverflow}）`)
+      }
+      if (!metrics.editModeButtonsOneLine) {
+        ng.push(`⑱ 前後の境界、3 つの再生型と速度が ${viewport.width}px 幅で同じ行に収まらない`)
       }
       if (!(metrics.player.y < metrics.strip.y && metrics.strip.y < metrics.tuning.y && metrics.tuning.y < metrics.spans.y)) {
         ng.push(`#1019 mobile: player→filmstrip→tuning→区間一覧の順がroughと異なる（${JSON.stringify(metrics)}）`)
@@ -2208,6 +2303,72 @@ if (!hlsReady) {
     if (!stoppedByPosition || atStop.seconds < 32 || atStop.seconds > 34.5) {
       ng.push(`⑪ LivePlayer の録画 HLS が境界の 3 秒後（33 秒付近）で再生位置により止まらない（${JSON.stringify(atStop)}）`)
     }
+  }
+}
+
+log('\n=== ⑲ LivePlayer の録画 HLS で → と次の境界ボタンが次の境界を選ぶ ===')
+{
+  const hlsBoundary = hlsPage.locator('[data-testid="chapter-filmstrip-boundary"][data-time-ms="30000"]')
+  const readSelectedBoundary = () => hlsPage.evaluate(() =>
+    document.querySelector('[data-testid="chapter-selected-boundary"]')?.textContent.trim())
+  await safeClick(hlsBoundary, '→ の移動元', '⑲ 録画 HLS の 30 秒境界を選べない')
+  if (await readSelectedBoundary() !== '0:30.000') ng.push('⑲ → の前に 30 秒境界が選ばれていない')
+  await hlsVideo.evaluate((v) => {
+    v.pause()
+    v.currentTime = 33
+  })
+  const startSettled = await hlsPage.waitForFunction(() => {
+    const v = document.querySelector('video')
+    return v.paused && !v.seeking && Math.abs(v.currentTime - 33) < 0.5
+  }, undefined, { timeout: 5000 }).then(() => true, () => false)
+  if (!startSettled) ng.push('⑲ → の前に録画 HLS の映像を 33 秒付近で停止できない')
+  await hlsPage.evaluate(() => document.activeElement?.blur())
+  if (!(await hlsPage.evaluate(() => document.activeElement === document.body))) {
+    ng.push('⑲ → の前にフォーカスを body に戻せない')
+  }
+
+  // ⑱ と同様に setter を記録し、seek イベントだけでは見逃す連続した書き込みを数える。
+  await hlsVideo.evaluate((v) => {
+    const currentTime = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime')
+    const seeks = []
+    v.boundaryNavigationSeeks = seeks
+    Object.defineProperty(v, 'currentTime', {
+      configurable: true,
+      get: () => currentTime.get.call(v),
+      set: (seconds) => {
+        seeks.push(seconds)
+        currentTime.set.call(v, seconds)
+      },
+    })
+  })
+  try {
+    await hlsPage.keyboard.press('ArrowRight')
+    // ⑪ と同様に HLS の位置は範囲で判定する。40 秒のフレーム中央付近に前後 0.5 秒を許し、
+    // 33 秒のままの場合とページ側の 10 秒シークで 43 秒に移る場合を範囲から外す。
+    const reached = await hlsPage.waitForFunction(() => {
+      const v = document.querySelector('video')
+      return v.paused && !v.seeking && Math.abs(v.currentTime - 40) < 0.5
+    }, undefined, { timeout: 5000 }).then(() => true, () => false)
+    const state = await hlsVideo.evaluate((v) => ({ seconds: v.currentTime, seeks: v.boundaryNavigationSeeks }))
+    const selected = await readSelectedBoundary()
+    if (!reached || selected !== '0:40.000' || state.seeks.length !== 1 || Math.abs(state.seeks[0] - 40) >= 0.5) {
+      ng.push(`⑲ 録画 HLS の → で 40 秒境界へ 1 回だけシークしない（選択=${selected} ${JSON.stringify(state)}）`)
+    }
+  } finally {
+    await hlsVideo.evaluate((v) => {
+      delete v.currentTime
+      delete v.boundaryNavigationSeeks
+    })
+  }
+
+  await safeClick(hlsBoundary, 'ボタンの移動元', '⑲ 録画 HLS の 30 秒境界を選び直せない')
+  if (await readSelectedBoundary() !== '0:30.000') ng.push('⑲ ボタンを押す前に 30 秒境界が選ばれていない')
+  const nextBoundaryButton = hlsPage.getByTestId('chapter-edit-playback-controls')
+    .getByRole('button', { name: '次の境界', exact: true })
+  await safeClick(nextBoundaryButton, '次の境界', '⑲ 録画 HLS の編集バーで次の境界ボタンを押せない')
+  const selected = await readSelectedBoundary()
+  if (selected !== '0:40.000') {
+    ng.push(`⑲ 録画 HLS の次の境界ボタンで 40 秒境界が選ばれない（選択=${selected}）`)
   }
 }
 

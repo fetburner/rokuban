@@ -12,6 +12,8 @@ import {
 type PlayerFrameOptions = {
   fullscreenContainerRef?: RefObject<HTMLElement | null>
   onSeekBy?: (seconds: number) => void
+  /** チャプター編集が ← / → を扱う間はページ側の 10 秒シークを止める。 */
+  suppressArrowSeek?: boolean
   onSeekToFraction?: (fraction: number) => boolean
   onSavePosition?: (video: HTMLVideoElement, keepalive?: boolean) => void
   savePositionKey?: unknown
@@ -42,6 +44,7 @@ export function usePlayerFrame(
   const {
     fullscreenContainerRef,
     onSeekBy,
+    suppressArrowSeek = false,
     onSeekToFraction,
     onSavePosition,
     savePositionKey,
@@ -256,10 +259,12 @@ export function usePlayerFrame(
           }
           break
         case 'arrowleft':
+          if (suppressArrowSeek) return
           seekByRef.current?.(-10)
           handled = seekByRef.current !== undefined
           break
         case 'arrowright':
+          if (suppressArrowSeek) return
           seekByRef.current?.(10)
           handled = seekByRef.current !== undefined
           break
@@ -289,7 +294,7 @@ export function usePlayerFrame(
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [requestFullscreen, videoRef])
+  }, [requestFullscreen, suppressArrowSeek, videoRef])
 
   useEffect(() => () => window.clearTimeout(controlsTimerRef.current), [])
 

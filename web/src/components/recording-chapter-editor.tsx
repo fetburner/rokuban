@@ -27,6 +27,12 @@ export type ChapterEditorStatus = {
   stale: boolean
 }
 
+/** ChapterBoundaryNavigation は編集バーから選べる前後の境界への操作を表す。 */
+export type ChapterBoundaryNavigation = {
+  previous?: () => void
+  next?: () => void
+}
+
 type RecordingChapterEditorProps = {
   /** サーバーが持っているタイムライン。ドラフトの初期値。 */
   spans: ChapterSpan[]
@@ -48,6 +54,7 @@ type RecordingChapterEditorProps = {
   onBoundaryAction: (seconds: number) => void
   /** 選んでいる境界（既定は再生位置に最も近い境界）。映像側の「前後 3 秒」「境界まで」「境界から」が使う。 */
   onSelectedBoundaryChange: (seconds: number | null) => void
+  onBoundaryNavigationChange?: (navigation: ChapterBoundaryNavigation) => void
   /** 編集中の下書きを、同じ再生画面の表示用に共有する。 */
   onDraftChange?: (spans: ChapterSpan[]) => void
   /** 保存は成功で resolve、失敗で reject。 */
@@ -90,6 +97,7 @@ function ChapterDraftEditor({
   jumpTo,
   onBoundaryAction,
   onSelectedBoundaryChange,
+  onBoundaryNavigationChange,
   onDraftChange,
   onSave,
   onReset,
@@ -228,6 +236,20 @@ function ChapterDraftEditor({
     onBoundaryActionRef.current(seconds)
   }, [])
 
+  const selectedIndex = selectedBoundary === null ? -1 : boundaries.indexOf(selectedBoundary)
+  const previousBoundary = boundaries[selectedIndex - 1]
+  const nextBoundary = boundaries[selectedIndex + 1]
+  const selectAdjacentBoundary = useCallback((direction: 'previous' | 'next') => {
+    const boundary = direction === 'previous' ? previousBoundary : nextBoundary
+    if (boundary !== undefined) selectBoundary(boundary)
+  }, [nextBoundary, previousBoundary, selectBoundary])
+  useLayoutEffect(() => {
+    onBoundaryNavigationChange?.({
+      previous: previousBoundary === undefined ? undefined : () => selectAdjacentBoundary('previous'),
+      next: nextBoundary === undefined ? undefined : () => selectAdjacentBoundary('next'),
+    })
+  }, [nextBoundary, onBoundaryNavigationChange, previousBoundary, selectAdjacentBoundary])
+
   /**
    * moveBoundary は境界を delta 秒動かす唯一の経路（`,` `.`・±ボタン・長押し・ドラッグ・
    * 再生位置に合わせる）。正規化と undo 履歴を通し、動かした後の境界を選んで映像を連れて行く。
@@ -285,10 +307,7 @@ function ChapterDraftEditor({
         if (!kept) keyRepeatStoppedRef.current = true
         return
       }
-      const index = selectedBoundary === null ? -1 : boundaries.indexOf(selectedBoundary)
-      const next = event.key === 'ArrowRight' ? index + 1 : (index < 0 ? 0 : index - 1)
-      const nextBoundary = boundaries[Math.max(0, Math.min(boundaries.length - 1, next))]
-      if (nextBoundary !== selectedBoundary) selectBoundary(nextBoundary)
+      selectAdjacentBoundary(event.key === 'ArrowRight' ? 'next' : 'previous')
     }
     const onKeyUp = () => {
       keyRepeatStoppedRef.current = false
@@ -299,7 +318,7 @@ function ChapterDraftEditor({
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
     }
-  }, [boundaries, history, moveBoundary, selectBoundary, selectedBoundary, undo])
+  }, [boundaries.length, history, moveBoundary, selectAdjacentBoundary, selectedBoundary, undo])
 
   const save = useCallback(async () => {
     // 自動層は変更がなくても明示的に確認できる。空の層も「CM なしで確認する」

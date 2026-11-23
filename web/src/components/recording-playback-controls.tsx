@@ -110,6 +110,8 @@ type RecordingPlaybackControlsProps = {
   chapterEditing?: boolean
   canEditChapters?: boolean
   onEnterChapterEditing?: () => void
+  onPreviousBoundary?: () => void
+  onNextBoundary?: () => void
   onPlayAround?: () => void
   onPlayToBoundary?: () => void
   onPlayFromBoundary?: () => void
@@ -216,6 +218,8 @@ export function RecordingPlaybackControls({
   chapterEditing = false,
   canEditChapters = false,
   onEnterChapterEditing,
+  onPreviousBoundary,
+  onNextBoundary,
   onPlayAround,
   onPlayToBoundary,
   onPlayFromBoundary,
@@ -634,8 +638,32 @@ export function RecordingPlaybackControls({
                 {currentChapterName}
               </span>
             )}
-            {/* 400px 幅でも 3 つの再生型と速度が並ぶ小さなボタンにし、別メニューで帯を広げない。 */}
+            {/* 境界移動はアイコンにして、3 つの再生型と速度と同じ行に置く。 */}
             <div data-testid="chapter-edit-playback-modes" className="ml-auto flex basis-full min-w-0 shrink-0 items-center justify-end gap-1 sm:basis-auto md:gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className={cn(ghost, 'size-8 shrink-0 md:size-9')}
+                aria-label="前の境界"
+                title="前の境界"
+                onClick={onPreviousBoundary}
+                disabled={onPreviousBoundary === undefined}
+              >
+                <SkipBack aria-hidden="true" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className={cn(ghost, 'size-8 shrink-0 md:size-9')}
+                aria-label="次の境界"
+                title="次の境界"
+                onClick={onNextBoundary}
+                disabled={onNextBoundary === undefined}
+              >
+                <SkipForward aria-hidden="true" />
+              </Button>
               <Button
                 type="button"
                 variant="secondary"

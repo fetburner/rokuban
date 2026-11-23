@@ -11,6 +11,7 @@ import type { ChapterSpan, RecordingChaptersSource } from '@/api/generated'
 import { Button } from '@/components/ui/button'
 import {
   RecordingChapterEditor,
+  type ChapterBoundaryNavigation,
   type ChapterEditorCommands,
   type ChapterEditorStatus,
 } from '@/components/recording-chapter-editor'
@@ -498,6 +499,7 @@ export function LivePlayer(props: LivePlayerProps) {
     displayedFrameVideoKey,
   )
   const [editorSelected, setEditorSelected] = useState<number | null>(null)
+  const [editorBoundaryNavigation, setEditorBoundaryNavigation] = useState<ChapterBoundaryNavigation>({})
   const localChapterEditorCommandsRef = useRef<ChapterEditorCommands | null>(null)
   const resolvedChapterEditorCommandsRef = chapterEditorCommandsRef ?? localChapterEditorCommandsRef
   const playbackAudio = isRecordingHLS && !onAudioChange && recordingHLSAudioOverride.set
@@ -646,10 +648,15 @@ export function LivePlayer(props: LivePlayerProps) {
     void persistPlaybackPosition(recordingId, write, keepalive)
   }, [isRecordingHLS, mode, recordingDuration, recordingId])
 
+  const editorOpen =
+    isRecordingHLS && chapterEditing && chapterVersion !== undefined &&
+    onSaveChapters !== undefined && onResetChapters !== undefined
+
   // Shared frame behavior lives here. The playback source supplies its own seek semantics and
   // HLS subtitle-track classification; live has no recording seek callbacks.
   const frame = usePlayerFrame(videoRef, frameRef, undefined, {
     fullscreenContainerRef,
+    suppressArrowSeek: editorOpen,
     // commitRecordingSeek は後方の const。usePlayerFrame がコールバックを ref に入れ直し、
     // キー押下（render 後）にだけ呼ぶので、宣言前でも TDZ にならない。
     onSeekBy: strategy.recording
@@ -1476,6 +1483,8 @@ export function LivePlayer(props: LivePlayerProps) {
         onSaveChapters !== undefined && onResetChapters !== undefined
       }
       onEnterChapterEditing={onEnterChapterEditing}
+      onPreviousBoundary={editorOpen ? editorBoundaryNavigation.previous : undefined}
+      onNextBoundary={editorOpen ? editorBoundaryNavigation.next : undefined}
       onPlayAround={editorSelected === null ? undefined : () => chapterPlayback.playAround(Math.round(editorSelected * 1000))}
       onPlayToBoundary={editorSelected === null ? undefined : () => chapterPlayback.playAround(Math.round(editorSelected * 1000), 'to')}
       onPlayFromBoundary={editorSelected === null ? undefined : () => chapterPlayback.playAround(Math.round(editorSelected * 1000), 'from')}
@@ -1542,10 +1551,6 @@ export function LivePlayer(props: LivePlayerProps) {
       }}
     />
   )
-  const editorOpen =
-    isRecordingHLS && chapterEditing && chapterVersion !== undefined &&
-    onSaveChapters !== undefined && onResetChapters !== undefined
-
   // 元 HLS の編集では保存時刻は録画先頭からの ms、編集画面の終端も recordingDurationMs
   // に固定する。変換中に <video>.duration が伸びても、既存境界や編集可能範囲は動かない。
   // controls と video は常に同じ木の位置に置き、編集開始で HLS セッションを張り直さない。
@@ -1582,6 +1587,7 @@ export function LivePlayer(props: LivePlayerProps) {
             jumpTo={seekRecording}
             onBoundaryAction={chapterPlayback.selectBoundary}
             onSelectedBoundaryChange={setEditorSelected}
+            onBoundaryNavigationChange={setEditorBoundaryNavigation}
             onSave={onSaveChapters}
             onReset={async () => await onResetChapters()}
             pending={chapterSavePending}
