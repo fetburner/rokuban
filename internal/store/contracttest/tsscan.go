@@ -28,6 +28,7 @@ type TSScanFixture struct {
 	Catalog                 store.Catalog
 	NewOriginal             func(t *testing.T, sizeBytes int64, trashed bool) (recordingID, assetID int64)
 	NewEncodedOnlyRecording func(t *testing.T) (recordingID, assetID int64)
+	MarkOriginalMissing     func(t *testing.T, assetID int64)
 	SetAssetSize            func(t *testing.T, assetID, sizeBytes int64)
 	SetAssetState           func(t *testing.T, assetID int64, state string)
 	SetScannedSize          func(t *testing.T, assetID, scannedSizeBytes int64)
@@ -44,6 +45,9 @@ func RunTSScan(t *testing.T, newStore NewTSScanStore) {
 	t.Helper()
 	t.Run("reads only active originals missing a current-size scan", func(t *testing.T) {
 		runTSScanReads(t, newStore)
+	})
+	t.Run("replacement rechecks physical presence after reading the source", func(t *testing.T) {
+		runTSScanReplacementRequiresPresentOriginal(t, newStore)
 	})
 	t.Run("replaces statistics and marker together", func(t *testing.T) {
 		runTSScanReplacement(t, newStore)
@@ -114,6 +118,19 @@ func runTSScanReads(t *testing.T, newStore NewTSScanStore) {
 	}
 	if slices.Contains(got, encodedOnlyID) {
 		t.Errorf("missing TS scan recordings = %v, encoded-only recording %d should be excluded", got, encodedOnlyID)
+	}
+
+	missingID, missingAssetID := f.NewOriginal(t, 12, false)
+	f.MarkOriginalMissing(t, missingAssetID)
+	if _, err := f.Store.GetActiveOriginalForTSScan(ctx, missingID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("GetActiveOriginalForTSScan(missing copy) = %v, want ErrNotFound", err)
+	}
+	if _, err := f.Store.GetActiveOriginalForTSScan(ctx, staleID); err != nil {
+		t.Errorf("GetActiveOriginalForTSScan(present unmeasured copy) = %v, want found", err)
+	}
+	got, err = f.Store.ListMissingTSScanRecordings(ctx, 0, 20)
+	if err != nil || !slices.Contains(got, staleID) || slices.Contains(got, missingID) {
+		t.Errorf("TS scan candidates = %v, %v; want present %d included and missing %d excluded", got, err, staleID, missingID)
 	}
 }
 
@@ -336,5 +353,24 @@ func assertStaleTSScanMarker(t *testing.T, f TSScanFixture, recordingID, assetID
 	}
 	if got := readTSScanSnapshot(t, f, recordingID).ScannedSizeBytes; got != scannedSizeBytes {
 		t.Fatalf("Catalog.Export.MediaAssetTSScans stale size for recording %d = %d, want %d", recordingID, got, scannedSizeBytes)
+	}
+}
+
+func runTSScanReplacementRequiresPresentOriginal(t *testing.T, newStore NewTSScanStore) {
+	f := newStore(t)
+	ctx := t.Context()
+	for _, missing := range []bool{false, true} {
+		id, assetID := f.NewOriginal(t, 8, false)
+		source, err := f.Store.GetActiveOriginalForTSScan(ctx, id)
+		if err != nil {
+			t.Fatalf("getting TS scan source: %v", err)
+		}
+		if missing {
+			f.MarkOriginalMissing(t, assetID)
+		}
+		applied, err := f.Store.ReplaceScan(ctx, source, 8, nil, nil)
+		if err != nil || applied == missing {
+			t.Errorf("ReplaceScan after missing=%v: %v, %v; want applied=%v, nil", missing, applied, err, !missing)
+		}
 	}
 }

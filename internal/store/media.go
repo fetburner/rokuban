@@ -46,7 +46,8 @@ type RecordingRemovalState struct {
 // MediaServing は streamer が使うメディアと録画状態の読み取り契約である。
 // 「配信可能」と書いたメソッドは、active なコピーがあり（deleting と deleted のアセットは返さない）、録画がごみ箱に無いものを返す。
 // 検査: contracttest.RunMedia の「serving returns only active assets」（original と encoded の deleting・deleted）、「serving covers thumbnails and seek tiles」（thumbnail と seek_tiles の deleting・deleted、ごみ箱の録画）。
-// 原本と encoded のごみ箱の除外、置き場ごとの原本取得（GetOriginalMediaAssetForServingInStore）の除外は契約テストでは未検証。
+// 検査: contracttest.RunMedia の「original serving requires a visible copy in the requested store」（置き場ごとの原本取得で deleting・pending・deleted とごみ箱の録画を除外）。
+// 原本と encoded のごみ箱の除外は契約テストでは未検証。
 type MediaServing interface {
 	// GetOriginalMediaAssetForServing は配信可能な原本を返す。無ければ ErrNotFound を返す。
 	GetOriginalMediaAssetForServing(ctx context.Context, recordingID int64) (MediaAsset, error)
@@ -62,7 +63,8 @@ type MediaServing interface {
 	// GetSeekTilesMediaAssetForServing は配信可能なシークタイルを返す。対象が無ければ ErrNotFound を返す。
 	// 検査: contracttest.RunMedia の「serving covers thumbnails and seek tiles」。
 	GetSeekTilesMediaAssetForServing(ctx context.Context, recordingID int64) (MediaAsset, error)
-	// GetActiveOriginalMediaAsset は録画 HLS が使う active な原本を返す。対象が無ければ ErrNotFound を返す（契約テストでは未検証）。
+	// GetActiveOriginalMediaAsset は録画 HLS が使う active な原本を返す。対象が無ければ ErrNotFound を返す。
+	// 検査: contracttest.RunMedia の「media jobs read active inputs through their contract」。
 	GetActiveOriginalMediaAsset(ctx context.Context, recordingID int64) (MediaAsset, error)
 	// GetRecordingHLSTarget は配信可能な原本か ingest temp と世代を返す。対象が無ければ ErrNotFound を返す。
 	// 検査: contracttest.RunMedia の「recording HLS target shares the committed-original visibility predicate」。

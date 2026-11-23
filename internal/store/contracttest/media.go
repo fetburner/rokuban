@@ -14,15 +14,28 @@ import (
 
 // MediaFixture はメディア契約の実装と状態を作るフックをまとめる。
 type MediaFixture struct {
-	Serving   store.MediaServing
-	Reconcile store.MediaReconcile
-	Precheck  store.IngestPrecheck
-	Storage   store.StorageObservation
-	Reader    store.MediaReader
-	Query     store.RecordingQuery
-	Catalog   store.Catalog
-	Publisher store.MediaPublish
-	Progress  store.EncodeProgressReporter
+	Serving     store.MediaServing
+	Reconcile   store.MediaReconcile
+	Precheck    store.IngestPrecheck
+	Storage     store.StorageObservation
+	Reader      store.MediaReader
+	Query       store.RecordingQuery
+	Catalog     store.Catalog
+	Publisher   store.MediaPublish
+	Progress    store.EncodeProgressReporter
+	WriterState store.IngestWriterStateReader
+
+	OpenTransfer     func(name string, policy store.StoragePolicy) store.StorageTransfer
+	SetCopyCreatedAt func(t *testing.T, copyID int64, createdAt time.Time)
+	// SeedOwnedTransferPath は pending コピーを転送で所有したキーに結び付ける。
+	SeedOwnedTransferPath func(t *testing.T, copyID int64, relPath string)
+	// WaitForPublishBlocked は別の試行の公開が回収の完了を待っていることを確認する。
+	WaitForPublishBlocked func(t *testing.T)
+	OpenStore             func(name string) MediaStoreScope
+	NewIngestStoreChooser func(policy store.StoragePolicy) store.IngestStoreChooser
+	AddCopy               func(t *testing.T, assetID int64, storeName, relPath string) int64
+	SetIngestCheckpoint   func(t *testing.T, recordingID, writerGeneration int64)
+	SetIngestDisplayPath  func(t *testing.T, recordingID int64, relPath string)
 	// Chapters は、公開と直列化する書き手として使う。
 	Chapters store.ChapterEdits
 
@@ -91,6 +104,15 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("drop stats are scoped to the target recording", func(t *testing.T) { runRecordingDropStats(t, newFixture) })
 	t.Run("drop positions are scoped to the target recording", func(t *testing.T) { runRecordingDropPositions(t, newFixture) })
 	t.Run("encode progress reaches the listener", func(t *testing.T) { runEncodeProgressReport(t, newFixture) })
+	t.Run("original routing reads active copies across stores", func(t *testing.T) { runOriginalStoreRouting(t, newFixture) })
+	t.Run("original serving requires a visible copy in the requested store", func(t *testing.T) { runOriginalServingInStore(t, newFixture) })
+	t.Run("ingest chooses the first rule matching age zero", func(t *testing.T) { runDesiredOriginalStore(t, newFixture) })
+	t.Run("ingest writer state is scoped by site and record", func(t *testing.T) { runIngestWriterState(t, newFixture) })
+	t.Run("storage observations are scoped by store and root", func(t *testing.T) { runStorageSyncScope(t, newFixture) })
+	t.Run("transfer selects present sources for listing and preparation", func(t *testing.T) { runTransferSourcePresence(t, newFixture) })
+	t.Run("placement pruning requires a present desired copy", func(t *testing.T) { runPlacementPruningPresence(t, newFixture) })
+	t.Run("corrupt derived copy retirement requires a present original", func(t *testing.T) { runCorruptCopyRetirementPresence(t, newFixture) })
+	t.Run("orphan paths are scoped by store", func(t *testing.T) { runOrphanStoreScope(t, newFixture) })
 	t.Run("serving returns only active assets", func(t *testing.T) { runMediaServingActiveOnly(t, newFixture) })
 	t.Run("serving covers thumbnails and seek tiles", func(t *testing.T) { runMediaServingDerived(t, newFixture) })
 	t.Run("recording HLS target shares the committed-original visibility predicate", func(t *testing.T) { runMediaRecordingHLSTarget(t, newFixture) })
@@ -99,12 +121,13 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("namespace guard rejects unprefixed originals and encoded files", func(t *testing.T) { runMediaNamespaceUnprefixed(t, newFixture) })
 	t.Run("namespace guard leaves thumbnails and seek tiles to their own namespace", func(t *testing.T) { runMediaNamespaceDerived(t, newFixture) })
 	t.Run("audit lists every media asset path including reserved namespaces", func(t *testing.T) { runMediaAuditPaths(t, newFixture) })
+	t.Run("thumbnail and seek tile candidates require a present original", func(t *testing.T) { runMissingDerivativeCandidates(t, newFixture) })
 	t.Run("thumbnail reselection candidates carry typed timeline and inputs", func(t *testing.T) { runMediaThumbnailCandidates(t, newFixture) })
 	t.Run("orphan ageing compares against the database clock", func(t *testing.T) { runMediaOrphanAgeing(t, newFixture) })
 	t.Run("missing asset ageing compares against the database clock", func(t *testing.T) { runMediaMissingAgeing(t, newFixture) })
 }
 
-// RunMediaPublish verifies the atomic publication and in-place registration contract.
+// RunMediaPublish はメディアの公開・準備・回収と in-place 登録の契約を実行する。
 func RunMediaPublish(t *testing.T, newFixture NewMediaFixture) {
 	t.Helper()
 	t.Run("clearing ingest progress is idempotent", func(t *testing.T) { runClearIngestProgress(t, newFixture) })
@@ -113,6 +136,22 @@ func RunMediaPublish(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("encoded publication rechecks attempt and desired profiles", func(t *testing.T) { runEncodedPublicationRechecks(t, newFixture) })
 	t.Run("encoded callback failure rolls back asset", func(t *testing.T) { runEncodedPublicationRollback(t, newFixture) })
 	t.Run("thumbnail and seek tiles publish through one callback", func(t *testing.T) { runDerivedPublication(t, newFixture) })
+	t.Run("thumbnail replacement requires a present input", func(t *testing.T) { runThumbnailReplacementPresence(t, newFixture) })
+	t.Run("preparation commits one live copy per store and generation", func(t *testing.T) {
+		runPendingCopyPreparation(t, newFixture(t))
+	})
+	t.Run("preparation rejects tombstoned paths", func(t *testing.T) {
+		runPendingCopyTombstone(t, newFixture(t))
+	})
+	t.Run("reclaim lists only old pending derived copies in its store and rechecks eligibility", func(t *testing.T) {
+		runPendingCopyReclaim(t, newFixture(t))
+	})
+	t.Run("reclaim passes only owned transfer paths", func(t *testing.T) {
+		runPendingCopyTransferOwnership(t, newFixture(t))
+	})
+	t.Run("publication cannot activate a copy during reclaim", func(t *testing.T) {
+		runPendingCopyPublicationWaits(t, newFixture(t))
+	})
 	t.Run("thumbnail and seek tile callback failures roll back assets", func(t *testing.T) { runDerivedPublicationRollback(t, newFixture) })
 	t.Run("in-place registration is idempotent and reuses its active path", func(t *testing.T) { runInPlacePublication(t, newFixture) })
 	t.Run("commit failure after publish returns an error and leaves no rows", func(t *testing.T) { runPublishCommitFailure(t, newFixture) })
@@ -940,6 +979,18 @@ func runMediaThumbnailCandidates(t *testing.T, newFixture NewMediaFixture) {
 	}
 	if gotPlain.MediaAssetID != plainID || gotPlain.Profile != plainProfile || gotPlain.RelPath != plainPath || gotPlain.Cut || len(gotPlain.KeepRanges) != 0 {
 		t.Fatalf("uncut input = %+v, want asset %d %q at %q without keep ranges", gotPlain, plainID, plainProfile, plainPath)
+	}
+
+	// 取得候補の録画は残し、実体無しの原本・encoded だけを入力から外す。
+	observeMissingContractCopy(t, f, originalID)
+	observeMissingContractCopy(t, f, cutID)
+	observeMissingContractCopy(t, f, plainID)
+	rows, err = f.Reconcile.ListThumbnailReselectCandidates(ctx, store.MediaReconcilePage{AfterRecordingID: id - 1, RowLimit: 1})
+	if err != nil || len(rows) != 1 || rows[0].RecordingID != id {
+		t.Fatalf("candidates with missing inputs = %+v, %v; want recording %d", rows, err, id)
+	}
+	if row := rows[0]; row.OriginalMediaAssetID != 0 || row.OriginalRelPath != "" || len(row.EncodedAssets) != 0 {
+		t.Errorf("candidate with missing inputs = %+v, want no usable inputs", row)
 	}
 }
 

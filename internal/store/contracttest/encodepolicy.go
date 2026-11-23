@@ -21,6 +21,7 @@ type EncodePolicyFixture struct {
 	CMDetection store.CMDetection
 
 	NewRecording        func(t *testing.T) int64
+	MarkOriginalMissing func(t *testing.T, assetID int64)
 	NewAsset            func(t *testing.T, recordingID int64, kind string, profile *string) int64
 	SetRecordingTrashed func(t *testing.T, recordingID int64)
 	SetDesired          func(t *testing.T, recordingID int64, profiles []string)
@@ -447,6 +448,28 @@ func runSetPolicy(t *testing.T, newFixture NewEncodePolicyFixture) {
 	attempt, shouldRun, err := f.CMDetection.BeginAttempt(ctx, id, 1)
 	if err != nil || !shouldRun || attempt.PolicyGeneration != 1 {
 		t.Fatalf("BeginAttempt after SetPolicy = (generation=%d, shouldRun=%t, err=%v), want generation 1 and run", attempt.PolicyGeneration, shouldRun, err)
+	}
+
+	// 凍結済み方針の有無に関わらず、実体無しの原本で CM 検出を有効化しない。
+	for _, frozen := range []bool{false, true} {
+		for _, missing := range []bool{false, true} {
+			recording := f.NewRecording(t)
+			original := f.NewAsset(t, recording, "original", nil)
+			if frozen {
+				f.SetDesired(t, recording, []string{"h264"})
+			}
+			if missing {
+				f.MarkOriginalMissing(t, original)
+			}
+			err := f.Policy.SetPolicy(ctx, recording, store.EncodePolicyUpdate{CMDetect: &enabled})
+			if (missing && !errors.Is(err, store.ErrOriginalUnavailable)) || (!missing && err != nil) {
+				t.Errorf("SetPolicy(frozen=%v, missing=%v) = %v", frozen, missing, err)
+			}
+			item, err := f.CMDetection.GetWorkItem(ctx, recording)
+			if err != nil || item.Enabled == missing {
+				t.Errorf("CM enabled after SetPolicy(frozen=%v, missing=%v) = %v, %v; want %v", frozen, missing, item.Enabled, err, !missing)
+			}
+		}
 	}
 
 	withoutOriginalID := f.NewRecording(t)

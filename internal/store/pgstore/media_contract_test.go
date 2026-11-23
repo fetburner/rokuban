@@ -208,7 +208,25 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 			}
 		},
 		NewAsset: func(t *testing.T, recordingID int64, kind string, profile *string, relPath, state string) int64 {
-			return newMediaContractAsset(t, pool, recordingID, kind, profile, relPath, state)
+			t.Helper()
+			id := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+				fixtureParams.Kind = kind
+				fixtureParams.Profile = profile
+				fixtureParams.RelPath = relPath
+			})
+			if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET store = 'tokyo' WHERE media_asset_id = $1`, id); err != nil {
+				t.Fatalf("setting media asset copy store to tokyo: %v", err)
+			}
+
+			if state != "active" {
+				if _, err := pool.Exec(context.Background(), `
+UPDATE media_asset_copies
+SET state = $1, deleted_at = CASE WHEN $1 = 'deleted' THEN now() ELSE NULL END
+WHERE media_asset_id = $2`, state, id); err != nil {
+					t.Fatalf("setting media asset copy state to %s: %v", state, err)
+				}
+			}
+			return id
 		},
 		CopyID: func(t *testing.T, assetID int64) int64 {
 			return dbtest.MediaAssetCopyID(t, pool, assetID, "tokyo")
@@ -218,29 +236,8 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 	configureMediaReaderFixture(t, pool, &fixture)
 	configureMediaObservationFixture(t, pool, &fixture)
 	configureMediaStorageFixture(t, pool, &fixture)
+	configureMediaRoutingFixture(pool, &fixture)
 	return fixture
-}
-
-func newMediaContractAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, kind string, profile *string, relPath, state string) int64 {
-	t.Helper()
-	id := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
-		fixtureParams.Kind = kind
-		fixtureParams.Profile = profile
-		fixtureParams.RelPath = relPath
-	})
-	if _, err := pool.Exec(context.Background(), `UPDATE media_asset_copies SET store = 'tokyo' WHERE media_asset_id = $1`, id); err != nil {
-		t.Fatalf("setting media asset copy store to tokyo: %v", err)
-	}
-
-	if state != "active" {
-		if _, err := pool.Exec(context.Background(), `
-UPDATE media_asset_copies
-SET state = $1, deleted_at = CASE WHEN $1 = 'deleted' THEN now() ELSE NULL END
-WHERE media_asset_id = $2`, state, id); err != nil {
-			t.Fatalf("setting media asset copy state to %s: %v", state, err)
-		}
-	}
-	return id
 }
 
 func configureMediaPublishFixture(t *testing.T, pool *pgxpool.Pool, fixture *contracttest.MediaFixture) {
@@ -532,5 +529,23 @@ func configureMediaStorageFixture(t *testing.T, pool *pgxpool.Pool, fixture *con
 		}); err != nil {
 			t.Fatalf("seeding encoded asset rebuild request: %v", err)
 		}
+	}
+}
+
+// observePresentCopyMissing は指定した置き場のコピーに実体無しの観測を記録する。
+func observePresentCopyMissing(t *testing.T, pool *pgxpool.Pool, assetID int64, storeName string) {
+	t.Helper()
+	copyID := dbtest.MediaAssetCopyID(t, pool, assetID, storeName)
+	if err := sqlcgen.New(pool).UpsertMissingMediaAsset(t.Context(), copyID); err != nil {
+		t.Fatalf("recording missing copy %d: %v", copyID, err)
+	}
+}
+
+// insertPresentCopiesDetection は録画に CM 検出の結果を 1 件置く。
+func insertPresentCopiesDetection(t *testing.T, pool *pgxpool.Pool, recordingID int64) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `
+INSERT INTO recording_cm_detections (recording_id, cm_ranges) VALUES ($1, '{[0,1000)}'::int8multirange)`, recordingID); err != nil {
+		t.Fatalf("inserting CM detection for %d: %v", recordingID, err)
 	}
 }

@@ -149,7 +149,8 @@ ingest が公開する原本には、同じトランザクションで進捗行�
 - 移行時の世代同期: `TestMediaAssetCopiesMigrationBackfillsCopiesAndGenerations`
 - 観測行・進捗行の名前制約: `TestStorageStoreNames`
 - 空文字を持つ DB の移行拒否: `TestStorageStoreNamesMigrationRefusesUnassignedRows`
-- 置き場をまたぐ観測の一意性: `TestStorageSyncAllowsSameRootAcrossStores` / `TestOrphanFileAllowsSamePathAcrossStores`
+- 置き場ごとの観測の一意性: `TestMediaStoreContract` の `storage observations are scoped by store and root`
+- 置き場ごとの孤児記録の一意性: `TestMediaStoreContract` の `orphan paths are scoped by store`
 - worker 起動時のコピー必須検査: `TestAdoptUnassignedStoreRows`
 - adopt のブレーカー割り当て: `TestAdoptUnassignedStoreRowsAssignsLegacyDeleteReconcileBreaker`
 - adopt が派生世代を変えないこと: `TestAdoptUnassignedStoreRowsKeepsDerivedGenerationCurrent`

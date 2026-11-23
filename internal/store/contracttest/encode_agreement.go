@@ -61,6 +61,10 @@ func runEncodePendingAgreement(t *testing.T, newFixture NewMediaFixture) {
 	f.FailEncodeAttempt(t, below, h264, encodeAgreementAttemptLimit-1)
 	f.BeginEncodeAttempt(t, newRecording("実行中", []string{h264}, true), h264)
 
+	// 実体無しの原本もエンコード対象に残る。コピーの監査結果だけで投入を止めない。
+	missingOriginal := newRecording("原本の実体無し", []string{h264}, false)
+	observeMissingContractCopy(t, f, f.NewAsset(t, missingOriginal, "original", nil, "originals/missing.ts", "active"))
+
 	// 待機列にも投入にも入らない。
 	trashed := newRecording("ごみ箱", []string{h264}, true)
 	f.SetRecordingTrashed(t, trashed)
@@ -80,7 +84,23 @@ func runEncodePendingAgreement(t *testing.T, newFixture NewMediaFixture) {
 	f.BeginEncodeAttempt(t, exhaustedRebuild, cut)
 	f.FailEncodeAttempt(t, exhaustedRebuild, cut, encodeAgreementAttemptLimit)
 
-	wantPending := []string{"不足", "削除中の版", "cut 確認済み", "作り直し要求", "試行上限の手前", "実行中"}
+	// 実体無しの encoded も版があると数える。監査結果だけで不足や作り直しを発行しない。
+	missingEncoded := newRecording("encoded の実体無し", []string{h264}, true)
+	observeMissingContractCopy(t, f, f.NewAsset(t, missingEncoded, "encoded", &h264Profile, "encoded/missing.mp4", "active"))
+	for _, missing := range []bool{false, true} {
+		id := newRecording(fmt.Sprintf("要求と一致する版 missing=%v", missing), []string{cut}, true)
+		f.SetEncodedAssetRebuildRequest(t, id, cut, keep)
+		// 通常の不足判定だけで候補から外れることと、要求が満たされたことを区別する。
+		f.SetChapterSpans(t, id, nil)
+		profile := "cut"
+		assetID := f.NewAsset(t, id, "encoded", &profile, fmt.Sprintf("encoded/matching-%d.mp4", id), "active")
+		f.SetMediaAssetKeepRanges(t, assetID, keep)
+		if missing {
+			observeMissingContractCopy(t, f, assetID)
+		}
+	}
+
+	wantPending := []string{"不足", "削除中の版", "cut 確認済み", "作り直し要求", "試行上限の手前", "実行中", "原本の実体無し"}
 	wantRunning := []string{"実行中"}
 	want := map[string]int{}
 	for _, title := range wantPending {

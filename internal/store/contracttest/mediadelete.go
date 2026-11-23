@@ -14,6 +14,10 @@ import (
 // MediaDeleteFixture はメディア削除契約と、その状態を作るための実装別フックをまとめる。
 type MediaDeleteFixture struct {
 	Store                         store.MediaDelete
+	Storage                       store.StorageObservation
+	NewOldGeneration              func(t *testing.T) (oldCopyID, currentCopyID int64)
+	NewRetainedEncoded            func(t *testing.T, recordingID int64)
+	SetAssetState                 func(t *testing.T, assetID int64, state string)
 	Serving                       store.MediaServing
 	Catalog                       store.Catalog
 	NewUntilEncodedOriginal       func(t *testing.T) (recordingID, assetID int64)
@@ -33,6 +37,9 @@ type NewMediaDeleteStore func(t *testing.T) MediaDeleteFixture
 // RunMediaDelete はメディア削除の契約を実行する。
 func RunMediaDelete(t *testing.T, newStore NewMediaDeleteStore) {
 	t.Helper()
+	t.Run("until-encoded deletion requires present derived copies", func(t *testing.T) { runUntilEncodedPresence(t, newStore) })
+	t.Run("old-generation deletion requires a present current copy", func(t *testing.T) { runOldGenerationPresence(t, newStore) })
+	t.Run("removed encoded deletion requires another present version", func(t *testing.T) { runRemovedEncodedPresence(t, newStore) })
 	t.Run("until-encoded transition waits for and rechecks recording writes", func(t *testing.T) {
 		runUntilEncodedSerialization(t, newStore)
 	})

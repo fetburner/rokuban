@@ -2,6 +2,7 @@ package pgstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -20,6 +22,28 @@ var encodePolicyContractEventID atomic.Int32
 
 func TestEncodePolicyContract(t *testing.T) {
 	contracttest.RunEncodePolicy(t, newEncodePolicyContractFixture)
+}
+
+func TestPresentCopies_RejectedCMDetectionDoesNotCreatePolicyRow(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	recordingID := dbtest.Recording(t, pool)
+	original := dbtest.MediaAsset(t, pool, recordingID)
+	observePresentCopyMissing(t, pool, original, dbtest.StoreName)
+
+	enabled := true
+	if err := testMedia(pool, dbtest.StoreName, "").SetPolicy(t.Context(), recordingID, store.EncodePolicyUpdate{CMDetect: &enabled}); !errors.Is(err, store.ErrOriginalUnavailable) {
+		t.Fatalf("enabling detection with missing original: %v, want ErrOriginalUnavailable", err)
+	}
+	// 契約の読み取りは、既定値の方針の行と行が無い状態を区別しない。
+	var exists bool
+	if err := pool.QueryRow(t.Context(), `SELECT EXISTS (
+    SELECT 1 FROM recording_processing_policy WHERE recording_id = $1
+)`, recordingID).Scan(&exists); err != nil {
+		t.Fatalf("checking missing recording's policy row: %v", err)
+	}
+	if exists {
+		t.Error("missing recording got a policy row, want none")
+	}
 }
 
 type encodePolicyContractDB struct {
@@ -35,6 +59,9 @@ func newEncodePolicyContractFixture(t *testing.T) contracttest.EncodePolicyFixtu
 		Recordings: NewRecordings(db.pool, dbtest.StoreName), Reconcile: media, Removals: media,
 		CMDetection:  NewAnalysis(db.pool, dbtest.StoreName),
 		NewRecording: db.newRecording, NewAsset: db.newAsset,
+		MarkOriginalMissing: func(t *testing.T, assetID int64) {
+			observePresentCopyMissing(t, db.pool, assetID, dbtest.StoreName)
+		},
 		SetRecordingTrashed: func(t *testing.T, recordingID int64) {
 			t.Helper()
 			if _, err := db.pool.Exec(context.Background(), "UPDATE recordings SET deleted_at = now() WHERE id = $1", recordingID); err != nil {
