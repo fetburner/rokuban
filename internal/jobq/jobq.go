@@ -99,6 +99,13 @@ type Enqueuer interface {
 	Enqueue(ctx context.Context, args Args, opts ...EnqueueOpt) (Result, error)
 }
 
+// DeliverableCounter は物理キューを 1 台の worker が引き受けた場合に配送される件数を数える。
+// HTTP 層から adapter を隠し、River と asynq の両 adapter が同じ操作を実装できるよう
+// jobq に置く。lease が有効な実行中ジョブは含めない。
+type DeliverableCounter interface {
+	CountDeliverable(ctx context.Context, physicalQueue string) (int64, error)
+}
+
 // ErrDiscard marks a job result that must not be delivered again.
 var ErrDiscard = errors.New("jobq: discard")
 
