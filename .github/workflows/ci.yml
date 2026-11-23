@@ -204,6 +204,7 @@ jobs:
           echo "::error::Static SPA did not become ready at ${E2E_URL}; server log follows"
           cat "${server_log}"
           exit 1
+        working-directory: web
       - name: Run browser E2E
         if: ${{ !cancelled() }}
         run: |
