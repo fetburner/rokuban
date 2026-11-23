@@ -204,7 +204,7 @@ func (s *Store) Put(ctx context.Context, key string, src io.Reader, size int64, 
 			PartNumber: aws.Int32(partNumber), Body: bytes.NewReader(body), ContentLength: aws.Int64(length),
 		})
 		if err != nil {
-			return abort(withCredentialClass(fmt.Errorf("uploading S3 multipart part %d for %q: %w", partNumber, key, err)))
+			return abort(withS3ErrorClasses(fmt.Errorf("uploading S3 multipart part %d for %q: %w", partNumber, key, err)))
 		}
 		parts = append(parts, types.CompletedPart{ETag: out.ETag, PartNumber: aws.Int32(partNumber)})
 		remaining -= length
@@ -246,7 +246,7 @@ func (s *Store) head(ctx context.Context, key string) (objstore.Object, string, 
 		if isMissingObject(err) {
 			return objstore.Object{}, "", objstore.ErrNotFound
 		}
-		return objstore.Object{}, "", withCredentialClass(fmt.Errorf("heading S3 object %q: %w", key, err))
+		return objstore.Object{}, "", withS3ErrorClasses(fmt.Errorf("heading S3 object %q: %w", key, err))
 	}
 	object := objstore.Object{Key: key}
 	if output.ContentLength != nil {
@@ -281,7 +281,7 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 		return fmt.Errorf("invalid S3 object key %q: %w", key, err)
 	}
 	if _, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)}); err != nil {
-		return withCredentialClass(fmt.Errorf("deleting S3 object %q: %w", key, err))
+		return withS3ErrorClasses(fmt.Errorf("deleting S3 object %q: %w", key, err))
 	}
 	return nil
 }
@@ -295,7 +295,7 @@ func (s *Store) List(ctx context.Context, prefix string) ([]objstore.Object, err
 			Bucket: aws.String(s.bucket), Prefix: aws.String(prefix), ContinuationToken: token,
 		})
 		if err != nil {
-			return nil, withCredentialClass(fmt.Errorf("listing S3 objects with prefix %q: %w", prefix, err))
+			return nil, withS3ErrorClasses(fmt.Errorf("listing S3 objects with prefix %q: %w", prefix, err))
 		}
 		for _, item := range page.Contents {
 			if item.Key == nil {
@@ -379,7 +379,7 @@ func (s *Store) resolveOwnPut(ctx context.Context, key string, size int64, wantS
 	if recoveryErr == nil || errors.Is(recoveryErr, objstore.ErrAlreadyExists) || errors.Is(recoveryErr, objstore.ErrChecksumMismatch) {
 		return recoveryErr
 	}
-	return withCredentialClass(fmt.Errorf("%s %q: %w", operation, key, putErr))
+	return withS3ErrorClasses(fmt.Errorf("%s %q: %w", operation, key, putErr))
 }
 
 func (s *Store) recoverOwnObject(ctx context.Context, key string, size int64, wantSHA [32]byte, uploadToken string) error {
@@ -436,13 +436,22 @@ func isPreconditionFailed(err error) bool {
 	return apiErrorCode(err) == "PreconditionFailed" || httpStatusCode(err) == http.StatusPreconditionFailed
 }
 
-// withCredentialClass は、資格情報が取れない・失効している・拒否された失敗に objstore.ErrCredentials を足す。
-// 呼び出し側は errors.Is で、権限や接続の失敗と区別して数える。
-func withCredentialClass(err error) error {
+// withS3ErrorClasses は資格情報と一時的な受け付け拒否を分類し、元のエラーに分類を足す。
+func withS3ErrorClasses(err error) error {
 	if isCredentialFailure(err) {
 		return errors.Join(objstore.ErrCredentials, err)
 	}
+	if isExplicitThrottleRejection(err) {
+		return errors.Join(objstore.ErrTemporarilyUnavailable, err)
+	}
 	return err
+}
+
+// isExplicitThrottleRejection は S3 がレートを下げるよう明示した失敗だけを選ぶ。
+// AWS S3 API Reference の Error responses は SlowDown を 503 として定義し、要求レートを下げるよう説明する。
+// ServiceUnavailable は汎用 503 なので、壊れた置き場を無期限に再試行しないよう含めない。
+func isExplicitThrottleRejection(err error) bool {
+	return apiErrorCode(err) == "SlowDown"
 }
 
 func isCredentialFailure(err error) bool {
@@ -531,7 +540,7 @@ func (s *Store) startMultipart(ctx context.Context, key, contentType string, wan
 		Metadata:    metadata,
 	})
 	if err != nil {
-		return "", withCredentialClass(fmt.Errorf("starting S3 multipart upload for %q: %w", key, err))
+		return "", withS3ErrorClasses(fmt.Errorf("starting S3 multipart upload for %q: %w", key, err))
 	}
 	if created.UploadId == nil || *created.UploadId == "" {
 		return "", fmt.Errorf("starting S3 multipart upload for %q: server returned an empty upload ID", key)
@@ -677,7 +686,7 @@ func (s *Store) sendNextPart(ctx context.Context, st *uploadState, h hash.Hash, 
 		PartNumber: aws.Int32(number), Body: bytes.NewReader(body), ContentLength: aws.Int64(length),
 	})
 	if err != nil {
-		return withCredentialClass(fmt.Errorf("uploading S3 multipart part %d for %q: %w", number, st.Key, err))
+		return withS3ErrorClasses(fmt.Errorf("uploading S3 multipart part %d for %q: %w", number, st.Key, err))
 	}
 	if out.ETag == nil || *out.ETag == "" {
 		return fmt.Errorf("uploading S3 multipart part %d for %q: server returned no ETag", number, st.Key)
@@ -748,7 +757,7 @@ func (s *Store) CompleteUpload(ctx context.Context, raw []byte) error {
 		if s.recoverExisting(ctx, st.Key, 0, want) == nil {
 			return nil
 		}
-		return withCredentialClass(fmt.Errorf("putting empty S3 object %q: %w", st.Key, err))
+		return withS3ErrorClasses(fmt.Errorf("putting empty S3 object %q: %w", st.Key, err))
 	}
 	if st.PartSize <= 0 || int64(len(st.Parts)) != (st.Size+st.PartSize-1)/st.PartSize {
 		return fmt.Errorf("S3 upload for %q has %d parts for %d bytes: %w", st.Key, len(st.Parts), st.Size, objstore.ErrUploadInvalid)
@@ -772,7 +781,7 @@ func (s *Store) CompleteUpload(ctx context.Context, raw []byte) error {
 	case isUploadGone(err):
 		return fmt.Errorf("completing S3 multipart upload for %q: %w: %w", st.Key, objstore.ErrUploadInvalid, err)
 	default:
-		return withCredentialClass(fmt.Errorf("completing S3 multipart upload for %q: %w", st.Key, err))
+		return withS3ErrorClasses(fmt.Errorf("completing S3 multipart upload for %q: %w", st.Key, err))
 	}
 }
 
@@ -791,7 +800,7 @@ func (s *Store) AbortUpload(ctx context.Context, raw []byte) (bool, error) {
 	if _, err := s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
 		Bucket: bucket, Key: aws.String(st.Key), UploadId: uploadID,
 	}); err != nil && !isNoSuchUpload(err) {
-		return false, withCredentialClass(fmt.Errorf("aborting S3 multipart upload for %q: %w", st.Key, err))
+		return false, withS3ErrorClasses(fmt.Errorf("aborting S3 multipart upload for %q: %w", st.Key, err))
 	}
 	_, err = s.client.ListParts(ctx, &s3.ListPartsInput{
 		Bucket: bucket, Key: aws.String(st.Key), UploadId: uploadID,
@@ -800,7 +809,7 @@ func (s *Store) AbortUpload(ctx context.Context, raw []byte) (bool, error) {
 	case isNoSuchUpload(err):
 		return true, nil
 	case err != nil:
-		return false, withCredentialClass(fmt.Errorf("listing parts of S3 multipart upload for %q: %w", st.Key, err))
+		return false, withS3ErrorClasses(fmt.Errorf("listing parts of S3 multipart upload for %q: %w", st.Key, err))
 	default:
 		return false, nil
 	}
@@ -823,7 +832,7 @@ func (s *Store) GetFrom(ctx context.Context, key string, offset int64) (io.ReadC
 		if isMissingObject(err) {
 			return nil, objstore.ErrNotFound
 		}
-		return nil, withCredentialClass(fmt.Errorf("getting S3 object %q: %w", key, err))
+		return nil, withS3ErrorClasses(fmt.Errorf("getting S3 object %q: %w", key, err))
 	}
 	if output.Body == nil {
 		return nil, fmt.Errorf("getting S3 object %q: server returned an empty body", key)

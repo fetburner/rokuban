@@ -23,6 +23,7 @@ type fakeAPI struct {
 	headFn      func(context.Context, *s3.HeadObjectInput) (*s3.HeadObjectOutput, error)
 	getFn       func(context.Context, *s3.GetObjectInput) (*s3.GetObjectOutput, error)
 	completeErr error
+	createErr   error
 	// completeErrs は CompleteMultipartUpload の応答を呼び出し順に返す。空なら completeErr を返す。
 	completeErrs []error
 	// putErrs は PutObject の応答を呼び出し順に返す。空なら成功する。
@@ -86,6 +87,9 @@ func (*fakeAPI) ListObjectsV2(context.Context, *s3.ListObjectsV2Input, ...func(*
 func (f *fakeAPI) CreateMultipartUpload(_ context.Context, in *s3.CreateMultipartUploadInput, _ ...func(*s3.Options)) (*s3.CreateMultipartUploadOutput, error) {
 	f.mutationCalls++
 	f.createInputs = append(f.createInputs, in)
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
 	return &s3.CreateMultipartUploadOutput{UploadId: aws.String("upload-1")}, nil
 }
 

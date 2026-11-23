@@ -115,6 +115,52 @@ func TestResumeAfterStopCompletesWithStatedParts(t *testing.T) {
 	}
 }
 
+// TestResumableOperationsClassifyOnlyExplicitSlowDown は StartUpload・ContinueUpload・CompleteUpload の SlowDown を分類し、
+// 汎用 ServiceUnavailable は一時受け付け拒否に広げないことを確かめる。
+func TestResumableOperationsClassifyOnlyExplicitSlowDown(t *testing.T) {
+	ctx := context.Background()
+	data := []byte("data")
+	wantSHA := sha256.Sum256(data)
+	slowDown := &smithy.GenericAPIError{Code: "SlowDown", Message: "message text is irrelevant", Fault: smithy.FaultServer}
+
+	startStore := resumableStore(&fakeAPI{createErr: slowDown})
+	if _, err := startStore.StartUpload(ctx, "video.mp4", int64(len(data)), wantSHA, "video/mp4"); !errors.Is(err, objstore.ErrTemporarilyUnavailable) {
+		t.Fatalf("StartUpload SlowDown = %v, want ErrTemporarilyUnavailable", err)
+	}
+
+	continueClient := &fakeAPI{}
+	continueStore := resumableStore(continueClient)
+	state, err := continueStore.StartUpload(ctx, "video.mp4", int64(len(data)), wantSHA, "video/mp4")
+	if err != nil {
+		t.Fatalf("StartUpload before UploadPart SlowDown: %v", err)
+	}
+	continueClient.uploadPartErrs = []error{slowDown}
+	if _, _, err := continueStore.ContinueUpload(ctx, state, bytes.NewReader(data)); !errors.Is(err, objstore.ErrTemporarilyUnavailable) {
+		t.Fatalf("ContinueUpload SlowDown = %v, want ErrTemporarilyUnavailable", err)
+	}
+
+	completeClient := &fakeAPI{}
+	completeStore := resumableStore(completeClient)
+	state, err = completeStore.StartUpload(ctx, "video.mp4", int64(len(data)), wantSHA, "video/mp4")
+	if err != nil {
+		t.Fatalf("StartUpload before CompleteUpload SlowDown: %v", err)
+	}
+	state, _, err = completeStore.ContinueUpload(ctx, state, bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("ContinueUpload before CompleteUpload SlowDown: %v", err)
+	}
+	completeClient.completeErr = slowDown
+	if err := completeStore.CompleteUpload(ctx, state); !errors.Is(err, objstore.ErrTemporarilyUnavailable) {
+		t.Fatalf("CompleteUpload SlowDown = %v, want ErrTemporarilyUnavailable", err)
+	}
+
+	serviceUnavailable := &smithy.GenericAPIError{Code: "ServiceUnavailable", Message: "try again later", Fault: smithy.FaultServer}
+	serviceStore := resumableStore(&fakeAPI{createErr: serviceUnavailable})
+	if _, err := serviceStore.StartUpload(ctx, "video.mp4", int64(len(data)), wantSHA, "video/mp4"); err == nil || errors.Is(err, objstore.ErrTemporarilyUnavailable) {
+		t.Fatalf("StartUpload ServiceUnavailable = %v, want a non-nil unclassified error", err)
+	}
+}
+
 func TestCompleteEmptyUploadHandlesExistingKeyAfterPrecondition(t *testing.T) {
 	precondition := &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "412", Fault: smithy.FaultClient}
 	for _, tc := range []struct {

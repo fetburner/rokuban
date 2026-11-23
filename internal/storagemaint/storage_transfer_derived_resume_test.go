@@ -15,11 +15,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 	"github.com/fetburner/rokuban/internal/store"
@@ -37,6 +39,8 @@ type fakeResumableStore struct {
 	checksumReachedSliceEnd      bool             // checksum mismatch と slice 終了が重なったことを表す（同テストで確認）。
 	beforeGetFrom                func()           // GetFrom の最初に呼ぶ。テストが読みの途中で論理資産の世代を変えるのに使う。
 	completeErr                  []error          // CompleteUpload が先頭から返す。nil の要素は本物の完了。尽きたら本物。
+	continueErr                  []error          // ContinueUpload が成功した後に返すエラー。送信済み progress の保存を検査する。
+	continueFailAfter            int64            // 非ゼロなら ContinueUpload の source をこの byte 数読んだ後に continueErr を返す。
 	abortResult                  []fakeAbort      // AbortUpload が先頭から返す。尽きたら本物。
 	abortCalls                   int              // AbortUpload が呼ばれた回数
 	beforeAbort                  func()           // AbortUpload の最初に呼ぶ。テストが掃除の途中で締切を切るのに使う。
@@ -90,12 +94,41 @@ func (r *waitAfterBytesReader) Read(p []byte) (int, error) {
 func (r *waitAfterBytesReader) Close() error { return r.reader.Close() }
 
 func (s *fakeResumableStore) ContinueUpload(ctx context.Context, state []byte, src io.Reader) ([]byte, int64, error) {
+	var injected error
+	if len(s.continueErr) > 0 {
+		injected = s.continueErr[0]
+		s.continueErr = s.continueErr[1:]
+		if s.continueFailAfter > 0 {
+			src = &failAfterBytesReader{reader: src, remaining: s.continueFailAfter, err: injected}
+		}
+	}
 	state, offset, err := s.Store.ContinueUpload(ctx, state, src)
+	if err == nil && injected != nil {
+		err = injected
+	}
 	if s.waitForChecksumUntilSliceEnd && errors.Is(err, objstore.ErrChecksumMismatch) {
 		s.checksumReachedSliceEnd = true
 		<-ctx.Done()
 	}
 	return state, offset, err
+}
+
+type failAfterBytesReader struct {
+	reader    io.Reader
+	remaining int64
+	err       error
+}
+
+func (r *failAfterBytesReader) Read(p []byte) (int, error) {
+	if r.remaining == 0 {
+		return 0, r.err
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	n, err := r.reader.Read(p)
+	r.remaining -= int64(n)
+	return n, err
 }
 
 func (s *fakeResumableStore) CompleteUpload(ctx context.Context, state []byte) error {
@@ -414,6 +447,96 @@ func TestStorageTransferWorkerRestartsDerivedUploadWhenCompleteIsInvalid(t *test
 		t.Fatalf("invalid completions = %d, want 1", failures)
 	}
 	f.assertPublished(t)
+}
+
+// TestStorageTransferWorkerDoesNotCountStoreUnavailableFailures は置き場の一時的な受け付け拒否を 10 回、資格情報失敗を 1 回受けても
+// 試行を数えず、各失敗後に保存した offset から次の Work が送信を続けることを確かめる。
+func TestStorageTransferWorkerDoesNotCountStoreUnavailableFailures(t *testing.T) {
+	f := newDerivedResumeFixture(t)
+	temporarilyUnavailableBefore := promtestutil.ToFloat64(metrics.StorageTransferDeferredFailures.WithLabelValues("temporarily_unavailable"))
+	credentialsBefore := promtestutil.ToFloat64(metrics.StorageTransferDeferredFailures.WithLabelValues("credentials"))
+	// slice の期限より先に部分送信で失敗させ、次の Work が進んだ offset から続ける経路を通す。
+	f.worker.Config.Transfer.Bandwidth = nil
+	f.target(t).continueFailAfter = 10 * 1024
+	for range 10 {
+		f.target(t).continueErr = append(f.target(t).continueErr, errors.Join(objstore.ErrTemporarilyUnavailable, errors.New("S3 SlowDown")))
+	}
+	f.target(t).continueErr = append(f.target(t).continueErr, errors.Join(objstore.ErrCredentials, errors.New("expired credentials")))
+	for attempt := 0; attempt < 11; attempt++ {
+		err := f.work(t)
+		delay, ok := jobq.SnoozeDelay(err)
+		if !ok || delay != 5*time.Minute {
+			t.Fatalf("Work after an uncounted store failure = %v, want a 5 minute snooze", err)
+		}
+		wantTemporarilyUnavailable := float64(attempt + 1)
+		wantCredentials := float64(0)
+		if attempt == 10 {
+			wantTemporarilyUnavailable = 10
+			wantCredentials = 1
+		}
+		if got := promtestutil.ToFloat64(metrics.StorageTransferDeferredFailures.WithLabelValues("temporarily_unavailable")) - temporarilyUnavailableBefore; got != wantTemporarilyUnavailable {
+			t.Fatalf("temporarily_unavailable deferred failures after uncounted failure %d = %v, want %v", attempt+1, got, wantTemporarilyUnavailable)
+		}
+		if got := promtestutil.ToFloat64(metrics.StorageTransferDeferredFailures.WithLabelValues("credentials")) - credentialsBefore; got != wantCredentials {
+			t.Fatalf("credentials deferred failures after uncounted failure %d = %v, want %v", attempt+1, got, wantCredentials)
+		}
+		if n := f.attemptCount(t); n != 0 {
+			t.Fatalf("transfer attempts after uncounted failure %d = %d, want 0", attempt+1, n)
+		}
+		var handedOff bool
+		var offset int64
+		testutil.RequireNoError(t, f.pool.QueryRow(context.Background(), `
+SELECT handed_off, offset_bytes FROM media_asset_copy_transfer_progress WHERE copy_id = $1`, f.copyID(t)).Scan(&handedOff, &offset), "reading handed-off progress")
+		wantOffset := int64(attempt+1) * f.target(t).continueFailAfter
+		if !handedOff || offset != wantOffset {
+			t.Fatalf("saved progress after uncounted failure = handed_off %t offset %d, want true and %d", handedOff, offset, wantOffset)
+		}
+	}
+	if offsets := f.source(t).getOffsets; len(offsets) != 11 || offsets[0] != 0 {
+		t.Fatalf("source offsets across 11 rejected uploads = %v, want 11 reads starting at 0", offsets)
+	} else {
+		for i, offset := range offsets[1:] {
+			wantOffset := int64(i+1) * f.target(t).continueFailAfter
+			if offset != wantOffset {
+				t.Fatalf("source offset on resumed Work %d = %d, want %d", i+2, offset, wantOffset)
+			}
+		}
+	}
+	// 試行回数が 0 の資産は、上限 10 による exhaustion の対象にならず転送候補のままである。
+	if state := f.copyState(t); state != "pending" {
+		t.Fatalf("copy state after 11 uncounted failures = %q, want pending", state)
+	}
+	candidates, _, err := f.worker.Storage.CountMediaAssetTransferCandidates(context.Background(), 10)
+	if err != nil || candidates != 1 {
+		t.Fatalf("transfer candidates after 11 uncounted failures = %d, %v; want 1", candidates, err)
+	}
+	if err := f.work(t); err != nil {
+		t.Fatalf("final Work after the store recovered: %v", err)
+	}
+	f.assertPublished(t)
+}
+
+// TestStorageTransferWorkerCountsUnclassifiedStoreFailures は一時受け付け拒否に分類されない送信失敗が従来どおり
+// 1 回の試行として記録されることを確かめる。
+func TestStorageTransferWorkerCountsUnclassifiedStoreFailures(t *testing.T) {
+	f := newDerivedResumeFixture(t)
+	temporarilyUnavailableBefore := promtestutil.ToFloat64(metrics.StorageTransferDeferredFailures.WithLabelValues("temporarily_unavailable"))
+	credentialsBefore := promtestutil.ToFloat64(metrics.StorageTransferDeferredFailures.WithLabelValues("credentials"))
+	f.worker.Config.Transfer.Bandwidth = nil
+	f.target(t).continueErr = []error{errors.New("unexpected S3 failure")}
+	err := f.work(t)
+	if err != nil {
+		t.Fatalf("Work after unclassified failure = %v, want the recorded copy failure to return normally", err)
+	}
+	if n := f.attemptCount(t); n != 1 {
+		t.Fatalf("transfer attempts after unclassified failure = %d, want 1", n)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageTransferDeferredFailures.WithLabelValues("temporarily_unavailable")) - temporarilyUnavailableBefore; got != 0 {
+		t.Fatalf("temporarily_unavailable deferred failures after counted failure = %v, want 0", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.StorageTransferDeferredFailures.WithLabelValues("credentials")) - credentialsBefore; got != 0 {
+		t.Fatalf("credentials deferred failures after counted failure = %v, want 0", got)
+	}
 }
 
 // TestStorageTransferWorkerKeepsAbandonedUploadUntilStoreReportsGone は、掃除の Abort が「まだ残っている」を返す間は

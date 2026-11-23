@@ -8,6 +8,8 @@ FS 置き場間の転送は、転送待ちの件数、物理コピーの成功�
 
 `rokuban_storage_transfer_exhausted_assets` が 0 以外なら、対象の転送元、宛先、ログの失敗理由を確認し、原因を直してから runbook の手順で試行記録を消す。マウントの不一致は、マウントと `.rokuban-store` の値を確認する。
 
+`rokuban_storage_transfer_deferred_failures_total{reason}` は、試行に数えず snooze した転送失敗の累計である。`rate()` で増加を見て、失敗が続いているときは転送元・宛先の置き場と資格情報を確認する。`reason` は数えなかった理由で、取りうる値は計器の Help にある。
+
 `rokuban_storage_transfer_policy_mismatch_total` は、設定変更前の規則の指紋を持つ job を捨てた累計である。通常の規則の切り替えで増えることがある。増加だけで障害とは判定しない。
 
 `rokuban_storage_transfer_corrupt_sources_retired_total` は、転送の照合で壊れていると分かった派生コピーを退役させた累計である。増えたときは Error ログで転送元の置き場とパスを調べ、置き場の障害を疑う。退役の手順と、再生成について確かめた範囲は [置き場間の転送](../storage/transfer.md) にある。
@@ -81,6 +83,7 @@ Warn は置き場が止まり始めたときに 1 回、Info は解けたとき�
 - 古い件数が捨てられたとき、残った新しい件数で止めること: `TestEncodeReconcile_StaleCountDecidesByTheSavedCount`
 - 待ち件数が止まったら、最後の成功の古さを見てから worker とマウントを調べる: `rokuban_storage_transfer_waiting_assets`
 - 試行が上限に達した件数が 0 以外なら、原因を直してから試行記録を消す: `rokuban_storage_transfer_exhausted_assets`
+- rate が増えていれば、試行に数えない転送失敗が続いている: `rokuban_storage_transfer_deferred_failures_total{reason}`
 - 設定変更で増えることがあり、増加だけでは障害と判定しない: `rokuban_storage_transfer_policy_mismatch_total`
 - 増えたら転送元の置き場の障害を疑う: `rokuban_storage_transfer_corrupt_sources_retired_total`
 - 件数の鮮度は全件パスの周期と比べて見る: `rokuban_storage_transfer_backlog_counted_timestamp_seconds`

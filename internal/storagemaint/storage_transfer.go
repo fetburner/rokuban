@@ -35,6 +35,10 @@ import (
 const (
 	storageTransferRowLimit   int32 = 1000
 	storageTransferLockSnooze       = 30 * time.Second
+	// storageTransferStoreUnavailableSnooze は置き場の状態を再確認するまでの待ち時間。
+	// AWS SDK の既定の最大試行回数は 3 回、再試行の backoff 上限は 20 秒で、このエラーが届く時点で SDK の再試行は終わっている。
+	// 資格情報の失敗は人が直すまで戻らないため、短い間隔の再要求を避けて 5 分後に再確認する。
+	storageTransferStoreUnavailableSnooze = 5 * time.Minute
 	// abandonedUploadRowLimit は 1 回の Work で Abort する掃除待ちの上限である。
 	abandonedUploadRowLimit int32 = 100
 	// abandonedUploadCleanupTimeout は 1 回の Work の掃除に許す時間である。掃除は Work の締切と同じ ctx を使うので、
@@ -1543,6 +1547,16 @@ func sourceMatchesTransferMetadata(transfer store.MediaAssetTransfer, sourceSize
 func (w *StorageTransferWorker) recordTransferFailure(ctx context.Context, transfer store.MediaAssetTransfer, log *slog.Logger, cause error) error {
 	if ctx.Err() != nil {
 		return nil //nolint:nilerr // Shutdown cancellation must not count as a transfer failure.
+	}
+	if errors.Is(cause, objstore.ErrTemporarilyUnavailable) {
+		metrics.StorageTransferDeferredFailures.WithLabelValues("temporarily_unavailable").Inc()
+		log.Warn("storage transfer: object store is not accepting work; retrying without counting an attempt", "err", cause)
+		return jobq.Snooze(storageTransferStoreUnavailableSnooze)
+	}
+	if errors.Is(cause, objstore.ErrCredentials) {
+		metrics.StorageTransferDeferredFailures.WithLabelValues("credentials").Inc()
+		log.Warn("storage transfer: object store credentials are unavailable; retrying without counting an attempt", "err", cause)
+		return jobq.Snooze(storageTransferStoreUnavailableSnooze)
 	}
 	if err := w.Storage.RecordMediaAssetTransferFailure(ctx, transfer.CopyID, cause.Error()); err != nil {
 		return fmt.Errorf("recording transfer failure after %w: %w", cause, err)
