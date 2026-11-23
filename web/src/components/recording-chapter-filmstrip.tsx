@@ -44,6 +44,7 @@ type RecordingChapterFilmstripProps = {
   isPlaying: boolean
   spans: ChapterSpan[]
   selectedBoundary: number | null
+  selectedBoundaryMeaning: string
   tilesAvailable: boolean
   onSeek: (seconds: number) => void
   onSelectBoundary: (seconds: number) => void
@@ -73,6 +74,7 @@ export function RecordingChapterFilmstrip({
   isPlaying,
   spans,
   selectedBoundary,
+  selectedBoundaryMeaning,
   tilesAvailable,
   onSeek,
   onSelectBoundary,
@@ -413,6 +415,14 @@ export function RecordingChapterFilmstrip({
         })}
       </div>
 
+      {selectedBoundary !== null && (
+        <div
+          data-testid="chapter-selected-boundary-meaning"
+          className="mb-1 min-w-0 whitespace-normal break-words text-sm text-muted-foreground"
+        >
+          {selectedBoundaryMeaning}
+        </div>
+      )}
       <div data-testid="chapter-tuning-controls" className="flex min-h-11 flex-wrap items-center gap-1.5 md:gap-2">
         <span className="hidden text-sm text-muted-foreground md:inline">選んでいる境界</span>
         <output data-testid="chapter-selected-boundary" className="rounded bg-muted px-2 py-1 font-mono">
