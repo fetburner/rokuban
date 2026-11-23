@@ -49,20 +49,23 @@ type Config struct {
 
 // Adapter は jobq.Enqueuer と jobq.Runner を実装する。
 type Adapter struct {
-	redis    redis.UniversalClient
-	client   *asynq.Client
-	registry *jobq.Registry
-	queueFor QueueFunc
-	queues   map[string]int
-	periodic []jobq.PeriodicJobSpec
+	redis     redis.UniversalClient
+	client    *asynq.Client
+	inspector *asynq.Inspector
+	registry  *jobq.Registry
+	queueFor  QueueFunc
+	queues    map[string]int
+	periodic  []jobq.PeriodicJobSpec
+	now       func() time.Time
 
 	mu  sync.Mutex
 	run *serverRun
 }
 
 var (
-	_ jobq.Enqueuer = (*Adapter)(nil)
-	_ jobq.Runner   = (*Adapter)(nil)
+	_ jobq.Enqueuer           = (*Adapter)(nil)
+	_ jobq.Runner             = (*Adapter)(nil)
+	_ jobq.DeliverableCounter = (*Adapter)(nil)
 )
 
 // NewAdapter は購読と定期投入の仕様を検査し、呼び出し元が所有する Redis 接続を借りる。
@@ -95,6 +98,7 @@ func NewAdapter(redisClient redis.UniversalClient, registry *jobq.Registry, queu
 	}
 	adapter := &Adapter{
 		redis: redisClient, client: asynq.NewClientFromRedisClient(redisClient),
+		inspector: asynq.NewInspectorFromRedisClient(redisClient), now: time.Now,
 		registry: registry, queueFor: queueFor, queues: queues,
 	}
 	if cfg.SchedulePeriodicJobs {
