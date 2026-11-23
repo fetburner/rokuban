@@ -47,6 +47,12 @@ describe('seekTilePlacement', () => {
     expect(at(0, 368, 368)).toMatchObject({ left: 224 })
   })
 
+  it('最小幅の指定も 16 の倍数に揃え、帯の幅と上限に収める', () => {
+    expect(seekTilePlacement(10, 368, 368, 161)).toMatchObject({ width: 176, height: 99, x: -176, left: 192 })
+    expect(seekTilePlacement(10, 150, 150, 161)).toMatchObject({ width: 144, left: 6 })
+    expect(seekTilePlacement(10, 1000, 1000, 321)).toMatchObject({ width: 320, left: 680 })
+  })
+
   it('上限（3 時間）以降と不正な値は null', () => {
     expect(at(10790)).toMatchObject({ x: -2880, y: -19260 })
     expect(at(10800)).toBeNull()

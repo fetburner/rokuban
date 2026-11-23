@@ -57,7 +57,8 @@ export type SeekTilePlacement = SeekTileRect & { width: number; height: number; 
 /**
  * seekTilePlacement は再生位置と帯の寸法からプレビューの配置を返す（録画・ライブ共通）。
  *
- * 幅は帯の幅の 4 割まで（上限 320px）。ポインタ中心に置き、帯からはみ出さない。
+ * 既定の幅は帯の幅の 4 割まで。minimumWidth が指定された場合はその幅以上に広げる。
+ * 幅の上限は 320px。ポインタ中心に置き、帯からはみ出さない。
  * 上限（`SEEK_TILES_MAX_TILES`）より後ろの位置や負の位置は null
  * （呼び出し側はプレビューを出さない）。
  */
@@ -65,10 +66,13 @@ export function seekTilePlacement(
   seconds: number,
   bandWidth: number,
   pointerOffsetX: number,
+  minimumWidth = 0,
 ): SeekTilePlacement | null {
   const cell = seekTileCell(seconds)
   if (cell === null) return null
-  const width = seekTileDisplayWidth(bandWidth)
+  const fit = Math.min(SEEK_TILES_DISPLAY_WIDTH, Math.floor(bandWidth / WIDTH_STEP) * WIDTH_STEP)
+  const minimum = Math.min(fit, Math.ceil(minimumWidth / WIDTH_STEP) * WIDTH_STEP)
+  const width = Math.max(minimum, seekTileDisplayWidth(bandWidth))
   const height = (width * SEEK_TILES_HEIGHT) / SEEK_TILES_WIDTH
   return {
     x: cell.column === 0 ? 0 : -cell.column * width,
