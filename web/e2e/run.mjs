@@ -16,8 +16,9 @@
 // .mjs の byte 数を降順に並べ、現在の合計 byte 数が最小の shard へ貪欲に割り当てる。
 // Go test のように直前の main の実測を cache から読む方式は timing artifact の保存・復元運用も要るため、
 // ここでは毎回同じ割当てになる byte 数を代理指標にする。
-import { appendFileSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { spawn } from 'node:child_process'
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { performance } from 'node:perf_hooks'
@@ -25,7 +26,15 @@ import { performance } from 'node:perf_hooks'
 const SELF = fileURLToPath(import.meta.url)
 const E2E_DIR = path.dirname(SELF)
 const WEB_DIR = path.dirname(E2E_DIR)
+const require = createRequire(path.join(WEB_DIR, 'package.json'))
 const NEEDS = new Set(['webkit', 'db-state', 's3', 'manual'])
+
+/** resolveViteCLI は web の依存としてインストールされた Vite CLI のパスを返す。 */
+export function resolveViteCLI() {
+  const packagePath = require.resolve('vite/package.json')
+  const vitePackage = JSON.parse(readFileSync(packagePath, 'utf8'))
+  return path.resolve(path.dirname(packagePath), vitePackage.bin.vite)
+}
 
 function compareNames(left, right) {
   return left < right ? -1 : left > right ? 1 : 0
@@ -64,7 +73,7 @@ function leadingGoDeps(source) {
   if (declarations.length > 0 && dependencies.length === 0) {
     throw new Error('e2e-go-deps: Go パッケージ指定がありません')
   }
-  const invalid = dependencies.filter((dependency) => dependency.startsWith('-'))
+  const invalid = dependencies.filter((dependency) => dependency.startsWith('-') || dependency.includes('...'))
   if (invalid.length > 0) {
     throw new Error(`e2e-go-deps: 不正な Go パッケージ指定: ${invalid.join(', ')}`)
   }
@@ -180,6 +189,46 @@ export function createShardMatrix(scripts, shardCount, directory = E2E_DIR) {
     : [])
 }
 
+function defaultCommand(command, args, input) {
+  const result = spawnSync(command, args, { cwd: path.dirname(WEB_DIR), input, encoding: 'utf8' })
+  if (result.error) throw result.error
+  if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed: ${result.stderr.trim()}`)
+  return result.stdout
+}
+
+/** createCIPlan は CI の変更ファイルから対象判定と shard matrix を作り、GitHub output に書く。 */
+export function createCIPlan({ full, baseSha, outputFile, runCommand = defaultCommand, scripts = selectCIScripts(), shardCount = 5, directory = E2E_DIR, distDirectory = path.join(WEB_DIR, 'dist') }) {
+  let targets = scripts
+  if (!full) {
+    if (!baseSha) throw new Error('部分選定には PR base SHA が必要です')
+    mkdirSync(distDirectory, { recursive: true })
+    writeFileSync(path.join(distDirectory, '.keep'), '', { flag: 'a' })
+    const changed = runCommand('git', ['diff', '--name-only', '-z', '--no-renames', baseSha, 'HEAD'])
+    const packages = [...new Set(scripts.flatMap(({ goDeps }) => goDeps))]
+    const affected = new Set()
+    if (packages.length > 0) {
+      const result = runCommand('go', ['run', './scripts/citest', ...packages], changed)
+      for (const name of result.split(/\r?\n/).filter(Boolean)) affected.add(name)
+    }
+    const modulePath = readFileSync(path.join(path.dirname(WEB_DIR), 'go.mod'), 'utf8').match(/^module\s+(\S+)/m)?.[1]
+    if (!modulePath) throw new Error('go.mod に module 宣言がありません')
+    targets = scripts.filter(({ goDeps }) => goDeps.some((dependency) => {
+      const pattern = dependency.startsWith('./') ? `${modulePath}/${dependency.slice(2)}` : dependency
+      return affected.has(pattern)
+    }))
+  }
+
+  const names = targets.map(({ name }) => name.replace(/\.mjs$/, '')).join(',')
+  const matrix = { include: createShardMatrix(targets, shardCount, directory) }
+  const output = [
+    `matrix=${JSON.stringify(matrix)}`,
+    `scripts=${names}`,
+    `planned_skip=${targets.length === 0}`,
+  ].join('\n') + '\n'
+  if (outputFile) appendFileSync(outputFile, output)
+  return { matrix, scripts: names, planned_skip: targets.length === 0, output }
+}
+
 /** summaryHeading は step summary で shard の判定表を識別できる見出しを返す。 */
 export function summaryHeading(shard) {
   return shard === null
@@ -188,7 +237,7 @@ export function summaryHeading(shard) {
 }
 
 function usage() {
-  console.error('使い方: node e2e/run.mjs [スクリプト名 | --needs 語彙 | --shard i/n | --scripts 名前,... | --matrix n | --go-deps-json]')
+  console.error('使い方: node e2e/run.mjs [スクリプト名 | --needs 語彙 | --shard i/n | --scripts 名前,... | --ci-plan]')
   console.error('例: node e2e/run.mjs chapters')
   console.error('例: node e2e/run.mjs --shard 1/5')
   console.error('例: node e2e/run.mjs --scripts recording-segmented-vod --shard 1/5')
@@ -235,30 +284,13 @@ function markdown(results) {
 
 async function main() {
   const args = process.argv.slice(2)
-  if (args.length === 1 && args[0] === '--go-deps-json') {
+  if (args.length === 1 && args[0] === '--ci-plan') {
     try {
-      const declared = selectCIScripts().filter(({ goDeps }) => goDeps.length > 0)
-      console.log(JSON.stringify(declared.map(({ name, goDeps }) => ({ name, goDeps }))))
-    } catch (error) {
-      console.error(error.message)
-      process.exitCode = 2
-    }
-    return
-  }
-
-  if (args[0] === '--matrix') {
-    const shardCount = Number(args[1])
-    if ((args.length !== 2 && args.length !== 4) || !Number.isSafeInteger(shardCount) || shardCount < 1 ||
-      (args.length === 4 && args[2] !== '--scripts')) {
-      usage()
-      process.exitCode = 2
-      return
-    }
-    try {
-      const ciScripts = selectCIScripts()
-      const targets = args.length === 4 ? selectScriptsByName(ciScripts, args[3].split(',').filter(Boolean)) : ciScripts
-      const include = createShardMatrix(targets, shardCount)
-      console.log(JSON.stringify({ include }))
+      createCIPlan({
+        full: process.env.E2E_CI_FULL === 'true',
+        baseSha: process.env.E2E_CI_BASE_SHA,
+        outputFile: process.env.GITHUB_OUTPUT,
+      })
     } catch (error) {
       console.error(error.message)
       process.exitCode = 2
@@ -268,12 +300,15 @@ async function main() {
 
   let scriptsOption
   let shardOption
+  let preview = false
   const positional = []
   for (let index = 0; index < args.length; index++) {
     if (args[index] === '--scripts' && index + 1 < args.length && scriptsOption === undefined) {
       scriptsOption = args[++index]
     } else if (args[index] === '--shard' && index + 1 < args.length && shardOption === undefined) {
       shardOption = args[++index]
+    } else if (args[index] === '--preview' && !preview) {
+      preview = true
     } else {
       positional.push(args[index])
     }
@@ -285,6 +320,12 @@ async function main() {
     (scriptsOption !== undefined && (scriptsOption.length === 0 || positional.length > 0)) ||
     (shardOption !== undefined && positional.length > 0)
   ) {
+    usage()
+    process.exitCode = 2
+    return
+  }
+
+  if (preview && shardOption === undefined) {
     usage()
     process.exitCode = 2
     return
@@ -338,18 +379,89 @@ async function main() {
     scripts = selectCIScripts()
   }
 
-  const results = []
-  for (const script of scripts) {
-    console.log(`\n=== E2E: ${script.name} ===`)
-    results.push(await run(script))
+  let previewProcess
+  let previewLog = ''
+  if (preview) {
+    const server = new URL(process.env.E2E_URL ?? 'http://localhost:40773')
+    const child = spawn(process.execPath, [resolveViteCLI(), 'preview', '--host', '0.0.0.0', '--port', server.port || '80', '--strictPort'], {
+      cwd: WEB_DIR,
+      detached: process.platform !== 'win32',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    previewProcess = child
+    child.stdout.setEncoding('utf8').on('data', (chunk) => { previewLog += chunk })
+    child.stderr.setEncoding('utf8').on('data', (chunk) => { previewLog += chunk })
+    let spawnError
+    child.once('error', (error) => { spawnError = error })
+    try {
+      await waitForPreview(child, process.env.E2E_URL ?? 'http://localhost:40773', () => spawnError)
+    } catch (error) {
+      console.error(error.message)
+      await stopPreview(child)
+      console.error(previewLog)
+      process.exitCode = 1
+      return
+    }
   }
 
-  const table = markdown(results)
-  console.log(`\n${table}`)
-  if (process.env.GITHUB_STEP_SUMMARY) {
-    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n\n## ${summaryHeading(summaryShard)}\n\n${table}\n`)
+  try {
+    const results = []
+    for (const script of scripts) {
+      console.log(`\n=== E2E: ${script.name} ===`)
+      results.push(await run(script))
+    }
+
+    const table = markdown(results)
+    console.log(`\n${table}`)
+    if (process.env.GITHUB_STEP_SUMMARY) {
+      appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n\n## ${summaryHeading(summaryShard)}\n\n${table}\n`)
+    }
+    if (results.some(({ code }) => code !== 0)) {
+      process.exitCode = 1
+      if (previewLog) console.error(previewLog)
+    }
+  } finally {
+    if (previewProcess) await stopPreview(previewProcess)
   }
-  if (results.some(({ code }) => code !== 0)) process.exitCode = 1
+}
+
+/** waitForPreview は preview の応答を待ち、起動失敗を検出する。 */
+export async function waitForPreview(child, url, getSpawnError, fetchImpl = fetch) {
+  const deadline = Date.now() + 60_000
+  while (Date.now() < deadline) {
+    if (getSpawnError()) throw new Error(`Could not start static SPA server: ${getSpawnError().message}`)
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(`Static SPA server exited with ${child.exitCode ?? child.signalCode}`)
+    }
+    try {
+      const response = await fetchImpl(url, { signal: AbortSignal.timeout(1000) })
+      if (response.ok) return
+    } catch { /* Preview is not ready yet. */ }
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+  throw new Error(`Static SPA server did not become ready at ${url}`)
+}
+
+async function stopPreview(child) {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return
+  try {
+    if (process.platform === 'win32') child.kill('SIGTERM')
+    else process.kill(-child.pid, 'SIGTERM')
+  } catch (error) {
+    if (error.code !== 'ESRCH') throw error
+  }
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, 5000)
+    child.once('close', () => { clearTimeout(timer); resolve() })
+  })
+  if (child.exitCode === null && child.signalCode === null) {
+    try {
+      if (process.platform === 'win32') child.kill('SIGKILL')
+      else process.kill(-child.pid, 'SIGKILL')
+    } catch (error) {
+      if (error.code !== 'ESRCH') throw error
+    }
+  }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === SELF) await main()

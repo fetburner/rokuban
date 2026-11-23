@@ -23,129 +23,78 @@ on:
   pull_request:
 
 jobs:
-  # PR の base と citest から browser-e2e の matrix を作る。main の全件実行は冒頭の役割分担に従う。
+  # PR の変更と citest から browser-e2e の matrix を作る。main の全件実行は冒頭の役割分担に従う。
   browser-e2e-plan:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       scripts: ${{ steps.plan.outputs.scripts }}
       planned_skip: ${{ steps.plan.outputs.planned_skip }}
-      run_web: ${{ steps.classify.outputs.run_web }}
-      full: ${{ steps.classify.outputs.full }}
     steps:
       - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: changes
+        if: github.event_name == 'pull_request'
+        with: &browser_e2e_path_filters
+          filters: |
+            web:
+              - 'web/**'
+              - '.node-version'
+              - '.github/**'
       - name: Fetch PR base
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
-      - id: classify
-        shell: bash
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          changed="$RUNNER_TEMP/browser-e2e-changed-files"
-          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            git diff --name-only -z --no-renames "$BASE_SHA" HEAD > "$changed"
-            full=false
-            run_web=false
-            while IFS= read -r -d '' file; do
-              case "$file" in
-                web/*|.node-version)
-                  full=true
-                  run_web=true
-                  ;;
-                .github/*)
-                  full=true
-                  run_web=true
-                  ;;
-              esac
-            done < "$changed"
-          else
-            : > "$changed"
-            full=true
-            run_web=true
-          fi
-          echo "full=$full" >> "$GITHUB_OUTPUT"
-          echo "run_web=$run_web" >> "$GITHUB_OUTPUT"
       # 部分選定では citest を実行するため planner に Go が要る。実判定の shard は needs_go で個別に決まる。
       - uses: actions/setup-go@v7
-        if: github.event_name == 'pull_request' && steps.classify.outputs.full != 'true'
+        if: github.event_name == 'pull_request' && steps.changes.outputs.web != 'true'
         with:
           go-version-file: go.mod
-      # test-shard にある go:embed all:dist の説明と同じ理由で、citest より先に用意する。
-      - run: mkdir -p web/dist && touch web/dist/.keep
       - id: plan
-        shell: bash
         env:
-          FULL: ${{ steps.classify.outputs.full }}
-        run: |
-          changed="$RUNNER_TEMP/browser-e2e-changed-files"
-          scripts=""
-          if [[ "$FULL" == true ]]; then
-            matrix=$(node web/e2e/run.mjs --matrix 5)
-          else
-            metadata="$RUNNER_TEMP/browser-e2e-go-deps.json"
-            node web/e2e/run.mjs --go-deps-json > "$metadata"
-            declare -A checked=()
-            declare -A selected=()
-            while IFS=$'\t' read -r name dependency; do
-              if [[ -z "${checked[$dependency]+present}" ]]; then
-                affected=$(go run ./scripts/citest "$dependency" < "$changed")
-                if [[ -n "$affected" ]]; then
-                  checked[$dependency]=true
-                else
-                  checked[$dependency]=false
-                fi
-              fi
-              if [[ "${checked[$dependency]}" == true ]]; then
-                selected[$name]=1
-              fi
-            done < <(jq -r '.[] | . as $script | .goDeps[] | [$script.name, .] | @tsv' "$metadata")
+          E2E_CI_FULL: ${{ steps.changes.outputs.web == 'true' || github.event_name == 'push' }}
+          E2E_CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node web/e2e/run.mjs --ci-plan
 
-            if (( ${#selected[@]} > 0 )); then
-              scripts=$(printf '%s\n' "${!selected[@]}" | sort | paste -sd, -)
-              matrix=$(node web/e2e/run.mjs --matrix 5 --scripts "$scripts")
-            else
-              matrix='{"include":[]}'
-            fi
-          fi
-
-          count=$(jq '.include | length' <<< "$matrix")
-          if [[ "$count" == 0 ]]; then
-            test "$FULL" != true
-            echo 'planned_skip=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'planned_skip=false' >> "$GITHUB_OUTPUT"
-          fi
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-          echo "scripts=$scripts" >> "$GITHUB_OUTPUT"
-
-  web-test-run:
-    needs: browser-e2e-plan
-    if: needs.browser-e2e-plan.outputs.run_web == 'true'
+  # 必須チェック名 web-test を担い、paths-filter が失敗した場合もチェックを赤にする。
+  web-test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     # vitest がハングしても既定の 6h でランナーを占有させない（go test の -timeout と同じ狙い）。
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: changes
+        if: github.event_name == 'pull_request'
+        with: *browser_e2e_path_filters
       - uses: pnpm/action-setup@v6
+        if: &web_test_needed ${{ github.event_name == 'push' || steps.changes.outputs.web == 'true' }}
         with:
           package_json_file: web/package.json
       - uses: actions/setup-node@v7
+        if: *web_test_needed
         with:
           node-version-file: .node-version
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+        if: *web_test_needed
         working-directory: web
-      # コンポーネント／lib のロジック回帰は CI では Vitest で止める（build は型エラーしか拾わない）。
-      # Go toolchain も postgres service も要らないので独立した job にして test job の信号と混ぜない。
+      # コンポーネント／lib のロジック回帰は Vitest で止める。Go toolchain と PostgreSQL は要らない。
       - run: pnpm test
+        if: *web_test_needed
         working-directory: web
       # E2E のフィクスチャ契約だけを検証する。E2E_VALIDATE_FIXTURES_ONLY=1 で各スクリプトは
       # ブラウザを起動せず終了する。実ブラウザ判定は browser-e2e job で実行する。
       - run: pnpm e2e:fixtures
+        if: *web_test_needed
         working-directory: web
 
   # 計画ジョブが e2e-go-deps を citest に渡し、変更された Go 依存を宣言した判定だけを選ぶ。
@@ -186,37 +135,10 @@ jobs:
           playwright-browser: chromium
       - run: pnpm build
         working-directory: web
-      - name: Start static SPA server and wait for readiness
-        run: |
-          server_log="${RUNNER_TEMP}/rokuban-e2e-preview.log"
-          pnpm preview --host 0.0.0.0 --port 40773 --strictPort >"${server_log}" 2>&1 &
-          server_pid=$!
-          for _ in $(seq 1 60); do
-            if curl --fail --silent --show-error "${E2E_URL}/" >/dev/null; then
-              echo "Static SPA is ready at ${E2E_URL}"
-              exit 0
-            fi
-            if ! kill -0 "${server_pid}" 2>/dev/null; then
-              break
-            fi
-            sleep 1
-          done
-          echo "::error::Static SPA did not become ready at ${E2E_URL}; server log follows"
-          cat "${server_log}"
-          exit 1
-        working-directory: web
       - name: Run browser E2E
         if: ${{ !cancelled() }}
-        run: |
-          if [[ -n "$E2E_SCRIPTS" ]]; then
-            node e2e/run.mjs --scripts "$E2E_SCRIPTS" --shard "$E2E_SHARD"
-          else
-            node e2e/run.mjs --shard "$E2E_SHARD"
-          fi
+        run: node e2e/run.mjs --scripts "$E2E_SCRIPTS" --shard "$E2E_SHARD" --preview
         working-directory: web
-      - name: Show static server log
-        if: failure()
-        run: cat "${RUNNER_TEMP}/rokuban-e2e-preview.log"
 
   # 必須チェック名 `browser-e2e` を保つ集約ジョブ。skip / cancelled / failure を緑にしない。
   browser-e2e:
@@ -224,39 +146,10 @@ jobs:
     if: always()
     runs-on: ubuntu-slim
     steps:
-      - shell: bash
-        env:
-          PLAN_RESULT: ${{ needs.browser-e2e-plan.result }}
-          PLANNED_SKIP: ${{ needs.browser-e2e-plan.outputs.planned_skip }}
-          SHARD_RESULT: ${{ needs.browser-e2e-shard.result }}
-        run: |
-          test "$PLAN_RESULT" = success
-          if [[ "$PLANNED_SKIP" == true ]]; then
-            test "$SHARD_RESULT" = skipped
-          else
-            test "$PLANNED_SKIP" = false
-            test "$SHARD_RESULT" = success
-          fi
-
-  # 必須チェック名 `web-test` は集約ジョブが担い、計画した skip だけを成功にする。
-  web-test:
-    needs: [browser-e2e-plan, web-test-run]
-    if: always()
-    runs-on: ubuntu-slim
-    steps:
-      - shell: bash
-        env:
-          PLAN_RESULT: ${{ needs.browser-e2e-plan.result }}
-          RUN_WEB: ${{ needs.browser-e2e-plan.outputs.run_web }}
-          TEST_RESULT: ${{ needs.web-test-run.result }}
-        run: |
-          test "$PLAN_RESULT" = success
-          if [[ "$RUN_WEB" == true ]]; then
-            test "$TEST_RESULT" = success
-          else
-            test "$RUN_WEB" = false
-            test "$TEST_RESULT" = skipped
-          fi
+      # 単一の失敗 step に集約し、空や未知の planned_skip も success shard を要求する。
+      - name: Validate plan and shard results
+        if: ${{ always() && (needs.browser-e2e-plan.result != 'success' || (needs.browser-e2e-plan.outputs.planned_skip == 'true' && needs.browser-e2e-shard.result != 'skipped') || (needs.browser-e2e-plan.outputs.planned_skip != 'true' && needs.browser-e2e-shard.result != 'success')) }}
+        run: exit 1
 
   # S3 の署名付き URL への 302 を実 Chrome で測る。`browser-e2e` と別ジョブにしている
   # のは、RustFS の固定イメージと実 Chrome（`playwright install chrome`）を用意するため。
@@ -961,49 +854,12 @@ jobs:
       - name: Remove probe volume
         if: always()
         run: docker volume rm -f rokuban-media-probe
-      - name: Smoke test
-        run: |
-          docker compose -f docker-compose.test.yml up --wait --wait-timeout 60
-          curl -sf http://localhost:40773/healthz
-          python3 - <<'PY'
-          from html.parser import HTMLParser
-          from urllib.parse import urljoin, urlparse
-          from urllib.request import urlopen
-
-          base = "http://localhost:40773"
-
-          class Assets(HTMLParser):
-              def __init__(self):
-                  super().__init__()
-                  self.urls = []
-
-              def handle_starttag(self, tag, attrs):
-                  for key, value in attrs:
-                      if key in ("src", "href") and value:
-                          parsed = urlparse(value)
-                          if not parsed.scheme and not parsed.netloc:
-                              self.urls.append(value)
-
-          with urlopen(base + "/") as response:
-              assert response.status == 200
-              assert "text/html" in response.headers.get("Content-Type", "")
-              index = response.read()
-
-          assets = Assets()
-          assets.feed(index.decode("utf-8"))
-          assert assets.urls, "index.html did not reference any local assets"
-          assert any(urlparse(asset).path.startswith("/assets/") for asset in assets.urls), "index.html did not reference a built asset"
-          for asset in assets.urls:
-              with urlopen(urljoin(base + "/", asset)) as response:
-                  assert response.status == 200, f"asset failed: {asset}"
-                  if urlparse(asset).path.startswith("/assets/"):
-                      assert "text/html" not in response.headers.get("Content-Type", ""), f"asset fell back to index.html: {asset}"
-                  response.read(1)
-
-          with urlopen(base + "/ci-spa-fallback/deep/route") as response:
-              assert response.status == 200
-              assert response.read() == index, "deep SPA route did not return index.html"
-          PY
+      - name: Start containers
+        run: docker compose -f docker-compose.test.yml up --wait --wait-timeout 60
+      - name: Check health
+        run: curl -sf http://localhost:40773/healthz
+      - name: Check SPA assets and fallback
+        run: node web/scripts/check-spa-served.mjs http://localhost:40773
       # 上の probe は touch/mkdir であって Go の os.MkdirAll / os.Create を
       # 通っていない。catalog_export は RunOnStart の定期ジョブなので、
       # 起動直後に実バイナリが nobody として media volume へ世代ディレクトリを

@@ -1,15 +1,19 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   createShardMatrix,
+  createCIPlan,
   discoverScripts,
   partitionScriptsBySourceBytes,
+  resolveViteCLI,
   selectCIScripts,
   selectScriptsByName,
   summaryHeading,
   validateGoDepsDeclarations,
+  waitForPreview,
 } from '../run.mjs'
 
 describe('e2e/run.mjs の CI 対象選別', () => {
@@ -124,6 +128,9 @@ describe('e2e/run.mjs の CI 対象選別', () => {
 
       writeFileSync(path.join(directory, 'check.mjs'), "// e2e-go-deps: ./internal/worker\nimport './fixture.mjs'\n")
       expect(() => validateGoDepsDeclarations(directory)).not.toThrow()
+
+      writeFileSync(path.join(directory, 'check.mjs'), "// e2e-go-deps: ./internal/worker/...\nimport './fixture.mjs'\n")
+      expect(() => validateGoDepsDeclarations(directory)).toThrow('e2e-go-deps: 不正な Go パッケージ指定: ./internal/worker/...')
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
@@ -154,6 +161,15 @@ describe('e2e/run.mjs の CI 対象選別', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+})
+
+describe('e2e/run.mjs の CLI', () => {
+  it('--matrix の削除後も手元の選択入口は維持し、旧 matrix 入口を受け付けない', () => {
+    const runner = path.resolve(process.cwd(), 'e2e/run.mjs')
+    const result = spawnSync(process.execPath, [runner, '--matrix', '5'], { encoding: 'utf8' })
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain('使い方:')
   })
 })
 
@@ -205,5 +221,151 @@ describe('e2e/run.mjs の CI shard matrix', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+})
+
+describe('e2e/run.mjs の CI 計画', () => {
+  it('全件では全判定を shard に割り、GitHub output に書き出す', () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'rokuban-e2e-plan-full-'))
+    const outputFile = path.join(directory, 'output')
+    try {
+      writeFileSync(path.join(directory, 'a.mjs'), 'a'.repeat(20))
+      writeFileSync(path.join(directory, 'b.mjs'), 'b'.repeat(30))
+      const plan = createCIPlan({
+        full: true,
+        outputFile,
+        directory,
+        shardCount: 5,
+        scripts: [
+          { name: 'a.mjs', needs: [], goDeps: [] },
+          { name: 'b.mjs', needs: [], goDeps: ['./internal/worker'] },
+        ],
+        runCommand: () => { throw new Error('全件計画では子プロセスを呼ばない') },
+      })
+
+      expect(plan.matrix).toEqual({ include: [
+        { shard: '1', count: '5', needs_go: true },
+        { shard: '2', count: '5', needs_go: false },
+      ] })
+      expect(plan.scripts).toBe('a,b')
+      expect(plan.planned_skip).toBe(false)
+      expect(readFileSync(outputFile, 'utf8')).toBe([
+        'matrix={"include":[{"shard":"1","count":"5","needs_go":true},{"shard":"2","count":"5","needs_go":false}]}',
+        'scripts=a,b',
+        'planned_skip=false',
+        '',
+      ].join('\n'))
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('変更ファイルを citest に一度渡し、出力された依存を宣言した判定だけを割る', () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'rokuban-e2e-plan-partial-'))
+    const distDirectory = path.join(directory, 'web', 'dist')
+    try {
+      for (const name of ['worker.mjs', 'streamer.mjs', 'plain.mjs']) writeFileSync(path.join(directory, name), name.repeat(10))
+      const commands: Array<{ command: string; args: string[]; input?: string }> = []
+      const plan = createCIPlan({
+        full: false,
+        baseSha: 'base-sha',
+        directory,
+        distDirectory,
+        shardCount: 5,
+        scripts: [
+          { name: 'worker.mjs', needs: [], goDeps: ['./internal/worker'] },
+          { name: 'streamer.mjs', needs: [], goDeps: ['./internal/streamer'] },
+          { name: 'plain.mjs', needs: [], goDeps: [] },
+        ],
+        runCommand: (command, args, input) => {
+          commands.push({ command, args, input })
+          return command === 'git' ? 'internal/worker/file.go\0' : 'github.com/fetburner/rokuban/internal/worker\n'
+        },
+      })
+
+      expect(commands).toEqual([
+        { command: 'git', args: ['diff', '--name-only', '-z', '--no-renames', 'base-sha', 'HEAD'], input: undefined },
+        { command: 'go', args: ['run', './scripts/citest', './internal/worker', './internal/streamer'], input: 'internal/worker/file.go\0' },
+      ])
+      expect(plan.scripts).toBe('worker')
+      expect(plan.matrix).toEqual({ include: [{ shard: '1', count: '5', needs_go: true }] })
+      expect(plan.planned_skip).toBe(false)
+      expect(readFileSync(path.join(distDirectory, '.keep'), 'utf8')).toBe('')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('影響する Go 依存が無い場合は空の計画を skip として書く', () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'rokuban-e2e-plan-empty-'))
+    const distDirectory = path.join(directory, 'web', 'dist')
+    const outputFile = path.join(directory, 'output')
+    try {
+      writeFileSync(path.join(directory, 'go.mjs'), 'go'.repeat(20))
+      const plan = createCIPlan({
+        full: false,
+        baseSha: 'base-sha',
+        outputFile,
+        directory,
+        distDirectory,
+        scripts: [{ name: 'go.mjs', needs: [], goDeps: ['./internal/worker'] }],
+        runCommand: (command) => command === 'git' ? 'docs/readme.md\0' : '',
+      })
+
+      expect(plan.matrix).toEqual({ include: [] })
+      expect(plan.scripts).toBe('')
+      expect(plan.planned_skip).toBe(true)
+      expect(readFileSync(outputFile, 'utf8')).toBe('matrix={"include":[]}\nscripts=\nplanned_skip=true\n')
+      expect(readFileSync(path.join(distDirectory, '.keep'), 'utf8')).toBe('')
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('Go 依存は import path の完全一致だけで選ぶ', () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'rokuban-e2e-plan-exact-'))
+    try {
+      writeFileSync(path.join(directory, 'wildcard.mjs'), 'wildcard'.repeat(10))
+      const plan = createCIPlan({
+        full: false,
+        baseSha: 'base-sha',
+        directory,
+        distDirectory: path.join(directory, 'dist'),
+        scripts: [{ name: 'wildcard.mjs', needs: [], goDeps: ['./internal/worker/...'] }],
+        runCommand: (command) => command === 'git'
+          ? 'internal/worker/service/worker.go\0'
+          : 'github.com/fetburner/rokuban/internal/worker/service\n',
+      })
+
+      expect(plan.matrix).toEqual({ include: [] })
+      expect(plan.scripts).toBe('')
+      expect(plan.planned_skip).toBe(true)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('e2e/run.mjs の preview readiness', () => {
+  it('pnpm を介さず Node から Vite CLI を起動できる', () => {
+    const result = spawnSync(process.execPath, [resolveViteCLI(), '--version'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+    })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toMatch(/^vite\/\d/)
+  })
+
+  it('preview が応答したら判定を始められる', async () => {
+    const child = { exitCode: null, signalCode: null }
+    const fetchImpl = async () => ({ ok: true })
+    await expect(waitForPreview(child, 'http://localhost:40773/', () => undefined, fetchImpl)).resolves.toBeUndefined()
+  })
+
+  it('preview が起動直後に終了したら判定を始めない', async () => {
+    const child = { exitCode: 1, signalCode: null }
+    const fetchImpl = async () => { throw new Error('応答前に終了したため fetch しない') }
+    await expect(waitForPreview(child, 'http://localhost:40773/', () => undefined, fetchImpl))
+      .rejects.toThrow('Static SPA server exited with 1')
   })
 })
