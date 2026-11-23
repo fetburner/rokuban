@@ -79,7 +79,7 @@ func seedCMRanges(t *testing.T, pool *pgxpool.Pool, recordingID int64, ranges []
 	if !shouldRun {
 		t.Fatalf("CM detection attempt for recording %d should run", recordingID)
 	}
-	saved, err := det.SaveDetection(ctx, attempt, ranges)
+	saved, err := det.SaveDetection(ctx, attempt, ranges, store.CMDetectionMaterial{})
 	testutil.RequireNoError(t, err, "saving CM detection result")
 	if !saved {
 		t.Fatalf("CM detection result for recording %d was not saved", recordingID)

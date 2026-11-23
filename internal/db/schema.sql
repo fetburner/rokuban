@@ -828,7 +828,10 @@ COMMENT ON COLUMN public.media_assets.content_revision IS 'ContentRevision „ÅØ„Ä
 CREATE TABLE public.recording_cm_detections (
     recording_id bigint NOT NULL,
     cm_ranges int8multirange NOT NULL,
-    detected_at timestamp with time zone DEFAULT now() NOT NULL
+    detected_at timestamp with time zone DEFAULT now() NOT NULL,
+    logo_ranges int8multirange,
+    structure_elements jsonb,
+    CONSTRAINT recording_cm_detections_review_material_pair CHECK (((logo_ranges IS NULL) = (structure_elements IS NULL)))
 );
 
 --

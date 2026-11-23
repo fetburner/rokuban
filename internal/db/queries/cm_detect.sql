@@ -158,10 +158,12 @@ WHERE recording_id = sqlc.arg('recording_id')
 FOR UPDATE;
 
 -- name: SaveCMDetection :exec
-INSERT INTO recording_cm_detections (recording_id, cm_ranges)
-VALUES (sqlc.arg('recording_id'), sqlc.arg('cm_ranges')::text::int8multirange)
+INSERT INTO recording_cm_detections (recording_id, cm_ranges, logo_ranges, structure_elements)
+VALUES (sqlc.arg('recording_id'), sqlc.arg('cm_ranges')::text::int8multirange,
+        sqlc.arg('logo_ranges')::text::int8multirange, sqlc.narg('structure_elements')::jsonb)
 ON CONFLICT (recording_id) DO UPDATE
-SET cm_ranges = EXCLUDED.cm_ranges, detected_at = now();
+SET cm_ranges = EXCLUDED.cm_ranges, logo_ranges = EXCLUDED.logo_ranges,
+    structure_elements = EXCLUDED.structure_elements, detected_at = now();
 
 -- name: LockCMStation :exec
 -- 局ごとのロゴ状態（cm_logos と cm_logo_areas）を書く tx の先頭で取る。

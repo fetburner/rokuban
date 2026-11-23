@@ -116,7 +116,7 @@ func testCMDetectionTrashClearsAttempt(t *testing.T, newStore NewCMDetectionStor
 	if err := f.TrashStore.SoftDelete(ctx, id); err != nil {
 		t.Fatalf("SoftDelete() error = %v", err)
 	}
-	if saved, err := f.Store.SaveDetection(ctx, third, []chapters.Range{{StartMs: 1000, EndMs: 2000}}); err != nil || saved {
+	if saved, err := f.Store.SaveDetection(ctx, third, []chapters.Range{{StartMs: 1000, EndMs: 2000}}, store.CMDetectionMaterial{}); err != nil || saved {
 		t.Fatalf("SaveDetection(trashed recording) = %v, %v; want discarded", saved, err)
 	}
 	if err := f.TrashStore.Restore(ctx, id); err != nil {
@@ -232,7 +232,7 @@ func testCMDetectionResultRangesAndRetry(t *testing.T, newStore NewCMDetectionSt
 		t.Fatalf("BeginAttempt() = %+v, %v, %v; want running", attempt, shouldRun, err)
 	}
 	ranges := []chapters.Range{{StartMs: 3000, EndMs: 4000}, {StartMs: 1000, EndMs: 3000}, {StartMs: 2000, EndMs: 5000}}
-	saved, err := f.Store.SaveDetection(ctx, attempt, ranges)
+	saved, err := f.Store.SaveDetection(ctx, attempt, ranges, store.CMDetectionMaterial{})
 	if err != nil || !saved {
 		t.Fatalf("SaveDetection() = %v, %v; want saved", saved, err)
 	}
@@ -274,7 +274,7 @@ func testCMDetectionGenerationFence(t *testing.T, newStore NewCMDetectionStore) 
 	if err != nil || !shouldRun || current.PolicyGeneration != 1 {
 		t.Fatalf("current BeginAttempt() PolicyGeneration = %d, shouldRun = %t, err = %v; want generation 1 and run", current.PolicyGeneration, shouldRun, err)
 	}
-	if saved, err := f.Store.SaveDetection(ctx, old, []chapters.Range{{StartMs: 1000, EndMs: 2000}}); err != nil || saved {
+	if saved, err := f.Store.SaveDetection(ctx, old, []chapters.Range{{StartMs: 1000, EndMs: 2000}}, store.CMDetectionMaterial{}); err != nil || saved {
 		t.Fatalf("SaveDetection(old generation) = %v, %v; want a discarded result", saved, err)
 	}
 	snapshot, err := f.ChapterStore.Read(ctx, id)
@@ -284,7 +284,7 @@ func testCMDetectionGenerationFence(t *testing.T, newStore NewCMDetectionStore) 
 	if snapshot.Detected || len(snapshot.CMRanges) != 0 {
 		t.Fatalf("old generation wrote detection = %+v, want no result", snapshot.CMRanges)
 	}
-	if saved, err := f.Store.SaveDetection(ctx, current, []chapters.Range{{StartMs: 1000, EndMs: 2000}}); err != nil || !saved {
+	if saved, err := f.Store.SaveDetection(ctx, current, []chapters.Range{{StartMs: 1000, EndMs: 2000}}, store.CMDetectionMaterial{}); err != nil || !saved {
 		t.Fatalf("SaveDetection(current generation) = %v, %v; want saved", saved, err)
 	}
 }
@@ -299,7 +299,7 @@ func testCMDetectionSavesAfterLogoAppears(t *testing.T, newStore NewCMDetectionS
 		t.Fatalf("BeginAttempt() = %+v, %v, %v; want running without a logo version", attempt, shouldRun, err)
 	}
 	f.SeedLogo(t, station, id)
-	if saved, err := f.Store.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 1000, EndMs: 2000}}); err != nil || !saved {
+	if saved, err := f.Store.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 1000, EndMs: 2000}}, store.CMDetectionMaterial{}); err != nil || !saved {
 		t.Fatalf("SaveDetection(logo appeared later) = %v, %v; want saved", saved, err)
 	}
 	snapshot, err := f.ChapterStore.Read(ctx, id)
@@ -318,7 +318,7 @@ func testCMDetectionDiscardsMissingOriginal(t *testing.T, newStore NewCMDetectio
 		t.Fatalf("BeginAttempt() = %+v, %v, %v; want running", attempt, shouldRun, err)
 	}
 	f.MarkOriginalMissing(t, id)
-	if saved, err := f.Store.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 1000, EndMs: 2000}}); err != nil || saved {
+	if saved, err := f.Store.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 1000, EndMs: 2000}}, store.CMDetectionMaterial{}); err != nil || saved {
 		t.Fatalf("SaveDetection(original missing) = %v, %v; want discarded", saved, err)
 	}
 	assertNoCMDetectionResult(t, f.ChapterStore, ctx, id, "result for a missing original")
@@ -346,7 +346,7 @@ func testCMDetectionRejectsDeletedLogo(t *testing.T, newStore NewCMDetectionStor
 	if _, err := f.CMStationStore.DeleteLogo(ctx, station); err != nil {
 		t.Fatalf("DeleteLogo() error = %v", err)
 	}
-	if saved, err := f.Store.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 1000, EndMs: 2000}}); err != nil || saved {
+	if saved, err := f.Store.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 1000, EndMs: 2000}}, store.CMDetectionMaterial{}); err != nil || saved {
 		t.Fatalf("SaveDetection(logo deleted) = %v, %v; want discarded", saved, err)
 	}
 	assertNoCMDetectionResult(t, f.ChapterStore, ctx, id, "result using a deleted logo")
@@ -403,7 +403,7 @@ func testCMDetectionRejectsChangedLogo(t *testing.T, newStore NewCMDetectionStor
 	attempt.LogoLearnedAt = &logo.LearnedAt
 	time.Sleep(time.Millisecond)
 	f.SeedLogo(t, station, id)
-	if saved, err := f.Store.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 1000, EndMs: 2000}}); err != nil || saved {
+	if saved, err := f.Store.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 1000, EndMs: 2000}}, store.CMDetectionMaterial{}); err != nil || saved {
 		t.Fatalf("SaveDetection(after logo changed) = %v, %v; want discarded", saved, err)
 	}
 	assertNoCMDetectionResult(t, f.ChapterStore, ctx, id, "result using an old logo version")
@@ -467,7 +467,7 @@ func runDetectionWaitsForChapterWrite(t *testing.T, newStore NewCMDetectionStore
 			err   error
 		}, 1)
 		go func() {
-			saved, err := f.Store.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 1000, EndMs: 2000}})
+			saved, err := f.Store.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 1000, EndMs: 2000}}, store.CMDetectionMaterial{})
 			result <- struct {
 				saved bool
 				err   error

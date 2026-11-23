@@ -344,7 +344,7 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	}
 	// 結果を 0 区間で保存すると、試行は消え、原本は消せる対象になる。
 	attempt := startCMDetectionTestAttemptRow(t, ctx, det, id)
-	saved, err := det.SaveDetection(ctx, attempt, nil)
+	saved, err := det.SaveDetection(ctx, attempt, nil, store.CMDetectionMaterial{})
 	testutil.RequireNoError(t, err, "SaveDetection")
 	if !saved {
 		t.Fatal("SaveDetection of a zero-CM result was not saved")

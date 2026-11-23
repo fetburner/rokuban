@@ -74,6 +74,48 @@ func (s *Analysis) Read(ctx context.Context, recordingID int64) (store.ChapterSn
 	return snapshot, nil
 }
 
+// ReadReview は最新の自動 CM 区間と、あれば同じ検出行のレビュー材料を読む。
+func (s *Analysis) ReadReview(ctx context.Context, recordingID int64) (store.ChapterReviewSnapshot, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return store.ChapterReviewSnapshot{}, fmt.Errorf("beginning chapter review read for recording %d: %w", recordingID, err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+	state, err := q.GetRecordingChapterState(ctx, recordingID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.ChapterReviewSnapshot{}, fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
+		}
+		return store.ChapterReviewSnapshot{}, fmt.Errorf("loading chapter review state for recording %d: %w", recordingID, err)
+	}
+	snapshot := snapshotFromState(state)
+	rangesRaw, err := q.GetRecordingCMRangesJSON(ctx, recordingID)
+	if err != nil {
+		return store.ChapterReviewSnapshot{}, fmt.Errorf("loading latest CM ranges for recording %d: %w", recordingID, err)
+	}
+	if err := json.Unmarshal(rangesRaw, &snapshot.CMRanges); err != nil {
+		return store.ChapterReviewSnapshot{}, fmt.Errorf("decoding latest CM ranges for recording %d: %w", recordingID, err)
+	}
+	review, err := q.GetRecordingChapterReviewMaterial(ctx, recordingID)
+	if err != nil {
+		return store.ChapterReviewSnapshot{}, fmt.Errorf("loading chapter review material for recording %d: %w", recordingID, err)
+	}
+	result := store.ChapterReviewSnapshot{Chapter: snapshot, MaterialsAvailable: review.MaterialsAvailable}
+	if err := json.Unmarshal(review.LogoRanges, &result.LogoRanges); err != nil {
+		return store.ChapterReviewSnapshot{}, fmt.Errorf("decoding logo ranges for recording %d: %w", recordingID, err)
+	}
+	if review.MaterialsAvailable {
+		if err := json.Unmarshal(review.StructureElements, &result.Elements); err != nil {
+			return store.ChapterReviewSnapshot{}, fmt.Errorf("decoding structure elements for recording %d: %w", recordingID, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return store.ChapterReviewSnapshot{}, fmt.Errorf("committing chapter review read for recording %d: %w", recordingID, err)
+	}
+	return result, nil
+}
+
 // Replace はユーザー層の全体を 1 つの tx で引き取る、または置き換える。
 func (s *Analysis) Replace(ctx context.Context, recordingID int64, expectedVersion string, spans []chapters.Span, requireDetectionComplete bool) error {
 	tx, err := s.pool.Begin(ctx)

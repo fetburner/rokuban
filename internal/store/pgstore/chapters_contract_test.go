@@ -57,8 +57,10 @@ VALUES ($1, 'always', '{}', true)`, id); err != nil {
 			SaveCMDetection: func(t *testing.T, id int64, ranges []chapters.Range) {
 				t.Helper()
 				if err := sqlcgen.New(pool).SaveCMDetection(context.Background(), sqlcgen.SaveCMDetectionParams{
-					RecordingID: id,
-					CmRanges:    multirange(ranges),
+					RecordingID:       id,
+					CmRanges:          multirange(ranges),
+					LogoRanges:        "{}",
+					StructureElements: []byte("[]"),
 				}); err != nil {
 					t.Fatalf("saving CM detection: %v", err)
 				}
@@ -76,7 +78,7 @@ VALUES ($1, 'always', '{}', true)`, id); err != nil {
 				if _, err := q.LockRecording(ctx, id); err != nil {
 					t.Fatalf("locking recording: %v", err)
 				}
-				if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: id, CmRanges: multirange(ranges)}); err != nil {
+				if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: id, CmRanges: multirange(ranges), LogoRanges: "{}", StructureElements: []byte("[]")}); err != nil {
 					t.Fatalf("writing CM result: %v", err)
 				}
 				return func() {

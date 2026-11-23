@@ -37,6 +37,12 @@ type CMDetectionLogo struct {
 	CodedHeight int32
 }
 
+// CMDetectionMaterial は検出完了と同時に保存する編集レビュー材料を表す。
+type CMDetectionMaterial struct {
+	LogoRanges []chapters.Range
+	Elements   []chapters.CMElement
+}
+
 // CMDetectionJob は reconcile が CM 検出ジョブを投入するための入力を表す。
 type CMDetectionJob struct {
 	RecordingID         int64
@@ -75,6 +81,7 @@ type CMDetection interface {
 	// AbortAttempt は一致する初回の running 試行を削除する。
 	AbortAttempt(ctx context.Context, attempt CMDetectionAttempt) error
 	// SaveDetection は一致する現在世代の試行について、正規化した CM 区間を保存する。
+	// レビュー材料が渡された場合は CM 区間と同じ結果行・トランザクションで保存する。
 	// 保存の時点で、試行の世代と試行回数が現在のものか、検出が desired か、試行がロゴを使っていた場合はロゴの版（learned_at）が現在のロゴと一致するかを確かめ直す。
 	// 検出が desired でなければ試行を消して false を返す。ロゴの版が違えば、試行を消して保存しない（試行を消すことは契約テストでは未検証）。
 	// ロゴを使わずに始まった試行は、後から現れたロゴとは照合しない。
@@ -85,7 +92,7 @@ type CMDetection interface {
 	//   - 「result started without a logo is saved even if a logo appears later」（ロゴを使わない試行）
 	// 試行回数の照合は契約テストでは未検証。
 	// 保存は同じ局のロゴ操作と、同じ録画のチャプター編集に直列化される。録画との直列化は RunCMDetection の「result waits for chapter edit row lock」で検査する。局との直列化は契約テストでは未検証。
-	SaveDetection(ctx context.Context, attempt CMDetectionAttempt, ranges []chapters.Range) (bool, error)
+	SaveDetection(ctx context.Context, attempt CMDetectionAttempt, ranges []chapters.Range, material CMDetectionMaterial) (bool, error)
 	// SaveLearnedLogo は局の枠版と試行が一致する場合にロゴを保存し、保存したかを返す。
 	// 保存は同じ局の枠操作と直列化される。検査: RunCMDetection の「learned logo waits and rejects the changed area version」（枠の版の照合と局ロックでの待ち）。局にロゴが既にあれば保存しない（契約テストでは未検証）。
 	SaveLearnedLogo(ctx context.Context, attempt CMDetectionAttempt, logo CMDetectionLogo, observedAreaVersion *time.Time) (saved bool, err error)

@@ -1898,6 +1898,38 @@ export const GetRecordingChaptersResponse = zod.object({
 
 
 /**
+ * 編集画面だけが使う検出レビュー材料を返す。通常再生でも毎回読む
+ * `/chapters` の応答を重くしないため、専用の読み取り口に分ける。
+ * `autoSpans` は最新の検出結果を CM 率の安全弁に通した値で、確認済みの録画でも返す。
+ * `materialsAvailable` が偽なら旧形式の検出結果などで材料が無い。真で候補が空なら、
+ * 判定材料はあるが候補が無い。
+ * @summary Get CM detection review material for chapter editing
+ */
+export const GetRecordingChapterReviewParams = zod.object({
+  "id": zod.int()
+})
+
+export const GetRecordingChapterReviewResponse = zod.object({
+  "materialsAvailable": zod.boolean().describe('判定材料が保存されているか。偽は空の候補とは異なり、材料が無いことを表す。'),
+  "logoRanges": zod.array(zod.object({
+  "startMs": zod.int(),
+  "endMs": zod.int()
+})),
+  "candidates": zod.array(zod.object({
+  "kind": zod.enum(['overcut_logo', 'overcut_grid', 'missed_cm']).describe('候補の種別。'),
+  "startMs": zod.int(),
+  "endMs": zod.int()
+})),
+  "autoSpans": zod.array(zod.object({
+  "startMs": zod.int().describe('原本の最初の映像フレームを 0 とする ms。最も近いフレーム境界へ丸めて\nある（30000/1001 fps 固定）。\n'),
+  "endMs": zod.int().describe('半開区間の終端。区間は [startMs, endMs)。'),
+  "label": zod.string().optional().describe('チャプターのラベル（`OP` / `ED` / `CM` など）。省略はラベル無しで、\nそのときは `cut` が真でなければならない（本編は行を持たない）。\n'),
+  "cut": zod.boolean().describe('真なら「本編ではない」区間として自動スキップの対象になり、カット版の\nencode が取り除く。偽でもラベルがあれば目盛りには出る（OP / ED を\n切らずに印だけ付ける）。\n')
+})).describe('最新の自動検出区間。CM 率の安全弁を通し、ユーザー所有の有無によらず返す。')
+})
+
+
+/**
  * タイムライン全体を置き換える。部分更新は無い（境界の修正は「その時点の
  * 検出結果に対する差分」なので、差分だけを送る形にすると再検出で境界が動いた
  * 瞬間に意味を失う）。

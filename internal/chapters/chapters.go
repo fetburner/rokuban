@@ -48,6 +48,120 @@ type Range struct {
 	EndMs   int64 `json:"endMs"`
 }
 
+// CMElement は join_logo_scp が構造出力に記録した要素を表す。
+type CMElement struct {
+	StartMs     int64  `json:"startMs"`
+	EndMs       int64  `json:"endMs"`
+	ErrorFrames int64  `json:"errorFrames"`
+	Label       string `json:"label"`
+}
+
+// ReviewCandidate は編集時に確認する候補の種別と時間範囲を表す。
+type ReviewCandidate struct {
+	Kind    string `json:"kind"`
+	StartMs int64  `json:"startMs"`
+	EndMs   int64  `json:"endMs"`
+}
+
+const (
+	// CandidateOvercutLogo はCM区間内のロゴ表示から導く切りすぎ候補を表す。
+	CandidateOvercutLogo = "overcut_logo"
+	// CandidateOvercutGrid は15秒格子誤差から導く切りすぎ候補を表す。
+	CandidateOvercutGrid = "overcut_grid"
+	// CandidateMissedCM は本編側のCM候補を表す。
+	CandidateMissedCM = "missed_cm"
+	// structureLabelCM はjoin_logo_scpの構造出力ラベルで、LabelCMとは異なる。
+	structureLabelCM = ":CM"
+)
+
+const (
+	// reviewLogoThresholdMs は切りすぎ候補に使うロゴ表示時間。未検証。出典は Tachikaze の値。実録画の分布は見ていない。
+	reviewLogoThresholdMs int64 = 5000
+	// reviewGridErrorFrames は切りすぎ候補に使う15秒格子からのずれ。未検証。出典は Tachikaze の値。実録画の分布は見ていない。
+	reviewGridErrorFrames int64 = 5
+	// reviewKnownLengthToleranceFrames は既知長の集約に使う許容幅。未検証。出典は Tachikaze の値。実録画の分布は見ていない。
+	reviewKnownLengthToleranceFrames int64 = 3
+)
+
+// ReviewCandidates はロゴ区間・構造出力・安全弁適用後の自動区間から要確認候補を導出する。
+// 既知CM長はカット区間に重なる :CM 構造要素（CM 1本）の長さから集める。
+func ReviewCandidates(auto []Span, logos []Range, elements []CMElement) []ReviewCandidate {
+	out := make([]ReviewCandidate, 0)
+	var cuts []Range
+	for _, span := range auto {
+		if span.Cut {
+			cuts = append(cuts, Range{StartMs: span.StartMs, EndMs: span.EndMs})
+		}
+	}
+	for _, cut := range cuts {
+		var overlap int64
+		for _, logo := range logos {
+			overlap += max(0, min(cut.EndMs, logo.EndMs)-max(cut.StartMs, logo.StartMs))
+		}
+		if overlap >= reviewLogoThresholdMs {
+			out = append(out, ReviewCandidate{Kind: CandidateOvercutLogo, StartMs: cut.StartMs, EndMs: cut.EndMs})
+		}
+	}
+	for _, element := range elements {
+		if element.Label == structureLabelCM && overlapsAny(Range{StartMs: element.StartMs, EndMs: element.EndMs}, cuts) && abs(element.ErrorFrames) > reviewGridErrorFrames {
+			out = append(out, ReviewCandidate{Kind: CandidateOvercutGrid, StartMs: element.StartMs, EndMs: element.EndMs})
+		}
+	}
+	known := knownCMFrameLengths(cuts, elements)
+	for _, element := range elements {
+		span := Range{StartMs: element.StartMs, EndMs: element.EndMs}
+		if overlapsAny(span, cuts) {
+			continue
+		}
+		length := MsToFrame(span.EndMs) - MsToFrame(span.StartMs)
+		for _, knownLength := range known {
+			if abs(length-knownLength) <= reviewKnownLengthToleranceFrames {
+				out = append(out, ReviewCandidate{Kind: CandidateMissedCM, StartMs: span.StartMs, EndMs: span.EndMs})
+				break
+			}
+		}
+	}
+	return out
+}
+
+func overlapsAny(span Range, ranges []Range) bool {
+	for _, r := range ranges {
+		if span.StartMs < r.EndMs && r.StartMs < span.EndMs {
+			return true
+		}
+	}
+	return false
+}
+
+// knownCMFrameLengths はカット区間に重なる :CM 構造要素（CM 1本）の長さを母集団として、
+// 許容幅にまとまる2本以上の長さを返す。
+func knownCMFrameLengths(cuts []Range, elements []CMElement) []int64 {
+	lengths := make([]int64, 0, len(elements))
+	for _, element := range elements {
+		span := Range{StartMs: element.StartMs, EndMs: element.EndMs}
+		if element.Label == structureLabelCM && overlapsAny(span, cuts) {
+			lengths = append(lengths, MsToFrame(span.EndMs)-MsToFrame(span.StartMs))
+		}
+	}
+	var known []int64
+	for i, length := range lengths {
+		for j, other := range lengths {
+			if i != j && abs(length-other) <= reviewKnownLengthToleranceFrames {
+				known = append(known, length)
+				break
+			}
+		}
+	}
+	return known
+}
+
+func abs(value int64) int64 {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
 // Timeline は原本の時間軸を隙間なく覆うスパン列（昇順）。本編の区間は
 // Label が空で Cut が偽。
 type Timeline []Span

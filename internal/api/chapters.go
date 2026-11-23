@@ -57,6 +57,32 @@ func (h *Server) GetRecordingChapters(ctx context.Context, req GetRecordingChapt
 	}, nil
 }
 
+// GetRecordingChapterReview は編集画面専用の検出材料と最新自動区間を返す。
+// 通常再生の応答を増やさず、ユーザー層を所有中でも比較元の自動層を返す。
+func (h *Server) GetRecordingChapterReview(ctx context.Context, req GetRecordingChapterReviewRequestObject) (GetRecordingChapterReviewResponseObject, error) {
+	if h.chapterStore == nil {
+		return nil, fmt.Errorf("chapter store is not configured")
+	}
+	state, err := h.chapterStore.ReadReview(ctx, req.Id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return GetRecordingChapterReview404JSONResponse{Error: "recording not found"}, nil
+		}
+		return nil, fmt.Errorf("loading chapter review for recording %d: %w", req.Id, err)
+	}
+	auto := chapters.AutoSpans(state.Chapter.CMRanges, state.Chapter.ProgramDurationMs)
+	var candidates []chapters.ReviewCandidate
+	if state.MaterialsAvailable {
+		candidates = chapters.ReviewCandidates(auto, state.LogoRanges, state.Elements)
+	}
+	return GetRecordingChapterReview200JSONResponse{
+		MaterialsAvailable: state.MaterialsAvailable,
+		LogoRanges:         rangesToAPI(state.LogoRanges),
+		Candidates:         candidatesToAPI(candidates),
+		AutoSpans:          chapterSpansToAPI(auto),
+	}, nil
+}
+
 // PutRecordingChapterEdits はユーザー層をタイムライン全体で置き換える。
 //
 // 最初の PUT が所有の行を作り、以後この録画では自動層を読まない。引き取りで
@@ -138,6 +164,22 @@ func chapterSpansToAPI(spans []chapters.Span) []ChapterSpan {
 			span.Label = &label
 		}
 		out = append(out, span)
+	}
+	return out
+}
+
+func rangesToAPI(ranges []chapters.Range) []ChapterRange {
+	out := make([]ChapterRange, len(ranges))
+	for i, r := range ranges {
+		out[i] = ChapterRange{StartMs: r.StartMs, EndMs: r.EndMs}
+	}
+	return out
+}
+
+func candidatesToAPI(candidates []chapters.ReviewCandidate) []ChapterReviewCandidate {
+	out := make([]ChapterReviewCandidate, len(candidates))
+	for i, c := range candidates {
+		out[i] = ChapterReviewCandidate{Kind: ChapterReviewCandidateKind(c.Kind), StartMs: c.StartMs, EndMs: c.EndMs}
 	}
 	return out
 }

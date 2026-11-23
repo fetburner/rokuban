@@ -1815,6 +1815,37 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/recordings/{id}/chapter-review:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    get:
+      operationId: getRecordingChapterReview
+      summary: Get CM detection review material for chapter editing
+      description: |
+        編集画面だけが使う検出レビュー材料を返す。通常再生でも毎回読む
+        `/chapters` の応答を重くしないため、専用の読み取り口に分ける。
+        `autoSpans` は最新の検出結果を CM 率の安全弁に通した値で、確認済みの録画でも返す。
+        `materialsAvailable` が偽なら旧形式の検出結果などで材料が無い。真で候補が空なら、
+        判定材料はあるが候補が無い。
+      responses:
+        "200":
+          description: Chapter editing review material
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecordingChapterReview"
+        "404":
+          description: Recording not found (purged)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/recordings/{id}/chapter-edits:
     parameters:
       - name: id
@@ -2536,6 +2567,53 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ChapterSpan"
+
+    RecordingChapterReview:
+      type: object
+      required: [materialsAvailable, logoRanges, candidates, autoSpans]
+      properties:
+        materialsAvailable:
+          type: boolean
+          description: 判定材料が保存されているか。偽は空の候補とは異なり、材料が無いことを表す。
+        logoRanges:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChapterRange"
+        candidates:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChapterReviewCandidate"
+        autoSpans:
+          type: array
+          description: 最新の自動検出区間。CM 率の安全弁を通し、ユーザー所有の有無によらず返す。
+          items:
+            $ref: "#/components/schemas/ChapterSpan"
+
+    ChapterRange:
+      type: object
+      required: [startMs, endMs]
+      properties:
+        startMs:
+          type: integer
+          format: int64
+        endMs:
+          type: integer
+          format: int64
+
+    ChapterReviewCandidate:
+      type: object
+      required: [kind, startMs, endMs]
+      properties:
+        kind:
+          type: string
+          description: 候補の種別。
+          enum: [overcut_logo, overcut_grid, missed_cm]
+        startMs:
+          type: integer
+          format: int64
+        endMs:
+          type: integer
+          format: int64
 
     ChapterSpan:
       type: object

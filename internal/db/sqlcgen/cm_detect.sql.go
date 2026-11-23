@@ -7,6 +7,7 @@ package sqlcgen
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -1185,19 +1186,28 @@ func (q *Queries) MarkCMLogoCandidateReady(ctx context.Context, arg MarkCMLogoCa
 }
 
 const saveCMDetection = `-- name: SaveCMDetection :exec
-INSERT INTO recording_cm_detections (recording_id, cm_ranges)
-VALUES ($1, $2::text::int8multirange)
+INSERT INTO recording_cm_detections (recording_id, cm_ranges, logo_ranges, structure_elements)
+VALUES ($1, $2::text::int8multirange,
+        $3::text::int8multirange, $4::jsonb)
 ON CONFLICT (recording_id) DO UPDATE
-SET cm_ranges = EXCLUDED.cm_ranges, detected_at = now()
+SET cm_ranges = EXCLUDED.cm_ranges, logo_ranges = EXCLUDED.logo_ranges,
+    structure_elements = EXCLUDED.structure_elements, detected_at = now()
 `
 
 type SaveCMDetectionParams struct {
-	RecordingID int64
-	CmRanges    string
+	RecordingID       int64
+	CmRanges          string
+	LogoRanges        string
+	StructureElements json.RawMessage
 }
 
 func (q *Queries) SaveCMDetection(ctx context.Context, arg SaveCMDetectionParams) error {
-	_, err := q.db.Exec(ctx, saveCMDetection, arg.RecordingID, arg.CmRanges)
+	_, err := q.db.Exec(ctx, saveCMDetection,
+		arg.RecordingID,
+		arg.CmRanges,
+		arg.LogoRanges,
+		arg.StructureElements,
+	)
 	return err
 }
 
