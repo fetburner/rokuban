@@ -338,7 +338,7 @@ ScaledJob の `--once` では、プロセスのメモリが毎回空から始ま
 <details><summary>根拠</summary>
 
 - 失った後に作り直され、Warn がもう 1 回出て、系列が出ないこと: `TestEncodeReconcile_LostSnapshotIsRebuiltAndWarnsAgain`
-- 古い時刻の件数で上書きしないこと: `TestRecordTransferBacklog_StaleCountDoesNotOverwrite`
-- 並行する保存で変化を見るのが 1 つだけであること: `TestRecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce`
+- 古い時刻の件数で上書きしないこと: `TestStorageTransferStoreContract/RecordTransferBacklog_StaleCountDoesNotOverwrite`
+- 並行する保存で変化を見るのが 1 つだけであること: `TestStorageTransferStoreContract/RecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce`
 
 </details>

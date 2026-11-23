@@ -170,12 +170,12 @@ desired の置き場から外れた配置は、削除 reconcile の腕の 1 つ�
 - 保存せずに抜けた試行は、世代を上げて先頭から取り直し、失敗として数えない: `TestStorageTransferWorkerRestartsFromSourceWhenPreviousAttemptFailed`
 - 長さや状態が合わない引き継ぎは失敗として 1 回数える。次の試行は世代を上げて取り直し、合わなかった世代の temp を消す: `TestStorageTransferWorkerRestartsWhenSavedTempLengthDiffers`
 - 転送元の接続が切れて失敗した試行の次は、切れた位置から Range で続ける: `TestStorageTransferWorkerResumesFromWrittenBytesAfterRemoteDisconnect`
-- コピーを pending でなくす transaction と並行に進捗を取っても、行を作らない: `TestTransferProgressAcquireWaitsForConcurrentCopyRetirement`
+- コピーを pending でなくす transaction と並行に進捗を取っても、行を作らない。検査は `TestStorageTransferStoreContract/TransferProgressAcquireWaitsForConcurrentCopyRetirement`
 - slice の時間で止まって保存し snooze し、繰り返すと完了する: `TestStorageTransferWorkerSliceStopsAndResumesToCompletion`
 - slice が止まったとき自分の lease が切れていて保存できなければ、成功で終えず snooze する: `TestStorageTransferWorkerSnoozesWhenOwnLeaseExpiredDuringSlice`
-- lease を別の試行に取られた試行の保存を拒む: `TestTransferProgressZombieSaveIsRejected`
-- lease が切れた後の、持ち主自身の保存を拒む: `TestTransferProgressSaveAfterOwnLeaseExpiryIsRejected`
-- 進捗の行は、コピーが pending でなくなるときに消える: `TestTransferProgressRowIsDeletedWithPendingCopy`
+- lease を別の試行に取られた試行の保存を拒む: `TestStorageTransferStoreContract/TransferProgressZombieSaveIsRejected`
+- lease が切れた後の、持ち主自身の保存を拒む: `TestStorageTransferStoreContract/TransferProgressSaveAfterOwnLeaseExpiryIsRejected`
+- 進捗の行は、コピーが pending でなくなるときに消える: `TestStorageTransferStoreContract/TransferProgressRowIsDeletedWithPendingCopy`
 - 古い世代の temp は回収し、今の世代の temp と猶予内の進捗の無い temp は残す: `TestTransferTempOrphanCleanupFollowsProgressGeneration`
 - temp 名の旧形式と新形式の判定: `TestParseStorageTransferTempFile`
 - 記録済みの SHA-256 を上書きしない: `TestCompleteMediaAssetTransferRejectsChangedSHA`
@@ -239,13 +239,13 @@ desired の置き場から外れた配置は、削除 reconcile の腕の 1 つ�
 - 宛先キーの照合は、Head の SHA-256 があれば中身を読まず、無ければ読んで測る: `TestExistingTransferredObjectUsesHeadSHA256`
 - 照合の途中で lease が引き継がれても、続きから読む: `TestStorageTransferWorkerResumesSourceVerificationAfterHandoff`
 - 世代が変わった後の SHA-256 の観測を書かない: `TestStorageTransferWorkerDoesNotRecordSHA256AfterGenerationChanges`
-- 送信状態の引き継ぎは、きれいなときだけ続きから: `TestTransferProgressCleanHandoffResumesSavedState`
-- 送信状態を次の試行へ返すのは、きれいな引き継ぎのときだけ: `TestTransferUploadSavedStateReturnsOnlyOnCleanHandoff`
-- 置き換えと行の削除で古い送信状態が掃除待ちに移る: `TestTransferUploadReplaceAbandonsPreviousState` / `TestTransferUploadRowDeletionAbandonsState`
-- 掃除待ちは置き場で絞り、ID 順に返す: `TestTransferUploadAbandonedListFiltersByStoreInIDOrder`
+- 送信状態の引き継ぎは、きれいなときだけ続きから: `TestStorageTransferStoreContract/TransferProgressCleanHandoffResumesSavedState`
+- 送信状態を次の試行へ返すのは、きれいな引き継ぎのときだけ: `TestStorageTransferStoreContract/TransferUploadSavedStateReturnsOnlyOnCleanHandoff`
+- 置き換えと行の削除で古い送信状態が掃除待ちに移る。置き換えの検査は `TestStorageTransferStoreContract/TransferUploadReplaceAbandonsPreviousState`。行の削除の検査は `TestStorageTransferStoreContract/TransferUploadRowDeletionAbandonsState`
+- 掃除待ちは置き場で絞り、ID 順に返す: `TestStorageTransferStoreContract/TransferUploadAbandonedListFiltersByStoreInIDOrder`
 - 送信状態の表は、置き場と状態の両方か、どちらも無いかだけを表現する: `TestTransferUploadPairCheckRejectsHalfState`
-- 観測値は NULL の行で、現在の世代のものだけ書く: `TestRecordObservedMediaAssetSHA256WritesOnlyUnknownCurrentGeneration`
-- 照合の途中経過は lease の引き継ぎをまたいで残る: `TestTransferSourceVerificationSurvivesHandoffs`
+- 観測値は NULL の行で、現在の世代のものだけ書く。検査は `TestStorageTransferStoreContract/RecordObservedMediaAssetSHA256WritesOnlyUnknownCurrentGeneration`
+- 照合の途中経過は lease の引き継ぎをまたいで残る: `TestStorageTransferStoreContract/TransferSourceVerificationSurvivesHandoffs`
 - 照合の状態は送信状態と同じ行に共存しない: `TestTransferSourceVerificationExcludesUploadState`
 
 </details>
