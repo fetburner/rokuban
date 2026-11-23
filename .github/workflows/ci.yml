@@ -294,6 +294,7 @@ jobs:
           --health-timeout 3s
           --health-retries 5
     env:
+      MEASURE_2181_TMP: ${{ runner.temp }}
       ROKUBAN_TEST_DATABASE_URL: postgres://rokuban:rokuban@localhost:5432/rokuban_test?sslmode=disable
       ROKUBAN_TEST_REDIS_URL: redis://localhost:6379/0
       # 実 ffmpeg / ffprobe を回すテスト（この変数を見るもの）を
