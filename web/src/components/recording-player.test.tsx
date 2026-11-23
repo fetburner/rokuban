@@ -1080,6 +1080,35 @@ describe('RecordingPlayer のチャプター', () => {
   const asset = [{ profile: 'h264', sizeBytes: 123 }]
   const cmSpan = { startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }
 
+  it('編集中の下書き編集を編集バーの区間名へ両方向に反映する', () => {
+    const baseProps = {
+      recordingId: 1020,
+      encodedAssets: asset,
+      chapterVersion: 'v1',
+      chapterEditing: true,
+      onSaveChapters: () => Promise.resolve(),
+      onResetChapters: () => {},
+    }
+    const cmView = render(<RecordingPlayer {...baseProps} chapters={[cmSpan]} />)
+    const cmVideo = cmView.container.querySelector('video')!
+    setMediaProps(cmVideo, { duration: 120, currentTime: 15, paused: true })
+    fireEvent.loadedMetadata(cmVideo)
+    fireEvent.timeUpdate(cmVideo)
+    expect(cmView.getByTestId('chapter-edit-current-name')).toHaveTextContent('CM')
+    fireEvent.click(cmView.getByRole('button', { name: '削除' }))
+    expect(cmView.getByTestId('chapter-edit-current-name')).toHaveTextContent('本編')
+    cmView.unmount()
+
+    const mainView = render(<RecordingPlayer {...baseProps} chapters={[]} />)
+    const mainVideo = mainView.container.querySelector('video')!
+    setMediaProps(mainVideo, { duration: 120, currentTime: 15, paused: true })
+    fireEvent.loadedMetadata(mainVideo)
+    fireEvent.timeUpdate(mainVideo)
+    expect(mainView.getByTestId('chapter-edit-current-name')).toHaveTextContent('本編')
+    fireEvent.click(mainView.getByRole('button', { name: 'ここから最後まで切る' }))
+    expect(mainView.getByTestId('chapter-edit-current-name')).toHaveTextContent('CM')
+  })
+
   it('未取得または検出中は「チャプターを直す」を出さない', () => {
     const { container, queryByRole, rerender } = render(
       <RecordingPlayer

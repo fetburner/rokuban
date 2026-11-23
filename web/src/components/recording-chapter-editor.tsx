@@ -7,6 +7,7 @@ import {
   FRAME_SECONDS,
   chapterBoundaries,
   chapterSpanIndexesAtBoundary,
+  chapterSpanIndexAtSeconds,
   displayedFrameBoundaryMs,
   moveChapterBoundary,
   nearestChapterBoundary,
@@ -47,6 +48,8 @@ type RecordingChapterEditorProps = {
   onBoundaryAction: (seconds: number) => void
   /** 選んでいる境界（既定は再生位置に最も近い境界）。映像側の「前後 3 秒」「境界まで」「境界から」が使う。 */
   onSelectedBoundaryChange: (seconds: number | null) => void
+  /** 編集中の下書きを、同じ再生画面の表示用に共有する。 */
+  onDraftChange?: (spans: ChapterSpan[]) => void
   /** 保存は成功で resolve、失敗で reject。 */
   onSave: (spans: ChapterSpan[], version: string) => Promise<unknown>
   onReset: () => Promise<unknown>
@@ -87,6 +90,7 @@ function ChapterDraftEditor({
   jumpTo,
   onBoundaryAction,
   onSelectedBoundaryChange,
+  onDraftChange,
   onSave,
   onReset,
   pending,
@@ -112,6 +116,9 @@ function ChapterDraftEditor({
   useEffect(() => {
     draftRef.current = draft
   }, [draft])
+  useLayoutEffect(() => {
+    onDraftChange?.(draft)
+  }, [draft, onDraftChange])
   useEffect(() => {
     labelEditRef.current = null
   }, [base.spans, base.version])
@@ -125,6 +132,12 @@ function ChapterDraftEditor({
     setAdoptNext(false)
   }, [spans, version])
   const boundaries = useMemo(() => chapterBoundaries(draft), [draft])
+  const playingSpanIndex = isPlaying ? chapterSpanIndexAtSeconds(draft, currentSeconds) : -1
+  const playingSpanKey = playingSpanIndex < 0
+    ? null
+    : `${draft[playingSpanIndex].startMs}-${draft[playingSpanIndex].endMs}-${playingSpanIndex}`
+  const playingRowRef = useRef<HTMLLIElement | null>(null)
+  const spanListRef = useRef<HTMLElement | null>(null)
   const dirty = useMemo(() => !sameSpans(draft, base.spans), [draft, base.spans])
   const [selectedBoundaryValue, setSelectedBoundaryValue] = useState<number | null>(null)
   const [pendingStartMs, setPendingStartMs] = useState<number | null>(null)
@@ -197,6 +210,17 @@ function ChapterDraftEditor({
   useEffect(() => {
     onSelectedBoundaryChange(selectedBoundary)
   }, [onSelectedBoundaryChange, selectedBoundary])
+
+  useEffect(() => {
+    if (!isPlaying || playingSpanIndex < 0) return
+    const list = spanListRef.current
+    const row = playingRowRef.current
+    if (!list || !row) return
+    const listRect = list.getBoundingClientRect()
+    const rowRect = row.getBoundingClientRect()
+    if (rowRect.top < listRect.top) list.scrollTop -= listRect.top - rowRect.top
+    else if (rowRect.bottom > listRect.bottom) list.scrollTop += rowRect.bottom - listRect.bottom
+  }, [isPlaying, playingSpanIndex, playingSpanKey])
 
   // 境界を選ぶ操作はすべてここを通り、映像を境界のコマへ連れて行って止める。
   const selectBoundary = useCallback((seconds: number) => {
@@ -357,6 +381,7 @@ function ChapterDraftEditor({
       {/* 右の列は高さを映像の行に任せ（絶対配置）、一覧だけがスクロールする。 */}
       <div className="relative min-h-0 min-w-0 md:col-start-2 md:row-start-1">
       <section
+        ref={spanListRef}
         data-testid="chapter-span-list"
         aria-label="区間の一覧"
         className="h-full overflow-y-auto overscroll-contain rounded-md border border-border/70 p-2 md:absolute md:inset-0 md:h-auto"
@@ -391,10 +416,12 @@ function ChapterDraftEditor({
               const selected = selectedEdge !== 'false'
               return (
                 <li
+                  ref={index === playingSpanIndex ? playingRowRef : undefined}
                   key={`${span.startMs}-${span.endMs}-${index}`}
                   data-testid="chapter-span-row"
                   data-selected={selectedEdge}
-                  className={`relative grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1 rounded-lg border py-2 pr-2 pl-5 ${selected ? 'border-foreground ring-1 ring-foreground' : 'border-border'}`}
+                  data-playing={index === playingSpanIndex ? 'true' : 'false'}
+                  className={`relative grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1 rounded-lg border py-2 pr-2 pl-5 ${selected ? 'border-foreground ring-1 ring-foreground' : index === playingSpanIndex ? 'border-sky-500' : 'border-border'} ${index === playingSpanIndex ? 'bg-sky-500/10' : ''}`}
                 >
                   <span
                     aria-hidden="true"

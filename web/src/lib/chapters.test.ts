@@ -7,6 +7,10 @@ import {
   autoSkipSeekSeconds,
   chapterBoundaryMsToSeekSeconds,
   chapterBoundaries,
+  chapterEntries,
+  chapterEntryIndexAtSeconds,
+  chapterLabel,
+  chapterSpanIndexAtSeconds,
   chapterJumpTarget,
   chapterSpanIndexesAtBoundary,
   displayedFrameBoundaryMs,
@@ -55,6 +59,28 @@ describe('skipTarget', () => {
 
   it('duration が未確定でも終端へ飛ぶ', () => {
     expect(skipTarget(spans, 9.8, 10.1, Number.NaN)).toBe(20)
+  })
+})
+
+describe('chapter entries and names', () => {
+  it('同じ区間包含判定から現在の entry index と表示名を導く', () => {
+    const spans = [cm(10_000, 20_000), op(30_000, 40_000)]
+    expect(chapterLabel(spans[0]!)).toBe('CM')
+    expect(chapterEntries(spans, 50)).toEqual([
+      { start: 0, end: 10, label: '本編' },
+      { start: 10, end: 20, label: 'CM' },
+      { start: 20, end: 30, label: '本編' },
+      { start: 30, end: 40, label: 'OP' },
+      { start: 40, end: 50, label: '本編' },
+    ])
+    expect(chapterEntryIndexAtSeconds(chapterEntries(spans, 50), 10)).toBe(1)
+    expect(chapterEntryIndexAtSeconds(chapterEntries(spans, 50), 20)).toBe(2)
+    expect(chapterEntryIndexAtSeconds([], 20)).toBe(-1)
+    expect(chapterSpanIndexAtSeconds(spans, 10)).toBe(0)
+    expect(chapterSpanIndexAtSeconds(spans, 20)).toBe(-1)
+    const entries = chapterEntries(spans, 50)
+    expect(entries[chapterEntryIndexAtSeconds(entries, 10)]?.label).toBe('CM')
+    expect(entries[chapterEntryIndexAtSeconds(entries, 20)]?.label).toBe('本編')
   })
 })
 

@@ -273,6 +273,7 @@ export function RecordingPlayer({
     () => (playingCut || chapterEditing ? [] : (chapters ?? [])),
     [chapters, chapterEditing, playingCut],
   )
+  const [editorDraftSpans, setEditorDraftSpans] = useState<ChapterSpan[]>(chapters ?? [])
   const navigateToRecordingRef = useRef(onNavigateToRecording)
   navigateToRecordingRef.current = onNavigateToRecording
   const nextEpisodeRef = useRef(nextEpisode)
@@ -567,7 +568,7 @@ export function RecordingPlayer({
         currentSeconds={currentSeconds}
         durationSeconds={durationSeconds}
         playedFraction={playedFraction}
-        chapters={chapterSpans}
+        chapters={chapterEditing ? editorDraftSpans : chapterSpans}
         playingCut={playingCut}
         chapterEditing={chapterEditing}
         canEditChapters={
@@ -769,6 +770,7 @@ export function RecordingPlayer({
             jumpTo={jumpTo}
             onBoundaryAction={chapterPlayback.selectBoundary}
             onSelectedBoundaryChange={setEditorSelected}
+            onDraftChange={setEditorDraftSpans}
             onSave={onSaveChapters}
             onReset={async () => await onResetChapters()}
             pending={chapterSavePending}

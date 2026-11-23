@@ -14,6 +14,42 @@
 
 import type { ChapterSpan } from '@/api/generated'
 
+export type ChapterEntry = { start: number; end: number; label: string }
+
+/** chapterLabel はチャプター区間の表示名を返す。 */
+export function chapterLabel(span: ChapterSpan): string {
+  return span.label ?? (span.cut ? 'CM' : 'チャプター')
+}
+
+function secondsInRange(seconds: number, start: number, end: number): boolean {
+  return seconds >= start && seconds < end
+}
+
+/** chapterSpanIndexAtSeconds は時刻を含むチャプター区間の index を返す。区間外は -1。 */
+export function chapterSpanIndexAtSeconds(spans: ChapterSpan[], seconds: number): number {
+  return spans.findIndex((span) => secondsInRange(seconds, span.startMs / 1000, span.endMs / 1000))
+}
+
+/** chapterEntryIndexAtSeconds は時刻を含む表示区間の index を返す。区間外は -1。 */
+export function chapterEntryIndexAtSeconds(entries: ChapterEntry[], seconds: number): number {
+  return entries.findIndex((entry) => secondsInRange(seconds, entry.start, entry.end))
+}
+
+/** chapterEntries は区間と隙間（本編）を時刻順に並べる。終端は duration が分かるときだけ閉じる。 */
+export function chapterEntries(spans: ChapterSpan[], durationSeconds: number): ChapterEntry[] {
+  const out: ChapterEntry[] = []
+  let cursor = 0
+  for (const span of [...spans].sort((a, b) => a.startMs - b.startMs)) {
+    const start = span.startMs / 1000
+    const end = span.endMs / 1000
+    if (start > cursor) out.push({ start: cursor, end: start, label: '本編' })
+    out.push({ start, end, label: chapterLabel(span) })
+    cursor = Math.max(cursor, end)
+  }
+  if (durationSeconds > cursor) out.push({ start: cursor, end: durationSeconds, label: '本編' })
+  return out
+}
+
 /** CHAPTER_SKIP_STORAGE_KEY は自動スキップの ON / OFF（端末ごとの好み）。 */
 export const CHAPTER_SKIP_STORAGE_KEY = 'rokuban:chapter-skip'
 
