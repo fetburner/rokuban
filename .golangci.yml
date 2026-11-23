@@ -298,11 +298,13 @@ linters:
           # conformance/harness は複数のテストパッケージが共有するため _test.go に置けないが、
           # conformance タグ付きでテストからしか使われない（docker / go build を起動する）。
           # scripts/citest は CI が go run で呼ぶ判定ツールで、go list だけを子プロセスで起動する。
+          # scripts/testcache は CI が go run で呼ぶ判定ツールで、git と go list を子プロセスで起動する。
           list-mode: lax
           files:
             - "!$test"
             - "!${config-path}/internal/mirakc/conformance/harness/**"
             - "!${config-path}/scripts/citest/**"
+            - "!${config-path}/scripts/testcache/**"
             - "!${config-path}/internal/worker/**"
             - "!${config-path}/internal/cmdetect/**"
             - "!${config-path}/internal/encode/**"

@@ -1,6 +1,6 @@
 # PR と main の役割分担
 # PR は変更が影響しうる検証に絞って結果を早く返す。その絞り込みの安全網は main への
-# push ごとの全件実行だけとし、Go テストは -count=1 を維持する。
+# push ごとの全件実行だけとする。main は各 shard でテスト結果を失効させて全件を回し、その結果を PR が使うキャッシュとして保存する。
 # main のコミットごとの結果を残すため、後続の push があっても cancel-in-progress で止めない。
 # PR が緑で main が落ちたら、原因の PR の作者（エージェントを含む）が修正 PR を出す。revert はしない。
 # 集約ジョブは、計画段階で対象が空と判定した場合だけ shard の skip を成功とする。
@@ -237,6 +237,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      cache_date: ${{ steps.plan.outputs.cache_date }}
+      shard_count: ${{ steps.plan.outputs.shard_count }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -250,9 +252,11 @@ jobs:
           restore-keys: go-test-timings-
       - id: plan
         run: |
+          echo "cache_date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
           go list ./... > "$RUNNER_TEMP/packages.txt"
           go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions 3 < "$RUNNER_TEMP/packages.txt" > "$RUNNER_TEMP/matrix.json"
           echo "matrix=$(cat "$RUNNER_TEMP/matrix.json")" >> "$GITHUB_OUTPUT"
+          echo "shard_count=$(jq '.include | length' "$RUNNER_TEMP/matrix.json")" >> "$GITHUB_OUTPUT"
 
   test-shard:
     name: test (${{ matrix.description }})
@@ -285,6 +289,8 @@ jobs:
           --health-timeout 3s
           --health-retries 5
     env:
+      GOCACHE: ${{ runner.temp }}/go-build-cache
+      GOMODCACHE: ${{ runner.temp }}/go-mod-cache
       ROKUBAN_TEST_DATABASE_URL: postgres://rokuban:rokuban@localhost:5432/rokuban_test?sslmode=disable
       ROKUBAN_TEST_REDIS_URL: redis://localhost:6379/0
       # 実 ffmpeg / ffprobe を回すテスト（この変数を見るもの）を
@@ -295,7 +301,44 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          # setup-go の既定キャッシュ（キーは go.sum だけ）は使わず、外部入力を入れたキーで GOCACHE を保存する。
+          cache: false
+      - id: mod-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/go-mod-cache
+          key: go-mod-${{ hashFiles('go.sum') }}
+          restore-keys: go-mod-
       - uses: ./.github/actions/install-apt-cached
+      - id: shard-cache-key
+        name: Build Go test cache key
+        env:
+          POSTGRES_CONTAINER_ID: ${{ job.services.postgres.id }}
+          REDIS_CONTAINER_ID: ${{ job.services.redis.id }}
+          CACHE_DATE: ${{ needs.test-matrix.outputs.cache_date }}
+        run: |
+          postgres_id=$(docker inspect --format '{{.Image}}' "$POSTGRES_CONTAINER_ID")
+          redis_id=$(docker inspect --format '{{.Image}}' "$REDIS_CONTAINER_ID")
+          postgres_digest=$(docker image inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}' "$postgres_id")
+          redis_digest=$(docker image inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}' "$redis_id")
+          postgres_digest=${postgres_digest##*@}
+          redis_digest=${redis_digest##*@}
+          postgres_digest=${postgres_digest#sha256:}
+          redis_digest=${redis_digest#sha256:}
+          ffmpeg_version=$(dpkg-query -W -f='${Version}' ffmpeg | tr -cs 'A-Za-z0-9_.-' '-')
+          prefix="go-test-cache-$(go env GOVERSION)-${postgres_digest}-${redis_digest}-${ffmpeg_version}-"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+          echo "key=${prefix}${CACHE_DATE}" >> "$GITHUB_OUTPUT"
+      - id: go-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/go-build-cache
+          key: ${{ steps.shard-cache-key.outputs.key }}
+          restore-keys: ${{ steps.shard-cache-key.outputs.prefix }}
+      - name: Normalize checkout mtimes
+        run: go run ./scripts/testcache normalize
+      - name: Find packages with external CI test dependencies
+        run: go run ./scripts/testcache declared-packages > "$RUNNER_TEMP/always-run-packages.txt"
       # API / streamer のテストは DistFS に fstest.MapFS を渡し、go:embed all:dist の置き場は追跡済みの web/dist/.gitkeep が満たす。そのためフロントエンドのビルドは要らない。
       # DB を使うテストはパッケージごとに専用データベースを作るため（internal/testutil.SetupDB）、
       # 待ち合わせも踏み合いもなく並行実行できる。
@@ -313,15 +356,74 @@ jobs:
         shell: bash
         env:
           PACKAGES: ${{ matrix.packages }}
-          TIMING_FILE: timing-${{ matrix.id }}.json
+          TIMING_FILE: ${{ runner.temp }}/timing-${{ matrix.id }}.json
+          ALWAYS_TIMING_FILE: ${{ runner.temp }}/timing-always-${{ matrix.id }}.json
+          CACHED_TIMING_FILE: ${{ runner.temp }}/timing-cached-${{ matrix.id }}.json
+          ALWAYS_RUN_FILE: ${{ runner.temp }}/always-run-packages.txt
+          CACHE_HIT: ${{ steps.go-cache.outputs.cache-hit }}
+          SHARD_CACHE_KEY: ${{ steps.shard-cache-key.outputs.key }}
+          CACHE_STATE_FILE: ${{ runner.temp }}/go-test-cache-state-${{ matrix.id }}.txt
         run: |
           read -r -a pkgs <<< "$PACKAGES"
-          go run gotest.tools/gotestsum@v1.13.0 --jsonfile "$TIMING_FILE" -- -race -p 8 -count=1 -timeout 10m "${pkgs[@]}"
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+            cache_cleaned_at=$(date +%s%N)
+            printf '%s\n%s\n%s\n' "$cache_cleaned_at" "$SHARD_CACHE_KEY" "$CACHE_HIT" > "$CACHE_STATE_FILE"
+            # main は全件を再実行する。最も早い失効時刻を集約時に先に残し、全 shard の結果を有効にする。
+            go clean -testcache
+            go run gotest.tools/gotestsum@v1.13.0 --jsonfile "$TIMING_FILE" -- -race -p 8 -timeout 10m "${pkgs[@]}"
+          else
+            # テストバイナリの外の依存を宣言したパッケージだけを毎回実行する。
+            # cmd/rokuban が go build . でビルドするソースはテストバイナリの入力にも含まれるので、キャッシュの判定が追える。
+            # none の宣言は追加依存が無いことを表す。
+            mapfile -t declared < "$ALWAYS_RUN_FILE"
+            declare -A declared_set=()
+            for pkg in "${declared[@]}"; do declared_set["$pkg"]=1; done
+            always=()
+            cached=()
+            for pkg in "${pkgs[@]}"; do
+              if [[ -n "${declared_set[$pkg]+x}" ]]; then always+=("$pkg"); else cached+=("$pkg"); fi
+            done
+            if ((${#always[@]})); then
+              always_status=0
+              go run gotest.tools/gotestsum@v1.13.0 --jsonfile "$ALWAYS_TIMING_FILE" -- -race -p 8 -count=1 -timeout 10m "${always[@]}" || always_status=$?
+            else
+              always_status=0
+              : > "$ALWAYS_TIMING_FILE"
+            fi
+            if ((${#cached[@]})); then
+              cached_status=0
+              go run gotest.tools/gotestsum@v1.13.0 --jsonfile "$CACHED_TIMING_FILE" -- -race -p 8 -timeout 10m "${cached[@]}" || cached_status=$?
+            else
+              cached_status=0
+              : > "$CACHED_TIMING_FILE"
+            fi
+            cat "$ALWAYS_TIMING_FILE" "$CACHED_TIMING_FILE" > "$TIMING_FILE"
+            if ((always_status != 0 || cached_status != 0)); then exit 1; fi
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: go-test-timing-${{ matrix.id }}
-          path: timing-${{ matrix.id }}.json
-          # 同じ run の test-timings に渡すだけ。残すのは cache 側。
+          path: ${{ runner.temp }}/timing-${{ matrix.id }}.json
+          retention-days: 1
+      - name: Save Go module cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.id == '1' && steps.mod-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/go-mod-cache
+          key: go-mod-${{ hashFiles('go.sum') }}
+      - name: Upload Go cache shard for daily consolidation
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: go-test-cache-data-${{ matrix.id }}
+          path: ${{ runner.temp }}/go-build-cache
+          retention-days: 1
+      - name: Upload Go cache input state
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v7
+        with:
+          name: go-test-cache-state-${{ matrix.id }}
+          path: ${{ runner.temp }}/go-test-cache-state-${{ matrix.id }}.txt
           retention-days: 1
 
   mysql-contract-test:
@@ -356,17 +458,92 @@ jobs:
       - name: Run MySQL store contract tests
         run: go test -race -count=1 ./internal/mysqldb ./internal/mysqltest ./internal/store/mysqlstore
 
-  # main の実行だけが見積もりを更新する。PR はこの保存を行わず、main のキャッシュを読むだけ。
+  # main の shard は別々に実行するため、実行結果の GOCACHE を集めて日次キャッシュにまとめる。
+  # Actions のキャッシュは同じキーを上書きできないため、当日分があれば保存しない。
+  # 新しい日次キャッシュを保存した後、古い go-test-cache- のキーを削除する。
   test-timings:
-    needs: test-shard
+    needs: [test-shard, test-matrix]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/download-artifact@v8
         with:
           pattern: go-test-timing-*
           merge-multiple: true
           path: timings
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: go-test-cache-state-*
+          merge-multiple: false
+          path: cache-state
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: go-test-cache-data-*
+          merge-multiple: false
+          path: cache-artifacts
+      - id: cache-plan
+        env:
+          EXPECTED_SHARDS: ${{ needs.test-matrix.outputs.shard_count }}
+        run: |
+          compatible=true
+          state_count=0
+          for state in cache-state/go-test-cache-state-*/*.txt; do
+            [[ -f "$state" ]] || continue
+            ((state_count += 1))
+            timestamp=$(sed -n '1p' "$state")
+            key=$(sed -n '2p' "$state")
+            hit=$(sed -n '3p' "$state")
+            if [[ -z "${cache_key:-}" ]]; then cache_key=$key; cache_hit=$hit; fi
+            if [[ "$key" != "$cache_key" || "$hit" != "$cache_hit" ]]; then
+              compatible=false
+              echo "::warning::Go cache shards cannot be combined under one key; skipping cache save"
+              break
+            fi
+            printf '%s\t%s\n' "$timestamp" "${state#cache-state/go-test-cache-state-}" >> "$RUNNER_TEMP/go-cache-order.tsv"
+          done
+          if ((state_count != EXPECTED_SHARDS)); then
+            compatible=false
+            echo "::warning::Go cache state artifacts are incomplete; skipping cache save"
+          fi
+          save=false
+          if [[ "$compatible" == true && "$cache_hit" != true ]]; then save=true; fi
+          echo "compatible=$compatible" >> "$GITHUB_OUTPUT"
+          echo "save=$save" >> "$GITHUB_OUTPUT"
+          if [[ "$compatible" == true ]]; then
+            echo "key=$cache_key" >> "$GITHUB_OUTPUT"
+            echo "cache_hit=$cache_hit" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Merge shard Go caches
+        if: steps.cache-plan.outputs.save == 'true'
+        run: |
+          mkdir -p go-cache
+          # Go の内部形式は読まず、最も早い失効記録を cp -an で先に残す。後続の shard の結果もその時刻より新しい。
+          while IFS=$'\t' read -r _ shard_dir; do
+            shard_cache="cache-artifacts/go-test-cache-data-${shard_dir%/*}"
+            [[ -d "$shard_cache" ]] || { echo "::error::Missing Go cache artifact: $shard_cache"; exit 1; }
+            cp -an "$shard_cache"/. go-cache/
+          done < <(sort -n -k1,1 "$RUNNER_TEMP/go-cache-order.tsv")
+      - id: cache-save
+        uses: actions/cache/save@v6
+        if: steps.cache-plan.outputs.save == 'true'
+        with:
+          path: go-cache
+          key: ${{ steps.cache-plan.outputs.key }}
+      - name: Remove older Go test cache entries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_KEY: ${{ steps.cache-plan.outputs.key }}
+        if: steps.cache-plan.outputs.compatible == 'true' && (steps.cache-plan.outputs.cache_hit == 'true' || steps.cache-save.outcome == 'success')
+        run: |
+          gh cache list --key go-test-cache- --limit 1000 --json id,key |
+            jq -r --arg current "$CURRENT_KEY" '.[] | select(.key | startswith("go-test-cache-")) | select(.key != $current) | .id' |
+            while IFS= read -r cache_id; do
+              [[ -n "$cache_id" ]] && gh cache delete "$cache_id"
+            done
       - uses: actions/cache/save@v6
         with:
           path: timings

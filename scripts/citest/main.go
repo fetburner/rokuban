@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/fetburner/rokuban/scripts/internal/cideps"
 )
 
 func main() {
@@ -101,8 +103,8 @@ func selectPackages(root, tags string, patterns, changed []string) ([]string, er
 	}
 	check := packageSelection{
 		root: root, changed: files,
-		declarations: make(map[string][]extraDependency),
-		extraMatches: make(map[extraDependency]bool),
+		declarations: make(map[string][]cideps.Dependency),
+		extraMatches: make(map[cideps.Dependency]bool),
 	}
 	var selected []string
 	for _, target := range targets {
@@ -125,14 +127,15 @@ func selectPackages(root, tags string, patterns, changed []string) ([]string, er
 // 全件にし、判定の変更が同じ PR の検証を外すことを防ぐ。
 func requiresAllPackages(name string) bool {
 	return name == "go.mod" || name == "go.sum" ||
-		strings.HasPrefix(name, ".github/") || strings.HasPrefix(name, "scripts/citest/")
+		strings.HasPrefix(name, ".github/") || strings.HasPrefix(name, "scripts/citest/") ||
+		strings.HasPrefix(name, "scripts/internal/cideps/")
 }
 
 type packageSelection struct {
 	root         string
 	changed      changedFiles
-	declarations map[string][]extraDependency
-	extraMatches map[extraDependency]bool
+	declarations map[string][]cideps.Dependency
+	extraMatches map[cideps.Dependency]bool
 }
 
 // EmbedPatterns を使うと、最後の一致ファイルを削除した後も Go にパターンを問い合わせられる。
@@ -179,7 +182,7 @@ func (s packageSelection) matchesDeclarations(pkg listedPackage, target bool) (b
 		deps, seen := s.declarations[filename]
 		if !seen {
 			var err error
-			_, deps, _, err = readDeclarations(filename)
+			_, deps, _, err = cideps.Read(filename)
 			if err != nil {
 				return false, err
 			}
@@ -195,11 +198,11 @@ func (s packageSelection) matchesDeclarations(pkg listedPackage, target bool) (b
 	return false, nil
 }
 
-func (s packageSelection) matchesExtra(dep extraDependency) (bool, error) {
+func (s packageSelection) matchesExtra(dep cideps.Dependency) (bool, error) {
 	if match, ok := s.extraMatches[dep]; ok {
 		return match, nil
 	}
-	graph, err := goList(s.root, dep.tags, "-json=Dir,EmbedPatterns", "-deps", dep.pattern)
+	graph, err := goList(s.root, dep.Tags(), "-json=Dir,EmbedPatterns", "-deps", dep.Pattern())
 	if err != nil {
 		return false, err
 	}

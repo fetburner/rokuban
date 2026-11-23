@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/fetburner/rokuban/scripts/internal/cideps"
 )
 
 func writeSelectionFixture(t *testing.T) (string, map[string]string) {
@@ -155,6 +157,11 @@ func TestSelectPackages(t *testing.T) {
 			changed: "scripts/citest/main.go",
 			want:    []string{"example.com/fixture/conformance/ingestresume", "example.com/fixture/conformance/lifecycle"},
 		},
+		{
+			name:    "dependency declaration change",
+			changed: "scripts/internal/cideps/declarations.go",
+			want:    []string{"example.com/fixture/conformance/ingestresume", "example.com/fixture/conformance/lifecycle"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -234,7 +241,7 @@ func missingGoDeclarations(root string) ([]string, error) {
 		if !strings.HasSuffix(entry.Name(), ".go") {
 			return nil
 		}
-		file, _, declared, err := readDeclarations(path)
+		file, _, declared, err := cideps.Read(path)
 		if err != nil {
 			return err
 		}

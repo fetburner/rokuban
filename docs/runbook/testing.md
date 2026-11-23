@@ -228,6 +228,10 @@ mock では検出できない前提は、実物の mirakc コンテナに対す�
 
 PR の CI は Go の依存先か、ソースの `// ci-extra-deps:` で宣言した追加依存が変わったパッケージだけを回す。`go.mod` や `.github/` などを変えた PR と、main への push および週次検証では全パッケージを回す。
 
+main への push では、`go clean -testcache` でテスト結果を失効させてから全パッケージを実行し、その GOCACHE を 1 日 1 回 Actions のキャッシュに保存する。PR はそのキャッシュを使う。Postgres と Redis の service イメージや ffmpeg の実行ファイルはテストキャッシュの判定に入らないので、イメージのダイジェストと ffmpeg の版をキャッシュのキーに入れる。
+
+`// ci-extra-deps:` でテストバイナリの外の依存を宣言したパッケージは、子プロセスが読むソースをテストキャッシュが追跡しないため、PR でも毎回実行する。
+
 <details><summary>根拠</summary>
 
 - 実物の mirakc に対する判定の置き場: `internal/mirakc/conformance`
