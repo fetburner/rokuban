@@ -59,6 +59,18 @@ function rangeAround(center: number, length: number, duration: number, minLength
   return { startSeconds: start, endSeconds: start + safeLength }
 }
 
+function rangeFollowing(current: number, anchor: FilmstripRange, length: number, duration: number, minLength: number): FilmstripRange {
+  if (current > anchor.endSeconds) {
+    const steps = Math.floor((current - anchor.endSeconds) / length)
+    const startSeconds = anchor.endSeconds + steps * length
+    return rangeAround(startSeconds + length / 2, length, duration, minLength)
+  }
+  const distance = anchor.startSeconds - current
+  const steps = Math.max(0, Math.ceil(distance / length) - 1)
+  const endSeconds = anchor.startSeconds - steps * length
+  return rangeAround(endSeconds - length / 2, length, duration, minLength)
+}
+
 /**
  * RecordingChapterFilmstrip は原本の時間軸に沿ってシークタイルと編集境界を描く。
  *
@@ -84,6 +96,7 @@ export function RecordingChapterFilmstrip({
   const [openedAt] = useState(currentSeconds)
   const [trackWidth, setTrackWidth] = useState(0)
   const [userRange, setUserRange] = useState<FilmstripRange | null>(null)
+  const [rangeGestureActive, setRangeGestureActive] = useState(false)
   const [dragPreview, setDragPreview] = useState<{ from: number; ms: number; moved: boolean } | null>(null)
   const trackRef = useRef<HTMLDivElement | null>(null)
   const dragRef = useRef<{ fromSeconds: number; downX: number; moved: boolean } | null>(null)
@@ -108,10 +121,19 @@ export function RecordingChapterFilmstrip({
   }, [])
 
   const minLength = minFilmstripRangeSeconds(trackWidth)
-  const range = useMemo(
+  const baseRange = useMemo(
     () => userRange ?? rangeAround(openedAt, defaultFilmstripRangeSeconds(trackWidth), durationSeconds, minLength),
     [durationSeconds, minLength, openedAt, trackWidth, userRange],
   )
+  const baseRangeLength = baseRange.endSeconds - baseRange.startSeconds
+  const currentOutsideRange = currentSeconds < baseRange.startSeconds || currentSeconds > baseRange.endSeconds
+  const followRange = isPlaying && !rangeGestureActive && currentOutsideRange && baseRangeLength > 0
+    ? rangeFollowing(currentSeconds, baseRange, baseRangeLength, durationSeconds, minLength)
+    : null
+  if (followRange !== null && (
+    userRange === null || userRange.startSeconds !== followRange.startSeconds || userRange.endSeconds !== followRange.endSeconds
+  )) setUserRange(followRange)
+  const range = followRange ?? baseRange
   const tiles = useMemo(() => filmstripTileIndices(range, durationSeconds), [durationSeconds, range])
   const ticks = useMemo(() => filmstripTicks(range, trackWidth), [range, trackWidth])
   const rangeLength = range.endSeconds - range.startSeconds
@@ -119,7 +141,6 @@ export function RecordingChapterFilmstrip({
   const overviewStart = durationSeconds > 0 ? (range.startSeconds / durationSeconds) * 100 : 0
   const overviewWidth = durationSeconds > 0 ? (rangeLength / durationSeconds) * 100 : 100
   const cellPercent = rangeLength > 0 ? (SEEK_TILES_INTERVAL_SECONDS / rangeLength) * 100 : 0
-
   useEffect(() => () => {
     if (nudgeRepeatRef.current !== null) window.clearTimeout(nudgeRepeatRef.current)
   }, [])
@@ -253,10 +274,19 @@ export function RecordingChapterFilmstrip({
     onMoveBoundary(selectedBoundary, targetSeconds - selectedBoundary)
   }
 
+  /**
+   * overviewPanStart は overview の pointerdown から pointerup / cancel までを移動中と扱う。
+   * その間だけ再生位置による追従を止める。ドラッグ中に範囲を書き戻すと、利用者の移動先を
+   * 追従処理が上書きするためである。追従で送った範囲は userRange に確定するため、一時停止後も残る。
+   * ズームは押した時点で終わる操作なので、追従を止めない。
+   */
   const overviewPanStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    setRangeGestureActive(true)
+    setUserRange(range)
     event.currentTarget.setPointerCapture?.(event.pointerId)
     panToX(event.clientX, event.currentTarget)
   }
+  const overviewPanEnd = () => setRangeGestureActive(false)
 
   const action = 'h-9 md:h-8'
   const selectedFrameSeconds = selectedBoundary === null
@@ -273,6 +303,9 @@ export function RecordingChapterFilmstrip({
         onPointerMove={(event) => {
           if (event.currentTarget.hasPointerCapture?.(event.pointerId)) panToX(event.clientX, event.currentTarget)
         }}
+        onPointerUp={overviewPanEnd}
+        onPointerCancel={overviewPanEnd}
+        onLostPointerCapture={overviewPanEnd}
         aria-label="表示している時間範囲"
       >
         {durationSeconds > 0 && previewSpans.filter((span) => span.cut).map((span, index) => (
@@ -290,6 +323,14 @@ export function RecordingChapterFilmstrip({
           className="absolute -inset-y-1 rounded-sm border-2 border-foreground bg-foreground/10"
           style={{ left: `${overviewStart}%`, width: `${overviewWidth}%` }}
         />
+        {durationSeconds > 0 && (
+          <span
+            data-testid="chapter-filmstrip-overview-playhead"
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-0 z-20 w-0.5 -translate-x-1/2 bg-background outline outline-1 outline-foreground"
+            style={{ left: `${Math.max(0, Math.min(100, currentSeconds / durationSeconds * 100))}%` }}
+          />
+        )}
       </div>
 
       <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -413,6 +454,14 @@ export function RecordingChapterFilmstrip({
             />
           )
         })}
+        {durationSeconds > 0 && currentSeconds >= range.startSeconds && currentSeconds <= range.endSeconds && (
+          <span
+            data-testid="chapter-filmstrip-playhead"
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-0 z-30 w-0.5 -translate-x-1/2 bg-background outline outline-1 outline-foreground"
+            style={{ left: `${((currentSeconds - range.startSeconds) / rangeLength) * 100}%` }}
+          />
+        )}
       </div>
 
       {selectedBoundary !== null && (

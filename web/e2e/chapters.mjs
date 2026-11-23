@@ -5,7 +5,7 @@
 // 前後再生は `<video>` の実再生と `currentTime` の推移でしか観測できない。
 // CLAUDE.md §テスト規律のとおり、実装より先にここで判定手段を作る。
 //
-// 見るのは次の 14 点:
+// 見るのは次の 17 点:
 //   ① 目盛りの位置が区間の割合と一致し、cut と ラベル付きが別の見た目で出る
 //   ② 通常の再生で cut 区間の先頭に差し掛かると、その終端へ飛ぶ
 //   ③ 手動のシークで区間の中に入ったときは飛ばない（cut / ラベル付きの両方）
@@ -21,6 +21,9 @@
 //   ⑫ 停止位置まで進まない場合に実時間タイマーが録画 HLS を止め、編集中の再生は 33 秒を越えて続く
 //   ⑬ 停止タイマー後に HLS の canplay 自動再開が復活しない（録画 HLS が再生できないときは飛ばす）
 //   ⑭ 400px 幅の区間行で開始・終了を選び分けられ、開始付近から終了の前後再生を始められる
+//   ⑮ 編集バーの区間名が下書きの CM 境界を越えて変わり、再生中の行が強調される
+//   ⑯ フィルムストリップと概観の再生位置線が実寸の時刻位置に合う
+//   ⑰ 表示範囲外へ追従し、一時停止・シーク・境界選択後も範囲を保ってズームできる
 //
 // フィクスチャは ffmpeg で作る（再生位置の推移が判定に要る）。無い環境では
 // この判定だけを skip として終了する。
@@ -627,6 +630,232 @@ log('\n=== ④ 境界の「前後 3 秒」 ===')
 await page.getByRole('button', { name: '再生設定' }).click()
 await page.getByRole('menuitem', { name: 'チャプターを直す', exact: true }).click()
 await page.waitForSelector('[data-testid="chapter-edit-layout"]', { timeout: 5000 })
+
+log('\n=== ⑮ 編集バーの区間表示が下書きの CM 境界を越えて変わる ===')
+const editChapterName = page.getByTestId('chapter-edit-current-name')
+const safeClick = async (locator, label, failure) => {
+  try {
+    if (await locator.count({ timeout: 1500 }) !== 1 || !(await locator.isEnabled({ timeout: 1500 }))) {
+      ng.push(failure)
+      return false
+    }
+    await locator.click({ timeout: 1500 })
+    return true
+  } catch (error) {
+    ng.push(`${failure}（${label}: ${String(error).split('\n')[0]}）`)
+    return false
+  }
+}
+const readChapterName = async () => {
+  try {
+    if (await editChapterName.count({ timeout: 1000 }) !== 1) return null
+    return (await editChapterName.textContent({ timeout: 1000 }))?.trim() ?? null
+  } catch {
+    return null
+  }
+}
+const safeSeekForChapterCheck = async (seconds, label) => {
+  try {
+    if (await video.count({ timeout: 1000 }) !== 1) {
+      ng.push(`${label}: video 要素が無い`)
+      return false
+    }
+    await seek(seconds)
+    return true
+  } catch (error) {
+    ng.push(`${label}: 再生位置を設定できない（${String(error).split('\n')[0]}）`)
+    return false
+  }
+}
+let crossedDraftBoundary = { timedOut: true }
+if (await safeSeekForChapterCheck(27, '⑮')) {
+  const beforeEditChapterName = await readChapterName()
+  if (beforeEditChapterName !== '本編') {
+    ng.push(`⑮ 再生位置27秒の編集バーが「本編」を表示しない（表示=${beforeEditChapterName ?? '要素なし'}）`)
+  }
+  const boundary = page.locator('[data-testid="chapter-filmstrip-boundary"][data-time-ms="30000"]')
+  if (await safeClick(boundary, 'CM境界選択', '⑮ CM境界ボタンが無いか操作できない')) {
+    const playAround = page.getByRole('button', { name: '選択中の境界の前後3秒を再生' })
+    if (await safeClick(playAround, '前後3秒再生', '⑮ 前後3秒ボタンが無いか操作できない')) {
+      crossedDraftBoundary = await waitForPosition(video, 31, '⑮ CM境界の再生')
+      let playingRowCount = 0
+      try {
+        playingRowCount = await page.locator('[data-testid="chapter-span-row"][data-playing="true"]').count()
+      } catch { /* NG に集約する */ }
+      if (playingRowCount !== 1) ng.push(`⑮ 再生中の区間行が 1 行強調されない（件数=${playingRowCount}）`)
+      await video.evaluate((v) => v.pause()).catch(() => {})
+    }
+  }
+  const afterEditChapterName = await readChapterName()
+  if (afterEditChapterName !== 'CM') {
+    ng.push(`⑮ CM境界を越えた編集バーが「CM」に変わらない（表示=${afterEditChapterName ?? '要素なし'}${crossedDraftBoundary.timedOut ? '、再生位置の到達待ちも失敗' : ''}）`)
+  }
+}
+
+log('\n=== ⑮ 再生中の区間行が一覧のスクロール領域内に見える ===')
+await page.setViewportSize({ width: 400, height: 600 })
+await safeSeekForChapterCheck(59.5, '⑮ 一覧スクロール')
+const initialRowVisibility = await page.evaluate(() => {
+  const list = document.querySelector('[data-testid="chapter-span-list"]')
+  const rows = list?.querySelectorAll('[data-testid="chapter-span-row"]')
+  const target = rows?.[1]
+  if (!list || !target) return null
+  const listRect = list.getBoundingClientRect()
+  const targetTop = target.getBoundingClientRect().top - listRect.top + list.scrollTop
+  // 2 行目が一覧の下に隠れる高さに絞り、再生で行が切り替わったときの追従を確かめる。
+  list.style.height = `${Math.max(64, targetTop - 8)}px`
+  list.style.flex = 'none'
+  list.scrollTop = 0
+  const nextListRect = list.getBoundingClientRect()
+  const nextTargetRect = target.getBoundingClientRect()
+  return {
+    hiddenInitially: nextTargetRect.top >= nextListRect.bottom || nextTargetRect.bottom <= nextListRect.top,
+    scrollHeight: list.scrollHeight,
+    clientHeight: list.clientHeight,
+  }
+})
+if (!initialRowVisibility?.hiddenInitially || initialRowVisibility.scrollHeight <= initialRowVisibility.clientHeight) {
+  ng.push(`⑮ 再生対象行を一覧の外へ置く初期状態を作れない（${JSON.stringify(initialRowVisibility)}）`)
+} else {
+  const listPlayButton = page.getByTestId('chapter-edit-playback-controls').getByRole('button', { name: '再生', exact: true })
+  await listPlayButton.scrollIntoViewIfNeeded().catch(() => {})
+  if (await safeClick(listPlayButton, '一覧スクロール再生', '⑮ 編集用再生ボタンが無いか操作できない')) {
+    const reachedNextRow = await page.waitForFunction(() => document.querySelector('video')?.currentTime >= 60.5, undefined, { timeout: 10000 })
+      .then(() => true).catch(() => false)
+    const visiblePlayingRow = await page.waitForFunction(() => {
+      const list = document.querySelector('[data-testid="chapter-span-list"]')
+      const row = document.querySelector('[data-testid="chapter-span-row"][data-playing="true"]')
+      if (!list || !row) return false
+      const listRect = list.getBoundingClientRect()
+      const rowRect = row.getBoundingClientRect()
+      return rowRect.top >= listRect.top && rowRect.bottom <= listRect.bottom
+    }, undefined, { timeout: 3000 }).then(() => true).catch(() => false)
+    const listScrollTop = await page.getByTestId('chapter-span-list').evaluate((el) => el.scrollTop)
+    if (!reachedNextRow || !visiblePlayingRow || listScrollTop <= 0) {
+      ng.push(`⑮ 再生中の区間行が一覧の可視範囲へスクロールされない（到達=${reachedNextRow} 可視=${visiblePlayingRow} scrollTop=${listScrollTop}）`)
+    }
+    await video.evaluate((v) => v.pause()).catch(() => {})
+  }
+}
+
+log('\n=== ⑯ 再生位置の線はフィルムストリップと概観の時刻位置に合う ===')
+await video.evaluate((v) => v.pause()).catch(() => {})
+await safeSeekForChapterCheck(55, '⑯')
+const playheadGeometry = await page.evaluate(() => {
+  const track = document.querySelector('[data-testid="chapter-filmstrip-track"]')
+  const playhead = document.querySelector('[data-testid="chapter-filmstrip-playhead"]')
+  const overview = document.querySelector('[data-testid="chapter-filmstrip-overview"]')
+  const overviewPlayhead = document.querySelector('[data-testid="chapter-filmstrip-overview-playhead"]')
+  const video = document.querySelector('video')
+  if (!track || !playhead || !overview || !overviewPlayhead || !video) return null
+  const trackRect = track.getBoundingClientRect()
+  const markerRect = playhead.getBoundingClientRect()
+  const overviewRect = overview.getBoundingClientRect()
+  const overviewMarkerRect = overviewPlayhead.getBoundingClientRect()
+  const start = Number(track.dataset.visibleStartSeconds)
+  const end = Number(track.dataset.visibleEndSeconds)
+  const duration = Number(track.dataset.durationSeconds)
+  const seconds = video.currentTime
+  return {
+    trackDeltaPx: Math.abs((markerRect.left + markerRect.width / 2) - (trackRect.left + trackRect.width * (seconds - start) / (end - start))),
+    overviewDeltaPx: Math.abs((overviewMarkerRect.left + overviewMarkerRect.width / 2) - (overviewRect.left + overviewRect.width * seconds / duration)),
+    seconds, start, end, duration,
+  }
+})
+if (!playheadGeometry) {
+  ng.push('⑯ 再生位置線またはトラックの実寸が取れない')
+} else {
+  // 位置誤差は各バー上で 1.5 CSS px まで許容する。0px 幅要素でも中央位置を測る。
+  if (playheadGeometry.trackDeltaPx > 1.5) ng.push(`⑯ フィルムストリップ線の時刻位置が ${playheadGeometry.trackDeltaPx.toFixed(2)}px ずれる（許容1.5px、${JSON.stringify(playheadGeometry)}）`)
+  if (playheadGeometry.overviewDeltaPx > 1.5) ng.push(`⑯ 概観の線の時刻位置が ${playheadGeometry.overviewDeltaPx.toFixed(2)}px ずれる（許容1.5px、${JSON.stringify(playheadGeometry)}）`)
+}
+
+log('\n=== ⑰ 再生位置が表示範囲外へ出るとフィルムストリップが追従する ===')
+const trackLocator = page.getByTestId('chapter-filmstrip-track')
+const rangeSnapshot = async () => {
+  try {
+    if (await trackLocator.count({ timeout: 1000 }) !== 1) return null
+    return await trackLocator.evaluate((el) => ({
+      start: Number(el.dataset.visibleStartSeconds), end: Number(el.dataset.visibleEndSeconds),
+    }), { timeout: 1000 })
+  } catch {
+    return null
+  }
+}
+const allButton = page.getByRole('button', { name: '全体', exact: true })
+const zoomButton = page.getByRole('button', { name: 'フィルムストリップを拡大' })
+let beforeFollow = null
+let afterFollow = null
+let afterPause = null
+let followPosition = 0
+let crossedOldRangeEnd = false
+await safeSeekForChapterCheck(70, '⑰')
+  // 1000px では strip の幅から決まるズーム上限が120秒未満になり、再生中に旧範囲の終端を越えられる。
+  await page.setViewportSize({ width: 1000, height: 800 })
+if (await safeClick(allButton, '全体表示', '⑰ 全体表示ボタンが無いか操作できない')) {
+  // ズーム上限は画面幅とタイル幅から決まる。固定回数にせず、enabled が false になるまで拡大する。
+  let zoomCount = 0
+  while (zoomCount < 20) {
+    let enabled = false
+    try {
+      enabled = await zoomButton.count({ timeout: 1000 }) === 1 && await zoomButton.isEnabled({ timeout: 1000 })
+    } catch { /* 下の NG で扱う */ }
+    if (!enabled) break
+    if (!(await safeClick(zoomButton, '拡大', '⑰ 拡大操作に失敗'))) break
+    zoomCount++
+  }
+  beforeFollow = await rangeSnapshot()
+  if (!beforeFollow) {
+    ng.push('⑰ フィルムストリップの表示範囲を取得できない')
+  } else if (beforeFollow.end >= 120 || beforeFollow.end <= beforeFollow.start) {
+    ng.push(`⑰ 再生で範囲外へ出られる表示範囲にならない（${JSON.stringify(beforeFollow)}、拡大回数=${zoomCount}）`)
+  } else {
+    await safeSeekForChapterCheck(beforeFollow.end - 0.6, '⑰')
+    const playButton = page.getByTestId('chapter-edit-playback-controls').getByRole('button', { name: '再生', exact: true })
+    if (await safeClick(playButton, '再生開始', '⑰ 編集用再生ボタンが無いか操作できない')) {
+      crossedOldRangeEnd = await page.waitForFunction((oldEnd) => {
+        const video = document.querySelector('video')
+        return video !== null && video.currentTime > oldEnd + 0.5
+      }, beforeFollow.end, { timeout: 10000 }).then(() => true).catch(() => false)
+      afterFollow = await rangeSnapshot()
+      followPosition = await video.evaluate((v) => v.currentTime).catch(() => 0)
+      await video.evaluate((v) => v.pause()).catch(() => {})
+      await page.getByRole('button', { name: '再生', exact: true }).waitFor({ state: 'visible', timeout: 3000 }).catch(() => {})
+      afterPause = await rangeSnapshot()
+    }
+  }
+}
+if (!beforeFollow || !afterFollow || !crossedOldRangeEnd ||
+    (afterFollow.start === beforeFollow.start && afterFollow.end === beforeFollow.end) ||
+    followPosition < afterFollow.start || followPosition > afterFollow.end ||
+    !afterPause || followPosition < afterPause.start || followPosition > afterPause.end) {
+  ng.push(`⑰ 操作前の範囲終端を越えた再生位置を、一時停止後も表示範囲に含めない（前=${JSON.stringify(beforeFollow)} 追従後=${JSON.stringify(afterFollow)} 停止後=${JSON.stringify(afterPause)} 再生位置=${followPosition.toFixed(2)}、終端越え=${crossedOldRangeEnd}）`)
+} else {
+  await safeSeekForChapterCheck(followPosition, '⑰ 追従後のシーク')
+  const afterSeek = await rangeSnapshot()
+  const filmstripBoundary = page.locator('[data-testid="chapter-filmstrip-boundary"]')
+  const boundaryCount = await filmstripBoundary.count().catch(() => 0)
+  if (!afterSeek || afterSeek.start !== afterPause.start || afterSeek.end !== afterPause.end) {
+    ng.push(`⑰ シーク後に追従範囲が戻る（停止後=${JSON.stringify(afterPause)} シーク後=${JSON.stringify(afterSeek)}）`)
+  }
+  if (boundaryCount === 0) {
+    ng.push('⑰ 追従後の境界選択対象が無い')
+  } else {
+    await filmstripBoundary.first().click().catch(() => {})
+    const afterBoundary = await rangeSnapshot()
+    if (!afterBoundary || afterBoundary.start !== afterPause.start || afterBoundary.end !== afterPause.end) {
+      ng.push(`⑰ 境界選択後に追従範囲が戻る（停止後=${JSON.stringify(afterPause)} 境界選択後=${JSON.stringify(afterBoundary)}）`)
+    }
+  }
+  const zoomOutButton = page.getByRole('button', { name: 'フィルムストリップを縮小' })
+  if (await safeClick(zoomOutButton, '追従後のズーム', '⑰ 追従後にズームできない')) {
+    const afterZoom = await rangeSnapshot()
+    if (!afterZoom || afterZoom.end <= afterZoom.start || afterZoom.end - afterZoom.start <= afterPause.end - afterPause.start) {
+      ng.push(`⑰ 追従後のズームで表示範囲が広がらない（停止後=${JSON.stringify(afterPause)} ズーム後=${JSON.stringify(afterZoom)}）`)
+    }
+  }
+}
+
 log('\n=== ⑭ 区間行から終了境界を選び、400px 幅でも前後再生する ===')
 await page.setViewportSize({ width: 400, height: 800 })
 await seek(31)

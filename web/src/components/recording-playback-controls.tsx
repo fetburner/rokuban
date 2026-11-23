@@ -37,7 +37,7 @@ import {
   VolumeX,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { chapterBoundaryMsToSeekSeconds } from '@/lib/chapters'
+import { chapterBoundaryMsToSeekSeconds, chapterEntries, chapterEntryIndexAtSeconds, chapterLabel } from '@/lib/chapters'
 import {
   formatBytes,
   formatDate,
@@ -556,8 +556,10 @@ export function RecordingPlaybackControls({
       : undefined
   // 区間の隙間が本編（chapters は本編の区間を持たない。recording-player.tsx の props 注記）。
   const entries = hasChapters ? chapterEntries(chapters, durationSeconds) : []
-  const currentEntryIndex = entries.findIndex((entry) => seconds >= entry.start && seconds < entry.end)
-  const currentChapterName = hasChapters ? (entries[currentEntryIndex]?.label ?? '本編') : undefined
+  const currentEntryIndex = chapterEntryIndexAtSeconds(entries, seconds)
+  const currentChapterName = hasChapters || chapterEditing
+    ? (entries[currentEntryIndex]?.label ?? '本編')
+    : undefined
   const ghost = 'text-white hover:bg-white/15 hover:text-white'
   const watchedAction = watched ? onDeleteWatched : onPutWatched
   const showControls = controlsVisible || popoverOpen
@@ -618,7 +620,7 @@ export function RecordingPlaybackControls({
           // （別の木に描くと作り直され、再生位置が 0 に戻って止まる）。
           <div
             data-testid="chapter-edit-playback-controls"
-            className="absolute inset-x-0 bottom-0 flex items-center gap-1 bg-gradient-to-t from-black/85 to-transparent px-2 pt-8 pb-2 text-white sm:gap-2 md:gap-3 md:px-3"
+            className="absolute inset-x-0 bottom-0 flex flex-wrap items-center gap-1 bg-gradient-to-t from-black/85 to-transparent px-2 pt-8 pb-2 text-white sm:gap-2 md:gap-3 md:px-3"
           >
             <Button type="button" variant="ghost" size="icon" className={ghost} aria-label={isPlaying ? '一時停止' : '再生'} onClick={onTogglePlay}>
               {isPlaying ? <Pause /> : <Play />}
@@ -627,8 +629,13 @@ export function RecordingPlaybackControls({
               {formatPlaybackTimeMs(seconds)}
               <span className="hidden md:inline"> / {formatPlaybackTime(durationSeconds)}</span>
             </span>
+            {currentChapterName !== undefined && (
+              <span data-testid="chapter-edit-current-name" className="shrink-0 rounded bg-white/15 px-1.5 py-0.5 text-xs" aria-label={`現在の区間: ${currentChapterName}`}>
+                {currentChapterName}
+              </span>
+            )}
             {/* 400px 幅でも 3 つの再生型と速度が並ぶ小さなボタンにし、別メニューで帯を広げない。 */}
-            <div data-testid="chapter-edit-playback-modes" className="ml-auto flex min-w-0 shrink-0 items-center gap-1 md:gap-2">
+            <div data-testid="chapter-edit-playback-modes" className="ml-auto flex basis-full min-w-0 shrink-0 items-center justify-end gap-1 sm:basis-auto md:gap-2">
               <Button
                 type="button"
                 variant="secondary"
@@ -1298,22 +1305,7 @@ export function RecordingPlaybackControls({
   )
 }
 
-type ChapterEntry = { start: number; end: number; label: string }
-
-/** chapterEntries は区間と隙間（本編）を時刻順に並べる。終端は duration が分かるときだけ閉じる。 */
-function chapterEntries(spans: ChapterSpan[], durationSeconds: number): ChapterEntry[] {
-  const out: ChapterEntry[] = []
-  let cursor = 0
-  for (const span of [...spans].sort((a, b) => a.startMs - b.startMs)) {
-    const start = span.startMs / 1000
-    const end = span.endMs / 1000
-    if (start > cursor) out.push({ start: cursor, end: start, label: '本編' })
-    out.push({ start, end, label: chapterLabel(span) })
-    cursor = Math.max(cursor, end)
-  }
-  if (durationSeconds > cursor) out.push({ start: cursor, end: durationSeconds, label: '本編' })
-  return out
-}
+type ChapterEntry = ReturnType<typeof chapterEntries>[number]
 
 /** popoverClass は設定メニューとチャプター一覧が共有する置き場（md 以上は小窓、md 未満は画面下のシート）。 */
 function popoverClass(align: 'left' | 'right') {
@@ -1779,8 +1771,4 @@ function rateLabel(rate: number): string {
 
 function assetLabel(asset: EncodedAsset): string {
   return asset.cut === true ? `カット版（${asset.profile}）` : asset.profile
-}
-
-function chapterLabel(span: ChapterSpan): string {
-  return span.label ?? (span.cut ? 'CM' : 'チャプター')
 }
