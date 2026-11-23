@@ -47,17 +47,37 @@ function leadingNeeds(source) {
   return declaration ? declaration[1].trim().split(/\s+/).filter(Boolean) : []
 }
 
+function leadingGoDeps(source) {
+  const lines = source.split(/\r?\n/)
+  let index = lines[0]?.startsWith('#!') ? 1 : 0
+  const comments = []
+  for (; index < lines.length; index++) {
+    const line = lines[index]
+    if (line.trim() === '') continue
+    if (!/^\s*\/\//.test(line)) break
+    comments.push(line)
+  }
+  const declarations = comments
+    .map((line) => line.match(/^\s*\/\/\s*e2e-go-deps:\s*(.*)$/))
+    .filter(Boolean)
+  const dependencies = declarations.flatMap(([, value]) => value.trim().split(/\s+/).filter(Boolean))
+  if (declarations.length > 0 && dependencies.length === 0) {
+    throw new Error('e2e-go-deps: Go パッケージ指定がありません')
+  }
+  const invalid = dependencies.filter((dependency) => dependency.startsWith('-'))
+  if (invalid.length > 0) {
+    throw new Error(`e2e-go-deps: 不正な Go パッケージ指定: ${invalid.join(', ')}`)
+  }
+  return [...new Set(dependencies)]
+}
+
 /** discoverScripts は e2e/ 直下の実行スクリプトをファイル内容から選ぶ。 */
 export function discoverScripts(directory = E2E_DIR) {
   const files = readdirSync(directory).filter((name) => name.endsWith('.mjs')).sort()
   const source = new Map(files.map((name) => [name, readFileSync(path.join(directory, name), 'utf8')]))
   const imported = new Set()
-  const importPattern = /(?:\bfrom\s*|\bimport\s*\()\s*['"]\.\/([^'"]+\.mjs)['"]/g
-  const sideEffectImportPattern = /\bimport\s*['"]\.\/([^'"]+\.mjs)['"]/g
   for (const text of source.values()) {
-    for (const pattern of [importPattern, sideEffectImportPattern]) {
-      for (const match of text.matchAll(pattern)) imported.add(match[1])
-    }
+    for (const specifier of relativeE2EImports(text)) imported.add(specifier.slice(2))
   }
 
   return files
@@ -69,13 +89,62 @@ export function discoverScripts(directory = E2E_DIR) {
       if (unknown.length > 0) {
         throw new Error(`${name}: 未知の e2e-needs: ${unknown.join(', ')}`)
       }
-      return { name, needs }
+      return { name, needs, goDeps: leadingGoDeps(source.get(name)) }
     })
 }
 
 /** selectCIScripts は追加要件を宣言していない判定だけを CI の既定対象にする。 */
 export function selectCIScripts(directory = E2E_DIR) {
   return discoverScripts(directory).filter(({ needs }) => needs.length === 0)
+}
+
+function relativeE2EImports(source) {
+  const imports = new Set()
+  const importPattern = /(?:\bfrom\s*|\bimport\s*\()\s*['"](\.\/[^'"]+\.mjs)['"]/g
+  const sideEffectImportPattern = /\bimport\s*['"](\.\/[^'"]+\.mjs)['"]/g
+  for (const pattern of [importPattern, sideEffectImportPattern]) {
+    for (const match of source.matchAll(pattern)) imports.add(match[1])
+  }
+  return [...imports]
+}
+
+function sourceCallsGo(source) {
+  return /\b(?:execFileSync|runOutput)\s*\(\s*(['"])go\1\s*,/.test(source)
+}
+
+/** validateGoDepsDeclarations は CI 判定の import 先まで調べ、Go 起動に宣言があることを確かめる。 */
+export function validateGoDepsDeclarations(directory = E2E_DIR) {
+  for (const script of selectCIScripts(directory)) {
+    const pending = [path.join(directory, script.name)]
+    const visited = new Set()
+    let goSource
+    while (pending.length > 0) {
+      const filename = pending.pop()
+      if (visited.has(filename)) continue
+      visited.add(filename)
+      const source = readFileSync(filename, 'utf8')
+      if (sourceCallsGo(source)) goSource ??= filename
+      for (const specifier of relativeE2EImports(source)) {
+        const imported = path.resolve(path.dirname(filename), specifier)
+        const relative = path.relative(directory, imported)
+        if (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
+          pending.push(imported)
+        }
+      }
+    }
+    if (goSource && script.goDeps.length === 0) {
+      throw new Error(`${script.name}: Go を起動する ${path.relative(directory, goSource)} に e2e-go-deps 宣言がありません`)
+    }
+  }
+}
+
+/** selectScriptsByName は指定された判定だけを、対象集合の元の順序で返す。 */
+export function selectScriptsByName(scripts, names) {
+  const requested = new Set(names.map((name) => name.replace(/\.mjs$/, '')))
+  if (requested.size !== names.length) throw new Error('判定スクリプト名が重複しています')
+  const selected = scripts.filter(({ name }) => requested.delete(name.replace(/\.mjs$/, '')))
+  if (requested.size > 0) throw new Error(`判定スクリプトが見つからない: ${[...requested].join(', ')}`)
+  return selected
 }
 
 /** partitionScriptsBySourceBytes は対象をソース byte 数の LPT 順で決定的に shard へ割る。 */
@@ -93,10 +162,22 @@ export function partitionScriptsBySourceBytes(scripts, shardCount, directory = E
     for (let index = 1; index < shards.length; index++) {
       if (shards[index].bytes < shards[smallest].bytes) smallest = index
     }
-    shards[smallest].scripts.push({ name: script.name, needs: script.needs })
+    shards[smallest].scripts.push({ name: script.name, needs: script.needs, goDeps: script.goDeps })
     shards[smallest].bytes += script.bytes
   }
   return shards.map(({ scripts: shard }) => shard.sort((left, right) => compareNames(left.name, right.name)))
+}
+
+/** createShardMatrix は対象を byte 数で shard に割り、空 shard を除いて CI matrix を作る。 */
+export function createShardMatrix(scripts, shardCount, directory = E2E_DIR) {
+  const shards = partitionScriptsBySourceBytes(scripts, shardCount, directory)
+  return shards.flatMap((shard, index) => shard.length > 0
+    ? [{
+      shard: String(index + 1),
+      count: String(shardCount),
+      needs_go: shard.some(({ goDeps }) => goDeps.length > 0),
+    }]
+    : [])
 }
 
 /** summaryHeading は step summary で shard の判定表を識別できる見出しを返す。 */
@@ -107,9 +188,10 @@ export function summaryHeading(shard) {
 }
 
 function usage() {
-  console.error('使い方: node e2e/run.mjs [スクリプト名 | --needs 語彙 | --shard i/n]')
+  console.error('使い方: node e2e/run.mjs [スクリプト名 | --needs 語彙 | --shard i/n | --scripts 名前,... | --matrix n | --go-deps-json]')
   console.error('例: node e2e/run.mjs chapters')
   console.error('例: node e2e/run.mjs --shard 1/5')
+  console.error('例: node e2e/run.mjs --scripts recording-segmented-vod --shard 1/5')
 }
 
 function parseShard(value) {
@@ -153,10 +235,55 @@ function markdown(results) {
 
 async function main() {
   const args = process.argv.slice(2)
+  if (args.length === 1 && args[0] === '--go-deps-json') {
+    try {
+      const declared = selectCIScripts().filter(({ goDeps }) => goDeps.length > 0)
+      console.log(JSON.stringify(declared.map(({ name, goDeps }) => ({ name, goDeps }))))
+    } catch (error) {
+      console.error(error.message)
+      process.exitCode = 2
+    }
+    return
+  }
+
+  if (args[0] === '--matrix') {
+    const shardCount = Number(args[1])
+    if ((args.length !== 2 && args.length !== 4) || !Number.isSafeInteger(shardCount) || shardCount < 1 ||
+      (args.length === 4 && args[2] !== '--scripts')) {
+      usage()
+      process.exitCode = 2
+      return
+    }
+    try {
+      const ciScripts = selectCIScripts()
+      const targets = args.length === 4 ? selectScriptsByName(ciScripts, args[3].split(',').filter(Boolean)) : ciScripts
+      const include = createShardMatrix(targets, shardCount)
+      console.log(JSON.stringify({ include }))
+    } catch (error) {
+      console.error(error.message)
+      process.exitCode = 2
+    }
+    return
+  }
+
+  let scriptsOption
+  let shardOption
+  const positional = []
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === '--scripts' && index + 1 < args.length && scriptsOption === undefined) {
+      scriptsOption = args[++index]
+    } else if (args[index] === '--shard' && index + 1 < args.length && shardOption === undefined) {
+      shardOption = args[++index]
+    } else {
+      positional.push(args[index])
+    }
+  }
   if (
-    args.length > 2 ||
-    (['--needs', '--shard'].includes(args[0]) && args.length !== 2) ||
-    (!['--needs', '--shard'].includes(args[0]) && args.length > 1)
+    positional.length > 2 ||
+    (positional[0] === '--needs' && positional.length !== 2) ||
+    (positional.length > 1 && positional[0] !== '--needs') ||
+    (scriptsOption !== undefined && (scriptsOption.length === 0 || positional.length > 0)) ||
+    (shardOption !== undefined && positional.length > 0)
   ) {
     usage()
     process.exitCode = 2
@@ -173,8 +300,8 @@ async function main() {
     return
   }
 
-  if (args[0] === '--needs') {
-    const need = args[1]
+  if (positional[0] === '--needs') {
+    const need = positional[1]
     if (!NEEDS.has(need)) {
       console.error(`未知の e2e-needs: ${need}`)
       usage()
@@ -182,22 +309,26 @@ async function main() {
       return
     }
     scripts = scripts.filter(({ needs }) => needs.includes(need))
-  } else if (args[0] === '--shard') {
-    const shard = parseShard(args[1])
+  } else if (shardOption !== undefined) {
+    const shard = parseShard(shardOption)
     if (!shard) {
-      console.error(`shard 指定が不正: ${args[1]}`)
+      console.error(`shard 指定が不正: ${shardOption}`)
       usage()
       process.exitCode = 2
       return
     }
-    const targets = selectCIScripts()
+    const targets = scriptsOption === undefined
+      ? selectCIScripts()
+      : selectScriptsByName(selectCIScripts(), scriptsOption.split(',').filter(Boolean))
     scripts = partitionScriptsBySourceBytes(targets, shard.count)[shard.number - 1]
     summaryShard = shard
-  } else if (args[0]) {
-    const requested = args[0].replace(/\.mjs$/, '')
+  } else if (scriptsOption !== undefined) {
+    scripts = selectScriptsByName(discoverScripts(), scriptsOption.split(',').filter(Boolean))
+  } else if (positional[0]) {
+    const requested = positional[0].replace(/\.mjs$/, '')
     const found = scripts.find(({ name }) => name.replace(/\.mjs$/, '') === requested)
     if (!found) {
-      console.error(`判定スクリプトが見つからない: ${args[0]}`)
+      console.error(`判定スクリプトが見つからない: ${positional[0]}`)
       usage()
       process.exitCode = 2
       return
