@@ -11,8 +11,12 @@ import (
 
 // CMStationFixture は局単位の CM ロゴ契約と、テスト用状態作成フックをまとめる。
 type CMStationFixture struct {
-	Store        store.CMStation
-	NewRecording func(t *testing.T) int64
+	Store               store.CMStation
+	Detection           store.CMDetection
+	NewStationRecording func(t *testing.T, station store.CMStationRef) int64
+	MarkOriginalMissing func(t *testing.T, recordingID int64)
+	SeedDetection       func(t *testing.T, recordingID int64)
+	NewRecording        func(t *testing.T) int64
 	// BeginStationWrite は同じ局の書き込みロックを保持した tx を作り、commit 関数を返す。
 	BeginStationWrite func(t *testing.T, station store.CMStationRef) (commit func())
 	// WaitForStationWriteWait は name のメソッドがその局ロックで待っていることを確認する。
@@ -31,6 +35,12 @@ func RunCMStation(t *testing.T, newStore NewCMStationStore) {
 	t.Helper()
 	station := store.CMStationRef{NetworkID: 32678, ServiceID: 5168}
 	runCMStationSerialization(t, newStore, station)
+	t.Run("logo hints and station counts require present originals", func(t *testing.T) {
+		runCMStationOriginalPresence(t, newStore, station)
+	})
+	t.Run("candidate adoption preserves detections without a present original", func(t *testing.T) {
+		runCMStationAdoptionPresence(t, newStore, station)
+	})
 
 	t.Run("candidate results reject an old area version", func(t *testing.T) {
 		f := newStore(t)

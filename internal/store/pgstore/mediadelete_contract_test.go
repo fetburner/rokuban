@@ -41,6 +41,31 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 		}
 		return contracttest.MediaDeleteFixture{
 			Store: testMedia(pool, dbtest.StoreName, dbtest.StoreName), Serving: testMedia(pool, dbtest.StoreName, ""), Catalog: NewCatalog(pool, []string{store.DefaultSite}, dbtest.StoreName),
+			Storage: testMedia(pool, dbtest.StoreName, ""),
+			SetAssetState: func(t *testing.T, assetID int64, state string) {
+				dbtest.SetMediaAssetState(t, pool, assetID, state)
+			},
+			NewOldGeneration: func(t *testing.T) (int64, int64) {
+				t.Helper()
+				recordingID := newRecording(t)
+				assetID := newAsset(t, recordingID, "thumbnail", nil)
+				oldCopy := dbtest.MediaAssetCopyID(t, pool, assetID, dbtest.StoreName)
+				path := fmt.Sprintf("thumbnails/%d-g1.jpg", recordingID)
+				current := dbtest.ReplaceDerivedMediaAssetCopy(t, pool, assetID, dbtest.StoreName, path, 1)
+				return oldCopy, current
+			},
+			NewRetainedEncoded: func(t *testing.T, recordingID int64) {
+				t.Helper()
+				if _, err := pool.Exec(t.Context(), `
+UPDATE recording_processing_policy SET encode_profiles = ARRAY['p2'] WHERE recording_id = $1`, recordingID); err != nil {
+					t.Fatalf("adding retained profile: %v", err)
+				}
+				dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+					profile := "p2"
+					p.Kind, p.Profile = "encoded", &profile
+					p.RelPath = fmt.Sprintf("sites/default/store-contract/%d/p2.mp4", recordingID)
+				})
+			},
 			CopyID: func(t *testing.T, assetID int64) int64 {
 				t.Helper()
 				var copyID int64

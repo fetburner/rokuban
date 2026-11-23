@@ -61,6 +61,22 @@ func RunCMDetection(t *testing.T, newStore NewCMDetectionStore) {
 	t.Run("attempt failure cancel and abort preserve their transitions", func(t *testing.T) {
 		testCMDetectionAttemptTransitions(t, newStore, station)
 	})
+	t.Run("desired and retry require a present original", func(t *testing.T) {
+		f := newStore(t)
+		present, missing := f.NewRecording(t), f.NewRecording(t)
+		f.MarkOriginalMissing(t, missing)
+		for id, want := range map[int64]bool{present: true, missing: false} {
+			desired, err := f.Store.IsDetectionDesired(t.Context(), id)
+			if err != nil || desired != want {
+				t.Errorf("IsDetectionDesired(%d) = %v, %v; want %v, nil", id, desired, err, want)
+			}
+			retry, err := f.Store.RetryDetection(t.Context(), id)
+			if err != nil || retry.ActiveOriginal != want {
+				t.Errorf("RetryDetection(%d) = %+v, %v; want active original=%v", id, retry, err, want)
+			}
+		}
+	})
+
 	t.Run("result ranges normalize and retry clears the observation", func(t *testing.T) {
 		testCMDetectionResultRangesAndRetry(t, newStore)
 	})

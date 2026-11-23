@@ -58,6 +58,9 @@ func newTSScanContractFixture(t *testing.T) contracttest.TSScanFixture {
 
 			return recordingID, assetID
 		},
+		MarkOriginalMissing: func(t *testing.T, assetID int64) {
+			observePresentCopyMissing(t, pool, assetID, dbtest.StoreName)
+		},
 		SetAssetSize: func(t *testing.T, assetID, sizeBytes int64) {
 			t.Helper()
 			if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET size_bytes = $2 WHERE id = $1`, assetID, sizeBytes); err != nil {

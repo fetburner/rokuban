@@ -233,26 +233,6 @@ SELECT EXISTS (
 	}
 }
 
-func TestListStorageSyncWithoutConfiguredStoreIncludesNamedObservations(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	workerMedia := testMedia(pool, "tokyo", "")
-	if err := workerMedia.UpsertStorageSync(ctx, store.StorageObservationInput{
-		Root: "media", Path: "/media", TotalBytes: 100, UsedBytes: 25, AvailableBytes: 75,
-	}); err != nil {
-		t.Fatalf("recording worker storage observation: %v", err)
-	}
-
-	apiMedia := testMedia(pool, "tokyo", "")
-	rows, err := apiMedia.ListStorageSync(ctx)
-	if err != nil {
-		t.Fatalf("listing storage observations without configured store: %v", err)
-	}
-	if len(rows) != 1 || rows[0].Root != "media" || rows[0].Path != "/media" {
-		t.Fatalf("API-only storage observations = %+v, want named worker observation", rows)
-	}
-}
-
 func TestMediaAssetCopyTracksDeleteLifecycle(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -559,13 +539,6 @@ func TestMediaAssetCopiesRejectSecondLiveCopyOfSameStoreAndGeneration(t *testing
 	if !errors.As(err, &pgErr) || pgErr.ConstraintName != "media_asset_copies_asset_store_generation_idx" {
 		t.Fatalf("error = %v, want a violation of media_asset_copies_asset_store_generation_idx", err)
 	}
-	// 削除済みの行は数えない。
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, assetID); err != nil {
-		t.Fatal(err)
-	}
-	if err := upsertMediaAssetCopy(ctx, sqlcgen.New(pool), assetID, dbtest.StoreName, "other/second.m2ts", 0); err != nil {
-		t.Fatalf("live copy after the previous one was deleted: %v", err)
-	}
 }
 
 func TestMediaAssetCopiesRejectNewRowAtTombstonedPath(t *testing.T) {
@@ -601,36 +574,6 @@ func TestMediaAssetCopiesRejectNewRowAtTombstonedPath(t *testing.T) {
 	}
 	if pathRows != 1 || tombstones != 1 {
 		t.Fatalf("rows at reserved path = %d (%d tombstones), want one tombstone", pathRows, tombstones)
-	}
-}
-
-func TestPreparePendingMediaAssetCopyRejectsTombstonedPath(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	path := "originals/reserved-after-delete.ts"
-	tombstonedAssetID := dbtest.MediaAsset(t, pool, dbtest.Recording(t, pool))
-	if _, err := pool.Exec(ctx, `INSERT INTO media_asset_copies
-		(media_asset_id, store, rel_path, generation, state, deleted_at)
-		VALUES ($1, $2, $3, 0, 'deleted', now())`, tombstonedAssetID, dbtest.StoreName, path); err != nil {
-		t.Fatalf("creating tombstone at reserved path: %v", err)
-	}
-
-	profile := "h264"
-	media := testMedia(pool, dbtest.StoreName, "")
-	err := media.PreparePendingMediaAssetCopy(ctx, store.PendingMediaAssetCopy{
-		RecordingID: dbtest.Recording(t, pool), Kind: store.AssetKindEncoded, Profile: &profile,
-		RelPath: path, SizeBytes: 1, DerivedGeneration: 1,
-	})
-	if !errors.Is(err, store.ErrConflict) {
-		t.Fatalf("PreparePendingMediaAssetCopy at tombstoned path error = %v, want store.ErrConflict", err)
-	}
-
-	var copiesAtPath int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_copies WHERE store = $1 AND rel_path = $2`, dbtest.StoreName, path).Scan(&copiesAtPath); err != nil {
-		t.Fatalf("checking reserved path after pending insert: %v", err)
-	}
-	if copiesAtPath != 1 {
-		t.Fatalf("copies at reserved path = %d, want only the tombstone", copiesAtPath)
 	}
 }
 

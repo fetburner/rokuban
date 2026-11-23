@@ -19,9 +19,10 @@ var cmStationContractEventID atomic.Int32
 func TestCMStationContract(t *testing.T) {
 	contracttest.RunCMStation(t, func(t *testing.T) contracttest.CMStationFixture {
 		pool := testutil.SetupDB(t)
-		newRecording := func(t *testing.T) int64 {
+		newStationRecording := func(t *testing.T, station store.CMStationRef) int64 {
 			t.Helper()
 			id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+				fixtureParams.NetworkID, fixtureParams.ServiceID = station.NetworkID, station.ServiceID
 				fixtureParams.EventID = cmStationContractEventID.Add(1)
 				fixtureParams.ServiceName = "局単位 CM 契約 fixture"
 				fixtureParams.Title = "CM station store contract fixture"
@@ -33,9 +34,20 @@ func TestCMStationContract(t *testing.T) {
 			})
 			return id
 		}
+		analysis := NewAnalysis(pool, dbtest.StoreName)
 		return contracttest.CMStationFixture{
-			Store:        NewAnalysis(pool, dbtest.StoreName),
-			NewRecording: newRecording,
+			Store:     analysis,
+			Detection: analysis,
+			NewRecording: func(t *testing.T) int64 {
+				return newStationRecording(t, store.CMStationRef{NetworkID: 32678, ServiceID: 5168})
+			},
+			NewStationRecording: newStationRecording,
+			MarkOriginalMissing: func(t *testing.T, recordingID int64) {
+				markCMDetectionOriginalMissing(t, pool, recordingID)
+			},
+			SeedDetection: func(t *testing.T, recordingID int64) {
+				insertPresentCopiesDetection(t, pool, recordingID)
+			},
 			BeginStationWrite: func(t *testing.T, station store.CMStationRef) func() {
 				t.Helper()
 				ctx := context.Background()

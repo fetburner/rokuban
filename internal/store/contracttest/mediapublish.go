@@ -306,3 +306,35 @@ func runEncodedCutWaitsForChapterEdit(t *testing.T, newFixture NewMediaFixture) 
 		t.Fatal("PublishEncoded(cut) did not finish after the chapter edit committed")
 	}
 }
+
+func runThumbnailReplacementPresence(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := t.Context()
+	id := f.NewRecording(t)
+	original := f.NewAsset(t, id, "original", nil, "originals/source.ts", "active")
+	first := store.ThumbnailPublishInput{RecordingID: id, InputAssetID: original, RelPath: "thumbnails/first.jpg", SizeBytes: 1, SeekMs: 51}
+	if ok, err := f.Publisher.PublishThumbnail(ctx, first, func() error { return nil }); err != nil || !ok {
+		t.Fatalf("publishing first thumbnail: applied=%v, err=%v", ok, err)
+	}
+	asset, err := f.Serving.GetThumbnailMediaAssetForServing(ctx, id)
+	if err != nil {
+		t.Fatalf("reading thumbnail before replacement: %v", err)
+	}
+	seek := int64(51)
+	next := store.ThumbnailPublishInput{
+		RecordingID: id, InputAssetID: original, RelPath: "thumbnails/next.jpg", SizeBytes: 1, DerivedGeneration: 1,
+		Expected: &store.ThumbnailObservation{ID: asset.ID, Store: asset.Store, RelPath: "thumbnails/first.jpg", SeekMs: &seek},
+	}
+	observeMissingContractCopy(t, f, original)
+	calls := 0
+	publish := func() error { calls++; return nil }
+	if ok, err := f.Publisher.PublishThumbnail(ctx, next, publish); err != nil || ok || calls != 0 {
+		t.Fatalf("replacement with missing input = %v, %v; calls %d, want false, nil and no callback", ok, err, calls)
+	}
+	if err := f.Storage.DeleteMissingMediaAsset(ctx, f.CopyID(t, original)); err != nil {
+		t.Fatalf("restoring the input: %v", err)
+	}
+	if ok, err := f.Publisher.PublishThumbnail(ctx, next, publish); err != nil || !ok || calls != 1 {
+		t.Fatalf("replacement after input is found = %v, %v; calls %d, want true, nil and one callback", ok, err, calls)
+	}
+}
