@@ -23,60 +23,100 @@ on:
   pull_request:
 
 jobs:
+  # PR の変更と citest から browser-e2e の matrix を作る。main の全件実行は冒頭の役割分担に従う。
+  browser-e2e-plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      scripts: ${{ steps.plan.outputs.scripts }}
+      planned_skip: ${{ steps.plan.outputs.planned_skip }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: changes
+        if: github.event_name == 'pull_request'
+        with: &browser_e2e_path_filters
+          filters: |
+            web:
+              - 'web/**'
+              - '.node-version'
+              - '.github/**'
+      - name: Fetch PR base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
+      # 部分選定では citest を実行するため planner に Go が要る。実判定の shard は needs_go で個別に決まる。
+      - uses: actions/setup-go@v7
+        if: github.event_name == 'pull_request' && steps.changes.outputs.web != 'true'
+        with:
+          go-version-file: go.mod
+      - id: plan
+        env:
+          E2E_CI_FULL: ${{ steps.changes.outputs.web == 'true' || github.event_name == 'push' }}
+          E2E_CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node web/e2e/run.mjs --ci-plan
+
+  # 必須チェック名 web-test を担い、paths-filter が失敗した場合もチェックを赤にする。
   web-test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     # vitest がハングしても既定の 6h でランナーを占有させない（go test の -timeout と同じ狙い）。
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: changes
+        if: github.event_name == 'pull_request'
+        with: *browser_e2e_path_filters
       - uses: pnpm/action-setup@v6
+        if: &web_test_needed ${{ github.event_name == 'push' || steps.changes.outputs.web == 'true' }}
         with:
           package_json_file: web/package.json
       - uses: actions/setup-node@v7
+        if: *web_test_needed
         with:
           node-version-file: .node-version
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+        if: *web_test_needed
         working-directory: web
-      # コンポーネント／lib のロジック回帰は CI では Vitest で止める（build は型エラーしか拾わない）。
-      # Go toolchain も postgres service も要らないので独立した job にして test job の信号と混ぜない。
+      # コンポーネント／lib のロジック回帰は Vitest で止める。Go toolchain と PostgreSQL は要らない。
       - run: pnpm test
+        if: *web_test_needed
         working-directory: web
       # E2E のフィクスチャ契約だけを検証する。E2E_VALIDATE_FIXTURES_ONLY=1 で各スクリプトは
       # ブラウザを起動せず終了する。実ブラウザ判定は browser-e2e job で実行する。
       - run: pnpm e2e:fixtures
+        if: *web_test_needed
         working-directory: web
 
-  # 要件宣言の無い判定を browser-e2e の対象にする。語彙と意味は web/e2e/README.md に置く。
+  # 計画ジョブが e2e-go-deps を citest に渡し、変更された Go 依存を宣言した判定だけを選ぶ。
+  # web / Node / CI 準備の変更では全判定、main では毎回全判定を対象にする。
   # 必須チェック名 `browser-e2e` は下の集約ジョブが担う。
   browser-e2e-shard:
-    name: browser-e2e-shard (${{ matrix.shard }}/5)
+    name: browser-e2e-shard (${{ matrix.shard }}/${{ matrix.count }})
+    needs: browser-e2e-plan
+    if: needs.browser-e2e-plan.outputs.planned_skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4, 5]
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_USER: rokuban
-          POSTGRES_PASSWORD: rokuban
-          POSTGRES_DB: rokuban_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U rokuban"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+      matrix: ${{ fromJSON(needs.browser-e2e-plan.outputs.matrix) }}
     env:
       E2E_URL: http://localhost:40773
+      E2E_SCRIPTS: ${{ needs.browser-e2e-plan.outputs.scripts }}
+      E2E_SHARD: ${{ matrix.shard }}/${{ matrix.count }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
+        if: matrix.needs_go == true
         with:
           go-version-file: go.mod
       - uses: pnpm/action-setup@v6
@@ -95,53 +135,21 @@ jobs:
           playwright-browser: chromium
       - run: pnpm build
         working-directory: web
-      # Build after web/dist exists: this is the actual static bundle embedded in the Go binary.
-      - run: go build -o /tmp/rokuban ./cmd/rokuban
-      - name: Prepare CI config and apply database migrations
-        run: |
-          {
-            printf '%s\n' 'server:' '  listen: "127.0.0.1:40773"' '  allowed_hosts: [localhost]'
-            sed \
-              -e 's/^  host: postgres$/  host: localhost/' \
-              -e 's/^  database: rokuban$/  database: rokuban_test/' \
-              -e "s#^  media_dir: /mnt/media\$#  media_dir: ${RUNNER_TEMP}/rokuban-e2e-media#" \
-              config.ci.yml
-          } > "${RUNNER_TEMP}/rokuban-e2e.yml"
-          mkdir -p "${RUNNER_TEMP}/rokuban-e2e-media"
-          /tmp/rokuban migrate up --config "${RUNNER_TEMP}/rokuban-e2e.yml"
-      - name: Start API server and wait for readiness
-        run: |
-          server_log="${RUNNER_TEMP}/rokuban-e2e-server.log"
-          /tmp/rokuban server --roles api --config "${RUNNER_TEMP}/rokuban-e2e.yml" >"${server_log}" 2>&1 &
-          server_pid=$!
-          for _ in $(seq 1 60); do
-            if curl --fail --silent --show-error "${E2E_URL}/readyz" >/dev/null; then
-              echo "Rokuban is ready at ${E2E_URL}"
-              exit 0
-            fi
-            if ! kill -0 "${server_pid}" 2>/dev/null; then
-              break
-            fi
-            sleep 1
-          done
-          echo "::error::Rokuban did not become ready at ${E2E_URL}; server log follows"
-          cat "${server_log}"
-          exit 1
       - name: Run browser E2E
         if: ${{ !cancelled() }}
-        run: node e2e/run.mjs --shard ${{ matrix.shard }}/5
+        run: node e2e/run.mjs --scripts "$E2E_SCRIPTS" --shard "$E2E_SHARD" --preview
         working-directory: web
-      - name: Show API server log
-        if: failure()
-        run: cat "${RUNNER_TEMP}/rokuban-e2e-server.log"
 
   # 必須チェック名 `browser-e2e` を保つ集約ジョブ。skip / cancelled / failure を緑にしない。
   browser-e2e:
-    needs: browser-e2e-shard
+    needs: [browser-e2e-plan, browser-e2e-shard]
     if: always()
     runs-on: ubuntu-slim
     steps:
-      - run: test "${{ needs.browser-e2e-shard.result }}" = success
+      # 単一の失敗 step に集約し、空や未知の planned_skip も success shard を要求する。
+      - name: Validate plan and shard results
+        if: ${{ always() && (needs.browser-e2e-plan.result != 'success' || (needs.browser-e2e-plan.outputs.planned_skip == 'true' && needs.browser-e2e-shard.result != 'skipped') || (needs.browser-e2e-plan.outputs.planned_skip != 'true' && needs.browser-e2e-shard.result != 'success')) }}
+        run: exit 1
 
   # S3 の 302 と中継を実 Chrome で測る。`browser-e2e` と別ジョブにしている
   # のは、RustFS の固定イメージと実 Chrome（`playwright install chrome`）を用意するため。
@@ -847,10 +855,12 @@ jobs:
       - name: Remove probe volume
         if: always()
         run: docker volume rm -f rokuban-media-probe
-      - name: Smoke test
-        run: |
-          docker compose -f docker-compose.test.yml up --wait --wait-timeout 60
-          curl -sf http://localhost:40773/healthz
+      - name: Start containers
+        run: docker compose -f docker-compose.test.yml up --wait --wait-timeout 60
+      - name: Check health
+        run: curl -sf http://localhost:40773/healthz
+      - name: Check SPA assets and fallback
+        run: node web/scripts/check-spa-served.mjs http://localhost:40773
       # 上の probe は touch/mkdir であって Go の os.MkdirAll / os.Create を
       # 通っていない。catalog_export は RunOnStart の定期ジョブなので、
       # 起動直後に実バイナリが nobody として media volume へ世代ディレクトリを

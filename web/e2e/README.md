@@ -165,7 +165,11 @@ cd web && E2E_URL=http://localhost:40773 node e2e/run.mjs channel-and-more-sheet
 
 `run.mjs` は `e2e/` の実行スクリプトをファイルから探し、冒頭コメントに `// e2e-needs:` が無いものを CI で回す。新しい判定は既定で対象になる。各スクリプトは独立した Node プロセスで起動し、失敗後も続けて所要時間付きの結果表を出す。CI では `$GITHUB_STEP_SUMMARY` にも同じ表を追記する。スクリプト名を引数に渡すと、その 1 本だけを要件に関係なく実行できる。
 
-全対象を 1 ジョブで回すと CI 全体の待ち時間が延びるため、`--shard i/n` で対象を分ける。判定時間には偏りがあるので、重い判定が同じ shard に寄らないようソース byte 数を実行時間の代理指標として決定的に割り当てる。shard 数は各 shard の step summary に出る実測表を見て、判定時間が CI の他の最長経路を超えないように決める。
+全対象を 1 ジョブで回すと CI 全体の待ち時間が延びるため、`--shard i/n` で対象を分ける。判定時間には偏りがあるので、重い判定が同じ shard に寄らないようソース byte 数を実行時間の代理指標として決定的に割り当てる。Go 依存を宣言した判定を含む shard だけ Go toolchain を用意する。shard 数は各 shard の step summary に出る実測表を見て、判定時間が CI の他の最長経路を超えないように決める。
+
+CI の通常判定では、`run.mjs` が Node から Vite preview を起動して `web/dist` を配る。判定が使う API の応答は各スクリプトがブラウザ側で差し替えるため、本体サーバーの起動を共有の準備条件にしない。
+
+PR では `web/`・`.node-version`・`.github/` の変更で全判定を回す。それ以外は `scripts/citest` が依存先の変更に影響を受けた Go パッケージを選び、そのパッケージを宣言した判定だけを回す。main への push では毎回全判定を回す。
 
 `package.json` に個々のファイルを指す `e2e:*` 別名は置かない。別名の並びは対象一覧を重複して持ち、追加漏れも起こしていたため、個別実行はこの runner に寄せる。`e2e:fixtures` は browser 判定とは別の契約検証をまとめるため残す。
 
@@ -176,7 +180,9 @@ cd web && E2E_URL=http://localhost:40773 node e2e/run.mjs channel-and-more-sheet
 - `s3`: RustFS などの S3 サービスが必要。専用ジョブは `node e2e/run.mjs --needs s3` で対象を選ぶ
 - `manual`: 通常の CI 判定に入れず、必要なときだけ手動で起動する。宣言の隣に理由を書く
 
-ffmpeg と Go は browser-e2e が既に用意するので宣言しない。`E2E_BROWSER=webkit` など任意の診断モードを持つだけなら追加要件ではない。`lib.mjs` などの共有部品は別スクリプトからの import で除く。`finish(` を呼ばない実行判定があり、実行判定ではない fixture builder のような部品もあるため、`finish(` の有無では判別しない。
+ffmpeg は browser-e2e が常に用意するため宣言しない。Go を子プロセスで起動する判定は、冒頭コメントに `// e2e-go-deps: ./internal/streamer` のように、起動するパッケージをモジュールルートから書く。推移依存のパスは宣言に書かない。依存先の変更は `scripts/citest` が依存グラフから拾うためである。Go を子プロセスで起動するのに宣言の無い判定は、`run.test.ts` の検査が落とす。
+
+`E2E_BROWSER=webkit` など任意の診断モードを持つだけなら追加要件ではない。`lib.mjs` などの共有部品は別スクリプトからの import で除く。`finish(` を呼ばない実行判定があり、実行判定ではない fixture builder のような部品もあるため、`finish(` の有無では判別しない。
 
 CI はデザインの判定をすべて実行する。部分実行だけでは状態色・画素・タイムラインの判定が欠けるためである。`design-interactions.mjs` の `E2E_RULE_CARD_ONLY=1` はルールカードだけを調べるローカル診断用で、CI では使わない。実ブラウザ不要の `pnpm check:colors` は lint job に入っている。判定スクリプト全部を回す定期ジョブは、回す主体と失敗の受け手が決まっていないため作らない。
 
