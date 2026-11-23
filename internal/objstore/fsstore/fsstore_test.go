@@ -23,16 +23,6 @@ func TestStoreContract(t *testing.T) {
 	})
 }
 
-func TestPresignIsNotSupported(t *testing.T) {
-	objects, err := New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := objects.Presign(context.Background(), "encoded/a.mp4", "GET", 0, "", ""); err == nil {
-		t.Fatal("Presign succeeded for a filesystem store")
-	}
-}
-
 func TestStoreRejectsReservedStagingKey(t *testing.T) {
 	root := t.TempDir()
 	objects, err := New(root)

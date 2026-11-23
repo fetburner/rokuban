@@ -317,6 +317,12 @@ func newStreamerObjectStores(ctx context.Context, storage config.StorageConfig, 
 			return nil, err
 		}
 		if objectStore != nil {
+			if configured.Kind == "s3" && configured.Delivery == "proxy" {
+				objectStore, err = objstore.NewProxyDelivery(objectStore)
+				if err != nil {
+					return nil, fmt.Errorf("creating streamer object store %q: %w", name, err)
+				}
+			}
 			objects[name] = objectStore
 		}
 	}

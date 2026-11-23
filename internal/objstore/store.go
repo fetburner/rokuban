@@ -55,7 +55,7 @@ type Reader interface {
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
 }
 
-// Local is implemented by stores that can serve objects from a seekable reader.
+// Local はリバースプロキシが同じ rel_path のファイルとして読める置き場だけが実装する。
 type Local interface {
 	Open(ctx context.Context, key string) (io.ReadSeekCloser, Object, error)
 }
@@ -76,6 +76,8 @@ type Resumable interface {
 }
 
 // RangeReader は、完了したオブジェクトを offset から読める置き場が実装する。
+// 末尾より前に body を Close したときはすぐ返り、接続を残さない。
+// 存在しない key には ErrNotFound を返す。
 type RangeReader interface {
 	GetFrom(ctx context.Context, key string, offset int64) (io.ReadCloser, error)
 }

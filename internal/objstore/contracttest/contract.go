@@ -33,7 +33,16 @@ func Run(t *testing.T, newStore func(*testing.T) objstore.Store) {
 		checkListHidesIncompleteWrite(t, newStore)
 	})
 
-	// 再開できるアップロードと範囲読みは、それを満たす実装だけに走らせる。
+	if _, ok := newStore(t).(objstore.RangeReader); ok {
+		t.Run("range reader starts at offset and closes early", func(t *testing.T) {
+			checkRangeReaderStartsAtOffset(t, newStore(t))
+		})
+		t.Run("range reader returns not found for missing key", func(t *testing.T) {
+			checkRangeReaderMissingKey(t, newStore(t))
+		})
+	}
+
+	// 再開できるアップロードは、それを満たす実装だけに走らせる。
 	if _, ok := newStore(t).(objstore.Resumable); ok {
 		t.Run("resumable upload stopped and continued yields the same bytes", func(t *testing.T) {
 			checkResumableStopAndContinue(t, newStore(t))
@@ -49,9 +58,6 @@ func Run(t *testing.T, newStore func(*testing.T) objstore.Store) {
 		})
 		t.Run("resumable upload checks source length from saved size", func(t *testing.T) {
 			checkResumableSourceLengthAtSavedSize(t, newStore(t))
-		})
-		t.Run("range reader starts at offset", func(t *testing.T) {
-			checkRangeReaderStartsAtOffset(t, newStore(t))
 		})
 	}
 }
@@ -434,7 +440,7 @@ func checkRangeReaderStartsAtOffset(t *testing.T, objects objstore.Store) {
 	t.Helper()
 	ranged, ok := objects.(objstore.RangeReader)
 	if !ok {
-		t.Fatal("store implements objstore.Resumable but not objstore.RangeReader")
+		t.Fatal("store does not implement objstore.RangeReader")
 	}
 	key := testKey(t)
 	data := deterministicBytes(64 << 10)
@@ -454,6 +460,36 @@ func checkRangeReaderStartsAtOffset(t *testing.T, objects objstore.Store) {
 		if !bytes.Equal(got, data[offset:]) {
 			t.Fatalf("GetFrom(%d) returned %d bytes, want data[%d:] with %d bytes", offset, len(got), offset, len(data)-int(offset))
 		}
+	}
+
+	body, err := ranged.GetFrom(t.Context(), key, 0)
+	if err != nil {
+		t.Fatalf("GetFrom for early close: %v", err)
+	}
+	if _, err := body.Read(make([]byte, 1)); err != nil {
+		t.Fatalf("Read before early close: %v", err)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- body.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close before EOF: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close before EOF did not return promptly")
+	}
+}
+
+func checkRangeReaderMissingKey(t *testing.T, objects objstore.Store) {
+	t.Helper()
+	ranged, ok := objects.(objstore.RangeReader)
+	if !ok {
+		t.Fatal("store does not implement objstore.RangeReader")
+	}
+	_, err := ranged.GetFrom(t.Context(), testKey(t), 0)
+	if !errors.Is(err, objstore.ErrNotFound) {
+		t.Fatalf("GetFrom for missing key error = %v, want ErrNotFound", err)
 	}
 }
 

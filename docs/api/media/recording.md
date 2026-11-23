@@ -21,7 +21,7 @@
 
 URL は録画 API の `Recording.media` が返す。UI はそれをそのまま使い、自分では組み立てない。
 
-原本とコマは置き場の URL で、その置き場をマウントした streamer だけが配る。派生物（encoded・サムネイル・シークタイル）は置き場を含まない URL で、streamer が読める置き場のコピーを選んで配る。選んだコピーが S3 なら 302 で署名付き URL へ送る。
+原本とコマは置き場の URL で、その置き場をマウントした streamer だけが配る。派生物（encoded・サムネイル・シークタイル）は置き場を含まない URL で、streamer が読める置き場のコピーを選んで配る。選んだコピーが S3 なら、省略時は 302 で署名付き URL へ送り、`delivery: proxy` では streamer が Range 読みを中継する。
 
 ```
 GET  /api/media/stores/{store}/recordings/{id}/file              →  video/MP2T（原本、Range 対応）
@@ -34,6 +34,14 @@ HEAD /api/media/recordings/{id}/thumbnail         →  ヘッダーのみ
 GET  /api/media/recordings/{id}/seek-tiles        →  image/jpeg（シークプレビュー用の格子画像）
 HEAD /api/media/recordings/{id}/seek-tiles        →  ヘッダーのみ
 ```
+
+<details><summary>根拠</summary>
+
+- HTTP 契約、HEAD、Range、If-Range: `TestRangeReaderDeliveryHTTPContract`
+- 応答途中の失敗とクライアント切断: `TestRangeReaderDeliveryReportsTruncatedResponse`、`TestRangeReaderDeliveryStopsAfterClientDisconnect`
+- 実ブラウザでの再生とシーク: `s3-proxy.mjs`
+
+</details>
 
 ##### 外向きの形と再生方式
 

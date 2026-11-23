@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/fetburner/rokuban/internal/fsink"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -207,11 +206,6 @@ func (s *Store) List(ctx context.Context, prefix string) ([]objstore.Object, err
 		return nil, fmt.Errorf("listing filesystem objects: %w", err)
 	}
 	return objects, nil
-}
-
-// Presign is not supported by filesystem objects.
-func (s *Store) Presign(context.Context, string, string, time.Duration, string, string) (string, error) {
-	return "", errors.New("filesystem objects do not have signed URLs")
 }
 
 // contextReader stops copying promptly when its context is cancelled.
@@ -548,4 +542,3 @@ var _ objstore.RangeReader = (*Store)(nil)
 var _ objstore.Store = (*Store)(nil)
 var _ objstore.Reader = (*Store)(nil)
 var _ objstore.Local = (*Store)(nil)
-var _ objstore.SignedURL = (*Store)(nil)
