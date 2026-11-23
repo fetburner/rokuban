@@ -15,6 +15,8 @@ import {
   FRAME_SECONDS,
   chapterBoundaries,
   chapterBoundaryMsToSeekSeconds,
+  chapterEntries,
+  chapterEntryIndexAtSeconds,
   displayedFrameBoundaryMs,
   moveChapterBoundary,
 } from '@/lib/chapters'
@@ -24,7 +26,9 @@ import {
   SEEK_TILES_HEIGHT,
   SEEK_TILES_INTERVAL_SECONDS,
   SEEK_TILES_WIDTH,
+  seekTileBackgroundSize,
   seekTileCell,
+  seekTilePlacement,
 } from '@/lib/seek-tiles'
 
 // 長押しの連続送り。押した瞬間に 1 回動かし、NUDGE_REPEAT_DELAY_MS 押し続けたら
@@ -98,6 +102,7 @@ export function RecordingChapterFilmstrip({
   const [userRange, setUserRange] = useState<FilmstripRange | null>(null)
   const [rangeGestureActive, setRangeGestureActive] = useState(false)
   const [dragPreview, setDragPreview] = useState<{ from: number; ms: number; moved: boolean } | null>(null)
+  const [hover, setHover] = useState<{ x: number; width: number } | null>(null)
   const trackRef = useRef<HTMLDivElement | null>(null)
   const dragRef = useRef<{ fromSeconds: number; downX: number; moved: boolean } | null>(null)
   const ignoreClickRef = useRef(false)
@@ -115,7 +120,11 @@ export function RecordingChapterFilmstrip({
     observerRef.current = null
     trackRef.current = element
     if (element === null || typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(() => setTrackWidth(element.getBoundingClientRect().width))
+    const observer = new ResizeObserver(() => {
+      const { width } = element.getBoundingClientRect()
+      setTrackWidth(width)
+      setHover((position) => position?.width === width ? position : null)
+    })
     observer.observe(element)
     observerRef.current = observer
   }, [])
@@ -141,6 +150,11 @@ export function RecordingChapterFilmstrip({
   const overviewStart = durationSeconds > 0 ? (range.startSeconds / durationSeconds) * 100 : 0
   const overviewWidth = durationSeconds > 0 ? (rangeLength / durationSeconds) * 100 : 100
   const cellPercent = rangeLength > 0 ? (SEEK_TILES_INTERVAL_SECONDS / rangeLength) * 100 : 0
+  const entries = useMemo(() => chapterEntries(spans, durationSeconds), [spans, durationSeconds])
+  const hoverSeconds = hover === null ? 0 : filmstripXToTime(hover.x, range, hover.width)
+  const tilePreview = hover !== null && tilesAvailable && rangeLength > 0 && hoverSeconds < durationSeconds
+    ? seekTilePlacement(hoverSeconds, hover.width, hover.x, hover.width * cellPercent / 100 + 1)
+    : null
   useEffect(() => () => {
     if (nudgeRepeatRef.current !== null) window.clearTimeout(nudgeRepeatRef.current)
   }, [])
@@ -170,7 +184,21 @@ export function RecordingChapterFilmstrip({
     setDragPreview({ from: drag.fromSeconds, ms: Math.round(target * 1000), moved: drag.moved })
   }
 
+  const updateHover = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (dragRef.current !== null) {
+      moveBoundary(event)
+      return
+    }
+    if (event.pointerType !== 'mouse' || event.buttons !== 0) {
+      setHover(null)
+      return
+    }
+    const rect = event.currentTarget.getBoundingClientRect()
+    setHover(rect.width > 0 ? { x: event.clientX - rect.left, width: rect.width } : null)
+  }
+
   const startBoundaryDrag = (event: ReactPointerEvent<HTMLButtonElement>, boundary: number) => {
+    setHover(null)
     dragRef.current = { fromSeconds: boundary, downX: event.clientX, moved: false }
     // ポインターキャプチャは track に掛ける。境界ノードが正規化プレビューで差し替わりうるため。
     // キャプチャの付け替えで離した時の click がシークにならないよう抑止する。
@@ -368,99 +396,131 @@ export function RecordingChapterFilmstrip({
         })}
       </div>
 
-      <div
-        ref={setTrack}
-        data-testid="chapter-filmstrip-track"
-        data-duration-seconds={durationSeconds}
-        data-visible-start-seconds={range.startSeconds}
-        data-visible-end-seconds={range.endSeconds}
-        className="relative min-h-8 min-w-0 touch-none overflow-hidden rounded bg-muted/70"
-        onPointerMove={moveBoundary}
-        onPointerUp={finishBoundaryDrag}
-        onPointerCancel={cancelBoundaryDrag}
-        onClick={(event) => {
-          if (ignoreClickRef.current) {
-            ignoreClickRef.current = false
-            return
-          }
-          const rect = event.currentTarget.getBoundingClientRect()
-          onSeek(filmstripXToTime(event.clientX - rect.left, range, rect.width))
-        }}
-      >
-        {/* 帯の高さは 1 マス (16:9) の高さ。マスは絶対配置なので、同じ幅の見えない箱で高さを作る。 */}
-        <div aria-hidden className="invisible" style={{ width: `${cellPercent}%`, aspectRatio: '16 / 9' }} />
-        {tiles.map((index) => {
-          const seconds = index * SEEK_TILES_INTERVAL_SECONDS
-          const cell = seekTileCell(seconds)
-          const leftPercent = rangeLength > 0 ? ((seconds - range.startSeconds) / rangeLength) * 100 : 0
-          return (
-            <div
-              key={index}
-              data-testid="chapter-filmstrip-tile"
-              data-time-seconds={seconds}
-              className="absolute top-0 overflow-hidden border-r border-background/70 bg-muted"
-              style={{ left: `${leftPercent}%`, width: `${cellPercent}%`, aspectRatio: '16 / 9', containerType: 'inline-size' }}
-            >
-              {tilesAvailable && cell && (
-                // 格子全体を 1 マスの幅の列数倍に縮め（background-size は %）、位置は 1 マスの幅 (cqw) 単位で送る。
-                <div
-                  className="size-full bg-no-repeat"
-                  style={{
-                    backgroundImage: `url(${seekTilesUrl})`,
-                    backgroundSize: `${SEEK_TILES_COLUMNS * 100}% auto`,
-                    backgroundPosition: `${-cell.column * 100}cqw ${-cell.row * (SEEK_TILES_HEIGHT / SEEK_TILES_WIDTH) * 100}cqw`,
-                  }}
-                />
-              )}
-            </div>
-          )
-        })}
-        {previewSpans.filter((span) => span.cut).map((span, index) => {
-          const safeRangeLength = Math.max(rangeLength, 1)
-          const left = ((span.startMs / 1000 - range.startSeconds) / safeRangeLength) * 100
-          const width = ((span.endMs - span.startMs) / 1000 / safeRangeLength) * 100
-          return (
+      <div className="relative">
+        <div
+          ref={setTrack}
+          data-testid="chapter-filmstrip-track"
+          data-duration-seconds={durationSeconds}
+          data-visible-start-seconds={range.startSeconds}
+          data-visible-end-seconds={range.endSeconds}
+          className="relative min-h-8 min-w-0 touch-none overflow-hidden rounded bg-muted/70"
+          onPointerMove={updateHover}
+          onPointerLeave={() => setHover(null)}
+          onPointerDown={(event) => {
+            if (event.pointerType !== 'mouse') setHover(null)
+          }}
+          onPointerUp={finishBoundaryDrag}
+          onPointerCancel={cancelBoundaryDrag}
+          onClick={(event) => {
+            if (ignoreClickRef.current) {
+              ignoreClickRef.current = false
+              return
+            }
+            const rect = event.currentTarget.getBoundingClientRect()
+            onSeek(filmstripXToTime(event.clientX - rect.left, range, rect.width))
+          }}
+        >
+          {/* 帯の高さは 1 マス (16:9) の高さ。マスは絶対配置なので、同じ幅の見えない箱で高さを作る。 */}
+          <div aria-hidden className="invisible" style={{ width: `${cellPercent}%`, aspectRatio: '16 / 9' }} />
+          {tiles.map((index) => {
+            const seconds = index * SEEK_TILES_INTERVAL_SECONDS
+            const cell = seekTileCell(seconds)
+            const leftPercent = rangeLength > 0 ? ((seconds - range.startSeconds) / rangeLength) * 100 : 0
+            return (
+              <div
+                key={index}
+                data-testid="chapter-filmstrip-tile"
+                data-time-seconds={seconds}
+                className="absolute top-0 overflow-hidden border-r border-background/70 bg-muted"
+                style={{ left: `${leftPercent}%`, width: `${cellPercent}%`, aspectRatio: '16 / 9', containerType: 'inline-size' }}
+              >
+                {tilesAvailable && cell && (
+                  // 格子全体を 1 マスの幅の列数倍に縮め（background-size は %）、位置は 1 マスの幅 (cqw) 単位で送る。
+                  <div
+                    className="size-full bg-no-repeat"
+                    style={{
+                      backgroundImage: `url(${seekTilesUrl})`,
+                      backgroundSize: `${SEEK_TILES_COLUMNS * 100}% auto`,
+                      backgroundPosition: `${-cell.column * 100}cqw ${-cell.row * (SEEK_TILES_HEIGHT / SEEK_TILES_WIDTH) * 100}cqw`,
+                    }}
+                  />
+                )}
+              </div>
+            )
+          })}
+          {previewSpans.filter((span) => span.cut).map((span, index) => {
+            const safeRangeLength = Math.max(rangeLength, 1)
+            const left = ((span.startMs / 1000 - range.startSeconds) / safeRangeLength) * 100
+            const width = ((span.endMs - span.startMs) / 1000 / safeRangeLength) * 100
+            return (
+              <span
+                key={`${span.startMs}-${span.endMs}-${index}`}
+                data-testid="chapter-filmstrip-cut-range"
+                className="pointer-events-none absolute inset-y-0 z-10 border-t-4 border-chapter-cut bg-chapter-cut-muted/55"
+                style={{ left: `${left}%`, width: `${width}%` }}
+              />
+            )
+          })}
+          {boundaries.map((boundary) => {
+            const displayTime = boundary
+            const selected = selectedForDisplay !== null && Math.abs(displayTime - selectedForDisplay) < 0.001
+            const x = filmstripTimeToX(displayTime, range, 100)
+            return (
+              <button
+                key={boundary}
+                type="button"
+                data-testid="chapter-filmstrip-boundary"
+                data-time-ms={Math.round(displayTime * 1000)}
+                aria-label={`境界 ${formatPlaybackTimeMs(displayTime)}`}
+                aria-pressed={selected}
+                className={`absolute inset-y-0 z-20 w-1 -translate-x-1/2 touch-none border-0 p-0 ${selected ? 'bg-chapter-selection outline outline-2 outline-foreground' : 'bg-foreground'}`}
+                style={{ left: `${x}%` }}
+                onPointerDown={(event) => startBoundaryDrag(event, boundary)}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  if (ignoreClickRef.current) {
+                    ignoreClickRef.current = false
+                    return
+                  }
+                  onSelectBoundary(boundary)
+                }}
+              />
+            )
+          })}
+          {durationSeconds > 0 && currentSeconds >= range.startSeconds && currentSeconds <= range.endSeconds && (
             <span
-              key={`${span.startMs}-${span.endMs}-${index}`}
-              data-testid="chapter-filmstrip-cut-range"
-              className="pointer-events-none absolute inset-y-0 z-10 border-t-4 border-chapter-cut bg-chapter-cut-muted/55"
-              style={{ left: `${left}%`, width: `${width}%` }}
+              data-testid="chapter-filmstrip-playhead"
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 z-30 w-0.5 -translate-x-1/2 bg-background outline outline-1 outline-foreground"
+              style={{ left: `${((currentSeconds - range.startSeconds) / rangeLength) * 100}%` }}
             />
-          )
-        })}
-        {boundaries.map((boundary) => {
-          const displayTime = boundary
-          const selected = selectedForDisplay !== null && Math.abs(displayTime - selectedForDisplay) < 0.001
-          const x = filmstripTimeToX(displayTime, range, 100)
-          return (
-            <button
-              key={boundary}
-              type="button"
-              data-testid="chapter-filmstrip-boundary"
-              data-time-ms={Math.round(displayTime * 1000)}
-              aria-label={`境界 ${formatPlaybackTimeMs(displayTime)}`}
-              aria-pressed={selected}
-              className={`absolute inset-y-0 z-20 w-1 -translate-x-1/2 touch-none border-0 p-0 ${selected ? 'bg-chapter-selection outline outline-2 outline-foreground' : 'bg-foreground'}`}
-              style={{ left: `${x}%` }}
-              onPointerDown={(event) => startBoundaryDrag(event, boundary)}
-              onClick={(event) => {
-                event.stopPropagation()
-                if (ignoreClickRef.current) {
-                  ignoreClickRef.current = false
-                  return
-                }
-                onSelectBoundary(boundary)
+          )}
+        </div>
+        {tilePreview && (
+          <div
+            data-testid="chapter-filmstrip-preview"
+            aria-hidden="true"
+            className="pointer-events-none absolute bottom-full z-40 mb-2 flex flex-col items-center gap-1"
+            style={{ left: tilePreview.left, width: tilePreview.width }}
+          >
+            <div
+              data-testid="chapter-filmstrip-preview-image"
+              className="rounded bg-muted bg-no-repeat shadow-lg ring-1 ring-border"
+              style={{
+                width: tilePreview.width,
+                height: tilePreview.height,
+                backgroundImage: `url(${seekTilesUrl})`,
+                backgroundPosition: `${tilePreview.x}px ${tilePreview.y}px`,
+                backgroundSize: seekTileBackgroundSize(tilePreview.width),
               }}
             />
-          )
-        })}
-        {durationSeconds > 0 && currentSeconds >= range.startSeconds && currentSeconds <= range.endSeconds && (
-          <span
-            data-testid="chapter-filmstrip-playhead"
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-y-0 z-30 w-0.5 -translate-x-1/2 bg-background outline outline-1 outline-foreground"
-            style={{ left: `${((currentSeconds - range.startSeconds) / rangeLength) * 100}%` }}
-          />
+            <span
+              data-testid="chapter-filmstrip-preview-label"
+              className="max-w-full truncate rounded bg-popover px-1.5 text-xs text-popover-foreground shadow-sm"
+            >
+              {`${formatPlaybackTime(hoverSeconds)} · ${entries[chapterEntryIndexAtSeconds(entries, hoverSeconds)]?.label ?? '本編'}`}
+            </span>
+          </div>
         )}
       </div>
 

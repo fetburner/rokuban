@@ -5,7 +5,7 @@
 // 前後再生は `<video>` の実再生と `currentTime` の推移でしか観測できない。
 // CLAUDE.md §テスト規律のとおり、実装より先にここで判定手段を作る。
 //
-// 見るのは次の 19 点:
+// 見るのは次の 20 点:
 //   ① 目盛りの位置が区間の割合と一致し、cut と ラベル付きが別の見た目で出る
 //   ② 通常の再生で cut 区間の先頭に差し掛かると、その終端へ飛ぶ
 //   ③ 手動のシークで区間の中に入ったときは飛ばない（cut / ラベル付きの両方）
@@ -26,6 +26,7 @@
 //   ⑰ 表示範囲外へ追従し、一時停止・シーク・境界選択後も範囲を保ってズームできる
 //   ⑱ 編集中の → と次の境界ボタンが 1 回だけ移動し、選んだフレームから再生できる
 //   ⑲ 録画 HLS の編集中に → が 1 回だけシークし、次の境界ボタンでも次の境界を選べる
+//   ⑳ 狭い画面でフィルムストリップのホバーにコマ・時刻・区間名が出て、帯の左右と境界ボタンを塞がない
 //
 // フィクスチャは ffmpeg で作る（再生位置の推移が判定に要る）。無い環境では
 // この判定だけを skip として終了する。
@@ -1926,6 +1927,86 @@ log(`  30秒 tile: ${JSON.stringify(tilePosition)}`)
 await checkTilePixels('#1019 全体表示のタイルの画素')
 if (!tilePosition || Math.abs(tilePosition.actualX - tilePosition.expectedX) > 2) {
   ng.push(`#1019: 30秒tileのx位置が表示範囲の時刻→x計算と一致しない（${JSON.stringify(tilePosition)}）`)
+}
+
+log('\n=== ⑳ フィルムストリップのホバープレビュー ===')
+{
+  await page.setViewportSize({ width: 400, height: 800 })
+  const track = page.getByTestId('chapter-filmstrip-track')
+  const preview = page.getByTestId('chapter-filmstrip-preview')
+  const image = preview.getByTestId('chapter-filmstrip-preview-image')
+  await track.scrollIntoViewIfNeeded()
+  const band = await track.evaluate((element) => {
+    const { left, right, top, width, height } = element.getBoundingClientRect()
+    return { left, right, top, width, height }
+  })
+  const y = Math.round(band.top + band.height / 2)
+  // 直前に「全体」を選んだ 120 秒のフィクスチャ。両端と、区間内部の背景をホバーする。
+  for (const { x, chapter } of [
+    { x: Math.ceil(band.left) + 2, chapter: '本編' },
+    { x: Math.round(band.left + band.width * 35 / 120), chapter: 'CM' },
+    { x: Math.round(band.left + band.width * 65 / 120), chapter: 'OP' },
+    { x: Math.floor(band.right) - 2, chapter: '本編' },
+  ]) {
+    await page.mouse.move(x, y)
+    try {
+      await preview.waitFor({ state: 'visible', timeout: 1000 })
+    } catch {
+      ng.push(`⑳ x=${x}: ホバープレビューが表示されない`)
+      continue
+    }
+    try {
+      const { width, height, left, right, bottom } = await preview.evaluate(async (el) => {
+        // pointermove の連続イベントで予約した描画が済んでから測る。
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+        const rect = el.getBoundingClientRect()
+        return { width: rect.width, height: rect.height, left: rect.left, right: rect.right, bottom: rect.bottom }
+      }, undefined, { timeout: 1000 })
+      if (width <= 0 || height <= 0 || left < 0 || right > 400 || bottom > band.top) {
+        ng.push(`⑳ x=${x}: プレビューが画面の左右に収まらないか、帯に重なる（left=${left}, right=${right}, bottom=${bottom}, bandTop=${band.top}）`)
+        continue
+      }
+    } catch (error) {
+      ng.push(`⑳ x=${x}: プレビューの寸法を測れない（${error.message.split('\n')[0]}）`)
+      continue
+    }
+    const seconds = Math.floor((x - band.left) / band.width * 120)
+    const time = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+    try {
+      const label = await preview.getByTestId('chapter-filmstrip-preview-label').textContent({ timeout: 1000 })
+      if (label !== `${time} · ${chapter}`) ng.push(`⑳ x=${x}: 時刻・区間名が異なる（表示=${label}, 期待=${time} · ${chapter}）`)
+    } catch (error) {
+      ng.push(`⑳ x=${x}: 時刻・区間名を取得できない（${error.message.split('\n')[0]}）`)
+      continue
+    }
+    try {
+      const size = await image.evaluate((el) => ({ width: el.offsetWidth, height: el.offsetHeight }), undefined, { timeout: 1000 })
+      if (size.width <= band.width / 12) ng.push(`⑳ x=${x}: プレビューのコマが帯のコマより大きくない（幅=${size.width}）`)
+      const png = await image.screenshot({ timeout: 2000 })
+      const [pixel] = await readPixels(png, [[Math.round(size.width * 0.25), Math.round(size.height * 0.25)]])
+      const [r, g] = tileColor(seconds)
+      if (pixel.some((value, channel) => Math.abs(value - [r, g, QUAD_BLUE[0]][channel]) > 14)) {
+        ng.push(`⑳ x=${x}: ${time} の拡大コマの画素が異なる（rgb(${pixel})）`)
+      }
+    } catch (error) {
+      ng.push(`⑳ x=${x}: ${time} の拡大コマの寸法・画素を測れない（${error.message.split('\n')[0]}）`)
+    }
+  }
+  const boundary = page.locator('[data-testid="chapter-filmstrip-boundary"][data-time-ms="30000"]')
+  await boundary.hover({ force: true, timeout: 2000 })
+  if (await boundary.getAttribute('aria-pressed') === 'true') {
+    // 別の境界を選んでから押すことで、クリック前から選択済みの場合も遷移を測る。
+    await page.locator('[data-testid="chapter-filmstrip-boundary"][data-time-ms="40000"]').click({ timeout: 2000 })
+    await boundary.hover({ force: true, timeout: 2000 })
+  }
+  if (!(await preview.isVisible())) ng.push('⑳ 境界ボタン上でプレビューが表示されない')
+  if (await safeClick(boundary, '境界ボタン', '⑳ プレビュー表示中に境界を押せない')) {
+    if (await boundary.getAttribute('aria-pressed') !== 'true') ng.push('⑳ プレビュー表示中に境界を選択できない')
+  }
+  await page.mouse.move(Math.round(band.left + band.width / 2), y)
+  if (!(await preview.isVisible())) ng.push('⑳ 境界を選んだ後にプレビューが再表示されない')
+  await page.mouse.move(0, y)
+  if (await preview.isVisible()) ng.push('⑳ 帯の外へ移動してもプレビューが消えない')
 }
 
 log('\n=== #1019 filmstrip: 境界選択・1 frame 調整・PUT ===')
