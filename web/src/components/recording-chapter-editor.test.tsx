@@ -60,19 +60,23 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     expect(checkbox.checked).toBe(false)
   })
 
-  it('区間カードから近い境界へ移動し、filmstripで選んだ境界だけを調整する', () => {
+  it('再生位置が終端寄りでも開始ボタンは開始境界を選ぶ', () => {
     const { getByRole, getByTestId, onBoundaryAction, onSave, commandsRef } = renderEditor([cm], {
-      currentSeconds: 18,
+      currentSeconds: 19,
     })
-    fireEvent.click(getByRole('button', { name: '0:10 から 0:20 の境界を選ぶ' }))
-    expect(onBoundaryAction).toHaveBeenCalledWith(20)
+    const start = getByRole('button', { name: '開始 0:10 の境界を選ぶ' })
+    const end = getByRole('button', { name: '終了 0:20 の境界を選ぶ' })
+    fireEvent.click(start)
+    expect(onBoundaryAction).toHaveBeenCalledWith(10)
+    expect(start).toHaveAttribute('aria-pressed', 'true')
+    expect(end).toHaveAttribute('aria-pressed', 'false')
+    expect(getByTestId('chapter-span-row')).toHaveAttribute('data-selected', 'start')
 
     const filmstrip = getByTestId('chapter-filmstrip')
-    const startBoundary = filmstrip.querySelector<HTMLButtonElement>(
+    const selectedBoundary = filmstrip.querySelector<HTMLButtonElement>(
       '[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]',
     )!
-    fireEvent.click(startBoundary)
-    expect(startBoundary.getAttribute('aria-pressed')).toBe('true')
+    expect(selectedBoundary).toHaveAttribute('aria-pressed', 'true')
     fireEvent.click(getByRole('button', { name: '選択中の境界を 1 フレーム進める' }))
     expect(onSave).not.toHaveBeenCalled()
     expect(filmstrip.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="10033"]')).not.toBeNull()
@@ -80,9 +84,43 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     expect(commandsRef.current).not.toBeNull()
   })
 
-  it('区間カードとフィルムストリップの範囲は「〜」でつなぐ', () => {
-    const { getByRole, getByTestId } = renderEditor([cm])
-    expect(getByRole('button', { name: '0:10 から 0:20 の境界を選ぶ' })).toHaveTextContent(/^0:10〜0:20$/)
+  it('再生位置が開始寄りでも終了ボタンは終了境界を選ぶ', () => {
+    const { getByRole, getByTestId, onBoundaryAction } = renderEditor([cm], { currentSeconds: 11 })
+    const end = getByRole('button', { name: '終了 0:20 の境界を選ぶ' })
+    fireEvent.click(end)
+    expect(onBoundaryAction).toHaveBeenCalledWith(20)
+    expect(end).toHaveAttribute('aria-pressed', 'true')
+    expect(getByTestId('chapter-span-row')).toHaveAttribute('data-selected', 'end')
+  })
+
+  it('選択境界の意味を cut・ラベル・共有境界から表示する', () => {
+    const op: ChapterSpan = { startMs: 20_000, endMs: 30_000, label: 'OP', cut: false }
+    const standalone = renderEditor([cm])
+    fireEvent.click(standalone.getByRole('button', { name: '開始 0:10 の境界を選ぶ' }))
+    expect(standalone.getByTestId('chapter-selected-boundary-meaning')).toHaveTextContent('本編の終わり')
+    fireEvent.click(standalone.getByRole('button', { name: '終了 0:20 の境界を選ぶ' }))
+    expect(standalone.getByTestId('chapter-selected-boundary-meaning')).toHaveTextContent('本編の再開')
+    standalone.unmount()
+
+    const cutAndOp = renderEditor([cm, op], { currentSeconds: 19 })
+    fireEvent.click(cutAndOp.getByRole('button', { name: '終了 0:20 の境界を選ぶ' }))
+    const sharedCutAndOp = cutAndOp.getByTestId('chapter-selected-boundary-meaning')
+    expect(sharedCutAndOp).toHaveTextContent('CM の終わり・OP の始まり')
+    expect(sharedCutAndOp).not.toHaveTextContent('本編')
+    fireEvent.click(cutAndOp.getByRole('button', { name: '終了 0:30 の境界を選ぶ' }))
+    expect(cutAndOp.getByTestId('chapter-selected-boundary-meaning')).toHaveTextContent('OP の終わり')
+    cutAndOp.unmount()
+
+    const provided: ChapterSpan = { startMs: 20_000, endMs: 30_000, label: '提供', cut: true }
+    const adjacentCuts = renderEditor([cm, provided], { currentSeconds: 19 })
+    fireEvent.click(adjacentCuts.getByRole('button', { name: '終了 0:20 の境界を選ぶ' }))
+    const sharedCuts = adjacentCuts.getByTestId('chapter-selected-boundary-meaning')
+    expect(sharedCuts).toHaveTextContent('CM の終わり・提供 の始まり')
+    expect(sharedCuts).not.toHaveTextContent('本編')
+  })
+
+  it('フィルムストリップの範囲は「〜」でつなぐ', () => {
+    const { getByTestId } = renderEditor([cm])
     const filmstrip = getByTestId('chapter-filmstrip')
     expect(filmstrip).toHaveTextContent(/\d+:\d\d〜\d+:\d\d を表示/)
     expect(filmstrip).toHaveTextContent('（全体 0:00〜2:00 のうち枠の部分）')

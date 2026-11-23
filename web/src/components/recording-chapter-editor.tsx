@@ -6,12 +6,13 @@ import { RecordingChapterFilmstrip } from '@/components/recording-chapter-filmst
 import {
   FRAME_SECONDS,
   chapterBoundaries,
+  chapterSpanIndexesAtBoundary,
   displayedFrameBoundaryMs,
   moveChapterBoundary,
   nearestChapterBoundary,
   normalizeChapterDraft,
 } from '@/lib/chapters'
-import { formatPlaybackTime, formatTimeRange } from '@/lib/format'
+import { formatPlaybackTime } from '@/lib/format'
 
 export type ChapterEditorCommands = {
   save: () => Promise<boolean>
@@ -146,6 +147,21 @@ function ChapterDraftEditor({
   const selectedBoundary = boundaries.find((boundary) =>
     selectedBoundaryValue !== null && Math.abs(boundary - selectedBoundaryValue) <= 0.001,
   ) ?? nearestBoundary
+  const selectedBoundaryMeaning = selectedBoundary === null ? '' : (() => {
+    const boundaryMs = Math.round(selectedBoundary * 1000)
+    const indexes = chapterSpanIndexesAtBoundary(draft, selectedBoundary)
+    const coversBefore = indexes.some((index) => draft[index].endMs === boundaryMs)
+    const coversAfter = indexes.some((index) => draft[index].startMs === boundaryMs)
+    return indexes.map((index) => {
+      const span = draft[index]
+      const label = span.label || (span.cut ? 'CM' : '区間')
+      const starts = span.startMs === boundaryMs
+      const mainMeaning = span.cut && !(starts ? coversBefore : coversAfter)
+        ? starts ? '（本編の終わり）' : '（本編の再開）'
+        : ''
+      return `${label} の${starts ? '始まり' : '終わり'}${mainMeaning}`
+    }).join('・')
+  })()
 
   const pushHistory = useCallback((snapshot: ChapterSpan[]) => {
     setHistory((current) => [...current, snapshot.map((span) => ({ ...span }))])
@@ -330,6 +346,7 @@ function ChapterDraftEditor({
           isPlaying={isPlaying}
           spans={draft}
           selectedBoundary={selectedBoundary}
+          selectedBoundaryMeaning={selectedBoundaryMeaning}
           tilesAvailable={tilesAvailable}
           onSeek={jumpTo}
           onSelectBoundary={selectBoundary}
@@ -366,33 +383,43 @@ function ChapterDraftEditor({
         ) : (
           <ul className="flex flex-col gap-2">
             {draft.map((span, index) => {
-              const selected = selectedBoundary === span.startMs / 1000 || selectedBoundary === span.endMs / 1000
+              const selectedEdge = selectedBoundary === span.startMs / 1000
+                ? 'start'
+                : selectedBoundary === span.endMs / 1000
+                  ? 'end'
+                  : 'false'
+              const selected = selectedEdge !== 'false'
               return (
                 <li
                   key={`${span.startMs}-${span.endMs}-${index}`}
                   data-testid="chapter-span-row"
-                  data-selected={selected}
+                  data-selected={selectedEdge}
                   className={`relative grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1 rounded-lg border py-2 pr-2 pl-5 ${selected ? 'border-foreground ring-1 ring-foreground' : 'border-border'}`}
                 >
                   <span
                     aria-hidden="true"
                     className={`absolute inset-y-2 left-2 w-1 rounded-full ${span.cut ? 'bg-chapter-cut' : 'bg-muted-foreground/40'}`}
                   />
-                  <button
-                    type="button"
-                    className="col-span-2 flex min-h-8 items-center text-left font-mono text-sm text-muted-foreground"
-                    aria-label={`${formatPlaybackTime(span.startMs / 1000)} から ${formatPlaybackTime(span.endMs / 1000)} の境界を選ぶ`}
-                    onClick={() => {
-                      const startMs = span.startMs
-                      const endMs = span.endMs
-                      const boundaryMs = Math.abs(currentSeconds - startMs / 1000) <= Math.abs(currentSeconds - endMs / 1000)
-                        ? startMs
-                        : endMs
-                      selectBoundary(boundaryMs / 1000)
-                    }}
-                  >
-                    {formatTimeRange(formatPlaybackTime(span.startMs / 1000), formatPlaybackTime(span.endMs / 1000))}
-                  </button>
+                  <div className="col-span-2 grid min-w-0 grid-cols-2 gap-1">
+                    <button
+                      type="button"
+                      aria-label={`開始 ${formatPlaybackTime(span.startMs / 1000)} の境界を選ぶ`}
+                      aria-pressed={selectedEdge === 'start'}
+                      className={`min-w-0 truncate rounded px-1 text-left font-mono text-sm ${selectedEdge === 'start' ? 'bg-muted font-semibold text-foreground' : 'text-muted-foreground'}`}
+                      onClick={() => selectBoundary(span.startMs / 1000)}
+                    >
+                      開始 {formatPlaybackTime(span.startMs / 1000)}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`終了 ${formatPlaybackTime(span.endMs / 1000)} の境界を選ぶ`}
+                      aria-pressed={selectedEdge === 'end'}
+                      className={`min-w-0 truncate rounded px-1 text-right font-mono text-sm ${selectedEdge === 'end' ? 'bg-muted font-semibold text-foreground' : 'text-muted-foreground'}`}
+                      onClick={() => selectBoundary(span.endMs / 1000)}
+                    >
+                      終了 {formatPlaybackTime(span.endMs / 1000)}
+                    </button>
+                  </div>
                   <input
                     type="text"
                     value={span.label ?? ''}

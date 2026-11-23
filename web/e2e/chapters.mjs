@@ -5,7 +5,7 @@
 // 前後再生は `<video>` の実再生と `currentTime` の推移でしか観測できない。
 // CLAUDE.md §テスト規律のとおり、実装より先にここで判定手段を作る。
 //
-// 見るのは次の 13 点:
+// 見るのは次の 14 点:
 //   ① 目盛りの位置が区間の割合と一致し、cut と ラベル付きが別の見た目で出る
 //   ② 通常の再生で cut 区間の先頭に差し掛かると、その終端へ飛ぶ
 //   ③ 手動のシークで区間の中に入ったときは飛ばない（cut / ラベル付きの両方）
@@ -20,6 +20,7 @@
 //   ⑪ LivePlayer の録画 HLS が境界の 3 秒後（33 秒付近）で、手で止めずに再生位置で止まる
 //   ⑫ 停止位置まで進まない場合に実時間タイマーが録画 HLS を止め、編集中の再生は 33 秒を越えて続く
 //   ⑬ 停止タイマー後に HLS の canplay 自動再開が復活しない（録画 HLS が再生できないときは飛ばす）
+//   ⑭ 400px 幅の区間行で開始・終了を選び分けられ、開始付近から終了の前後再生を始められる
 //
 // フィクスチャは ffmpeg で作る（再生位置の推移が判定に要る）。無い環境では
 // この判定だけを skip として終了する。
@@ -626,6 +627,47 @@ log('\n=== ④ 境界の「前後 3 秒」 ===')
 await page.getByRole('button', { name: '再生設定' }).click()
 await page.getByRole('menuitem', { name: 'チャプターを直す', exact: true }).click()
 await page.waitForSelector('[data-testid="chapter-edit-layout"]', { timeout: 5000 })
+log('\n=== ⑭ 区間行から終了境界を選び、400px 幅でも前後再生する ===')
+await page.setViewportSize({ width: 400, height: 800 })
+await seek(31)
+const narrowRow = page.getByTestId('chapter-span-row').first()
+const narrowStart = narrowRow.getByRole('button', { name: '開始 0:30 の境界を選ぶ' })
+const narrowEnd = narrowRow.getByRole('button', { name: '終了 0:40 の境界を選ぶ' })
+if ((await narrowStart.count()) !== 1 || (await narrowEnd.count()) !== 1) {
+  ng.push('⑭ 400px 幅の区間行に開始・終了の境界ボタンが揃わない')
+} else {
+  const rowGeometry = await page.evaluate(() => {
+    const row = document.querySelector('[data-testid="chapter-span-row"]')
+    const buttons = row?.querySelectorAll('button[aria-label^="開始 "], button[aria-label^="終了 "]')
+    if (!row || !buttons || buttons.length !== 2) return null
+    const bounds = Array.from(buttons, (button) => button.getBoundingClientRect())
+    const r = row.getBoundingClientRect()
+    return {
+      oneLine: Math.abs(bounds[0].top - bounds[1].top) < 1 && Math.abs(bounds[0].bottom - bounds[1].bottom) < 1,
+      insideRow: bounds.every((b) => b.left >= r.left && b.right <= r.right),
+      overlap: Math.min(bounds[0].right, bounds[1].right) > Math.max(bounds[0].left, bounds[1].left),
+    }
+  })
+  if (!rowGeometry?.oneLine || !rowGeometry.insideRow || rowGeometry.overlap) {
+    ng.push(`⑭ 400px 幅の開始・終了ボタンが1行で重ならずに収まらない（${JSON.stringify(rowGeometry)}）`)
+  }
+  await narrowEnd.click()
+  const selectedTime = await page.getByTestId('chapter-selected-boundary').textContent()
+  if (selectedTime?.trim() !== '0:40.000') {
+    ng.push(`⑭ 終了ボタンで40秒境界が選ばれない（表示=${selectedTime?.trim()}）`)
+  }
+  await page.getByRole('button', { name: '選択中の境界の前後3秒を再生' }).click()
+  const endPlaybackStarted = await page.waitForFunction(() => {
+    const current = document.querySelector('video')?.currentTime
+    return current !== undefined && current >= 36.5 && current < 40
+  }, undefined, { timeout: 10000 }).then(() => true).catch(() => false)
+  const endPlaybackPosition = await video.evaluate((v) => v.currentTime)
+  await video.evaluate((v) => v.pause())
+  if (!endPlaybackStarted || endPlaybackPosition < 36.5 || endPlaybackPosition >= 40) {
+    ng.push(`⑭ 区間の開始付近から「終了」の前後再生が40秒境界の3秒前に始まらない（位置=${endPlaybackPosition.toFixed(2)}秒）`)
+  }
+}
+await page.setViewportSize({ width: 1280, height: 900 })
 const firstBoundary = page.locator('[data-testid="chapter-filmstrip-boundary"][data-time-ms="30000"]')
 if ((await firstBoundary.count()) !== 1) ng.push('④ 30 秒の境界が filmstrip に無い --- 判定の前提が崩れている')
 else await firstBoundary.click()
