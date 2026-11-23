@@ -421,7 +421,7 @@ function ChapterDraftEditor({
                   data-testid="chapter-span-row"
                   data-selected={selectedEdge}
                   data-playing={index === playingSpanIndex ? 'true' : 'false'}
-                  className={`relative grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1 rounded-lg border py-2 pr-2 pl-5 ${selected ? 'border-foreground ring-1 ring-foreground' : index === playingSpanIndex ? 'border-sky-500' : 'border-border'} ${index === playingSpanIndex ? 'bg-sky-500/10' : ''}`}
+                  className={`relative grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1 rounded-lg border py-2 pr-2 pl-5 ${selected ? 'border-foreground ring-1 ring-foreground' : index === playingSpanIndex ? 'border-foreground/50' : 'border-border'} ${index === playingSpanIndex ? 'bg-foreground/10' : ''}`}
                 >
                   <span
                     aria-hidden="true"

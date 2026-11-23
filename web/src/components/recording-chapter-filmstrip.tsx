@@ -327,7 +327,7 @@ export function RecordingChapterFilmstrip({
           <span
             data-testid="chapter-filmstrip-overview-playhead"
             aria-hidden="true"
-            className="pointer-events-none absolute inset-y-0 z-20 w-0.5 -translate-x-1/2 bg-sky-300"
+            className="pointer-events-none absolute inset-y-0 z-20 w-0.5 -translate-x-1/2 bg-background outline outline-1 outline-foreground"
             style={{ left: `${Math.max(0, Math.min(100, currentSeconds / durationSeconds * 100))}%` }}
           />
         )}
@@ -458,7 +458,7 @@ export function RecordingChapterFilmstrip({
           <span
             data-testid="chapter-filmstrip-playhead"
             aria-hidden="true"
-            className="pointer-events-none absolute inset-y-0 z-30 w-0.5 -translate-x-1/2 bg-sky-300"
+            className="pointer-events-none absolute inset-y-0 z-30 w-0.5 -translate-x-1/2 bg-background outline outline-1 outline-foreground"
             style={{ left: `${((currentSeconds - range.startSeconds) / rangeLength) * 100}%` }}
           />
         )}
