@@ -42,6 +42,21 @@ func main() {
 	}
 }
 
+func conformanceObjects(ctx context.Context, cfg s3store.Config, key string, size int64) (objstore.Store, error) {
+	delivery := os.Getenv("E2E_S3_DELIVERY")
+	if delivery == "crypt" {
+		return encryptedConformanceObjects(ctx, cfg, key, size)
+	}
+	objects, err := s3store.New(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if delivery == "proxy" {
+		return objstore.NewProxyDelivery(objects)
+	}
+	return objects, nil
+}
+
 func run(ctx context.Context) error {
 	databaseURL := os.Getenv("ROKUBAN_TEST_DATABASE_URL")
 	endpoint := os.Getenv("ROKUBAN_S3_CONFORMANCE_ENDPOINT")
@@ -66,16 +81,9 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("connecting to S3 browser conformance database: %w", err)
 	}
 	defer pool.Close()
-	objects, err := s3store.New(ctx, s3store.Config{Endpoint: endpoint, Region: region, Bucket: bucket})
+	streamObjects, err := conformanceObjects(ctx, s3store.Config{Endpoint: endpoint, Region: region, Bucket: bucket}, videoKey, videoSize)
 	if err != nil {
 		return fmt.Errorf("creating conformance object store: %w", err)
-	}
-	var streamObjects objstore.Store = objects
-	if os.Getenv("E2E_S3_DELIVERY") == "proxy" {
-		streamObjects, err = objstore.NewProxyDelivery(objects)
-		if err != nil {
-			return fmt.Errorf("configuring proxy delivery for conformance: %w", err)
-		}
 	}
 	queries := sqlcgen.New(pool)
 	startAt := time.Now().Truncate(time.Second)

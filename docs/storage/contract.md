@@ -37,6 +37,10 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、�
 
 `CompleteUpload` は、内容が同じ既存キーを成功として扱う。公開した後に止まった送信（FS は staging を消す前、S3 は完了の応答を失ったとき）を、再試行で完了させるためである。
 
+暗号化層の内側の S3 置き場は宣言された SHA-256 をメタデータに記録する。受け取る暗号文から平文の SHA-256 は計算できないため、公開前の照合は平文を読める暗号化層が担う。
+
+暗号化した置き場は `Store`、`Reader`、`RangeReader`、`Resumable` を提供する。配信は streamer が復号して中継する。署名付き URL やローカルファイルのパスでは暗号文が届くため、暗号化した置き場は `SignedURL` と `Local` を公開しない。
+
 配信側は `objstore.Local`、`objstore.SignedURL`、`objstore.RangeReader` の順で能力を調べる。`Local` はリバースプロキシが同じ `rel_path` のファイルを読める置き場だけが実装し、Range 対応のローカル配信に使う。`storage.accel_location` が設定されていれば `Open` で存在を確認してから `X-Accel-Redirect` を返す。
 
 `SignedURL` は署名付き URL へ redirect する。`RangeReader` は `Head` で確認したサイズを使い、streamer が Range 読みを中継する。

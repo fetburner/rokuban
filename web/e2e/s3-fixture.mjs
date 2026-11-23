@@ -80,8 +80,9 @@ export function createS3FixtureClient() {
     const url = new URL(pathName, S3_URL)
     const headers = authorizationHeaders(method, url, body, extraHeaders)
     const response = await fetch(url, { method, headers, body: body.length === 0 ? undefined : body })
+    if (response.ok) return response
     const responseText = await response.text()
-    if (!response.ok && !(method === 'PUT' && response.status === 409 && responseText.includes('BucketAlreadyOwnedByYou'))) {
+    if (!(method === 'PUT' && response.status === 409 && responseText.includes('BucketAlreadyOwnedByYou'))) {
       throw new Error(method + ' ' + url.pathname + url.search + ' failed (' + response.status + '): ' + responseText)
     }
     return response

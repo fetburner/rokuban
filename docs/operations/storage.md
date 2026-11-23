@@ -214,6 +214,37 @@ S3 へブラウザを直接送る 302 配信では、動画再生のため bucke
 
 中継では動画と字幕の両方を streamer が読むため、ブラウザから S3 への CORS は要らない。302 配信の CORS は `web/e2e/s3-302.mjs`、中継の再生は `web/e2e/s3-proxy.mjs` で確認する。
 
+#### S3 の暗号化
+
+新しい置き場名と専用の空の bucket を使う。鍵の目印は置き場名を含めて作るため、名前を変えると目印の照合に失敗する。既存の置き場では鍵の交換も暗号化の切り替えもできない。同じ bucket で切り替えると、DB に保存した相対キーから既存の派生物を引けなくなる。変更するときは別の置き場を作って転送する。
+
+worker と streamer に `ROKUBAN_CRYPT_<NAME>_PASSWORD` と `ROKUBAN_CRYPT_<NAME>_SALT` を渡す。`<NAME>` は置き場名の英字を大文字にし、ハイフンをアンダースコアにして作る。設定の検証では環境変数名に変換できない置き場名や、暗号化した置き場間での環境変数名の重複を拒否する。
+
+Secret などから環境変数を注入し、設定ファイルやその共有先へ鍵が残るのを防ぐ。password と salt の両方をバックアップする。片方でも失うと、その置き場の派生物はすべて読めなくなる。
+
+最初に操作する worker が空の bucket に条件付き書き込みで鍵の目印を置く。条件付き書き込みに非対応の S3 では目印を作れず、暗号化した置き場を初期化できない。streamer は既存の目印を確認するので、初期化には書き込み権限を持つ worker が要る。
+
+配信は中継を使うため、streamer には `HeadObject` と `GetObject` を許可する。平文の SHA-256 は照合用のメタデータに残り、提供者から読める。
+
+長いキーは暗号化後に S3 の上限を超えると拒まれる。同じ番組名を複数階層に展開するテンプレートでは、階層を減らしてキーを短くできる。孤児監査が `~crypt-foreign/` で報告する名前の末尾は、S3 の生キーをパディング無しの URL-safe Base64 で表したものである。
+
+rclone で復号するには、まず読み取り権限を持つ S3 remote を設定する。次に、その remote の bucket を指す crypt remote を作る。filename encryption は `standard`、directory name encryption は有効、filename encoding は `base32` にする。password と password2 には、それぞれ Rokuban に渡した password と salt を設定する。設定ファイルを直接作る場合は `rclone obscure` で変換した値を使う。
+
+```sh
+rclone lsf recovered:
+rclone copy recovered: ./recovered
+```
+
+`recovered` は crypt remote の名前である。目印の名前は crypt の暗号化対象外なので、rclone の strict names は既定の無効のままにする。
+
+<details><summary>根拠</summary>
+
+- 番組名を含むキーの長さは `TestContentPathKeyLimit` で確かめる
+- rclone との両方向の互換性は本文を `TestCryptRcloneRoundTrip`、名前を `TestCryptRcloneNames` で確かめる
+- 暗号化したコピーの Chrome での中継再生とシークは `web/e2e/s3-crypt-proxy.mjs` で確かめる
+
+</details>
+
 #### 適合テストが測る機能
 
 適合テストが測るのは 6 つである。結果は機能ごとに「対応 / 非対応 / 一部対応」で記録するだけで、非対応や一部対応を理由に失敗にしない。
@@ -225,7 +256,7 @@ S3 へブラウザを直接送る 302 配信では、動画再生のため bucke
 - 署名付き GET の Range
 - multipart の続き。送り手が落ちたあとも、同じ UploadId とパートの ETag だけで続けて完了できるかを見る
 
-条件付き書き込みは、対応していなくても、書き込み先のキーが一意なので使える。multipart の続きが非対応・一部対応のサーバーで派生物の転送が続きから送れるかは未検証である。
+通常の派生物は書き込み先のキーが一意なので、条件付き書き込みに非対応でも使える。暗号化した置き場の初期化要件は [S3 の暗号化](#s3-の暗号化) を参照する。multipart の続きが非対応・一部対応のサーバーで派生物の転送が続きから送れるかは未検証である。
 
 置き場の bucket には、`AbortIncompleteMultipartUpload` のライフサイクル規則を必ず設定する。途中で終わった multipart のアップロードはオブジェクトとして見えず、孤児回収では拾えない。abort への対応の有無にかかわらず、worker が途中で落ちればパートが残るためである。派生物の転送は 1 つのアップロードを slice をまたいで続けるので、途中のアップロードは何日も残りうる。`DaysAfterInitiation`（日単位）は、転送が slice をまたいで続く期間より十分長くする。短いと、続きの途中のアップロードが消え、次の試行は新しいアップロードから送り直すことになる。
 
@@ -235,7 +266,18 @@ DB を失った後は記録と突き合わせられないので、この手順�
 
 ```bash
 # DB が指す UploadId（S3 の送信状態と掃除待ちの両方）。出力を known.txt に保存する
-psql "$POSTGRES_CONNECTION_STRING" -At -c "SELECT convert_from(upload_state, 'UTF8')::jsonb->>'upload_id' FROM media_asset_copy_transfer_progress WHERE upload_state IS NOT NULL UNION SELECT convert_from(upload_state, 'UTF8')::jsonb->>'upload_id' FROM media_asset_transfer_abandoned_uploads" > known.txt
+psql "$POSTGRES_CONNECTION_STRING" -At > known.txt <<'SQL'
+WITH saved_uploads AS (
+  SELECT upload_state FROM media_asset_copy_transfer_progress WHERE upload_state IS NOT NULL
+  UNION ALL
+  SELECT upload_state FROM media_asset_transfer_abandoned_uploads
+), states AS (
+  SELECT convert_from(upload_state, 'UTF8')::jsonb AS state FROM saved_uploads
+)
+SELECT COALESCE(state->>'upload_id',
+                convert_from(decode(state->>'inner', 'base64'), 'UTF8')::jsonb->>'upload_id')
+FROM states;
+SQL
 
 # bucket の未完了アップロード（Key と UploadId の組）のうち、known.txt に無いものだけを Abort する
 aws s3api list-multipart-uploads --bucket BUCKET --query 'Uploads[].[Key,UploadId]' --output text

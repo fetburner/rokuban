@@ -237,15 +237,33 @@ CI の `browser-s3-302` は実 Chrome で回す。Playwright WebKit はローカ
 
 CI では RustFS の MP4 を `delivery: proxy` の streamer 経由で実 Chrome に再生させる。保存位置への移動と再生、一時停止を 3 分置いた後の再開も確認し、シーク開始から `seeked` までの時間を出力する。各シーク前に位置がバッファ外であることを確かめ、streamer の新しい Range 要求も数える。Playwright WebKit でも、ローカル診断として同じ判定を回せる。
 
-必要なのは `s3-302.mjs` と同じ RustFS、PostgreSQL、ffmpeg、ブラウザの準備である。CI の `browser-s3-302` は同じ S3 streamer conformance バイナリを用意し、`node e2e/run.mjs --needs s3` で両方を確認する。ローカルではその CI のサービスを起動し、次を実行する。
+必要なのは `s3-302.mjs` と同じ RustFS、PostgreSQL、ffmpeg、ブラウザの準備である。CI の `browser-s3-302` は S3 streamer conformance バイナリを用意し、`node e2e/run.mjs --needs s3` を実行する。ローカルではその CI のサービスを起動し、リポジトリのルートから次を実行する。
 
 ```sh
 go build -tags s3conformance -o /tmp/rokuban-s3streamer-conformance ./internal/streamer/conformance
+cd web
 E2E_STREAMER_FIXTURE_BINARY=/tmp/rokuban-s3streamer-conformance node e2e/run.mjs s3-proxy
 E2E_BROWSER=webkit E2E_STREAMER_FIXTURE_BINARY=/tmp/rokuban-s3streamer-conformance node e2e/run.mjs s3-proxy
 ```
 
 CI は実 Chrome で回し、Playwright WebKit は `E2E_BROWSER=webkit` を付けたローカル診断用である。
+
+### 暗号化した S3 の中継（`s3-crypt-proxy.mjs`）
+
+転送が使う送信 API で暗号化した MP4 を RustFS に置き、streamer の中継を実 Chrome で再生する。
+
+実行環境と fixture バイナリは S3 の中継と同じである。ローカルでは `web/` で次を実行する。
+
+```sh
+E2E_STREAMER_FIXTURE_BINARY=/tmp/rokuban-s3streamer-conformance node e2e/run.mjs s3-crypt-proxy
+```
+
+| 判定 | 観測するもの |
+|---|---|
+| 転送の再開 | 途中で止めた送信の offset が進み、完了前のキーは取得できない。その位置から再開して全長を確定する |
+| 暗号化 | RustFS を直接読み、動画のキーに番組名や拡張子が出ないことを確認する。本文には crypt のヘッダがあり、平文の名前と動画から採ったバイト列が出ない |
+| 中継と再生 | streamer の HEAD が平文サイズと Range 対応を直接返し、Chrome の動画が再生される |
+| バッファ外へのシーク | Chrome が指定時刻へ移動して再生を続ける。streamer と RustFS の双方に新しい Range GET が届く |
 
 ### シークバーのプレビュー（`seek-tiles.mjs`）
 

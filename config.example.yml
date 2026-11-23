@@ -89,6 +89,9 @@ storage:
   #   s3main: { kind: s3, endpoint: https://s3.example.com, region: us-east-1, bucket: rokuban-derived }
   #   # delivery を省略すると署名付き URL へ 302。proxy は streamer が中継する実験的な経路。
   #   s3proxy: { kind: s3, endpoint: https://s3.example.com, region: us-east-1, bucket: rokuban-derived, delivery: proxy }
+  #   # 暗号化には新しい置き場名と空の bucket を使う。配信は常に中継。
+  #   # worker と streamer に ROKUBAN_CRYPT_S3_CRYPT_PASSWORD と ROKUBAN_CRYPT_S3_CRYPT_SALT を渡す。
+  #   s3-crypt: { kind: s3, endpoint: https://s3.example.com, region: us-east-1, bucket: rokuban-encrypted, crypt: true }
   # originals:
   #   - store: main
   # derived: s3main

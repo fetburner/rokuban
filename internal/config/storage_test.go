@@ -420,6 +420,8 @@ func TestStoragePolicyFingerprint(t *testing.T) {
 	changedBucket.Stores["s3main"] = StoreConfig{Kind: "s3", Endpoint: "https://s3.example.com", Bucket: "other-derived"}
 	changedEndpoint := newStorage()
 	changedEndpoint.Stores["s3main"] = StoreConfig{Kind: "s3", Endpoint: "https://other-s3.example.com", Bucket: "derived"}
+	changedCrypt := newStorage()
+	changedCrypt.Stores["s3main"] = StoreConfig{Kind: "s3", Endpoint: "https://s3.example.com", Bucket: "derived", Crypt: true}
 	changedRule := newStorage()
 	changedRule.Originals[0].Match.OlderThan = "31d"
 	changedDerived := newStorage()
@@ -427,6 +429,7 @@ func TestStoragePolicyFingerprint(t *testing.T) {
 	for name, changed := range map[string]StorageConfig{
 		"s3 bucket":     changedBucket,
 		"s3 endpoint":   changedEndpoint,
+		"s3 encryption": changedCrypt,
 		"original rule": changedRule,
 		"derived store": changedDerived,
 	} {
@@ -512,7 +515,7 @@ func TestStoragePolicyFingerprint(t *testing.T) {
 	}
 }
 
-func TestStoreDeliveryValidation(t *testing.T) {
+func TestStoreOptionsValidation(t *testing.T) {
 	base := StorageConfig{
 		Stores: map[string]StoreConfig{
 			"main":  {Kind: "fs"},
@@ -530,6 +533,15 @@ func TestStoreDeliveryValidation(t *testing.T) {
 		{name: "default keeps existing delivery", stores: base.Stores},
 		{name: "proxy is valid for s3", stores: map[string]StoreConfig{"main": {Kind: "fs"}, "cloud": {Kind: "s3", Bucket: "derived", Delivery: "proxy"}}},
 		{name: "proxy is not valid for fs", stores: map[string]StoreConfig{"main": {Kind: "fs", Delivery: "proxy"}, "cloud": {Kind: "s3", Bucket: "derived"}}, wantError: "delivery is only valid for kind s3"},
+		{name: "crypt is valid for s3", stores: map[string]StoreConfig{"main": {Kind: "fs"}, "cloud": {Kind: "s3", Bucket: "derived", Crypt: true}}},
+		{name: "crypt is not valid for fs", stores: map[string]StoreConfig{"main": {Kind: "fs", Crypt: true}, "cloud": {Kind: "s3", Bucket: "derived"}}, wantError: "crypt is only valid for kind s3"},
+		{name: "crypt name cannot form an environment variable", stores: map[string]StoreConfig{
+			"main": {Kind: "fs"}, "cloud": {Kind: "s3", Bucket: "derived"}, "bad.name": {Kind: "s3", Bucket: "bad", Crypt: true},
+		}, wantError: `"bad.name" cannot form a crypt environment variable name`},
+		{name: "crypt names cannot share environment variables", stores: map[string]StoreConfig{
+			"main": {Kind: "fs"}, "cloud": {Kind: "s3", Bucket: "derived"},
+			"a-b": {Kind: "s3", Bucket: "first", Crypt: true}, "a_b": {Kind: "s3", Bucket: "second", Crypt: true},
+		}, wantError: `"a-b" and "a_b" share crypt environment variable prefix ROKUBAN_CRYPT_A_B`},
 		{name: "unknown s3 delivery is rejected", stores: map[string]StoreConfig{"main": {Kind: "fs"}, "cloud": {Kind: "s3", Bucket: "derived", Delivery: "direct"}}, wantError: "delivery must be proxy when set"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

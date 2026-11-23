@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +34,9 @@ type StoreConfig struct {
 	InternalURL string `yaml:"internal_url,omitempty" json:"-"`
 	// Delivery は streamer の配信方式を選ぶ。配置規則には影響しない。
 	Delivery string `yaml:"delivery,omitempty" json:"-"`
+	// Crypt は派生物の S3 置き場を rclone crypt 形式で使うかを指定する。
+	// 鍵素材は設定に持たず、置き場名で指定された環境変数から組み立て時に読む。
+	Crypt    bool   `yaml:"crypt,omitempty" json:"crypt,omitempty"`
 	Endpoint string `yaml:"endpoint,omitempty" json:"endpoint,omitempty"`
 	Region   string `yaml:"region,omitempty" json:"region,omitempty"`
 	Bucket   string `yaml:"bucket,omitempty" json:"bucket,omitempty"`
@@ -225,6 +229,16 @@ func (c StorageConfig) validatePolicyRequirements() []string {
 	return errs
 }
 
+var cryptEnvName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// CryptEnvPrefix は暗号化の password と salt を渡す環境変数の共通接頭辞を返す。
+func CryptEnvPrefix(name string) (string, error) {
+	if !cryptEnvName.MatchString(name) {
+		return "", fmt.Errorf("store name %q cannot form a crypt environment variable name", name)
+	}
+	return "ROKUBAN_CRYPT_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")), nil
+}
+
 func (c StorageConfig) validateStoreDefinitions() []string {
 	var errs []string
 	storeNames := make([]string, 0, len(c.Stores))
@@ -232,8 +246,20 @@ func (c StorageConfig) validateStoreDefinitions() []string {
 		storeNames = append(storeNames, name)
 	}
 	sort.Strings(storeNames)
+	cryptNames := make(map[string]string)
 	for _, name := range storeNames {
 		store := c.Stores[name]
+		if store.Crypt {
+			prefix, err := CryptEnvPrefix(name)
+			switch {
+			case err != nil:
+				errs = append(errs, fmt.Sprintf("storage.stores: %v", err))
+			case cryptNames[prefix] != "":
+				errs = append(errs, fmt.Sprintf("storage.stores keys %q and %q share crypt environment variable prefix %s", cryptNames[prefix], name, prefix))
+			default:
+				cryptNames[prefix] = name
+			}
+		}
 		if !storagename.ValidStoreName(name) {
 			errs = append(errs, fmt.Sprintf("storage.stores key %q must contain only lowercase ASCII letters, digits and hyphens", name))
 		}
@@ -242,6 +268,9 @@ func (c StorageConfig) validateStoreDefinitions() []string {
 		}
 		switch store.Kind {
 		case "fs":
+			if store.Crypt {
+				errs = append(errs, fmt.Sprintf("storage.stores.%s.crypt is only valid for kind s3", name))
+			}
 			if store.Delivery != "" {
 				errs = append(errs, fmt.Sprintf("storage.stores.%s.delivery is only valid for kind s3", name))
 			}
