@@ -21,6 +21,9 @@ var (
 	// ErrCredentials means the request failed because the credentials could not be retrieved,
 	// have expired, or were not recognized. It is joined to the underlying error.
 	ErrCredentials = errors.New("object store credentials are unusable")
+	// ErrTemporarilyUnavailable means the object store explicitly rejected a request for now.
+	// It is joined to the underlying error so callers can retry without counting a copy attempt.
+	ErrTemporarilyUnavailable = errors.New("object store is temporarily unavailable")
 	// ErrReadOnly means the object store was initialized without write capabilities.
 	ErrReadOnly = errors.New("object store is read-only")
 	// ErrUploadInvalid は、保存した再開状態ではもう続きを送れない・完了できないことを表す

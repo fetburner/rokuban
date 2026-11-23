@@ -580,6 +580,11 @@ var (
 		Name: "rokuban_storage_transfer_exhausted_assets",
 		Help: "Number of logical media assets with a copy in an FS store whose desired-store copy stopped retrying after reaching the transfer attempt limit. Originals that can already be deleted because their encoded copies exist are excluded.",
 	})
+	// StorageTransferDeferredFailures は、試行表に数えず再確認へ回した転送失敗の累計。Counter の rate で失敗が続いているかを見られ、試行表の意味を変えずに済む。
+	StorageTransferDeferredFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_storage_transfer_deferred_failures_total",
+		Help: "Storage transfer failures deferred without consuming a transfer attempt, by reason: temporarily_unavailable or credentials.",
+	}, []string{"reason"})
 	StorageDerivedCopiesOutsideDerivedS3 = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_storage_derived_copies_outside_derived_s3",
 		Help: "Number of active current-generation derived media copies in configured S3 stores other than storage.derived.",
@@ -836,6 +841,7 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		StorageTransferWaitingAssets,
 		StorageTransferWaitingBytes,
 		StorageTransferExhaustedAssets,
+		StorageTransferDeferredFailures,
 		StorageDerivedCopiesOutsideDerivedS3,
 		StorageTransferPolicyMismatches,
 		StorageTransferCorruptSourcesRetired,
