@@ -14,12 +14,3 @@ func testMedia(pool *pgxpool.Pool, storeName, derivedStore string) *Media {
 	}
 	return NewMediaInStore(pool, storeName, policy)
 }
-
-// testMediaWithStores は原本の置き場が storeName と違うときだけ派生物の置き場を分けて作る。
-func testMediaWithStores(pool *pgxpool.Pool, storeName, originalStore, derivedStore string) *Media {
-	if storeName == originalStore {
-		return testMedia(pool, storeName, derivedStore)
-	}
-	policy := store.NewStoragePolicy(nil, nil, derivedStore)
-	return NewMediaForDerivedStore(pool, storeName, originalStore, policy)
-}

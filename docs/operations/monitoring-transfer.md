@@ -77,9 +77,9 @@ Warn は置き場が止まり始めたときに 1 回、Info は解けたとき�
 - 上限の無い構成の targeted pass が DB に触らないこと: `TestEncodeReconcile_NoLimitPassDoesNotTouchBacklogState`
 - 解けた次のパスでゲージが 0 に戻ること: `TestEncodeReconcile_BacklogGaugeClearsOnTargetedPass`
 - パスごとにプロセスが新しくなっても Warn / Info が変化のときだけ出ること: `TestEncodeReconcile_BacklogLogsOnlyOnTransitions`
-- 並行する保存で変化を見るのが 1 つだけであること: `TestRecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce`
+- 並行する保存で変化を見るのが 1 つだけであること: `TestStorageTransferStoreContract/RecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce`
 - 数え始めた時刻を DB の時計から取ること: `TestEncodeReconcile_CountedAtComesFromTheDatabaseClock`
-- 古い時刻の件数が新しい件数を上書きしないこと: `TestRecordTransferBacklog_StaleCountDoesNotOverwrite`
+- 古い時刻の件数が新しい件数を上書きしないこと: `TestStorageTransferStoreContract/RecordTransferBacklog_StaleCountDoesNotOverwrite`
 - 古い件数が捨てられたとき、残った新しい件数で止めること: `TestEncodeReconcile_StaleCountDecidesByTheSavedCount`
 - 待ち件数が止まったら、最後の成功の古さを見てから worker とマウントを調べる: `rokuban_storage_transfer_waiting_assets`
 - 試行が上限に達した件数が 0 以外なら、原因を直してから試行記録を消す: `rokuban_storage_transfer_exhausted_assets`

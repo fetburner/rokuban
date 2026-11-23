@@ -182,8 +182,8 @@ worker が ingest か置き場で修飾するキューを引くときは、FS �
 - 帯域の上限が転送元の置き場ごとに掛かり、上限の無い置き場は絞られないこと: `TestTransferSourceReaderLimitsOnlyTheConfiguredSourceStore`
 - 転送待ちが上限に達した置き場へ encode を積まないこと: `TestEncodeReconcile_TransferBacklogStopsEncodesIntoTheSourceStore`
 - 止まっている置き場の解除が次のパスで投入とゲージに出ること: `TestEncodeReconcile_BacklogGaugeClearsOnTargetedPass`
-- 並行する保存で状態の変化を見るのが 1 つだけであること: `TestRecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce`
-- 古い時刻の件数が新しい件数を上書きしないこと: `TestRecordTransferBacklog_StaleCountDoesNotOverwrite`
+- 並行する保存で状態の変化を見るのが 1 つだけであること: `TestStorageTransferStoreContract/RecordTransferBacklog_ConcurrentCallsSeeTheChangeOnce`
+- 古い時刻の件数が新しい件数を上書きしないこと: `TestStorageTransferStoreContract/RecordTransferBacklog_StaleCountDoesNotOverwrite`
 - 上限の無い構成の targeted pass が DB に触らないこと: `TestEncodeReconcile_NoLimitPassDoesNotTouchBacklogState`
 - 上限を外した置き場の保存済みの件数が消えること: `TestEncodeReconcile_BacklogSnapshotDroppedWhenLimitRemoved`
 - 件数を数えないパスと数えるパスの区別: `TestEncodeReconcile_PassWithoutDecisionSkipsBacklogCount`
