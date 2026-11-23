@@ -125,7 +125,7 @@ Rokuban から見た録画の帰結は権威にならない。値は mirakc の 
 
 これは不変条件 7「mirakc 固有の概念を永続テーブルに入れない」の違反ではない。既存の 3 値はもともと mirakc の語彙で、取消の追加はその踏襲である。不変条件 7 が禁じるのは、mirakc の内部 ID・タグ形式・スケジュール状態のような実装詳細に紐づく構造の持ち込みである。録画結果の語彙（成功・失敗・取消）は、ドメインの外部仕様として妥当な粒度と言える。
 
-未知の値（mirakc が将来値を追加した場合）は、5 値目を足さずに失敗へ丸める。正規化は watcher が行い、生の値は同期表の状態（CHECK 無し）にそのまま残るので、観測は失われない。取消を失敗に丸めるのは分かっている 2 つの事実を区別できなくするが、未知の値は「何が起きたか分からない」という状態そのものが事実である。そのため、粗い失敗への集約を許容する。次に mirakc が値を足したら、watcher の ERROR ログを起点にこの CHECK と `openapi.yaml` の enum を更新する。
+未知の値（mirakc が将来値を追加した場合）は、5 値目を足さずに失敗へ丸める。正規化は store が録画の観測を書くときに行い、生の値は同期表の状態（CHECK 無し）にそのまま残るので、観測は失われない。取消を失敗に丸めるのは分かっている 2 つの事実を区別できなくするが、未知の値は「何が起きたか分からない」という状態そのものが事実である。そのため、粗い失敗への集約を許容する。次に mirakc が値を足したら、watcher の ERROR ログを起点にこの CHECK と `openapi.yaml` の enum を更新する。
 
 schedule が一度も観測されなかった欠測を表す 5 値目（`never-scheduled` 等）は足さない。欠測は record の状態ではない。後述の専用表で表す。
 
@@ -136,9 +136,9 @@ schedule が一度も観測されなかった欠測を表す 5 値目（`never-s
 - 状態の元: `GET /api/recording/records` の `recording.status`
 - mirakc-core の網羅的 enum: `RecordingStatus`
 - 内部 ID・タグ形式・スケジュール状態の例: `RecordingScheduleState`
-- 未知の値の正規化: `internal/watcher.normalizeRecordingStatus`
+- 未知の値の正規化: `internal/store.NormalizeRecordingStatus`
 - 生の値の残り先: `record_sync.status`
-- 更新するもの: `internal/watcher`、`openapi.yaml`
+- 更新するもの: `internal/store`、`openapi.yaml`
 
 </details>
 
