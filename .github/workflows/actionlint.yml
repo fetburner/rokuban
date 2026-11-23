@@ -1,0 +1,24 @@
+# ci.yml の定義に誤りがあっても検査を起動できるよう、ワークフローを分ける。
+name: Workflow lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # v1.74.0 は upstream の actionlint 1.7.12 を同梱する最後の版。
+      # v1.75.0 から同梱元が kjanat/actionlint に変わったため、SHA で固定する。
+      # 更新時は同梱の actionlint と go.mod の actionlint の版を揃える。
+      - uses: reviewdog/action-actionlint@8b682e1e7e512151d73a6b9449cbff173846226e # v1.74.0
+        with:
+          reporter: github-annotations
+          filter_mode: nofilter
+          fail_level: any
