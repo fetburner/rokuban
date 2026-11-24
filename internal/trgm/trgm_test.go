@@ -45,8 +45,8 @@ var similarityCases = []struct {
 	{"CJK 拡張 B の同一", "\U00020000\U00020001", "\U00020000\U00020001", 1},
 	{"CJK 拡張 B の包含", "\U00020000\U00020001", "\U00020000\U00020001\U00020002", 0.4},
 	{"ASCII と全角の同じ字", "ab", "ａｂ", 0},
-	{"衝突の組: ASCII の鍵と多バイトの鍵が一致する（U+4E1E）", "nn8", "\u4e1e", 0.2},
-	{"衝突の組: ASCII の鍵と多バイトの鍵が一致しない（U+4E68）", "p10", "\u4e68", 0},
+	{"legacy CRC-32 で ASCII の鍵（nn8）と衝突する（U+4E1E）", "nn8", "丞", 0.2},
+	{"標準の CRC-32 なら ASCII の鍵（p10）と衝突するが、legacy CRC-32 では衝突しない（U+4E68）", "p10", "乨", 0},
 }
 
 // TestSimilarityBoundaryTable は境界の表の各行について、Similarity の値が期待値と
@@ -66,7 +66,7 @@ func TestSimilarityBoundaryTable(t *testing.T) {
 // 期待値は、Postgres 17（公式イメージ、LC_CTYPE=en_US.utf8）の正規表現 [[:alnum:]] を
 // 全 codepoint で走査した結果に従う（この表は走査の全件ではなく、その抜粋である）。
 // この判定は Postgres 側の glibc の版に依存する。Go と Postgres が食い違うのは
-// glibc の Unicode 版より後に割り当てられた文字だけで、そのような文字は表に入れない。
+// 食い違うのは新しい Unicode 版で割り当てられたと見られる文字だけで（個々の版は未確認）、そのような文字は表に入れない。
 // 走査そのものはこのテストでは再実行しない。
 func TestIsAlnumBoundary(t *testing.T) {
 	t.Parallel()
