@@ -1,4 +1,4 @@
-import { act, fireEvent, render } from '@testing-library/react'
+import { act, fireEvent, render, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ChapterSpan } from '@/api/generated'
@@ -413,6 +413,75 @@ describe('RecordingChapterEditor の編集専用画面', () => {
     fireEvent.click(getByRole('button', { name: '元に戻す' }))
     expect(label).toHaveValue('CM')
     expect(getByRole('button', { name: '元に戻す' })).toHaveProperty('disabled', true)
+  })
+
+  it.each([
+    ['i', 'CM の終わりにする', [{ ...cm, startMs: 2_000, endMs: 2_236 }]],
+    ['o', 'CM の始まりにする', [{ ...cm, startMs: 2_236, endMs: 4_000 }]],
+    ['Backspace', 'この CM を消す', []],
+  ] as const)('%s と「%s」は同じ CM 編集を表示フレームに適用し、元に戻せる', async (key, button, expected) => {
+    const span = { ...cm, startMs: key === 'Backspace' ? 2_236 : 2_000, endMs: 4_000 }
+    const { getByTestId, onSave, commandsRef, props, rerender } = renderEditor([], {
+      currentSeconds: 66.75 * FRAME_SECONDS,
+      getDisplayedFrameSeconds: () => 67 * FRAME_SECONDS,
+    })
+    const control = within(getByTestId('chapter-tuning-controls')).getByRole('button', { name: button })
+    expect(control.title).toContain(key.length === 1 ? key.toUpperCase() : key)
+    expect(getByTestId('chapter-selected-boundary')).toHaveTextContent('—')
+    expect(control).toBeEnabled()
+
+    rerender(<RecordingChapterEditor {...props} spans={[span]} />)
+    expect(fireEvent.keyDown(document.body, { key })).toBe(false)
+    await act(() => commandsRef.current!.save())
+    expect(onSave).toHaveBeenLastCalledWith(expected, 'v1')
+
+    fireEvent.keyDown(document.body, { key: 'z', metaKey: true })
+    await act(() => commandsRef.current!.save())
+    expect(onSave).toHaveBeenLastCalledWith([span], 'v1')
+
+    fireEvent.click(control)
+    await act(() => commandsRef.current!.save())
+    expect(onSave).toHaveBeenLastCalledWith(expected, 'v1')
+  })
+
+  it('O で CM を合併して境界が消えると残った最寄りを選ぶ', () => {
+    const { getByTestId } = renderEditor([{ ...cm, endMs: 20_020 }, { ...cm, startMs: 30_000, endMs: 40_000 }], {
+      currentSeconds: 39.9,
+      getDisplayedFrameSeconds: () => 600 * FRAME_SECONDS,
+    })
+    expect(getByTestId('chapter-selected-boundary').textContent).toBe('0:40.000')
+    fireEvent.keyDown(document.body, { key: 'o' })
+    expect(getByTestId('chapter-selected-boundary').textContent).toBe('0:10.000')
+  })
+
+  it.each([
+    [10_000, '0:10.000'],
+    [8_000, '0:08.000'],
+  ])('Backspace で CM を消すと選択境界 %i ms が残る場合は保ち、消える場合は最寄りを選ぶ', (boundaryMs, selection) => {
+    const { container, getByTestId } = renderEditor([
+      { ...cm, startMs: 5_000, endMs: 8_000 },
+      cm,
+      { ...cm, startMs: 21_000, endMs: 24_000 },
+    ], { currentSeconds: 19 })
+    fireEvent.click(container.querySelector<HTMLButtonElement>(
+      `[data-testid="chapter-filmstrip-boundary"][data-time-ms="${boundaryMs}"]`,
+    )!)
+    expect(getByTestId('chapter-selected-boundary').textContent).toBe(selection)
+    fireEvent.keyDown(document.body, { key: 'Backspace' })
+    expect(getByTestId('chapter-selected-boundary').textContent).toBe('0:08.000')
+    expect(container.querySelector('[data-testid="chapter-filmstrip-boundary"][data-time-ms="10000"]')).toBeNull()
+  })
+
+  it.each(['i', 'o', 'Backspace'])('ラベル入力中の %s と修飾キー付きの操作は下書きを変えない', async (key) => {
+    const { getByLabelText, getByRole, onSave, commandsRef } = renderEditor([cm], { currentSeconds: 15 })
+    const label = getByLabelText('ラベル')
+    label.focus()
+    expect(fireEvent.keyDown(label, { key })).toBe(true)
+    label.blur()
+    expect(fireEvent.keyDown(document.body, { key, metaKey: true })).toBe(true)
+    expect(getByRole('button', { name: '元に戻す' })).toHaveProperty('disabled', true)
+    await act(() => commandsRef.current!.save())
+    expect(onSave).toHaveBeenCalledWith([cm], 'v1')
   })
 
   it('ラベル入力にフォーカスがあると Ctrl+Z は下書きの履歴を戻さない', () => {

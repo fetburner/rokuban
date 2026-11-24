@@ -1,5 +1,5 @@
 // e2e-go-deps: ./internal/worker
-// 録画 HLS の実ブラウザ時間軸と ingest 世代の切り替え後の再生継続を測る。
+// 録画 HLS の時間軸・ingest 世代の切り替え・チャプター保存を実ブラウザで判定する。
 // fixture は Go のテストが製品の HLS 引数ビルダーで作る。
 //   cd web && pnpm build
 //   pnpm preview --port 4173 --strictPort &
@@ -1069,7 +1069,87 @@ async function runLiveRecordingApiHlsRecoveryCheck() {
   await page.close()
 }
 
+async function runChapterInKeyCheck() {
+  log('\n=== チャプター編集: I で停止中の目印フレームを CM の終わりにする ===')
+  activeRecording = apiHlsRecoveryFinished
+  const page = await context.newPage()
+  try {
+    await page.setViewportSize({ width: 400, height: 800 })
+    await installApiStubs(page, timelineHandler)
+    await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
+    await page.getByTestId('recording-playback-start').click({ timeout: 10000 })
+    await page.getByRole('button', { name: '再生設定' }).click({ timeout: 10000 })
+    await page.getByRole('menuitem', { name: 'チャプターを直す', exact: true }).click({ timeout: 10000 })
+    await page.getByTestId('chapter-edit-layout').waitFor({ timeout: 10000 })
+    for (const name of ['CM の終わりにする', 'CM の始まりにする', 'この CM を消す']) {
+      const button = page.getByRole('button', { name, exact: true })
+      await button.waitFor({ state: 'visible', timeout: 5000 })
+      const box = await button.boundingBox()
+      if (!box || box.x < 0 || box.x + box.width > 400) ng.push(`400px 幅で「${name}」が横にはみ出す`)
+      await button.click({ trial: true, timeout: 5000 })
+    }
+
+    const video = page.locator('video')
+    await video.evaluate((v) => {
+      v.pause()
+      v.currentTime = 0.5
+      v.playbackRate = 0.5
+    }, undefined, { timeout: 10000 })
+    await page.waitForFunction(() => {
+      const v = document.querySelector('video')
+      return v && !v.seeking && Math.abs(v.currentTime - 0.5) < 0.01 && v.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+    }, undefined, { timeout: 10000 })
+    if (!(await page.evaluate(() => window.__startTimelineCapture(0)))) {
+      throw new Error('表示フレームの記録を開始できない')
+    }
+    await page.waitForFunction(() => window.__timelineCaptureComplete || window.__timelineCaptureError,
+      undefined, { timeout: 10000 })
+    const capture = await page.evaluate(() => ({
+      mark: window.__timelineMarks.at(-1),
+      error: window.__timelineCaptureError,
+      slot: window.__displayedMarkerSlot(),
+      paused: document.querySelector('video').paused,
+    }))
+    const expectedSeconds = markerTimes[capture.mark?.markerSlot]?.expectedSeconds
+    if (capture.error || !capture.paused || capture.slot !== capture.mark?.markerSlot || !Number.isFinite(expectedSeconds)) {
+      throw new Error(`目印フレームで止まらない (${JSON.stringify(capture)})`)
+    }
+    const expectedFrame = Math.round(expectedSeconds * SOURCE_FRAME_RATE)
+    const expectedMs = Math.round(expectedFrame * 1000 / SOURCE_FRAME_RATE)
+    // 画素で確認した表示フレームを保ち、再生時刻だけ 1 つ前のフレーム区間に置く。
+    // currentTime に戻す変異を、pause 直後のブラウザ差に依存せず検出する。
+    const earlierSeconds = (expectedFrame - 0.5) / SOURCE_FRAME_RATE
+    await video.evaluate((v, seconds) => {
+      Object.defineProperty(v, 'currentTime', { configurable: true, get: () => seconds })
+      v.dispatchEvent(new Event('timeupdate', { bubbles: true }))
+    }, earlierSeconds)
+    await page.waitForFunction((ms) => {
+      const text = document.querySelector('[data-testid="chapter-edit-playhead"]')?.textContent
+      const time = text?.match(/^(\d+):(\d{2})\.(\d{3})/)
+      return time && Number(time[1]) * 60000 + Number(time[2]) * 1000 + Number(time[3]) === ms
+    }, Math.round(earlierSeconds * 1000), { timeout: 5000 })
+    await video.focus()
+    await page.keyboard.press('i')
+    await video.evaluate((v) => { delete v.currentTime })
+
+    const [response] = await Promise.all([
+      page.waitForResponse((res) => res.request().method() === 'PUT' &&
+        new URL(res.url()).pathname === `/api/recordings/${RECORDING_ID}/chapter-edits`, { timeout: 5000 }),
+      page.getByRole('button', { name: /^(保存|このまま確認)$/ }).click({ timeout: 5000 }),
+    ])
+    const spans = response.request().postDataJSON().spans
+    if (!response.ok() || spans.length !== 1 || !spans[0].cut || spans[0].startMs !== 0 || spans[0].endMs !== expectedMs) {
+      ng.push(`I で保存した CM が目印フレームで終わらない (期待 0〜${expectedMs}ms / PUT=${JSON.stringify(spans)})`)
+    }
+  } catch (error) {
+    ng.push(`I の表示フレーム境界または狭い画面の操作を確認できない: ${error.message}`)
+  } finally {
+    await page.close()
+  }
+}
+
 await runRecordingApiHlsCheck()
 await runRecordingApiHlsRecoveryCheck()
 await runLiveRecordingApiHlsRecoveryCheck()
+await runChapterInKeyCheck()
 await finish(ng, browser)

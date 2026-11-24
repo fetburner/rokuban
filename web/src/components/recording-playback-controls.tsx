@@ -626,7 +626,7 @@ export function RecordingPlaybackControls({
             data-testid="chapter-edit-playback-controls"
             className="absolute inset-x-0 bottom-0 flex flex-wrap items-center gap-1 bg-gradient-to-t from-black/85 to-transparent px-2 pt-8 pb-2 text-white sm:gap-2 md:gap-3 md:px-3"
           >
-            <Button type="button" variant="ghost" size="icon" className={ghost} aria-label={isPlaying ? '一時停止' : '再生'} onClick={onTogglePlay}>
+            <Button type="button" variant="ghost" size="icon" className={ghost} aria-label={isPlaying ? '一時停止' : '再生'} title={isPlaying ? '一時停止（Space）' : '再生（Space）'} onClick={onTogglePlay}>
               {isPlaying ? <Pause /> : <Play />}
             </Button>
             <span data-testid="chapter-edit-playhead" className="shrink-0 font-mono text-xs md:text-sm">
@@ -646,7 +646,7 @@ export function RecordingPlaybackControls({
                 size="icon"
                 className={cn(ghost, 'size-8 shrink-0 md:size-9')}
                 aria-label="前の境界"
-                title="前の境界"
+                title="前の境界（←）"
                 onClick={onPreviousBoundary}
                 disabled={onPreviousBoundary === undefined}
               >
@@ -658,7 +658,7 @@ export function RecordingPlaybackControls({
                 size="icon"
                 className={cn(ghost, 'size-8 shrink-0 md:size-9')}
                 aria-label="次の境界"
-                title="次の境界"
+                title="次の境界（→）"
                 onClick={onNextBoundary}
                 disabled={onNextBoundary === undefined}
               >

@@ -364,3 +364,36 @@ export function moveChapterBoundary(
   const targetSeconds = Math.round((fromSeconds + deltaSeconds) * 1000) / 1000
   return { spans: moved, boundary: nearestChapterBoundary(chapterBoundaries(moved), targetSeconds) }
 }
+
+export type ChapterPlaybackEdit = 'end' | 'start' | 'remove'
+
+/**
+ * editChapterAtPlayback は昇順・重なりのない下書きから、再生位置で編集する差分を作る。
+ * CM の中ではその区間の端を、本編では前後の CM の端を対象にする。
+ * 反対側の端は保持し、重なった区間の処理は commitDraft の正規化に任せる。
+ */
+export function editChapterAtPlayback(
+  spans: ChapterSpan[],
+  action: ChapterPlaybackEdit,
+  positionMs: number,
+  durationMs: number,
+): { spans: ChapterSpan[]; operatedIndexes: number[] } | null {
+  const containing = spans.findIndex((span) => span.cut && span.startMs <= positionMs && positionMs < span.endMs)
+  if (action === 'remove') {
+    if (containing < 0) return null
+    return { spans: spans.filter((_, index) => index !== containing), operatedIndexes: [] }
+  }
+
+  const index = containing >= 0 ? containing : action === 'end'
+    ? spans.findLastIndex((span) => span.cut && span.endMs <= positionMs)
+    : spans.findIndex((span) => span.cut && span.startMs > positionMs)
+  const span = spans[index]
+  const updated = action === 'end'
+    ? { ...span, startMs: span?.startMs ?? 0, endMs: positionMs, cut: true }
+    : { ...span, startMs: positionMs, endMs: span?.endMs ?? durationMs, cut: true }
+  if (index < 0) {
+    if (updated.endMs <= updated.startMs) return null
+    return { spans: [...spans, updated], operatedIndexes: [spans.length] }
+  }
+  return { spans: spans.map((item, i) => i === index ? updated : item), operatedIndexes: [index] }
+}
