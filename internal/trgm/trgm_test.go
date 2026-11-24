@@ -65,8 +65,9 @@ func TestSimilarityBoundaryTable(t *testing.T) {
 // TestIsAlnumBoundary は英数字の判定を codepoint 単位で確かめる。
 // 期待値は、Postgres 17（公式イメージ、LC_CTYPE=en_US.utf8）の正規表現 [[:alnum:]] を
 // 全 codepoint で走査した結果に従う（この表は走査の全件ではなく、その抜粋である）。
-// この判定は Postgres 側の glibc の版に依存する。Go と Postgres が食い違うのは
-// 食い違うのは新しい Unicode 版で割り当てられたと見られる文字だけで（個々の版は未確認）、そのような文字は表に入れない。
+// この判定は Postgres 側の glibc の版に依存する。Go と Postgres が食い違うのは、
+// 新しい Unicode 版で割り当てられたと見られる文字だけで（個々の版は未確認）、
+// そのような文字は表に入れない。
 // 走査そのものはこのテストでは再実行しない。
 func TestIsAlnumBoundary(t *testing.T) {
 	t.Parallel()

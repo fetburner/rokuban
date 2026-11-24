@@ -26,7 +26,7 @@ import (
 // この判定だけが英数字とする codepoint は 4,672 だった。後者の範囲は 088F・0C5C・A7CE-A7CF・
 // 10940-10959・16EA0-16EB8・1E6C0-1E6DE・323B0-33479 など、新しい Unicode 版で割り当てられた
 // と見られる文字である（個々の割り当て版は未確認）。英数字の判定は DB の glibc の版に依存し、
-// その差は このパッケージでは埋めない。
+// その差はこのパッケージでは埋めない。
 func IsAlnum(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r) ||
 		unicode.Is(unicode.Nl, r) || unicode.Is(unicode.Other_Alphabetic, r)
