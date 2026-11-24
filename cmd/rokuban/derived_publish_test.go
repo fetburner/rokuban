@@ -13,7 +13,6 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/jobq"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/objstore"
@@ -214,7 +213,7 @@ func TestFailedDerivedTransferDoesNotReencode(t *testing.T) {
 	policy, err := cfg.Storage.BuildStorePolicy()
 	testutil.RequireNoError(t, err, "building storage policy")
 	deps, _, err := newWorkerDeps(ctx, cfg, policy, nil, []string{dbtest.StoreName},
-		map[string]string{dbtest.StoreName: root}, riveradapter.Config{Queues: []string{"encode"}}, pool, nil, false)
+		map[string]string{dbtest.StoreName: root}, []string{"encode"}, pool, nil, false)
 	testutil.RequireNoError(t, err, "building worker dependencies")
 	remoteRoot := t.TempDir()
 	remote, err := fsstore.New(remoteRoot)

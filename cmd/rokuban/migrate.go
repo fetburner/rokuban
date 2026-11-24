@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/spf13/cobra"
 
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	rivermigrate "github.com/fetburner/rokuban/internal/jobq/riveradapter/migrate"
 )
@@ -32,7 +33,10 @@ func newMigrateUpCmd() *cobra.Command {
 			if err := db.MigrateUp(cmd.Context(), dsn); err != nil {
 				return err
 			}
-			return rivermigrate.Up(cmd.Context(), dsn)
+			if cfg.Worker.Engine == config.JobEngineRiver {
+				return rivermigrate.Up(cmd.Context(), dsn)
+			}
+			return nil
 		},
 	}
 }

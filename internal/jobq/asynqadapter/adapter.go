@@ -43,24 +43,30 @@ type QueueFunc func(args jobq.Args) (string, error)
 type Config struct {
 	// Spec は購読するキューと定期ジョブを指定する。
 	Spec jobq.WorkerSpec
+	// Queues は購読を論理キュー名で絞る。空なら仕様の全キューを購読する。
+	Queues []string
 	// SchedulePeriodicJobs は Start 直後と周期ごとの投入を有効にする。
 	SchedulePeriodicJobs bool
 	// Once は RunOnce で 1 件だけ消化するモードを有効にする。
-	// 物理キューは 1 つ、並列数は 1、定期投入は無効とする。
+	// 物理キューは 1 つとし、定期投入は無効にする。adapter が並列数を 1 に揃える。
 	Once bool
+	// SoftStopTimeout は常駐モードで Start の ctx が終了してから Work を取り消すまでの猶予。
+	// 0 の場合、呼び出し元が Stop の ctx で停止期限を決める。
+	SoftStopTimeout time.Duration
 }
 
 // Adapter は jobq.Enqueuer と jobq.Runner を実装する。
 type Adapter struct {
-	redis     redis.UniversalClient
-	client    *asynq.Client
-	inspector *asynq.Inspector
-	registry  *jobq.Registry
-	queueFor  QueueFunc
-	queues    map[string]int
-	periodic  []jobq.PeriodicJobSpec
-	once      bool
-	now       func() time.Time
+	redis           redis.UniversalClient
+	client          *asynq.Client
+	inspector       *asynq.Inspector
+	registry        *jobq.Registry
+	queueFor        QueueFunc
+	queues          map[string]int
+	periodic        []jobq.PeriodicJobSpec
+	once            bool
+	softStopTimeout time.Duration
+	now             func() time.Time
 
 	mu  sync.Mutex
 	run *serverRun
@@ -101,7 +107,11 @@ func NewAdapter(redisClient redis.UniversalClient, registry *jobq.Registry, queu
 			return nil, fmt.Errorf("checking asynq queue for registered kind %q: %w", args.Kind(), err)
 		}
 	}
-	queues, err := physicalQueues(cfg.Spec)
+	selected, err := cfg.Spec.Select(cfg.Queues)
+	if err != nil {
+		return nil, err
+	}
+	queues, err := physicalQueues(selected)
 	if err != nil {
 		return nil, err
 	}
@@ -109,10 +119,8 @@ func NewAdapter(redisClient redis.UniversalClient, registry *jobq.Registry, queu
 		if len(queues) != 1 {
 			return nil, fmt.Errorf("asynqadapter: once mode requires exactly one physical queue, got %d", len(queues))
 		}
-		for queue, concurrency := range queues {
-			if concurrency != 1 {
-				return nil, fmt.Errorf("asynqadapter: once mode requires MaxWorkers=1 for queue %q", queue)
-			}
+		for queue := range queues {
+			queues[queue] = 1
 		}
 		if cfg.SchedulePeriodicJobs {
 			return nil, errors.New("asynqadapter: once mode requires periodic scheduling to be disabled")
@@ -121,7 +129,7 @@ func NewAdapter(redisClient redis.UniversalClient, registry *jobq.Registry, queu
 	adapter := &Adapter{
 		redis: redisClient, client: asynq.NewClientFromRedisClient(redisClient),
 		inspector: asynq.NewInspectorFromRedisClient(redisClient), now: time.Now,
-		registry: registry, queueFor: queueFor, queues: queues, once: cfg.Once,
+		registry: registry, queueFor: queueFor, queues: queues, once: cfg.Once, softStopTimeout: cfg.SoftStopTimeout,
 	}
 	if cfg.SchedulePeriodicJobs {
 		adapter.periodic = append(adapter.periodic, cfg.Spec.PeriodicJobs...)

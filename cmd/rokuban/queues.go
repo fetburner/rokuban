@@ -58,6 +58,9 @@ const (
 	// shutdownBudget のコメント参照）。
 	softStopTimeoutFlagName = "soft-stop-timeout"
 
+	// defaultSoftStopTimeout は softStopTimeoutFlagName の既定値。
+	defaultSoftStopTimeout = 5 * time.Second
+
 	// defaultOnceIdleTimeout は onceIdleTimeoutFlagName の既定値。
 	//
 	// この値が効くのは KEDA が滞留を過大評価して Job を起こしすぎた
@@ -192,13 +195,13 @@ func resolveOnce(cmd *cobra.Command, roles []string) (bool, time.Duration, error
 }
 
 // resolveSoftStopTimeout は SIGTERM を受けてから実行中のジョブを打ち切るまでの
-// 猶予（riveradapter.Config.SoftStopTimeout）を決める。
+// 猶予を決める。asynq の 1 件消化モードの停止期限は RunOnce の契約に従う。
 //
 // 検査は 2 つで、どちらも「効かない / 意味が反転する値」を黙って受け取らない
 // ためにある（`--queues` / `--once-idle-timeout` と同じ方針）:
 //
-//   - worker ロールが無いプロセスでの指定は起動エラー。River クライアントを
-//     Start するのは worker ロールだけなので（resolveRiverClientKind）、
+//   - worker ロールが無いプロセスでの指定は起動エラー。ジョブの購読を
+//     開始するのは worker ロールだけなので、
 //     `--roles watcher --soft-stop-timeout 5m` は何も待たずに畳む。
 //   - 0 以下は起動エラー。**0 は「無制限」ではなく「待たない」である** ---
 //     River は SoftStopTimeout が 0 のとき work ctx を start ctx から継ぐので、

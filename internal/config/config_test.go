@@ -540,8 +540,11 @@ func TestLoad_DBPoolingDefaults(t *testing.T) {
 	if cfg.DB.APIStatementTimeout != 0 {
 		t.Errorf("db.api_statement_timeout = %v, want 0 (built-in default)", cfg.DB.APIStatementTimeout)
 	}
-	if cfg.Worker.RescueStuckJobsAfter != 6*time.Minute {
-		t.Errorf("worker.rescue_stuck_jobs_after = %v, want 6m", cfg.Worker.RescueStuckJobsAfter)
+	if cfg.Worker.RescueStuckJobsAfter == nil {
+		t.Fatal("worker.rescue_stuck_jobs_after has no default")
+	}
+	if got := *cfg.Worker.RescueStuckJobsAfter; got != 6*time.Minute {
+		t.Errorf("worker.rescue_stuck_jobs_after = %v, want 6m", got)
 	}
 }
 
@@ -970,7 +973,7 @@ func TestLoad_AllFieldsOverridden(t *testing.T) {
 		{
 			"worker",
 			cfg.Worker,
-			WorkerConfig{PeriodicJobs: false, Queues: []string{"ruler", "epg"}, RescueStuckJobsAfter: 2 * time.Minute},
+			WorkerConfig{Engine: "river", PeriodicJobs: false, Queues: []string{"ruler", "epg"}, RescueStuckJobsAfter: durPtr(2 * time.Minute)},
 		},
 		{
 			"encode",
@@ -2360,5 +2363,38 @@ func TestEncodeConfig_CutProfileSet(t *testing.T) {
 	}
 	if names := c.CutProfileNames(); len(names) != 2 || names[0] != "a" || names[1] != "c" {
 		t.Errorf("CutProfileNames = %v, want [a c]", names)
+	}
+}
+
+func TestLoad_WorkerEngine(t *testing.T) {
+	for _, tc := range []struct {
+		name, worker, wantError string
+		wantEngine              JobEngine
+	}{
+		{name: "default", wantEngine: "river"},
+		{name: "invalid engine", worker: "  engine: unknown\n", wantError: "worker.engine"},
+		{name: "asynq", worker: "  engine: asynq\n  redis_url: rediss://redis.example:6379/1\n", wantEngine: "asynq"},
+		{name: "missing Redis URL", worker: "  engine: asynq\n", wantError: "worker.redis_url"},
+		{name: "Redis URL syntax deferred to adapter", worker: "  engine: asynq\n  redis_url: redis://redis.example/invalid-db\n", wantEngine: "asynq"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := minimalConfig
+			if tc.worker != "" {
+				raw += "\nworker:\n" + tc.worker
+			}
+			cfg, err := loadFromString(raw)
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("loadFromString error = %v, want %q", err, tc.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Worker.Engine; got != tc.wantEngine {
+				t.Errorf("worker.engine = %q, want %q", got, tc.wantEngine)
+			}
+		})
 	}
 }

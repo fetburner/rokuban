@@ -13,7 +13,7 @@
 | 方針、展開方式、機微情報の供給 | 設定の入口と環境変数の展開 | [configuration/basics.md](configuration/basics.md) |
 | 規約、config と DB の境界、運用補助、やらないこと | キーの書式、設定と DB の分担、採らない仕組み | [configuration/basics.md](configuration/basics.md) |
 | スキーマ構造: 関心事別にセクションを切る、リファレンス、必須キー、db の運用ノブ（max_conns / api_statement_timeout）、ingest.stall_timeout | キーの一覧と運用ノブ | [configuration/keys.md](configuration/keys.md) |
-| スキーマ構造: サーキットブレーカーと検出器の閾値、worker.periodic_jobs と worker.queues、ffmpeg の存在検査、CM 区間の検出 | 閾値、ジョブ、検出 | [configuration/keys.md](configuration/keys.md) |
+| スキーマ構造: サーキットブレーカーと検出器の閾値、ジョブエンジンの選択、worker.periodic_jobs と worker.queues、ffmpeg の存在検査、CM 区間の検出 | 閾値、ジョブ、検出 | [configuration/keys.md](configuration/keys.md) |
 | スキーマ構造: live、encode/live の HW エンコード | ライブ視聴とエンコードの引数 | [configuration/live.md](configuration/live.md) |
 | スキーマ構造: カット版（`encode.profiles[].cut`）、同じ名前で意味を変えない、追加引数の許可リスト | カット版の argv と切る時刻 | [configuration/cut.md](configuration/cut.md) |
 | スキーマ構造: mirakc レジストリ: `mirakcs:` | site の規則とプロセスの site 束縛 | [configuration/sites.md](configuration/sites.md) |

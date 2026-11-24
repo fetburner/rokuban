@@ -7,11 +7,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/tsscan"
@@ -142,8 +140,8 @@ site 束縛ジョブ（--site が要る）: %s
 置き場ごとのジョブ（--store が要る。FS 置き場が 1 つだけなら省略できる）: %s
 site 非依存ジョブ（--site も --store も付けない）: %s
 
-UniqueOpts により、同じジョブが既に待機中（available/pending/retryable/running/
-scheduled）の場合は新規に投入されず合流する。その場合も終了コード 0 を返す
+エンジンの合流判定により、同じジョブが既に待機中または実行中なら投入を省く場合がある。
+合流した場合も終了コード 0 を返す
 （CronJob が失敗扱いにならないようにするため）。`,
 			strings.Join(sortedJobNamesByScope(true, false), ", "),
 			strings.Join(sortedJobNamesByScope(false, true), ", "),
@@ -161,15 +159,13 @@ scheduled）の場合は新規に投入されず合流する。その場合も�
 				return err
 			}
 			ctx := cmd.Context()
-			// 単発 CLI コマンドは特定のロールを担わないので roles は渡さない
-			// （pgxpool の既定の MaxConns がそのまま使われる。issue #90）。
-			pool, err := db.NewPool(ctx, cfg.DB, nil, 0, 0)
+			enqueuer, closeAdapter, err := newInsertOnlyEnqueuer(ctx, cfg, nil)
 			if err != nil {
 				return err
 			}
-			defer pool.Close()
+			defer closeJobAdapter(closeAdapter)
 
-			return runEnqueue(ctx, pool, job, site, cmd.OutOrStdout())
+			return runEnqueue(ctx, enqueuer, job, site, cmd.OutOrStdout())
 		},
 	}
 
@@ -214,22 +210,17 @@ func resolveEnqueueJobScope(cmd *cobra.Command, job string, cfg *config.Config) 
 }
 
 // runEnqueue はジョブ名から Args を組み立てて jobq.Enqueuer で 1 件
-// 投入する。DB / River とのやりとりをここに閉じ込め、cobra の RunE は薄い配線に
+// 投入する。エンジンとのやりとりを jobq.Enqueuer に委ね、cobra の RunE は薄い配線に
 // とどめる（runRescue と同じ切り出し方）。
 //
-// site は resolveEnqueueJobSite の結果。site 束縛ジョブでは非空、site 非依存では空。
+// site は resolveEnqueueJobScope の結果。site 束縛ジョブでは非空、site 非依存では空。
 //
-// UniqueOpts による合流で投入されなかった場合も nil を返す（CronJob が失敗扱いに
+// エンジンの合流判定で投入されなかった場合も nil を返す（CronJob が失敗扱いに
 // ならないようにするため）。投入されたかどうかは out へのログで分かる。
-func runEnqueue(ctx context.Context, pool *pgxpool.Pool, job, site string, out io.Writer) error {
+func runEnqueue(ctx context.Context, enqueuer jobq.Enqueuer, job, site string, out io.Writer) error {
 	spec, ok := enqueueJobs[job]
 	if !ok {
 		return fmt.Errorf("unknown job: %q (valid: %s)", job, strings.Join(sortedJobNames(), ", "))
-	}
-
-	enqueuer, err := newInsertOnlyEnqueuer(pool)
-	if err != nil {
-		return err
 	}
 
 	res, err := enqueuer.Enqueue(ctx, spec.NewArgs(site))

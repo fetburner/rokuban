@@ -18,6 +18,7 @@ type serverRun struct {
 	workCtx        context.Context
 	cancelWork     context.CancelFunc
 	cancelPeriodic context.CancelFunc
+	stopOnCancel   func() bool
 	periodic       sync.WaitGroup
 	servers        []*asynq.Server
 	done           chan struct{}
@@ -96,6 +97,14 @@ func (adapter *Adapter) startLocked(ctx context.Context, gate *onceGate) (*serve
 	for _, periodic := range adapter.periodic {
 		run.periodic.Go(func() { adapter.enqueuePeriodic(periodicCtx, periodic) })
 	}
+	if gate == nil && adapter.softStopTimeout > 0 {
+		run.stopOnCancel = context.AfterFunc(ctx, func() {
+			stopCtx, cancel := context.WithTimeout(base, adapter.softStopTimeout)
+			defer cancel()
+			// 猶予切れで Stop が Work を取り消す。cmd 側は続けて drain 完了を待つ。
+			_ = adapter.stop(stopCtx, run)
+		})
+	}
 	return run, nil
 }
 
@@ -170,6 +179,9 @@ func (adapter *Adapter) shutdown(run *serverRun) {
 	}
 	servers.Wait()
 	run.periodic.Wait()
+	if run.stopOnCancel != nil {
+		run.stopOnCancel()
+	}
 	run.cancelWork()
 
 	adapter.mu.Lock()

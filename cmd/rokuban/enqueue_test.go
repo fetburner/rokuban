@@ -10,10 +10,22 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/jobq"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
+
+func newRiverEnqueuer(t *testing.T, pool *pgxpool.Pool) jobq.Enqueuer {
+	t.Helper()
+	cfg := &config.Config{Worker: config.WorkerConfig{Engine: "river"}}
+	enqueuer, closeAdapter, err := newInsertOnlyEnqueuer(t.Context(), cfg, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closeJobAdapter(closeAdapter) })
+	return enqueuer
+}
 
 func requireEnqueuedJob(t *testing.T, ctx context.Context, pool *pgxpool.Pool, job, site string) string {
 	t.Helper()
@@ -35,7 +47,7 @@ func TestRunEnqueue_InsertsJob(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "ruler-pass", store.DefaultSite, &out); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "ruler-pass", store.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
@@ -54,12 +66,12 @@ func TestRunEnqueue_AlreadyPending_SkipsWithoutError(t *testing.T) {
 	ctx := context.Background()
 
 	var first bytes.Buffer
-	if err := runEnqueue(ctx, pool, "ruler-pass", store.DefaultSite, &first); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "ruler-pass", store.DefaultSite, &first); err != nil {
 		t.Fatalf("runEnqueue (first): %v", err)
 	}
 
 	var second bytes.Buffer
-	if err := runEnqueue(ctx, pool, "ruler-pass", store.DefaultSite, &second); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "ruler-pass", store.DefaultSite, &second); err != nil {
 		t.Fatalf("runEnqueue (second) returned error, want nil (合流時も終了コード 0): %v", err)
 	}
 	if !strings.Contains(second.String(), "already pending") {
@@ -76,7 +88,7 @@ func TestRunEnqueue_EpgSync(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "epg-sync", store.DefaultSite, &out); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "epg-sync", store.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
@@ -90,7 +102,7 @@ func TestRunEnqueue_ReconcilePass(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "reconcile-pass", store.DefaultSite, &out); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "reconcile-pass", store.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
@@ -104,7 +116,7 @@ func TestRunEnqueue_RecordSweep(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "record-sweep", store.DefaultSite, &out); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "record-sweep", store.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
@@ -118,7 +130,7 @@ func TestRunEnqueue_TunerSync(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "tuner-sync", store.DefaultSite, &out); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "tuner-sync", store.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
@@ -132,7 +144,7 @@ func TestRunEnqueue_CatalogExport(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "catalog-export", "test-store", &out); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "catalog-export", "test-store", &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 	if !strings.Contains(out.String(), "inserted job") {
@@ -155,7 +167,7 @@ func TestRunEnqueue_EncodeReconcile(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "encode-reconcile", "", &out); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "encode-reconcile", "", &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 	if !strings.Contains(out.String(), "inserted job") {
@@ -175,7 +187,7 @@ func TestRunEnqueue_ThumbnailReconcile(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "thumbnail-reconcile", "", &out); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "thumbnail-reconcile", "", &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 	if !strings.Contains(out.String(), "inserted job") {
@@ -193,7 +205,7 @@ func TestRunEnqueue_TSScanReconcile(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "ts-scan-reconcile", "", &out); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "ts-scan-reconcile", "", &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 	if !strings.Contains(out.String(), "inserted job") {
@@ -209,7 +221,7 @@ func TestRunEnqueue_TSScanReconcile(t *testing.T) {
 	}
 
 	var duplicate bytes.Buffer
-	if err := runEnqueue(ctx, pool, "ts-scan-reconcile", "", &duplicate); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "ts-scan-reconcile", "", &duplicate); err != nil {
 		t.Fatalf("runEnqueue duplicate: %v", err)
 	}
 	if !strings.Contains(duplicate.String(), "already pending") {
@@ -222,7 +234,7 @@ func TestRunEnqueue_CMDetectReconcile(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "cm-detect-reconcile", "", &out); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "cm-detect-reconcile", "", &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 	if !strings.Contains(out.String(), "inserted job") {
@@ -242,7 +254,7 @@ func TestRunEnqueue_StorageSync(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "storage-sync", "test-store", &out); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "storage-sync", "test-store", &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 	if !strings.Contains(out.String(), "inserted job") {
@@ -266,7 +278,7 @@ func TestRunEnqueue_DeleteReconcile(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "delete-reconcile", "test-store", &out); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "delete-reconcile", "test-store", &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 	if !strings.Contains(out.String(), "inserted job") {
@@ -293,12 +305,12 @@ func TestRunEnqueue_DeleteReconcile_AlreadyPending_SkipsWithoutError(t *testing.
 	ctx := context.Background()
 
 	var first bytes.Buffer
-	if err := runEnqueue(ctx, pool, "delete-reconcile", "test-store", &first); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "delete-reconcile", "test-store", &first); err != nil {
 		t.Fatalf("runEnqueue (1 回目): %v", err)
 	}
 
 	var second bytes.Buffer
-	if err := runEnqueue(ctx, pool, "delete-reconcile", "test-store", &second); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "delete-reconcile", "test-store", &second); err != nil {
 		t.Fatalf("runEnqueue (2 回目) は合流して nil を返すこと: %v", err)
 	}
 
@@ -313,7 +325,7 @@ func TestRunEnqueue_UnknownJob(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "no-such-job", store.DefaultSite, &out); err == nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "no-such-job", store.DefaultSite, &out); err == nil {
 		t.Fatal("unknown job のとき error を期待したが nil だった")
 	}
 }
