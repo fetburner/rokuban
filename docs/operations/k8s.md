@@ -171,14 +171,14 @@ Job は 1 件消化して自分で終了させる。ScaledJob は Job の自己�
 
 常駐する `--roles worker` をそのまま載せると Job が `succeeded` に到達せず、「0 → 1 → 0」が成立しない。起動は `rokuban server --roles worker --once` で、形は次に固定してある。
 
-- ジョブ 1 件の Work を抜けたらプロセスを畳む。成功・失敗を問わず exit 0 にする（リトライは River が持つので、k8s 側は `backoffLimit: 0` / `restartPolicy: Never` にして二重にリトライしない）
-- 引くキューはちょうど 1 つで、その同時実行数は 1 に落とす（KEDA 側が「1 Job = 1 アイテム」で数を合わせるため）。`worker.periodic_jobs: true` との併用は起動エラーになる。1 件で終わる Job がリーダーになると、定期投入の間隔が Job の起動回数で決まってしまうからである
+- ジョブ 1 件の Work を抜けたらプロセスを畳む。成功・失敗を問わず exit 0 にする。再試行はキューエンジンが担うので、k8s 側は `backoffLimit: 0` / `restartPolicy: Never` にして二重に再試行しない
+- 引く物理キューはちょうど 1 つで、その同時実行数は 1 に落とす（KEDA 側が「1 Job = 1 アイテム」で数を合わせるため）。`worker.periodic_jobs: true` との併用は起動エラーになる。1 件で終わる Job がリーダーになると、定期投入の間隔が Job の起動回数で決まってしまうからである
 - argv の制約は 3 つで、いずれも起動エラーになる
     - `--roles worker` 単独であること（常駐する役と同居させない）
     - `--once-idle-timeout` が正の値であること
     - `--once-idle-timeout` を `--once` 無しで書かないこと
 - ffmpeg / JLSE を使うキュー（encode / thumbnail / cm_detect）の ScaledJob だけ `Dockerfile.full` のイメージを使う。公式イメージはこれらを同梱しないので、該当キューを購読する worker は起動時に fail-fast する
-- ingest は Work が snooze を返した時点で 1 件を消化した扱いになり、Pod は終了する。snooze は同じ River job row を試行回数を増やさず再投入するため、次の Pod はその job ID から続ける。
+- ingest は Work が snooze を返した時点で 1 件を消化した扱いになり、Pod は終了する。snooze は同じジョブを試行回数を増やさずに再配送する。転送 slice の終了で snooze した場合、次の Pod は一時ファイルを引き継げれば保存済みのオフセットから転送を再開する。
   - 各 slice の間には KEDA の検出・Pod のスケジューリングと起動時間が加わる。4 分の転送 slice と 1 分の後処理予算で Timeout を 5 分にし、6 分の rescue 既定より先に Work が終わるようにする。配備先では通常の Pod 起動が slice より十分短いことを確認する。
   - SHA-256 の待ちも 30 秒ごとに同じ job を snooze するため、`--once` では待っている間 30 秒ごとに Pod が入れ替わる。待ちの上限は録画サイズ ÷ SHA-256 の処理速度の定数で、10 GB なら約 21 分、約 40 回である。
 
@@ -186,48 +186,57 @@ Job は 1 件消化して自分で終了させる。ScaledJob は Job の自己�
 
 - 1 件消化モードの同時実行数: `MaxWorkers`
 - ffmpeg / JLSE を使うキューの起動時検査: `jobs.RequiresEncodeTools` / `jobs.RequiresCMDetectTools`
-- snooze で 1 件消化扱いになる: `river.JobSnooze(0)` / `attempt`
+- snooze で 1 件消化扱いになる: `river.JobSnooze(0)` / `attempt`、`TestRunOncePromotesDueSnoozedTask`
+- ingest の転送再開: `TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint`
 - SHA-256 待ちの上限: `ingestSHA256BytesPerSecond`
 
 </details>
 
 #### 実行中のジョブを打ち切る条件
 
-1 件消化モードで実行中のジョブを打ち切りうるのは、空振りの待ち時間でなく SIGTERM のあとの猶予切れである。
+1 件消化モードで SIGTERM を受けたあとの停止手順は、キューエンジンごとに異なる。
 
 - `--once-idle-timeout`（既定 30 秒）は実行中のジョブを打ち切らない。「1 件も取れないまま待った時間」にしか効かず、KEDA が滞留を過大評価して起こした空振りの Job を終了させる値である。
-- ノード退避・ローリング更新で SIGTERM を受けた Job は、`--soft-stop-timeout`（既定 5 秒）を超えた時点で実行中のジョブの ctx を切る。**長時間キュー（`encode` / `ingest`）の ScaledJob では `--soft-stop-timeout` を明示する。** 既定のままだと、猶予を 300 秒に取った ScaledJob でも drain は 5 秒で終わる。`terminationGracePeriodSeconds` と対で引き上げること（下記「Deployment 併用時」の足し算）。上限を外すつもりで `0` と書くと起動エラーになる。
+- River 構成で SIGTERM を受けると、`--soft-stop-timeout`（既定 5 秒）の猶予が切れた時点で River が実行中の Work の ctx を取り消す。**長時間キュー（`encode` / `ingest`）の ScaledJob では `--soft-stop-timeout` を明示する。** Pod の終了猶予を延ばしても、フラグが既定のままなら Work の ctx は 5 秒で取り消される。`terminationGracePeriodSeconds` と対で引き上げること（下記「Deployment 併用時」の足し算）。上限を外すつもりで `0` と書くと起動エラーになる。
+- asynq 構成では SIGTERM による `waitCtx` の終了で停止に入ると、`RunOnce` は実行中の Work の完了を待って `canceled` を返す。停止待ちに期限を設けないため、`--soft-stop-timeout` は適用されない。Pod の停止待ちの上限は `terminationGracePeriodSeconds` 経過後の SIGKILL になる（未検証）。
 
-1 件消化モードの adapter は終了理由を得たあと、先に River の graceful stop を実行し、そのあとプロセスを畳む。前者は producer の fetch を止めて実行中の仕事を待ち、後者は Start に渡した ctx を cancel する。逆順にすると、取っていたジョブが完走に使える時間が `--soft-stop-timeout` の猶予まで縮む（下記「Deployment 併用時」）。graceful stop を先に出すほうが、猶予を消費せずに完走できる。
+River の adapter は終了理由を得たあと、先に graceful stop を実行する。graceful stop は producer の取得を止めて実行中の Work を待つ。そのあとプロセスを畳むために `Start` に渡した ctx を取り消す。逆順にすると、実行中の Work が完走に使える時間が `--soft-stop-timeout` の猶予まで縮む。graceful stop を先に出すと、この猶予を消費せずに完走を待てる。
+
+asynq の adapter は最初のハンドラに入った時点で取得を止める。Server は結果の反映を待って停止する。adapter は Server の停止を待ってからプロセスを畳む。
 
 <details><summary>根拠</summary>
 
-- `--once-idle-timeout` が実行中のジョブを打ち切らない: `TestOnceGate_IdleTimeoutDoesNotCutRunningJob`
-- 1 件消化後に graceful stop を先行する: `TestFinishOnce`
+- River で `--once-idle-timeout` が実行中のジョブを打ち切らない: `TestOnceGate_IdleTimeoutDoesNotCutRunningJob`
+- asynq で `--once-idle-timeout` が実行中のタスクを打ち切らない: `TestRunOnceIdleTimeoutDoesNotCutRunningTask`
+- River の graceful stop の順序: `TestFinishOnce`
+- River の SIGTERM 後の猶予: `TestServerCmd_SigtermDrainsRunningJob`
+- asynq の `waitCtx` 取り消し後の完了待ち: `TestRunOnceCanceled`。停止の期限を外す経路は `RunOnce` の `context.WithoutCancel(signalCtx)`
+- asynq の取得停止と 1 件消化: `TestRunOnceConsumesOnlyOneTask`
+- asynq の購読キューの昇格と孤児回収: `TestRunOncePromotesDueSnoozedTask`、`TestRunOnceRecoversOrphanedTask`
 
 </details>
 
 #### 既知の窓と未測定の挙動
 
-1 つの Job が 2 件消化して終わる窓が既知であり、窓の中の挙動は未測定である。
+River には 1 つの Job が 2 件消化して終わる窓がある。窓の中の挙動は未測定である。
 
 Work を抜けてから producer が止まるまでの間に次のジョブが fetch されると、これが起きる。最大同時実行数が 1 なので同時には走らない。打ち切られるのは `--soft-stop-timeout` の猶予を超えたときだけで、超えればその 2 件目は試行を消費せず `available` に戻る。これは上記の順序と River の実装からの導出であって、測定ではない（停止処理は producer を止めてから実行中の完了を待ち、猶予が切れたら work ctx を cancel する）。実害は KEDA の数が 1 つずれることと、その再試行だけである。実測では 25 回試してこの窓に入らなかった。窓の中の挙動そのものは未測定である。
 
 失敗するジョブ（到達不能な mirakc への `epg_sync`）でも exit 0 になる。ジョブは River 側で未完了のまま（`attempt=1`）残る。**次の Job がそれを引き直すところまでは測っていない。**
 
-登録されていない kind のジョブを取った場合は、1 回失敗させて終了する（ログの `outcome` 属性が `job_unhandled`）。River の executor はこの場合ワーカーのミドルウェアを通らないため、購読した終了イベントで観測している。バージョン差で起きる。新しいイメージの CronJob / api が古い worker の知らない kind を投入する形である。
+新しいイメージの CronJob や api は、古い worker が知らない kind を投入しうる。両 adapter はこの終了理由を `job_unhandled` と記録する。River は終了イベントを購読して検出する。asynq はハンドラで Args のデコード失敗を検出し、タスクを破棄する。
 
 <details><summary>根拠</summary>
 
 - 失敗したジョブも exit 0 でプロセスを終了する: `TestServerCmd_OnceModeExitsZeroOnJobFailure`
 - 停止処理: `Stop`
-- 未登録 kind のジョブを検出して終了する: `TestServerCmd_OnceModeExitsOnUnhandledJobKind`
+- 未登録 kind のジョブを検出して終了する: `TestServerCmd_OnceModeExitsOnUnhandledJobKind`、`TestRunOnceUnhandledKind`
 
 </details>
 
 #### スケーラのクエリと回収
 
-スケーラは待機中と再試行待ちのジョブを数え、回収は leader になった常駐 River client が担う。常駐 client は notifier Deployment と watcher Deployment の 2 箇所にある。
+River 構成ではスケーラが待機中と再試行待ちのジョブを数える。回収は leader になった常駐 River client が担う。常駐 client は notifier Deployment と watcher Deployment に置く。
 
 常駐 client の JobScheduler が `retryable` を昇格させるため、この集合は rescue の正しさを担わない。定期パスは `retryable` にならないが、ingest / encode など定期パス以外の kind は backoff 中も数えられるので、claim できない job のために Pod が起きうる。空振り Pod は `--once-idle-timeout` で終了する。
 
@@ -241,7 +250,7 @@ watcher Deployment の常駐 client も worker ロールを持つので全 kind 
 
 両者とも全 kind を登録している。したがって、どちらの client が leader でも、同じ締切で同じ kind を rescue すると読める。leader の交代を跨いだ挙動は実測していない（未検証）。
 
-asynq 構成では、常駐 notifier の HTTP ハンドラが物理キューごとの配送可能件数を返し、KEDA の metrics-api トリガが読む。この説明は asynq 構成に限る。River 構成では、SQL トリガが上記の待機中と再試行待ちを数える。
+asynq 構成では、常駐 notifier の HTTP ハンドラが物理キューごとの配送可能件数を返し、KEDA の metrics-api トリガが読む。KEDA が起こした Job の Server は、購読するキューで期限が来たタスクの昇格と孤児の回収を担う。回収可能になるまでの猶予中に起きた Job は、空振りで終わりうる。
 
 待機中、期限が来た再試行待ちと予約済み、孤児の実行中を数える。lease が有効な実行中タスクは数えない。KEDA の accurate 戦略は実行中を件数に含めない前提である。
 

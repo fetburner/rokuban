@@ -137,6 +137,31 @@ func TestRegisterDuplicateKindPanics(t *testing.T) {
 	Register[testArgs](registry, testWorker{})
 }
 
+func TestRegistryZeroArgs(t *testing.T) {
+	registry := NewRegistry()
+	if got := registry.ZeroArgs(); len(got) != 0 {
+		t.Fatalf("empty registry returned %v", got)
+	}
+	Register(registry, ptrWorker{})
+	Register(registry, secondTestWorker{})
+
+	got := registry.ZeroArgs()
+	if len(got) != 2 {
+		t.Fatalf("registered Args = %v, want two", got)
+	}
+	if _, ok := got[0].(secondTestArgs); !ok {
+		t.Errorf("first Args = %T, want secondTestArgs", got[0])
+	}
+	pointer, ok := got[1].(*testArgs)
+	if !ok || pointer == nil || pointer.N != 0 {
+		t.Fatalf("second Args = %#v, want a pointer to zero testArgs", got[1])
+	}
+	pointer.N = 7
+	if next := registry.ZeroArgs()[1].(*testArgs); next == pointer || next.N != 0 {
+		t.Errorf("next Args = %#v, want a fresh zero value", next)
+	}
+}
+
 func TestRegisterAdapterWorkers(t *testing.T) {
 	registry := NewRegistry()
 	Register[testArgs](registry, testWorker{})

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -148,6 +149,7 @@ type Worker[T Args] interface {
 }
 
 type workerHandler struct {
+	zero   func() Args
 	decode func([]byte) (Args, error)
 	work   func(context.Context, Args) error
 }
@@ -174,12 +176,18 @@ func Register[T Args](registry *Registry, worker Worker[T]) {
 		panic("jobq: registering a nil worker")
 	}
 
-	var zero T
-	if typeOf := reflect.TypeOf(zero); typeOf == nil {
+	typeOf := reflect.TypeFor[T]()
+	if typeOf.Kind() == reflect.Interface {
 		panic("jobq: Args type must not be an interface")
-	} else if typeOf.Kind() == reflect.Pointer {
-		zero = reflect.New(typeOf.Elem()).Interface().(T)
 	}
+	newZero := func() Args {
+		if typeOf.Kind() == reflect.Pointer {
+			return reflect.New(typeOf.Elem()).Interface().(T)
+		}
+		var args T
+		return args
+	}
+	zero := newZero()
 	kind := zero.Kind()
 	if kind == "" {
 		panic("jobq: registering Args with an empty kind")
@@ -197,6 +205,7 @@ func Register[T Args](registry *Registry, worker Worker[T]) {
 		panic(fmt.Sprintf("jobq: worker for kind %q is already registered", kind))
 	}
 	registry.handlers[kind] = workerHandler{
+		zero: newZero,
 		decode: func(payload []byte) (Args, error) {
 			var args T
 			if err := json.Unmarshal(payload, &args); err != nil {
@@ -218,6 +227,18 @@ func Register[T Args](registry *Registry, worker Worker[T]) {
 			return worker.Work(ctx, typed)
 		},
 	}
+}
+
+// ZeroArgs は登録済みの各 kind の零値 Args を kind 順に返す。
+// ポインタ型には呼び出しごとに零値を指す非 nil ポインタを返す。
+func (registry *Registry) ZeroArgs() []Args {
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	args := make([]Args, 0, len(registry.handlers))
+	for _, kind := range slices.Sorted(maps.Keys(registry.handlers)) {
+		args = append(args, registry.handlers[kind].zero())
+	}
+	return args
 }
 
 // Decode returns the Args value registered for kind after a JSON round trip.

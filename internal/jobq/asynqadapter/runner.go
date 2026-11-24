@@ -22,46 +22,55 @@ type serverRun struct {
 	servers        []*asynq.Server
 	done           chan struct{}
 	drained        chan struct{}
+	once           *onceGate
 
 	// Adapter.mu guards admission to Work and the count of admitted handlers.
 	stopping bool
 	active   int
 }
 
-// Start は物理キューごとに新しい Server を起動する。
+// Start は通常モードで物理キューごとに新しい Server を起動する。
 func (adapter *Adapter) Start(ctx context.Context) error {
+	if adapter.once {
+		return errors.New("asynqadapter: once mode requires RunOnce")
+	}
+	_, err := adapter.start(ctx, nil)
+	return err
+}
+
+func (adapter *Adapter) start(ctx context.Context, gate *onceGate) (*serverRun, error) {
 	for {
 		adapter.mu.Lock()
 		run := adapter.run
 		switch {
 		case ctx.Err() != nil:
 			adapter.mu.Unlock()
-			return fmt.Errorf("starting asynq adapter: %w", ctx.Err())
+			return nil, fmt.Errorf("starting asynq adapter: %w", ctx.Err())
 		case run == nil:
-			err := adapter.startLocked(ctx)
+			run, err := adapter.startLocked(ctx, gate)
 			adapter.mu.Unlock()
-			return err
+			return run, err
 		case !run.stopping:
 			adapter.mu.Unlock()
-			return errors.New("asynqadapter: delivery is already running")
+			return nil, errors.New("asynqadapter: delivery is already running")
 		default:
 			adapter.mu.Unlock()
 			select {
 			case <-run.done:
 			case <-ctx.Done():
-				return fmt.Errorf("waiting for previous asynq shutdown: %w", ctx.Err())
+				return nil, fmt.Errorf("waiting for previous asynq shutdown: %w", ctx.Err())
 			}
 		}
 	}
 }
 
-func (adapter *Adapter) startLocked(ctx context.Context) error {
+func (adapter *Adapter) startLocked(ctx context.Context, gate *onceGate) (*serverRun, error) {
 	base := context.WithoutCancel(ctx)
 	workCtx, cancelWork := context.WithCancel(base)
 	periodicCtx, cancelPeriodic := context.WithCancel(base)
 	run := &serverRun{
 		workCtx: workCtx, cancelWork: cancelWork, cancelPeriodic: cancelPeriodic,
-		done: make(chan struct{}), drained: make(chan struct{}),
+		done: make(chan struct{}), drained: make(chan struct{}), once: gate,
 	}
 	adapter.run = run
 	for queue, concurrency := range adapter.queues {
@@ -70,24 +79,24 @@ func (adapter *Adapter) startLocked(ctx context.Context) error {
 			Concurrency:              concurrency,
 			BaseContext:              func() context.Context { return base },
 			ShutdownTimeout:          time.Second,
-			DelayedTaskCheckInterval: time.Second,
+			DelayedTaskCheckInterval: delayedTaskCheckInterval,
 			IsFailure:                isFailure,
 			RetryDelayFunc:           retryDelay,
 			Logger:                   asynqLogger{},
 		})
 		handler := asynq.HandlerFunc(func(ctx context.Context, task *asynq.Task) error {
-			return adapter.work(ctx, run, task)
+			return adapter.work(ctx, run, server, task)
 		})
 		if err := server.Start(handler); err != nil {
 			adapter.stopLocked(run)
-			return fmt.Errorf("starting asynq server for queue %q: %w", queue, err)
+			return nil, fmt.Errorf("starting asynq server for queue %q: %w", queue, err)
 		}
 		run.servers = append(run.servers, server)
 	}
 	for _, periodic := range adapter.periodic {
 		run.periodic.Go(func() { adapter.enqueuePeriodic(periodicCtx, periodic) })
 	}
-	return nil
+	return run, nil
 }
 
 func (adapter *Adapter) enqueuePeriodic(ctx context.Context, periodic jobq.PeriodicJobSpec) {
@@ -107,8 +116,15 @@ func (adapter *Adapter) enqueuePeriodic(ctx context.Context, periodic jobq.Perio
 
 // Stop は新しい Work の開始を止め、ctx の期限で実行中の Work を取り消す。
 func (adapter *Adapter) Stop(ctx context.Context) error {
+	return adapter.stop(ctx, nil)
+}
+
+// stop は run を停止する。nil なら現在の run を対象にする。
+func (adapter *Adapter) stop(ctx context.Context, run *serverRun) error {
 	adapter.mu.Lock()
-	run := adapter.run
+	if run == nil {
+		run = adapter.run
+	}
 	if run == nil {
 		adapter.mu.Unlock()
 		return nil
@@ -139,7 +155,7 @@ func (adapter *Adapter) stopLocked(run *serverRun) {
 func (adapter *Adapter) shutdown(run *serverRun) {
 	var servers sync.WaitGroup
 	for _, server := range run.servers {
-		servers.Go(server.Stop)
+		servers.Go(func() { run.stopServer(server) })
 	}
 	servers.Wait()
 
@@ -162,7 +178,16 @@ func (adapter *Adapter) shutdown(run *serverRun) {
 	adapter.mu.Unlock()
 }
 
-func (adapter *Adapter) work(ctx context.Context, run *serverRun, task *asynq.Task) error {
+// stopServer はハンドラと shutdown が同じ Server の取得停止を共有できるようにする。
+func (run *serverRun) stopServer(server *asynq.Server) {
+	if run.once != nil {
+		run.once.stopPulling.Do(server.Stop)
+		return
+	}
+	server.Stop()
+}
+
+func (adapter *Adapter) work(ctx context.Context, run *serverRun, server *asynq.Server, task *asynq.Task) error {
 	adapter.mu.Lock()
 	if run.stopping {
 		adapter.mu.Unlock()
@@ -179,14 +204,19 @@ func (adapter *Adapter) work(ctx context.Context, run *serverRun, task *asynq.Ta
 		adapter.mu.Unlock()
 	}()
 
+	outcome := jobq.OnceOutcomeJobUnhandled
+	if gate := run.once; gate != nil {
+		if !gate.admissionClosed.CompareAndSwap(false, true) {
+			return jobq.Snooze(0)
+		}
+		// 並列数 1 の枠を持つ間に取得を止める（TestRunOnceConsumesOnlyOneTask）。
+		run.stopServer(server)
+		defer func() { gate.done <- outcome }()
+	}
 	args, err := adapter.registry.Decode(task.Type(), task.Payload())
 	if err != nil {
 		return fmt.Errorf("decoding asynq task: %w: %w", err, asynq.RevokeTask)
 	}
-	return adapter.execute(ctx, run.workCtx, args)
-}
-
-func (adapter *Adapter) execute(ctx, shutdownCtx context.Context, args jobq.Args) error {
 	spec := args.Spec()
 	limit := spec.MaxAttempts
 	if limit == 0 {
@@ -201,14 +231,15 @@ func (adapter *Adapter) execute(ctx, shutdownCtx context.Context, args jobq.Args
 
 	workCtx, cancel := context.WithTimeout(ctx, spec.Timeout(args))
 	defer cancel()
-	stop := context.AfterFunc(shutdownCtx, cancel)
+	stop := context.AfterFunc(run.workCtx, cancel)
 	defer stop()
-	if shutdownCtx.Err() != nil {
+	if run.workCtx.Err() != nil {
 		return jobq.Snooze(0)
 	}
-	err := adapter.registry.Work(workCtx, args)
+	outcome = jobq.OnceOutcomeJobDone
+	err = adapter.registry.Work(workCtx, args)
 	if ctxErr := workCtx.Err(); ctxErr != nil {
-		if errors.Is(ctxErr, context.Canceled) && shutdownCtx.Err() != nil {
+		if errors.Is(ctxErr, context.Canceled) && run.workCtx.Err() != nil {
 			return jobq.Snooze(0)
 		}
 		err = ctxErr
