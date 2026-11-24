@@ -4,15 +4,42 @@
  * **合成関数はここに複製しない。** 有効なタイムラインの導出（フレーム境界への
  * 量子化・隙間の本編・CM 率 50% の安全弁・所有の有無による層の選択）は Go の
  * `internal/chapters/` 1 か所にあり、API がその結果を返す。TS 側は返ってきた
- * 区間を描き、再生時に飛ばすだけである（シークタイルの固定値が Go と TS の
- * 2 か所にあった轍を踏まない。docs/frontend/recordings.md）。
+ * 区間を描き、再生時に飛ばす。編集時は要確認候補と下書きの重なりも判定する
+ * （シークタイルの固定値が Go と TS の 2 か所にあった轍を踏まない。
+ * docs/frontend/recordings.md）。
  *
  * **区間の隙間は本編である。** API は本編の区間を返さない（DB が持つ長さは EPG 上の
  * 番組長だけで、ファイルの実際の長さを api は知らない）。再生中の
  * `<video>.duration` がタイムラインの終端になる。
  */
 
-import type { ChapterSpan } from '@/api/generated'
+import type { ChapterRange, ChapterReviewCandidate, ChapterSpan } from '@/api/generated'
+
+/** chapterRangesOverlap は半開区間が正の長さで重なるかを返す。 */
+export function chapterRangesOverlap(a: ChapterRange, b: ChapterRange): boolean {
+  return Math.max(a.startMs, b.startMs) < Math.min(a.endMs, b.endMs)
+}
+
+/** unresolvedChapterReviewCandidates は元の状態が下書きに残る候補を開始順に返す。 */
+export function unresolvedChapterReviewCandidates(
+  candidates: readonly ChapterReviewCandidate[],
+  draft: readonly ChapterSpan[],
+): ChapterReviewCandidate[] {
+  const cuts = draft.filter((span) => span.cut).sort((a, b) => a.startMs - b.startMs)
+  return candidates.filter((candidate) => {
+    if (candidate.kind !== 'missed_cm') {
+      return cuts.some((cut) => chapterRangesOverlap(candidate, cut))
+    }
+    // カットで覆われていない部分は、ラベルの有無にかかわらず本編。
+    let coveredUntil = candidate.startMs
+    for (const cut of cuts) {
+      if (cut.startMs > coveredUntil) break
+      coveredUntil = Math.max(coveredUntil, cut.endMs)
+      if (coveredUntil >= candidate.endMs) return false
+    }
+    return true
+  }).sort((a, b) => a.startMs - b.startMs)
+}
 
 export type ChapterEntry = { start: number; end: number; label: string }
 

@@ -9,7 +9,7 @@ import {
   type RefObject,
 } from 'react'
 
-import type { ChapterSpan, EncodedAsset, KeepRange, RecordingChaptersSource, RecordingMedia } from '@/api/generated'
+import type { ChapterSpan, EncodedAsset, KeepRange, RecordingChapterReview, RecordingChaptersSource, RecordingMedia } from '@/api/generated'
 import {
   RecordingChapterEditor,
   type ChapterBoundaryNavigation,
@@ -113,6 +113,7 @@ type RecordingPlayerProps = {
   chapterSource?: RecordingChaptersSource
   /** `chapters` の版。保存時にそのまま返す。 */
   chapterVersion?: string
+  chapterReview?: RecordingChapterReview | 'error'
   /** 検出中。編集 UI を出さずに理由を表示する。 */
   chapterDetectionPending?: boolean
   /**
@@ -168,6 +169,7 @@ export function RecordingPlayer({
   chapters,
   chapterSource = 'auto',
   chapterVersion,
+  chapterReview,
   chapterDetectionPending = false,
   onSaveChapters,
   onResetChapters,
@@ -764,10 +766,12 @@ export function RecordingPlayer({
             key={recordingId}
             spans={chapters ?? []}
             version={chapterVersion}
+            chapterReview={chapterReview}
             detectionPending={false}
             source={chapterSource}
             seekTilesUrl={media.seekTilesUrl}
             currentSeconds={currentSeconds}
+            getCurrentSeconds={() => videoRef.current?.currentTime ?? currentSeconds}
             getDisplayedFrameSeconds={getDisplayedFrameSeconds}
             isPlaying={frame.mediaPlaying}
             durationSeconds={durationSeconds}

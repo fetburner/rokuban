@@ -7,7 +7,7 @@ import {
   type RefObject,
 } from 'react'
 
-import type { ChapterSpan, RecordingChaptersSource } from '@/api/generated'
+import type { ChapterSpan, RecordingChapterReview, RecordingChaptersSource } from '@/api/generated'
 import { Button } from '@/components/ui/button'
 import {
   RecordingChapterEditor,
@@ -264,6 +264,7 @@ type RecordingPlaybackProps = {
   /** 録画 HLS のチャプター状態と編集操作。 */
   chapterSource?: RecordingChaptersSource
   chapterVersion?: string
+  chapterReview?: RecordingChapterReview | 'error'
   chapterDetectionPending?: boolean
   onEnterChapterEditing?: () => void
   chapterEditorCommandsRef?: MutableRefObject<ChapterEditorCommands | null>
@@ -331,6 +332,7 @@ type LivePlayerProps =
       chapters?: never
       chapterSource?: never
       chapterVersion?: never
+      chapterReview?: never
       chapterDetectionPending?: never
       onEnterChapterEditing?: never
       chapterEditorCommandsRef?: never
@@ -420,6 +422,7 @@ export function LivePlayer(props: LivePlayerProps) {
     chapters,
     chapterSource = 'auto',
     chapterVersion,
+    chapterReview,
     chapterDetectionPending = false,
     chapterEditing = false,
     onEnterChapterEditing,
@@ -1576,10 +1579,12 @@ export function LivePlayer(props: LivePlayerProps) {
             key={recordingId}
             spans={chapters ?? []}
             version={chapterVersion}
+            chapterReview={chapterReview}
             detectionPending={false}
             source={chapterSource}
             seekTilesUrl={recordingSeekTilesUrl ?? ''}
             currentSeconds={currentAxisSeconds}
+            getCurrentSeconds={() => videoRef.current ? axisHeadSeconds + videoRef.current.currentTime : currentAxisSeconds}
             getDisplayedFrameSeconds={getDisplayedFrameSeconds}
             isPlaying={frame.mediaPlaying}
             durationSeconds={recordingDuration}

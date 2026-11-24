@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 
-import type { ChapterSpan } from '@/api/generated'
+import type { ChapterReviewCandidate, ChapterSpan } from '@/api/generated'
 import { Button } from '@/components/ui/button'
 import {
   defaultFilmstripRangeSeconds,
@@ -41,6 +41,38 @@ import {
 const NUDGE_REPEAT_DELAY_MS = 450
 const NUDGE_REPEAT_INTERVAL_MS = 200
 
+const reviewCandidateBands: Record<ChapterReviewCandidate['kind'], string> = {
+  overcut_logo: 'bottom-0 bg-chapter-review-logo',
+  overcut_grid: 'bottom-[3px] bg-chapter-review-grid',
+  missed_cm: 'bottom-[6px] bg-chapter-review-missed',
+}
+
+function ChapterReviewBands({ candidates, range }: {
+  candidates?: readonly ChapterReviewCandidate[]
+  range: FilmstripRange
+}) {
+  const length = range.endSeconds - range.startSeconds
+  if (length <= 0) return null
+  return candidates?.map(({ kind, startMs, endMs }) => {
+    const start = Math.max(range.startSeconds, startMs / 1000)
+    const end = Math.min(range.endSeconds, endMs / 1000)
+    if (start >= end) return null
+    return (
+      <span
+        key={`${kind}-${startMs}-${endMs}`}
+        data-testid="chapter-review-candidate"
+        data-kind={kind}
+        aria-hidden="true"
+        className={`pointer-events-none absolute z-10 h-[3px] ${reviewCandidateBands[kind]}`}
+        style={{
+          left: `${(start - range.startSeconds) / length * 100}%`,
+          width: `${(end - start) / length * 100}%`,
+        }}
+      />
+    )
+  })
+}
+
 type RecordingChapterFilmstripProps = {
   seekTilesUrl: string
   durationSeconds: number
@@ -48,6 +80,8 @@ type RecordingChapterFilmstripProps = {
   getDisplayedFrameSeconds: () => number | null
   isPlaying: boolean
   spans: ChapterSpan[]
+  reviewCandidates?: readonly ChapterReviewCandidate[]
+  reviewControls?: ReactNode
   selectedBoundary: number | null
   selectedBoundaryMeaning: string
   tilesAvailable: boolean
@@ -91,6 +125,8 @@ export function RecordingChapterFilmstrip({
   getDisplayedFrameSeconds,
   isPlaying,
   spans,
+  reviewCandidates,
+  reviewControls,
   selectedBoundary,
   selectedBoundaryMeaning,
   tilesAvailable,
@@ -329,7 +365,7 @@ export function RecordingChapterFilmstrip({
     <section data-testid="chapter-filmstrip" aria-label="チャプターフィルムストリップ" className="flex min-w-0 flex-col gap-1.5">
       <div
         data-testid="chapter-filmstrip-overview"
-        className="relative my-1 h-2 min-w-0 touch-none rounded bg-muted"
+        className="relative my-0.5 h-3 min-w-0 touch-none rounded bg-muted"
         onPointerDown={overviewPanStart}
         onPointerMove={(event) => {
           if (event.currentTarget.hasPointerCapture?.(event.pointerId)) panToX(event.clientX, event.currentTarget)
@@ -354,6 +390,7 @@ export function RecordingChapterFilmstrip({
           className="absolute -inset-y-1 rounded-sm border-2 border-foreground bg-foreground/10"
           style={{ left: `${overviewStart}%`, width: `${overviewWidth}%` }}
         />
+        <ChapterReviewBands candidates={reviewCandidates} range={{ startSeconds: 0, endSeconds: durationSeconds }} />
         {durationSeconds > 0 && (
           <span
             data-testid="chapter-filmstrip-overview-playhead"
@@ -364,14 +401,15 @@ export function RecordingChapterFilmstrip({
         )}
       </div>
 
-      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-        <span className="min-w-0 truncate">
+      <div className="flex items-center gap-1 text-xs text-muted-foreground md:gap-2">
+        <span className={reviewControls ? 'hidden lg:block' : 'min-w-0 truncate'}>
           {formatTimeRange(formatPlaybackTime(range.startSeconds), formatPlaybackTime(range.endSeconds))} を表示
-          <span className="hidden md:inline">
+          <span className={reviewControls ? 'hidden xl:inline' : 'hidden md:inline'}>
             （全体 {formatTimeRange(formatPlaybackTime(0), formatPlaybackTime(durationSeconds))} のうち枠の部分）
           </span>
         </span>
-        <span className="flex shrink-0 gap-1">
+        {reviewControls}
+        <span className="ml-auto flex shrink-0 gap-1">
           <Button type="button" size="sm" variant="outline" className={action} onClick={() => setUserRange({ startSeconds: 0, endSeconds: durationSeconds })} disabled={durationSeconds <= 0}>
             全体
           </Button>
@@ -464,6 +502,7 @@ export function RecordingChapterFilmstrip({
               />
             )
           })}
+          <ChapterReviewBands candidates={reviewCandidates} range={range} />
           {boundaries.map((boundary) => {
             const displayTime = boundary
             const selected = selectedForDisplay !== null && Math.abs(displayTime - selectedForDisplay) < 0.001

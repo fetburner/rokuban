@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 
-import type { ChapterSpan, RecordingChaptersSource } from '@/api/generated'
+import type { ChapterReviewCandidate, ChapterSpan, RecordingChapterReview, RecordingChaptersSource } from '@/api/generated'
 import { Button } from '@/components/ui/button'
 import { RecordingChapterFilmstrip } from '@/components/recording-chapter-filmstrip'
 import {
   FRAME_SECONDS,
   chapterBoundaries,
+  chapterRangesOverlap,
   chapterSpanIndexesAtBoundary,
   chapterSpanIndexAtSeconds,
   displayedFrameBoundaryMs,
@@ -13,6 +14,7 @@ import {
   moveChapterBoundary,
   nearestChapterBoundary,
   normalizeChapterDraft,
+  unresolvedChapterReviewCandidates,
   type ChapterPlaybackEdit,
 } from '@/lib/chapters'
 import { formatPlaybackTime } from '@/lib/format'
@@ -40,12 +42,14 @@ type RecordingChapterEditorProps = {
   spans: ChapterSpan[]
   /** `spans` の版（GET が返す）。保存時にそのまま返す。 */
   version: string
+  chapterReview?: RecordingChapterReview | 'error'
   /** 検出が終端に達していない。空の `spans` は「CM 無し」ではないので編集させない。 */
   detectionPending: boolean
   /** どの層を編集しているか。 */
   source: RecordingChaptersSource
   seekTilesUrl: string
   currentSeconds: number
+  getCurrentSeconds?: () => number
   /** 最後に表示されたフレームの mediaTime（秒）。取れなければ null（currentTime の floor に fallback）。 */
   getDisplayedFrameSeconds?: () => number | null
   isPlaying: boolean
@@ -85,13 +89,20 @@ export function RecordingChapterEditor(props: RecordingChapterEditorProps) {
 }
 
 const noDisplayedFrame = () => null
+const reviewReasons: Record<ChapterReviewCandidate['kind'], string> = {
+  overcut_logo: 'ロゴが出ています。本編かもしれません',
+  overcut_grid: '長さが 15 秒単位からずれています',
+  missed_cm: 'CM の長さと一致する部分があります',
+}
 
 function ChapterDraftEditor({
   spans,
   version,
+  chapterReview,
   source,
   seekTilesUrl,
   currentSeconds,
+  getCurrentSeconds,
   getDisplayedFrameSeconds = noDisplayedFrame,
   isPlaying,
   durationSeconds,
@@ -108,6 +119,18 @@ function ChapterDraftEditor({
   onStatusChange,
 }: RecordingChapterEditorProps) {
   const [draft, setDraft] = useState<ChapterSpan[]>(spans)
+  const reviewCandidates = chapterReview !== 'error' && chapterReview?.materialsAvailable
+    ? chapterReview.candidates
+    : undefined
+  const unresolvedReview = useMemo(() => reviewCandidates
+    ? unresolvedChapterReviewCandidates(reviewCandidates, draft)
+    : [], [reviewCandidates, draft])
+  const missedCount = unresolvedReview.filter((candidate) => candidate.kind === 'missed_cm').length
+  const nextReview = useCallback(() => {
+    const currentMs = Math.round((getCurrentSeconds?.() ?? currentSeconds) * 1000)
+    const candidate = unresolvedReview.find(({ startMs }) => startMs > currentMs) ?? unresolvedReview[0]
+    if (candidate) jumpTo(candidate.startMs / 1000)
+  }, [currentSeconds, getCurrentSeconds, jumpTo, unresolvedReview])
   const draftRef = useRef(draft)
   const labelEditRef = useRef<{ before: ChapterSpan[]; changed: boolean } | null>(null)
   const [history, setHistory] = useState<ChapterSpan[][]>([])
@@ -313,6 +336,11 @@ function ChapterDraftEditor({
       }
       if (editingTarget || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
       const key = event.key.toLowerCase()
+      if (key === 'n' && unresolvedReview.length > 0) {
+        event.preventDefault()
+        if (!event.repeat) nextReview()
+        return
+      }
       if (key === 'i' || key === 'o' || key === 'backspace') {
         event.preventDefault()
         if (!event.repeat) editAtPlayback(key === 'i' ? 'end' : key === 'o' ? 'start' : 'remove')
@@ -341,7 +369,7 @@ function ChapterDraftEditor({
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
     }
-  }, [boundaries.length, editAtPlayback, history, moveBoundary, selectAdjacentBoundary, selectedBoundary, undo])
+  }, [boundaries.length, editAtPlayback, history, moveBoundary, nextReview, selectAdjacentBoundary, selectedBoundary, undo, unresolvedReview.length])
 
   const save = useCallback(async () => {
     // 自動層は変更がなくても明示的に確認できる。空の層も「CM なしで確認する」
@@ -409,6 +437,33 @@ function ChapterDraftEditor({
           getDisplayedFrameSeconds={getDisplayedFrameSeconds}
           isPlaying={isPlaying}
           spans={draft}
+          reviewCandidates={unresolvedReview}
+          reviewControls={chapterReview && (
+            <div className="flex items-center gap-1 md:gap-2">
+              <span role="status">
+                {chapterReview === 'error'
+                  ? '要確認の候補を読み込めませんでした'
+                  : reviewCandidates
+                    ? `切りすぎ ${unresolvedReview.length - missedCount} 件・見逃し ${missedCount} 件`
+                    : '検出の判定材料がありません'}
+              </span>
+              {reviewCandidates && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-9 px-2 text-xs md:h-8"
+                  aria-label="次の要確認"
+                  title="次の要確認（N）"
+                  onClick={nextReview}
+                  disabled={unresolvedReview.length === 0}
+                >
+                  <span className="md:hidden">次へ</span>
+                  <span className="hidden md:inline">次の要確認</span>
+                </Button>
+              )}
+            </div>
+          )}
           selectedBoundary={selectedBoundary}
           selectedBoundaryMeaning={selectedBoundaryMeaning}
           tilesAvailable={tilesAvailable}
@@ -455,6 +510,9 @@ function ChapterDraftEditor({
                   ? 'end'
                   : 'false'
               const selected = selectedEdge !== 'false'
+              const reasons = new Set(unresolvedReview
+                .filter((candidate) => chapterRangesOverlap(candidate, span))
+                .map((candidate) => reviewReasons[candidate.kind]))
               return (
                 <li
                   ref={index === playingSpanIndex ? playingRowRef : undefined}
@@ -540,6 +598,9 @@ function ChapterDraftEditor({
                       削除
                     </Button>
                   </div>
+                  {Array.from(reasons, (reason) => (
+                    <p key={reason} className="col-span-2 text-xs text-muted-foreground">{reason}</p>
+                  ))}
                 </li>
               )
             })}
