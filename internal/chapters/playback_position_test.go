@@ -1,3 +1,5 @@
+// ci-extra-files: testdata/playback-position-vectors.json
+
 package chapters
 
 import (

@@ -228,6 +228,8 @@ mock では検出できない前提は、実物の mirakc コンテナに対す�
 
 PR の CI は Go の依存先か、ソースの `// ci-extra-deps:` で宣言した追加依存が変わったパッケージだけを回す。`go.mod` や `.github/` などを変えた PR と、main への push および週次検証では全パッケージを回す。
 
+テストが実行時にパッケージの外のファイル（`openapi.yaml` や SQL など）を読むなら、そのテストの `package` 節より前に `// ci-extra-files:` で読むパスを書く。書き忘れると、そのファイルだけを変えた PR ではテストが選ばれず、main の全件実行で初めて落ちる。
+
 <details><summary>根拠</summary>
 
 - 実物の mirakc に対する判定の置き場: `internal/mirakc/conformance`

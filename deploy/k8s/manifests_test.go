@@ -1,3 +1,5 @@
+// ci-extra-files: cmd/rokuban/enqueue.go
+
 // Package k8s はテストだけを持つ。`deploy/k8s/base/` のマニフェストが「クラスタに
 // 載せる前に分かる形で壊れていないか」を `go test ./...` で検査するためのもの。
 //

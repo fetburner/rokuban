@@ -74,12 +74,14 @@ type changedFiles map[string][]string
 
 func selectPackages(root, tags string, patterns, changed []string) ([]string, error) {
 	files := make(changedFiles)
+	var paths []string
 	all := false
 	for _, name := range changed {
 		if name == "" {
 			continue
 		}
 		name = path.Clean(filepath.ToSlash(name))
+		paths = append(paths, name)
 		all = all || requiresAllPackages(name)
 		dir, rel := path.Dir(name), path.Base(name)
 		for {
@@ -100,8 +102,8 @@ func selectPackages(root, tags string, patterns, changed []string) ([]string, er
 		return nil, err
 	}
 	check := packageSelection{
-		root: root, changed: files,
-		declarations: make(map[string][]extraDependency),
+		root: root, changed: files, paths: paths,
+		declarations: make(map[string]declarations),
 		extraMatches: make(map[extraDependency]bool),
 	}
 	var selected []string
@@ -129,9 +131,11 @@ func requiresAllPackages(name string) bool {
 }
 
 type packageSelection struct {
-	root         string
-	changed      changedFiles
-	declarations map[string][]extraDependency
+	root    string
+	changed changedFiles
+	// paths は変更されたファイルのモジュールルートからの相対パス。ci-extra-files の照合に使う。
+	paths        []string
+	declarations map[string]declarations
 	extraMatches map[extraDependency]bool
 }
 
@@ -176,23 +180,36 @@ func (s packageSelection) matchesDeclarations(pkg listedPackage, target bool) (b
 	}
 	for _, name := range files {
 		filename := filepath.Join(pkg.Dir, name)
-		deps, seen := s.declarations[filename]
+		decls, seen := s.declarations[filename]
 		if !seen {
 			var err error
-			_, deps, _, err = readDeclarations(filename)
+			_, decls, err = readDeclarations(filename)
 			if err != nil {
 				return false, err
 			}
-			s.declarations[filename] = deps
+			s.declarations[filename] = decls
 		}
-		for _, dep := range deps {
+		for _, dep := range decls.deps {
 			match, err := s.matchesExtra(dep)
 			if err != nil || match {
 				return match, err
 			}
 		}
+		for _, decl := range decls.files {
+			if s.matchesFile(decl) {
+				return true, nil
+			}
+		}
 	}
 	return false, nil
+}
+
+// matchesFile は ci-extra-files の 1 つのパスに、変更されたファイルが一致するかを返す。
+// ディレクトリは配下のファイルに一致する。名前の前方一致だけでは別のディレクトリ（testdata と testdata2）にも一致するので、区切りで判定する。
+func (s packageSelection) matchesFile(decl string) bool {
+	return slices.ContainsFunc(s.paths, func(name string) bool {
+		return decl == "." || name == decl || strings.HasPrefix(name, decl+"/")
+	})
 }
 
 func (s packageSelection) matchesExtra(dep extraDependency) (bool, error) {

@@ -1,3 +1,5 @@
+// ci-extra-files: internal/db/queries/delete_reconcile.sql
+
 package storagemaint
 
 import (

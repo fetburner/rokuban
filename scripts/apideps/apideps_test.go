@@ -1,5 +1,6 @@
 // ci-extra-deps: ./internal/api
 // ci-extra-deps: -tags=s3conformance,conformance ./internal/api
+// ci-extra-files: .golangci.yml
 
 // Package apideps はテストだけを持つ。api ロールの推移的な import に、禁止された
 // パッケージが届いていないことを `go test ./...` で検査する（不変条件 1）。

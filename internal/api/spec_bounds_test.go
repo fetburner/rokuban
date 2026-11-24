@@ -1,3 +1,5 @@
+// ci-extra-files: openapi.yaml
+
 package api
 
 import (
