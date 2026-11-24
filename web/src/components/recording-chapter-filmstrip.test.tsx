@@ -16,6 +16,7 @@ const props = {
   onSeek: () => {},
   onSelectBoundary: () => {},
   onMoveBoundary: () => {},
+  onEditAtPlayback: () => {},
 }
 
 describe('RecordingChapterFilmstrip の再生位置線', () => {

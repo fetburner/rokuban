@@ -19,6 +19,7 @@ import {
   chapterEntryIndexAtSeconds,
   displayedFrameBoundaryMs,
   moveChapterBoundary,
+  type ChapterPlaybackEdit,
 } from '@/lib/chapters'
 import { formatPlaybackTime, formatPlaybackTimeMs, formatTimeRange } from '@/lib/format'
 import {
@@ -54,6 +55,7 @@ type RecordingChapterFilmstripProps = {
   onSelectBoundary: (seconds: number) => void
   /** 境界を delta 秒動かす。`continued` は長押しの 2 回目以降（undo を 1 件にまとめる）。 */
   onMoveBoundary: (fromSeconds: number, deltaSeconds: number, continued?: boolean) => boolean | void
+  onEditAtPlayback: (action: ChapterPlaybackEdit) => void
 }
 
 function rangeAround(center: number, length: number, duration: number, minLength: number): FilmstripRange {
@@ -95,6 +97,7 @@ export function RecordingChapterFilmstrip({
   onSeek,
   onSelectBoundary,
   onMoveBoundary,
+  onEditAtPlayback,
 }: RecordingChapterFilmstripProps) {
   // 編集モードに入った時点の再生位置。開いた直後の表示範囲はこの周りにし、再生が進んでも追わない。
   const [openedAt] = useState(currentSeconds)
@@ -542,20 +545,29 @@ export function RecordingChapterFilmstrip({
             境界の直後（次の区間の先頭）
           </span>
         )}
-        <Button type="button" size="sm" variant="outline" className={action} aria-label="選択中の境界を1秒戻す" disabled={selectedBoundary === null} {...nudgeButtonProps(-1)}>
+        <Button type="button" size="sm" variant="outline" className={`${action} hidden md:inline-flex`} aria-label="選択中の境界を1秒戻す" disabled={selectedBoundary === null} {...nudgeButtonProps(-1)}>
           −1秒
         </Button>
-        <Button type="button" size="sm" variant="outline" className={action} aria-label="選択中の境界を1フレーム戻す" disabled={selectedBoundary === null} {...nudgeButtonProps(-FRAME_SECONDS)}>
+        <Button type="button" size="sm" variant="outline" className={action} aria-label="選択中の境界を1フレーム戻す" title="1 フレーム戻す（,）" disabled={selectedBoundary === null} {...nudgeButtonProps(-FRAME_SECONDS)}>
           <span className="md:hidden">−1f</span><span className="hidden md:inline">−1フレーム</span>
         </Button>
-        <Button type="button" size="sm" variant="outline" className={action} aria-label="選択中の境界を 1 フレーム進める" disabled={selectedBoundary === null} {...nudgeButtonProps(FRAME_SECONDS)}>
+        <Button type="button" size="sm" variant="outline" className={action} aria-label="選択中の境界を 1 フレーム進める" title="1 フレーム進める（.）" disabled={selectedBoundary === null} {...nudgeButtonProps(FRAME_SECONDS)}>
           <span className="md:hidden">+1f</span><span className="hidden md:inline">+1フレーム</span>
         </Button>
-        <Button type="button" size="sm" variant="outline" className={action} aria-label="選択中の境界を1秒進める" disabled={selectedBoundary === null} {...nudgeButtonProps(1)}>
+        <Button type="button" size="sm" variant="outline" className={`${action} hidden md:inline-flex`} aria-label="選択中の境界を1秒進める" disabled={selectedBoundary === null} {...nudgeButtonProps(1)}>
           +1秒
         </Button>
         <Button type="button" size="sm" variant="outline" className={`${action} hidden md:inline-flex`} aria-label="選択中の境界を現在の再生位置に合わせる" disabled={selectedBoundary === null} onClick={alignSelectedToPlayback}>
           再生位置に合わせる
+        </Button>
+        <Button type="button" size="sm" variant="outline" className={action} aria-label="CM の終わりにする" title="CM の終わりにする（I）" onClick={() => onEditAtPlayback('end')}>
+          <span className="md:hidden">I</span><span className="hidden md:inline">CM の終わりにする</span>
+        </Button>
+        <Button type="button" size="sm" variant="outline" className={action} aria-label="CM の始まりにする" title="CM の始まりにする（O）" onClick={() => onEditAtPlayback('start')}>
+          <span className="md:hidden">O</span><span className="hidden md:inline">CM の始まりにする</span>
+        </Button>
+        <Button type="button" size="sm" variant="outline" className={action} aria-label="この CM を消す" title="この CM を消す（Backspace）" onClick={() => onEditAtPlayback('remove')}>
+          <span className="md:hidden">⌫</span><span className="hidden md:inline">この CM を消す</span>
         </Button>
         <span className="ml-auto hidden text-xs text-muted-foreground md:inline">← → で前後の境界へ移る</span>
       </div>

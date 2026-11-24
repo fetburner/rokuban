@@ -14,6 +14,7 @@ import {
   chapterJumpTarget,
   chapterSpanIndexesAtBoundary,
   displayedFrameBoundaryMs,
+  editChapterAtPlayback,
   loadChapterSkip,
   moveChapterBoundary,
   nearestChapterBoundary,
@@ -22,6 +23,7 @@ import {
   playbackSecondsToChapterBoundaryMs,
   saveChapterSkip,
   skipTarget,
+  type ChapterPlaybackEdit,
 } from '@/lib/chapters'
 
 const cm = (startMs: number, endMs: number): ChapterSpan => ({ startMs, endMs, label: 'CM', cut: true })
@@ -201,6 +203,42 @@ describe('moveChapterBoundary', () => {
     expect(moved.spans).toEqual([cm(10_000, 35_000)])
     expect(moved.boundary).toBe(10)
     expect(normalizeChapterDraft(moved.spans)).toEqual(moved.spans)
+  })
+})
+
+describe('editChapterAtPlayback', () => {
+  const first = cm(10_000, 20_000)
+  const last = cm(40_000, 50_000)
+  const spans = [first, last]
+  const opening = op(22_000, 28_000)
+  const credits = { ...op(32_000, 38_000), label: 'ED' }
+  const cases: [string, ChapterPlaybackEdit, ChapterSpan[], number, ChapterSpan[]][] = [
+    ['I は CM 内なら終端を縮める', 'end', spans, 15_000, [cm(10_000, 15_000), last]],
+    ['I は本編なら直前の CM を伸ばす', 'end', spans, 30_000, [cm(10_000, 30_000), last]],
+    ['I は前に CM がなければ先頭から切る', 'end', spans, 5_000, [{ startMs: 0, endMs: 5_000, cut: true }, first, last]],
+    ['I は録画先頭に空の CM を作らない', 'end', [], 0, []],
+    ['I は OP の中では直前の CM を伸ばし OP の残りを保つ', 'end', [first, opening, credits, last], 25_000,
+      [cm(10_000, 25_000), op(25_000, 28_000), credits, last]],
+    ['O は CM 内なら先頭を後ろへ動かす', 'start', spans, 45_000, [first, cm(45_000, 50_000)]],
+    ['O は本編なら次の CM を前へ伸ばす', 'start', spans, 30_000, [first, cm(30_000, 50_000)]],
+    ['O は後に CM がなければ録画末尾まで切る', 'start', spans, 55_000, [first, last, { startMs: 55_000, endMs: 60_000, cut: true }]],
+    ['O は録画末尾に空の CM を作らない', 'start', [], 60_000, []],
+    ['O は ED の中では次の CM を伸ばし ED の冒頭を保つ', 'start', [first, opening, credits, last], 35_000,
+      [first, opening, { startMs: 32_000, endMs: 35_000, cut: false, label: 'ED' }, cm(35_000, 50_000)]],
+    ['O で同じラベルの CM に接すると合併する', 'start', spans, 20_000, [cm(10_000, 50_000)]],
+    ['Backspace は CM 内ならその区間を消す', 'remove', spans, 45_000, [first]],
+    ['Backspace は CM の先頭を区間に含める', 'remove', spans, 10_000, [last]],
+    ['Backspace は CM の終端を区間に含めない', 'remove', spans, 20_000, spans],
+    ['Backspace は本編で何もしない', 'remove', spans, 30_000, spans],
+    ['Backspace は手前に CM のない位置で何もしない', 'remove', spans, 5_000, spans],
+    ['Backspace は後ろに CM のない位置で何もしない', 'remove', spans, 55_000, spans],
+    ['Backspace は OP の中で何もしない', 'remove', [first, opening, credits, last], 25_000, [first, opening, credits, last]],
+    ['Backspace は ED の中で何もしない', 'remove', [first, opening, credits, last], 35_000, [first, opening, credits, last]],
+  ]
+
+  it.each(cases)('%s', (_name, action, draft, positionMs, expected) => {
+    const edit = editChapterAtPlayback(draft, action, positionMs, 60_000)
+    expect(edit ? normalizeChapterDraft(edit.spans, edit.operatedIndexes) : draft).toEqual(expected)
   })
 })
 

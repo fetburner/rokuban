@@ -9,9 +9,11 @@ import {
   chapterSpanIndexesAtBoundary,
   chapterSpanIndexAtSeconds,
   displayedFrameBoundaryMs,
+  editChapterAtPlayback,
   moveChapterBoundary,
   nearestChapterBoundary,
   normalizeChapterDraft,
+  type ChapterPlaybackEdit,
 } from '@/lib/chapters'
 import { formatPlaybackTime } from '@/lib/format'
 
@@ -68,7 +70,7 @@ type RecordingChapterEditorProps = {
 /**
  * RecordingChapterEditor は編集専用の録画プレイヤー画面。
  *
- * 境界をストリップで選び、選択中の境界だけをフレーム単位で調整する。編集は
+ * 選んだ境界の調整と、再生位置での CM 編集を行う。編集は
  * タイムライン全体の置き換えとして保存し、サーバーが返す版をそのまま使う。
  */
 export function RecordingChapterEditor(props: RecordingChapterEditorProps) {
@@ -161,7 +163,11 @@ function ChapterDraftEditor({
     : 0
   // 描画用（ボタンの無効判定）は currentTime の floor、押した瞬間の値は mediaTime 優先。
   const currentMs = displayedFrameBoundaryMs(null, currentSeconds)
-  const nowMs = () => displayedFrameBoundaryMs(getDisplayedFrameSeconds(), currentSeconds)
+  // duration が未確定（0）や無限（EVENT HLS の変換中）のときは頭打ちしない。
+  const currentPositionMs = useCallback(() => {
+    const ms = displayedFrameBoundaryMs(getDisplayedFrameSeconds(), currentSeconds)
+    return durationMs > 0 ? Math.min(durationMs, ms) : ms
+  }, [currentSeconds, durationMs, getDisplayedFrameSeconds])
   const nearestBoundary = nearestChapterBoundary(boundaries, currentSeconds)
   // nudgeBoundary stores integer milliseconds, while frame controls pass a rational
   // 29.97fps interval. Match within 1ms so the chosen boundary stays selected.
@@ -269,6 +275,18 @@ function ChapterDraftEditor({
     return Math.abs(moved.boundary - Math.round((from + deltaSeconds) * 1000) / 1000) <= 0.001
   }, [commitDraft, selectBoundary])
 
+  const editAtPlayback = useCallback((action: ChapterPlaybackEdit) => {
+    const positionMs = currentPositionMs()
+    const edit = editChapterAtPlayback(draftRef.current, action, positionMs, durationMs)
+    if (!edit || !commitDraft(edit.spans, edit.operatedIndexes)) return
+    const remaining = chapterBoundaries(draftRef.current)
+    if (action !== 'remove') {
+      setSelectedBoundaryValue(nearestChapterBoundary(remaining, positionMs / 1000))
+    } else if (selectedBoundary !== null && !remaining.includes(selectedBoundary)) {
+      setSelectedBoundaryValue(nearestChapterBoundary(remaining, selectedBoundary))
+    }
+  }, [commitDraft, currentPositionMs, durationMs, selectedBoundary])
+
   // キーリピートで境界が消えたら、キーを離すまでリピートを無視する。
   const keyRepeatStoppedRef = useRef(false)
 
@@ -293,11 +311,16 @@ function ChapterDraftEditor({
         undo()
         return
       }
+      if (editingTarget || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+      const key = event.key.toLowerCase()
+      if (key === 'i' || key === 'o' || key === 'backspace') {
+        event.preventDefault()
+        if (!event.repeat) editAtPlayback(key === 'i' ? 'end' : key === 'o' ? 'start' : 'remove')
+        return
+      }
       const isArrow = event.key === 'ArrowLeft' || event.key === 'ArrowRight'
       const isFrameNudge = event.key === ',' || event.key === '.'
-      if (!isArrow && !isFrameNudge) return
-      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || boundaries.length === 0) return
-      if (editingTarget) return
+      if ((!isArrow && !isFrameNudge) || boundaries.length === 0) return
       event.preventDefault()
       if (isFrameNudge) {
         if (!event.repeat) keyRepeatStoppedRef.current = false
@@ -318,7 +341,7 @@ function ChapterDraftEditor({
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
     }
-  }, [boundaries.length, history, moveBoundary, selectAdjacentBoundary, selectedBoundary, undo])
+  }, [boundaries.length, editAtPlayback, history, moveBoundary, selectAdjacentBoundary, selectedBoundary, undo])
 
   const save = useCallback(async () => {
     // 自動層は変更がなくても明示的に確認できる。空の層も「CM なしで確認する」
@@ -351,8 +374,6 @@ function ChapterDraftEditor({
     }
   }, [commandsRef, discardDraft, reset, save])
 
-  // duration が未確定（0）や無限（EVENT HLS の変換中）のときは頭打ちしない。
-  const currentPositionMs = () => (durationMs > 0 ? Math.min(durationMs, nowMs()) : nowMs())
   const startNewSpan = () => setPendingStartMs(currentPositionMs())
   const closeNewSpan = () => {
     if (pendingStartMs === null) return
@@ -394,6 +415,7 @@ function ChapterDraftEditor({
           onSeek={jumpTo}
           onSelectBoundary={selectBoundary}
           onMoveBoundary={moveBoundary}
+          onEditAtPlayback={editAtPlayback}
         />
       </div>
 
@@ -406,7 +428,7 @@ function ChapterDraftEditor({
         className="h-full overflow-y-auto overscroll-contain rounded-md border border-border/70 p-2 md:absolute md:inset-0 md:h-auto"
       >
         <div className="mb-2 flex justify-end">
-          <Button type="button" size="sm" variant="outline" onClick={undo} disabled={history.length === 0}>
+          <Button type="button" size="sm" variant="outline" title="元に戻す（⌘Z / Ctrl+Z）" onClick={undo} disabled={history.length === 0}>
             元に戻す
           </Button>
         </div>
