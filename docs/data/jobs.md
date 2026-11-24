@@ -31,7 +31,7 @@
 
 ### 契約と adapter の境界
 
-ジョブ引数の型は共有の置き場に置き、River への依存は adapter に閉じ込める。責務は変わる理由で 4 つに分け、理由の違うものを同じ場所に置かない。
+ジョブ引数の型は共有の置き場に置き、River と asynq への依存は adapter に閉じ込める。責務は変わる理由で 4 つに分け、理由の違うものを同じ場所に置かない。
 
 | 責務 | 変わる理由 | 持ち主 |
 |---|---|---|
@@ -42,13 +42,13 @@
 
 API は、store の commit 後にヒントとして投入する。投入の失敗はログに残し、定期 reconcile に委ねる。watcher も、観測の commit の後にヒントとして投入する。CLI は単発で投入し、合流の有無を結果から表示する。
 
-River クライアントと投入オプションへの変換は、adapter に閉じ込める。worker の登録だけは River の公開 API が具体型を要求するので、River adapter を通す。他の adapter は中立なレジストリを使う。
+River クライアントと投入オプションへの変換は、adapter に閉じ込める。worker の登録だけは River の公開 API が具体型を要求するので、River adapter を通す。asynq adapter は中立なレジストリに登録された worker を使う。
 
 import 境界の linter は、本番コードによる River adapter の直接 import を禁止する。例外は worker の登録とテスト DB 作成だけである。構成の根である起動コードは adapter を組み立てるので、対象外にする。テストも River の import を adapter に閉じる。唯一の例外は KEDA の SQL テストで、ScaledJob の状態名を River のスキーマと照合する。asynq と go-redis の import も、テストを含め asynq adapter に閉じる。
 
 逆向きの境界も持つ。adapter の本番コードは、契約とエンジンだけに依存する。禁止リストで製品パッケージを塞ぐと、リストに無い別の製品パッケージへの依存が通る。そのため許可リストで判定し、テストは対象外にする。
 
-契約は River と asynq の共通部分に絞る。扱うのは queue・timeout・retry・enqueue・work・runner lifecycle、worker の仕様の型、1 件消化モードの終了理由である。仕様の型は、キューごとの並列数と購読する物理キュー名、定期ジョブの一覧と周期を表す。定期投入の runner は、起動直後に 1 回、その後は周期ごとに投入する。この点は型の doc に書いた契約である。1 件消化モードの待機と停止は adapter が担い、起動側は終了理由を受け取る。排他、一覧、job ID / 試行番号、購読の仕組みは adapter 固有のまま外に置く。adapter の内部状態へ依存しない境界を先に作るためである。
+契約は River と asynq の共通部分に絞る。扱うのは queue・timeout・retry・enqueue・work・runner lifecycle、worker の仕様の型、1 件消化モードの終了理由である。仕様の型は、キューごとの並列数と購読する物理キュー名、定期ジョブの一覧と周期を表す。定期投入の runner は、起動直後に 1 回、その後は周期ごとに投入する。この点は型の doc に書いた契約である。River と asynq の adapter は 1 件消化モードの待機と停止を担う。起動側は共通の型で終了理由を受け取る。排他、一覧、job ID / 試行番号、購読の仕組みは adapter 固有のまま外に置く。adapter の内部状態へ依存しない境界を先に作るためである。
 
 `jobq.Snooze` の下限 d は配送を観測する時計と backend の時計が一致している前提である。backend の時計が worker の時計より進んでいれば worker からはその時計差の分だけ早く届くことがある。使う時計は adapter ごとに異なり、公開契約も計時基準を定めていないため、adapter 側では時計差を補正しない。再試行する側は待ちのあと Work で状態を確かめ直すため、delay の下限ちょうどに正しさを頼らない。
 
@@ -58,7 +58,9 @@ import 境界の linter は、本番コードによる River adapter の直接 i
 
 設定キーを持たない周期と並列数は、上書きできない製品の仕様として組み立て関数のリテラルで書く。config に既定値を置くのは、設定キーのある値だけである。adapter は既定値を持たず、0 の並列数や周期を起動時に拒む。adapter が「0 なら既定値」を持つと、config の既定値との二重既定になり、片方だけが直る。
 
-物理キュー名の命名規則は製品の規則で、起動形態ではない。投入側の規則は adapter のコンストラクタが解決関数として受け取る。購読側の物理名は、組み立て関数が同じ規則の部品で展開して仕様に入れる。この 2 つは別の経路なので、型は一致を保証しない。食い違うと、api が `ingest` へ入れ、worker が `ingest_tokyo` を引く「黙って動かない」になる。そのため adapter は構築時に、定期ジョブの投入先が購読する物理名に入ることを検査する。解決関数が nil のときも、論理名に倒さず構築を拒む。登録した worker の投入先が決まることと、定期ジョブの kind が登録済みであることも、構築時に検査する。site が実行時に決まる Args の投入先は、起動時には検査できない。
+物理キュー名の命名規則は製品の規則で、起動形態ではない。投入側の規則は adapter のコンストラクタが解決関数として受け取る。購読側の物理名は、組み立て関数が同じ規則の部品で展開して仕様に入れる。この 2 つは別の経路なので、型は一致を保証しない。食い違うと、api が `ingest` へ入れ、worker が `ingest_tokyo` を引く「黙って動かない」になる。そのため adapter は構築時に、定期ジョブの投入先が購読する物理名に入ることを検査する。解決関数が nil のときも、論理名に倒さず構築を拒む。
+
+River と asynq の adapter は構築時に、登録済みのすべての kind について零値の Args で投入先を解決する。site 単位のキューに載る Args が site を取得する `QueueSite` を持たなければ、構築を拒む。実際の site に対応する投入先は実行時に決まる。定期ジョブの kind が登録済みであることも構築時に検査する。
 
 <details><summary>根拠</summary>
 
@@ -67,6 +69,8 @@ import 境界の linter は、本番コードによる River adapter の直接 i
 - commit 後のヒントの投入と CLI の単発投入: `Enqueue`、合流の表示は `Result.Coalesced`
 - River への変換の閉じ込め先: `internal/jobq/riveradapter`、投入オプションは `InsertOpts`
 - 中立なレジストリ: `jobq.Registry`
+- River の零値検査: `riveradapter.Register` が登録する builder。`TestNewAdapterRejectsSiteBoundArgsWithoutQueueSite` で検査する
+- asynq の零値検査: `jobq.Registry.ZeroArgs`。`TestNewAdapterChecksRegisteredQueueWithoutPeriodicJobs` で検査する
 - 仕様の型と検査: `jobq.WorkerSpec` の `Validate` / `Select` / `CheckKinds` / `CheckQueueFor`
 - 仕様の組み立て: `cmd/rokuban` の `newWorkerSpec`（`tsscan` が `internal/jobs` を import するので jobs には置けない）
 - import 境界の判定: `.golangci.yml` の depguard。adapter の本番コードは `riveradapter-allowlist` と `asynqadapter-allowlist`（許可リスト）

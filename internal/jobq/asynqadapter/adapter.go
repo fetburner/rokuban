@@ -45,6 +45,9 @@ type Config struct {
 	Spec jobq.WorkerSpec
 	// SchedulePeriodicJobs は Start 直後と周期ごとの投入を有効にする。
 	SchedulePeriodicJobs bool
+	// Once は RunOnce で 1 件だけ消化するモードを有効にする。
+	// 物理キューは 1 つ、並列数は 1、定期投入は無効とする。
+	Once bool
 }
 
 // Adapter は jobq.Enqueuer と jobq.Runner を実装する。
@@ -56,6 +59,7 @@ type Adapter struct {
 	queueFor  QueueFunc
 	queues    map[string]int
 	periodic  []jobq.PeriodicJobSpec
+	once      bool
 	now       func() time.Time
 
 	mu  sync.Mutex
@@ -92,14 +96,32 @@ func NewAdapter(redisClient redis.UniversalClient, registry *jobq.Registry, queu
 	if err := cfg.Spec.CheckQueueFor(queueFor); err != nil {
 		return nil, fmt.Errorf("checking asynq periodic job queues: %w", err)
 	}
+	for _, args := range registry.ZeroArgs() {
+		if _, err := queueFor(args); err != nil {
+			return nil, fmt.Errorf("checking asynq queue for registered kind %q: %w", args.Kind(), err)
+		}
+	}
 	queues, err := physicalQueues(cfg.Spec)
 	if err != nil {
 		return nil, err
 	}
+	if cfg.Once {
+		if len(queues) != 1 {
+			return nil, fmt.Errorf("asynqadapter: once mode requires exactly one physical queue, got %d", len(queues))
+		}
+		for queue, concurrency := range queues {
+			if concurrency != 1 {
+				return nil, fmt.Errorf("asynqadapter: once mode requires MaxWorkers=1 for queue %q", queue)
+			}
+		}
+		if cfg.SchedulePeriodicJobs {
+			return nil, errors.New("asynqadapter: once mode requires periodic scheduling to be disabled")
+		}
+	}
 	adapter := &Adapter{
 		redis: redisClient, client: asynq.NewClientFromRedisClient(redisClient),
 		inspector: asynq.NewInspectorFromRedisClient(redisClient), now: time.Now,
-		registry: registry, queueFor: queueFor, queues: queues,
+		registry: registry, queueFor: queueFor, queues: queues, once: cfg.Once,
 	}
 	if cfg.SchedulePeriodicJobs {
 		adapter.periodic = append(adapter.periodic, cfg.Spec.PeriodicJobs...)
