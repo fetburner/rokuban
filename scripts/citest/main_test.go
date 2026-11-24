@@ -1,3 +1,6 @@
+// ci-extra-deps: -tags=s3conformance,conformance ./...
+// 全パッケージのソースを読んで検査するため、サブプロセス経由の依存だけでは足りない。
+
 package main
 
 import (
@@ -72,6 +75,22 @@ var data string
 
 package ingestresume
 `,
+		"conformance/fileread/read_test.go": `// ci-extra-files: ./shared/input.txt
+
+package fileread
+`,
+		"conformance/dirread/read_test.go": `// ci-extra-files: testdata/golden
+
+package dirread
+`,
+		"conformance/depread/read_test.go": `package depread
+
+import _ "example.com/fixture/internal/shared"
+`,
+		"internal/shared/shared.go": `// ci-extra-files: schema.sql
+
+package shared
+`,
 	}
 	for name, body := range files {
 		path := filepath.Join(root, name)
@@ -83,6 +102,15 @@ package ingestresume
 		}
 	}
 	return root, files
+}
+
+// allConformance は fixture の conformance パッケージ全件（全件選択になる変更の期待値）。
+var allConformance = []string{
+	"example.com/fixture/conformance/depread",
+	"example.com/fixture/conformance/dirread",
+	"example.com/fixture/conformance/fileread",
+	"example.com/fixture/conformance/ingestresume",
+	"example.com/fixture/conformance/lifecycle",
 }
 
 func TestSelectPackages(t *testing.T) {
@@ -138,22 +166,47 @@ func TestSelectPackages(t *testing.T) {
 		{
 			name:    "module definition",
 			changed: "go.mod",
-			want:    []string{"example.com/fixture/conformance/ingestresume", "example.com/fixture/conformance/lifecycle"},
+			want:    allConformance,
 		},
 		{
 			name:    "module checksums",
 			changed: "go.sum",
-			want:    []string{"example.com/fixture/conformance/ingestresume", "example.com/fixture/conformance/lifecycle"},
+			want:    allConformance,
 		},
 		{
 			name:    "GitHub workflow",
 			changed: ".github/workflows/ci.yml",
-			want:    []string{"example.com/fixture/conformance/ingestresume", "example.com/fixture/conformance/lifecycle"},
+			want:    allConformance,
 		},
 		{
 			name:    "selector change",
 			changed: "scripts/citest/main.go",
-			want:    []string{"example.com/fixture/conformance/ingestresume", "example.com/fixture/conformance/lifecycle"},
+			want:    allConformance,
+		},
+		{
+			name:    "ci-extra-files file declaration matches the changed file",
+			changed: "shared/input.txt",
+			want:    []string{"example.com/fixture/conformance/fileread"},
+		},
+		{
+			name:    "ci-extra-files file declaration does not match a sibling file",
+			changed: "shared/other.txt",
+			want:    nil,
+		},
+		{
+			name:    "ci-extra-files directory declaration matches beneath it",
+			changed: "testdata/golden/case1/out.json",
+			want:    []string{"example.com/fixture/conformance/dirread"},
+		},
+		{
+			name:    "ci-extra-files directory declaration does not match a name prefix",
+			changed: "testdata/goldenx/a.json",
+			want:    nil,
+		},
+		{
+			name:    "ci-extra-files declared in a non-test file of a dependency",
+			changed: "schema.sql",
+			want:    []string{"example.com/fixture/conformance/depread"},
 		},
 	}
 	for _, tt := range tests {
@@ -218,6 +271,45 @@ func build(ctx context.Context) error {
 	}
 }
 
+func TestReadExtraFilesDeclaration(t *testing.T) {
+	tests := []struct {
+		name    string
+		line    string
+		want    []string
+		wantErr bool
+	}{
+		{name: "cleans ./ prefix and trailing slash", line: "./openapi.yaml  testdata/", want: []string{"openapi.yaml", "testdata"}},
+		{name: "module root is rejected", line: ".", wantErr: true},
+		{name: "module root with ./ is rejected", line: "./", wantErr: true},
+		{name: "empty list", line: "   ", wantErr: true},
+		{name: "absolute path", line: "/etc/passwd", wantErr: true},
+		{name: "parent escape", line: "../outside.json", wantErr: true},
+		{name: "parent in the middle", line: "a/../../b", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "decl_test.go")
+			source := "// ci-extra-files: " + tt.line + "\n\npackage decl\n"
+			if err := os.WriteFile(file, []byte(source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, decls, err := readDeclarations(file)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("readDeclarations(%q) error = nil, want error (files %v)", tt.line, decls.files)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(decls.files, tt.want) {
+				t.Errorf("files for %q = %v, want %v", tt.line, decls.files, tt.want)
+			}
+		})
+	}
+}
+
 func missingGoDeclarations(root string) ([]string, error) {
 	var missing []string
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -234,11 +326,11 @@ func missingGoDeclarations(root string) ([]string, error) {
 		if !strings.HasSuffix(entry.Name(), ".go") {
 			return nil
 		}
-		file, _, declared, err := readDeclarations(path)
+		file, decls, err := readDeclarations(path)
 		if err != nil {
 			return err
 		}
-		if !declared && callsGo(file) {
+		if !decls.declaresDeps() && callsGo(file) {
 			missing = append(missing, path)
 		}
 		return nil

@@ -241,13 +241,22 @@ jobs:
   # 決める。手で名前を並べると、パッケージが増えるたびに直すことになるため。
   # 実測が無いパッケージは 0 秒と見積もられる（初回・キャッシュ切れ）。
   # 必須チェック名 `test` は下の集約ジョブが担う。
+  # PR は citest で変更の影響を受けるパッケージだけを選ぶ。main は go list の全件。
+  # 対象が空になるのは PR で変更がテストに影響しないときだけで、その場合は planned_skip を出して
+  # shard を作らず、集約ジョブ test がそれを成功とみなす（mirakc-conformance と同じ形）。
   test-matrix:
     # 全シャードの開始を待たせる。ubuntu-slim では setup-go と gotestsum のビルドで 24s → 110s に伸びた。
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      planned_skip: ${{ steps.plan.outputs.planned_skip }}
     steps:
       - uses: actions/checkout@v7
+      - name: Fetch PR base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -258,14 +267,35 @@ jobs:
           key: go-test-timings-${{ github.run_id }}
           restore-keys: go-test-timings-
       - id: plan
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          go list ./... > "$RUNNER_TEMP/packages.txt"
-          go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions 3 < "$RUNNER_TEMP/packages.txt" > "$RUNNER_TEMP/matrix.json"
-          echo "matrix=$(cat "$RUNNER_TEMP/matrix.json")" >> "$GITHUB_OUTPUT"
+          packages_file="$RUNNER_TEMP/packages.txt"
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            git diff --name-only -z --no-renames "$BASE_SHA" HEAD |
+              go run ./scripts/citest ./... > "$packages_file"
+          else
+            go list ./... > "$packages_file"
+          fi
+          if [[ ! -s "$packages_file" ]]; then
+            test "$GITHUB_EVENT_NAME" = pull_request
+            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo 'planned_skip=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions 3 < "$packages_file")
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            # 少数パッケージを割り当てたときに残る空のシャードを除く。
+            matrix=$(jq -ce '.include |= map(select(.packages != "")) | select(.include | length > 0)' <<< "$matrix")
+          fi
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   test-shard:
     name: test (${{ matrix.description }})
     needs: test-matrix
+    if: needs.test-matrix.outputs.planned_skip != 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -381,13 +411,25 @@ jobs:
           path: timings
           key: go-test-timings-${{ github.run_id }}
 
-  # 必須チェック名 test を保つ集約ジョブ。skip / cancelled / failure を緑にしない。
+  # 必須チェック名 test を保つ集約ジョブ。冒頭の「PR と main の役割分担」に従う。
+  # PR は citest の選定結果が空のときだけ shard の skip を成功とし、それ以外の skip / cancelled / failure を緑にしない。
   test:
-    needs: test-shard
+    needs: [test-matrix, test-shard]
     if: always()
     runs-on: ubuntu-slim
     steps:
-      - run: test "${{ needs.test-shard.result }}" = success
+      - shell: bash
+        env:
+          PLAN_RESULT: ${{ needs.test-matrix.result }}
+          PLANNED_SKIP: ${{ needs.test-matrix.outputs.planned_skip }}
+          SHARD_RESULT: ${{ needs.test-shard.result }}
+        run: |
+          test "$PLAN_RESULT" = success
+          if [ "$PLANNED_SKIP" = true ]; then
+            test "$SHARD_RESULT" = skipped
+          else
+            test "$SHARD_RESULT" = success
+          fi
 
   # rokuban が mirakc に期待する API 挙動を実物のコンテナに対して判定する。
   # 冒頭の「PR と main の役割分担」に従う。PR は citest の選定結果、main は go list の全件を

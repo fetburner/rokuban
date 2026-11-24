@@ -1,3 +1,5 @@
+// ci-extra-files: .node-version Dockerfile web/package.json
+
 // Package versioncheck はテストだけを持つ。リポジトリ内で手作業では揃わなくなる版の
 // 組み合わせを `go test ./...` で検査するためのもの。CI の test ジョブが回す
 // `go list ./...` の対象なので、専用の job は要らない。

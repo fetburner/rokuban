@@ -1,3 +1,5 @@
+// ci-extra-files: internal/jobs
+
 // ロール分割デプロイのワークロード（ScaledJob / CronJob / site 束縛の Pod）に
 // 効く検査。manifests_test.go が「オブジェクト間の参照と config の中身」を見るのに
 // 対して、こちらは **argv とキュー名とスケジュールの噛み合わせ**を見る。

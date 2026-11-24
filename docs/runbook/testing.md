@@ -60,6 +60,14 @@ mirakc を相手にするテストは `internal/mirakc/mirakctest` の fake を�
 
 </details>
 
+### PR の CI で回すテスト
+
+PR の CI は変更の影響を受けるテストだけを回し、main への push では全件を回す。選ぶ条件と宣言の書き方を次に書く。
+
+PR の CI は、変更が Go の依存先に入るパッケージと、ソースの `// ci-extra-deps:` で宣言した追加依存が変わったパッケージだけを回す。実行時にパッケージの外のファイル（`openapi.yaml` や SQL など）を読むテストは、そのテストの `package` 節より前に `// ci-extra-files:` で読むパスを書く。書き忘れると、そのファイルだけを変えた PR ではテストが選ばれず、main への push の全件実行で初めて落ちる。
+
+`go.mod` や `.github/` を変えた PR と、main への push では全パッケージを回す。週次の検証（mirakc conformance の drift 検知）は別系統で、ここの選び方の対象ではない。
+
 ### k8s の故障注入
 
 強制終了した worker の仕事の再実行と、接続断の間に失った mirakc の schedule の再照合を、使い捨ての kind + KEDA suite で検査する。実デプロイのキュー・Pod・media volume を通すためである。
@@ -226,7 +234,7 @@ mock では検出できない前提は、実物の mirakc コンテナに対す�
 
 コマンドは `go test -tags conformance -p 1 ./internal/mirakc/conformance/...`。放送病態はケースごとにパッケージを分け、CI の `gotestsum tool ci-matrix` が実測時間でシャードへ振り分ける。reconciler の `overrides.contentPath` の既存 schedule への反映も対象である。これは mirakc が `GET /api/recording/schedules` で `options.contentPath` を POST した値のまま返すことに依存する。 `/events` の再送・録画中の Range 挙動も同様で、テストの mock は権威にならず、こちらが権威になる。症状と観測手段は [troubleshooting.md](troubleshooting.md) の該当項目。
 
-PR の CI は Go の依存先か、ソースの `// ci-extra-deps:` で宣言した追加依存が変わったパッケージだけを回す。`go.mod` や `.github/` などを変えた PR と、main への push および週次検証では全パッケージを回す。
+PR で何を回すかは、上の「PR の CI で回すテスト」節に従う。
 
 <details><summary>根拠</summary>
 
