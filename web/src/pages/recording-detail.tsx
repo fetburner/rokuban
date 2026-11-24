@@ -13,6 +13,7 @@ import { recordingDetailQueryKey } from '@/lib/recording-detail-cache'
 import { formatDateTime } from '@/lib/format'
 import { hasLiveIngestProgress, ingestRefetchIntervalMs } from '@/lib/ingest'
 import type { LiveAudioChoice } from '@/lib/live'
+import { useRetryCMDetection } from '@/lib/use-retry-cm-detection'
 
 /**
  * RecordingDetailPage は録画単体の着地先。
@@ -125,6 +126,7 @@ export function RecordingDetailPage() {
     },
   })
   const recording = unwrap(query.data)
+  const retryCMDetection = useRetryCMDetection(recording)
   // ごみ箱の録画（deletedAt 付き）も 200 で返る（getRecording の openapi.yaml
   // description）。この真偽で再生系を出さない規律（下記 RecordingDetail）を適用する。
   const trash = recording?.deletedAt != null
@@ -222,7 +224,15 @@ export function RecordingDetailPage() {
             startAtBeginning={search.fromBeginning}
             chapterEditing={chapterEditing}
             chapterReview={chapterReviewQuery.isError ? 'error' : unwrap(chapterReviewQuery.data)}
-            onEnterChapterEditing={() => {
+            chapterRetry={{
+              enabled: !trash && retryCMDetection.enabled,
+              pending: retryCMDetection.pending,
+              run: (source) => {
+                if (source === 'auto') leaveChapterEditMode()
+                retryCMDetection.run(idNum)
+              },
+            }}
+            onEnterChapterEditing={retryCMDetection.pending ? undefined : () => {
               setConfirmChapterExit(false)
               setEditingId(idNum)
             }}

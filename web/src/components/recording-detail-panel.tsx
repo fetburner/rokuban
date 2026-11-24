@@ -24,7 +24,7 @@ import {
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { DropStatsTable } from '@/components/drop-stats-table'
-import type { ChapterEditorCommands, ChapterEditorStatus } from '@/components/recording-chapter-editor'
+import type { ChapterDetectionRetry, ChapterEditorCommands, ChapterEditorStatus } from '@/components/recording-chapter-editor'
 import { EncodedVersionMenu, RecordingAssetControls } from '@/components/recording-actions'
 import {
   DropBadges,
@@ -161,6 +161,7 @@ export function RecordingDetail({
   startAtBeginning = false,
   chapterEditing = false,
   chapterReview,
+  chapterRetry,
   onEnterChapterEditing,
   chapterEditorCommandsRef,
   onChapterEditorStatusChange,
@@ -174,6 +175,7 @@ export function RecordingDetail({
   startAtBeginning?: boolean
   chapterEditing?: boolean
   chapterReview?: RecordingChapterReview | 'error'
+  chapterRetry?: ChapterDetectionRetry
   onEnterChapterEditing?: () => void
   chapterEditorCommandsRef?: MutableRefObject<ChapterEditorCommands | null>
   onChapterEditorStatusChange?: (status: ChapterEditorStatus) => void
@@ -730,6 +732,7 @@ export function RecordingDetail({
               chapterDetectionPending={chapters?.detectionPending}
               chapterEditing={chapterEditing}
               chapterReview={chapterReview}
+              chapterRetry={chapterRetry}
               onEnterChapterEditing={onEnterChapterEditing}
               chapterEditorCommandsRef={chapterEditorCommandsRef}
               onChapterEditorStatusChange={onChapterEditorStatusChange}
@@ -784,6 +787,7 @@ export function RecordingDetail({
               chapterDetectionPending={chapters?.detectionPending}
               chapterEditing={chapterEditing}
               chapterReview={chapterReview}
+              chapterRetry={chapterRetry}
               onEnterChapterEditing={onEnterChapterEditing}
               chapterEditorCommandsRef={chapterEditorCommandsRef}
               onChapterEditorStatusChange={onChapterEditorStatusChange}

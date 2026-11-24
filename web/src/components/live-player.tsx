@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import {
   RecordingChapterEditor,
   type ChapterBoundaryNavigation,
+  type ChapterDetectionRetry,
   type ChapterEditorCommands,
   type ChapterEditorStatus,
 } from '@/components/recording-chapter-editor'
@@ -265,6 +266,7 @@ type RecordingPlaybackProps = {
   chapterSource?: RecordingChaptersSource
   chapterVersion?: string
   chapterReview?: RecordingChapterReview | 'error'
+  chapterRetry?: ChapterDetectionRetry
   chapterDetectionPending?: boolean
   onEnterChapterEditing?: () => void
   chapterEditorCommandsRef?: MutableRefObject<ChapterEditorCommands | null>
@@ -333,6 +335,7 @@ type LivePlayerProps =
       chapterSource?: never
       chapterVersion?: never
       chapterReview?: never
+      chapterRetry?: never
       chapterDetectionPending?: never
       onEnterChapterEditing?: never
       chapterEditorCommandsRef?: never
@@ -423,6 +426,7 @@ export function LivePlayer(props: LivePlayerProps) {
     chapterSource = 'auto',
     chapterVersion,
     chapterReview,
+    chapterRetry,
     chapterDetectionPending = false,
     chapterEditing = false,
     onEnterChapterEditing,
@@ -1580,6 +1584,7 @@ export function LivePlayer(props: LivePlayerProps) {
             spans={chapters ?? []}
             version={chapterVersion}
             chapterReview={chapterReview}
+            chapterRetry={chapterRetry}
             detectionPending={false}
             source={chapterSource}
             seekTilesUrl={recordingSeekTilesUrl ?? ''}

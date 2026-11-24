@@ -11,7 +11,6 @@ import {
   useListRules,
   usePurgeRecording,
   useRemoveRecordingEncodedAsset,
-  useRetryRecordingCMDetection,
   useSetRecordingEncodePolicy,
   type Recording,
 } from '@/api/generated'
@@ -40,10 +39,9 @@ import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { encodeSettingsError, keepOriginalLabel, type KeepOriginal } from '@/lib/encode-settings'
 import { encodedAssetLabel, encodedRemovalPlan } from '@/lib/encoded-removal'
 import { formatBytes } from '@/lib/format'
-import { isAwaitingAdoption } from '@/lib/cm-detect-stage'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
-import { useCMDetectEnabled } from '@/lib/capabilities'
 import { useMoveRecordingToTrash } from '@/lib/use-recording-trash'
+import { useRetryCMDetection } from '@/lib/use-retry-cm-detection'
 
 // ⋮ メニューの行。#1018 のラフ（13px × 行間 1.7 + 上下 7px = 36px）の高さに合わせる。
 // 部品の既定（実測 28px）では詰まって窮屈に見える。`web/e2e/recording-detail-layout.mjs` が下限 36px を測る。
@@ -61,9 +59,9 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
   const toast = useToast()
   const moveToTrash = useMoveRecordingToTrash(recordingId)
   const purgeRecording = usePurgeRecording()
-  const cmDetectEnabled = useCMDetectEnabled()
   const setEncodePolicy = useSetRecordingEncodePolicy()
-  const retryCMDetection = useRetryRecordingCMDetection()
+  const retryCMDetection = useRetryCMDetection(recording)
+  const { cmDetectEnabled } = retryCMDetection
   // ルール名はメニューの行に添える。RuleSection と同じ一覧クエリ（キャッシュ共有）から引く。
   const rules = unwrap(useListRules().data) ?? []
   const ruleName = rules.find((rule) => rule.id === recording.ruleId)?.name
@@ -113,7 +111,7 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
       .finally(() => setRestoring(false))
   }
 
-  const busy = moveToTrash.pending || restoring || purgeRecording.isPending || setEncodePolicy.isPending || retryCMDetection.isPending
+  const busy = moveToTrash.pending || restoring || purgeRecording.isPending || setEncodePolicy.isPending || retryCMDetection.pending
 
   if (!trash) {
     return (
@@ -134,29 +132,15 @@ export function RecordingActions({ recording, trash }: { recording: Recording; t
               )}
             </DropdownMenuItem>
           )}
-          {(recording.cmDetection.state === 'detected' || recording.cmDetection.state === 'failed') &&
-          !isAwaitingAdoption(recording.cmDetection) ? (
+          {retryCMDetection.show && (
             <DropdownMenuItem
               className={menuRow}
-              // 原本が無いと再検出は 409 になる（検出は原本から読む）。押せる形で出さない。
-              disabled={busy || !cmDetectEnabled || recording.sizeBytes === undefined}
-              onClick={() =>
-                retryCMDetection.mutate(
-                  { id: recordingId },
-                  {
-                    onSuccess: () => {
-                      invalidate()
-                      toast({ message: 'CM 検出を再試行します' })
-                    },
-                    onError: (err) =>
-                      toast({ message: mutationErrorMessage('CM 検出の再試行に失敗しました', err), kind: 'error' }),
-                  },
-                )
-              }
+              disabled={busy || !retryCMDetection.enabled}
+              onClick={() => retryCMDetection.run(recordingId)}
             >
               CM 検出をやり直す
             </DropdownMenuItem>
-          ) : null}
+          )}
           {recording.cmDetection.state !== 'disabled' ? (
             <DropdownMenuItem
               className={menuRow}
