@@ -28,11 +28,15 @@ func NotifyTopic(ctx context.Context, exec Execer, payload string) error {
 	return nil
 }
 
-// PruneNotifications は created_at が retention より古い通知を削除し、削除した行数を返す。
+// NotificationRetention は通知表の保持期間。notifier が読む遡る時間より長くする。
+// 大小関係の検査は mysqlsource のテスト（TestRetentionOutlastsLookback）。
+const NotificationRetention = 5 * time.Minute
+
+// PruneNotifications は created_at が NotificationRetention より古い通知を削除し、削除した行数を返す。
 // notifier の有無と無関係に呼ばれる前提で、notifier 側には置かない。
 // 検査は TestPruneNotificationsRemovesOnlyOldRows。
-func PruneNotifications(ctx context.Context, db *sql.DB, retention time.Duration) (int64, error) {
-	result, err := db.ExecContext(ctx, `DELETE FROM notifications WHERE created_at < NOW(6) - INTERVAL ? MICROSECOND`, retention.Microseconds())
+func PruneNotifications(ctx context.Context, db *sql.DB) (int64, error) {
+	result, err := db.ExecContext(ctx, `DELETE FROM notifications WHERE created_at < NOW(6) - INTERVAL ? MICROSECOND`, NotificationRetention.Microseconds())
 	if err != nil {
 		return 0, fmt.Errorf("pruning notifications: %w", err)
 	}

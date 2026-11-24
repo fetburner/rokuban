@@ -120,7 +120,10 @@ func TestRolledBackNotifyDoesNotReachHub(t *testing.T) {
 	if err := mysqlstore.NotifyTopic(ctx, db, "rules"); err != nil {
 		t.Fatalf("NotifyTopic: %v", err)
 	}
+	// recordings と rules は同じ flush に入りうる。順序はランダムなので、rules を受けた後に
+	// 残りを見て、rollback した recordings が届かないことを決定的に確かめる。
 	expectTopic(t, sub, "rules")
+	expectNoTopic(t, sub)
 }
 
 // TestOutOfOrderCommitIsDelivered は、番号の小さい行が後からコミットされても届くことを検査する。

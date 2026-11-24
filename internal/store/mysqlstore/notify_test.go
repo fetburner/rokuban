@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/fetburner/rokuban/internal/mysqltest"
 	"github.com/fetburner/rokuban/internal/store"
@@ -100,36 +99,34 @@ func TestCircuitBreakerTriggersNotify(t *testing.T) {
 }
 
 // TestPruneNotificationsRemovesOnlyOldRows は、掃除が保持期間より古い行だけを消すことを検査する。
-// 行数が保持期間ぶんで頭打ちになる性質は、古い行が消え新しい行が残ることで確かめる。
+// created_at を明示して、保持期間より十分古い行と十分新しい行を入れる（時刻の境界には頼らない）。
 func TestPruneNotificationsRemovesOnlyOldRows(t *testing.T) {
 	db := mysqltest.SetupDB(t)
 	ctx := context.Background()
+	old := NotificationRetention * 2
 	for range 3 {
-		if err := NotifyTopic(ctx, db, "rules"); err != nil {
-			t.Fatalf("NotifyTopic: %v", err)
+		if _, err := db.ExecContext(ctx, `INSERT INTO notifications (payload, created_at) VALUES ('rules', NOW(6) - INTERVAL ? MICROSECOND)`, old.Microseconds()); err != nil {
+			t.Fatalf("inserting old notification: %v", err)
 		}
 	}
-	deleted, err := PruneNotifications(ctx, db, time.Hour)
+	if err := NotifyTopic(ctx, db, "recordings"); err != nil {
+		t.Fatalf("NotifyTopic new: %v", err)
+	}
+	deleted, err := PruneNotifications(ctx, db)
 	if err != nil {
-		t.Fatalf("PruneNotifications(1h): %v", err)
-	}
-	if deleted != 0 || countNotifications(t, db) != 3 {
-		t.Errorf("1h retention deleted %d, rows = %d; want 0 deleted and 3 rows", deleted, countNotifications(t, db))
-	}
-	// 古い行は保持期間より十分前、新しい行は保持期間より十分後に作る。境界の近くで検査すると揺れる。
-	const retention = 250 * time.Millisecond
-	time.Sleep(2 * retention)
-	if err := NotifyTopic(ctx, db, "rules"); err != nil {
-		t.Fatalf("NotifyTopic: %v", err)
-	}
-	deleted, err = PruneNotifications(ctx, db, retention)
-	if err != nil {
-		t.Fatalf("PruneNotifications(5ms): %v", err)
+		t.Fatalf("PruneNotifications: %v", err)
 	}
 	if deleted != 3 {
 		t.Errorf("deleted = %d, want the 3 old rows", deleted)
 	}
 	if n := countNotifications(t, db); n != 1 {
-		t.Errorf("rows = %d, want only the newest row", n)
+		t.Errorf("rows = %d, want only the new row", n)
+	}
+	var payload string
+	if err := db.QueryRowContext(ctx, `SELECT payload FROM notifications`).Scan(&payload); err != nil {
+		t.Fatalf("reading remaining row: %v", err)
+	}
+	if payload != "recordings" {
+		t.Errorf("remaining payload = %q, want recordings", payload)
 	}
 }
