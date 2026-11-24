@@ -39,8 +39,12 @@ type EPGFixture struct {
 	// InvalidRegexPattern is rejected by this implementation's regex syntax.
 	InvalidRegexPattern string
 
-	CreateRule func(t *testing.T, options EPGRuleOptions) int64
-	MarkStale  func(t *testing.T, site string, serviceIDs []int32, programIDs []int64)
+	CreateRule          func(t *testing.T, options EPGRuleOptions) int64
+	MarkStale           func(t *testing.T, site string, serviceIDs []int32, programIDs []int64)
+	ObserveNotification func(t *testing.T, notify func()) string
+	CreateRecording     func(t *testing.T, program store.EPGProgramUpsert, status string, labelRuleID *int64) int64
+	CreateSeriesLabel   func(t *testing.T, keyword, value string, priority int) int64
+	SetIntent           func(t *testing.T, site string, programID int64, action string)
 }
 
 // NewEPGFixture は実在する EPG 契約実装と状態作成用フックを作る。
@@ -52,6 +56,9 @@ func RunEPG(t *testing.T, newFixture NewEPGFixture) {
 	t.Run("sync writes one batch and readers return the projection", func(t *testing.T) {
 		runEPGSyncAndRead(t, newFixture)
 	})
+	t.Run("sync writes and refreshes projected genre levels", func(t *testing.T) {
+		runEPGSyncGenreLevels(t, newFixture)
+	})
 	t.Run("keyword search normalizes width and respects case sensitivity", func(t *testing.T) {
 		runEPGKeywordSearch(t, newFixture)
 	})
@@ -60,6 +67,33 @@ func RunEPG(t *testing.T, newFixture NewEPGFixture) {
 	})
 	t.Run("regex validation distinguishes syntax errors", func(t *testing.T) {
 		runEPGRegexValidation(t, newFixture)
+	})
+	t.Run("search applies keyword genre free and channel filters", func(t *testing.T) {
+		runEPGSearchIntegration(t, newFixture)
+	})
+	t.Run("keyword LIKE special characters are literal", func(t *testing.T) {
+		runEPGKeywordLiterals(t, newFixture)
+	})
+	t.Run("rule sites gate the evaluation site", func(t *testing.T) {
+		runEPGRuleSiteGate(t, newFixture)
+	})
+	t.Run("search filters by site without collapsing duplicate program IDs", func(t *testing.T) {
+		runEPGSearchSites(t, newFixture)
+	})
+	t.Run("search accepts every supported condition shape", func(t *testing.T) {
+		runEPGSearchConditionShapes(t, newFixture)
+	})
+	t.Run("search requires sites", func(t *testing.T) {
+		runEPGSearchRequiresSites(t, newFixture)
+	})
+	t.Run("search rejects unknown text identifiers", func(t *testing.T) {
+		runEPGRejectsUnknownIdentifiers(t, newFixture)
+	})
+	t.Run("explicit notification publishes the EPG update", func(t *testing.T) {
+		runEPGNotify(t, newFixture)
+	})
+	t.Run("upcoming programs follow the recording effective series", func(t *testing.T) {
+		runEPGUpcomingSeries(t, newFixture)
 	})
 }
 
@@ -78,9 +112,13 @@ func runEPGSyncAndRead(t *testing.T, newFixture NewEPGFixture) {
 		epgProgram("default", 1001, 1, "ＮＨＫニュース", "説明", start, 1_800_000, 7),
 		epgProgram("default", 1002, 2, "別の番組", "説明", start.Add(time.Hour), 1_800_000, 6),
 	}
+	programs[0].Genres = json.RawMessage(`[{"lv1":7},{"lv1":"03"},{"lv1":7},{"lv1":16},{"lv1":1.5},{"LV1":1},{}]`)
 	if err := f.Sync.UpsertPrograms(ctx, programs); err != nil {
 		t.Fatalf("upserting programs: %v", err)
 	}
+
+	f.SetIntent(t, "default", 1001, "record")
+	recordingID := f.CreateRecording(t, programs[0], "recording", nil)
 
 	listedServices, err := f.Reader.ListServices(ctx, "default")
 	if err != nil {
@@ -101,6 +139,16 @@ func runEPGSyncAndRead(t *testing.T, newFixture NewEPGFixture) {
 	if len(listedPrograms) != 2 {
 		t.Fatalf("programs = %+v, want 2 rows", listedPrograms)
 	}
+	if got := listedPrograms[0]; got.IntentAction == nil || *got.IntentAction != "record" ||
+		got.RecordingID == nil || *got.RecordingID != recordingID {
+		t.Fatalf("program list item = %+v, want record intent and active recording %d", got, recordingID)
+	}
+	if got := listedPrograms[0].GenreLv1; !slices.Equal(got, []int16{3, 7}) {
+		t.Fatalf("program list genres = %v, want [3 7]", got)
+	}
+	if got := listedPrograms[1]; got.IntentAction != nil || got.RecordingID != nil {
+		t.Fatalf("program list item = %+v, want no intent or recording", got)
+	}
 	listQuery.Services = []store.EPGServiceRef{{NetworkID: 1, ServiceID: 1}}
 	filtered, err := f.Reader.ListPrograms(ctx, listQuery)
 	if err != nil {
@@ -114,8 +162,11 @@ func runEPGSyncAndRead(t *testing.T, newFixture NewEPGFixture) {
 	if err != nil {
 		t.Fatalf("getting program detail: %v", err)
 	}
-	if detail.Program.ProgramID != 1001 || detail.Program.GenreLv1[0] != 7 {
-		t.Fatalf("program detail = %+v, want program 1001 with genre 7", detail)
+	if detail.Program.ProgramID != 1001 || !slices.Equal(detail.Program.GenreLv1, []int16{3, 7}) {
+		t.Fatalf("program detail = %+v, want program 1001 with genres [3 7]", detail)
+	}
+	if detail.IntentAction == nil || *detail.IntentAction != "record" {
+		t.Fatalf("program detail intent = %v, want record", detail.IntentAction)
 	}
 	var extended map[string]string
 	if err := json.Unmarshal(detail.Program.Extended, &extended); err != nil || extended["key"] != "value" {
@@ -171,6 +222,53 @@ func runEPGSyncAndRead(t *testing.T, newFixture NewEPGFixture) {
 	}
 	if pruned != 1 {
 		t.Fatalf("pruned programs = %d, want 1", pruned)
+	}
+}
+
+// runEPGSyncGenreLevels は genre_lv1_of と同じ規則で同期時に大分類が更新されることを確かめる。
+func runEPGSyncGenreLevels(t *testing.T, newFixture NewEPGFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if err := f.Sync.UpsertServices(ctx, []store.EPGServiceUpsert{epgService("default", 1, "局 A", "GR")}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 10, 19, 9, 30, 0, 0, time.UTC)
+	program := epgProgram("default", 1001, 1, "番組", "", start, 1_800_000, 7)
+
+	// 同じ番組を更新する。空にするケースの直前には大分類を入れておく。
+	cases := []struct {
+		name   string
+		genres json.RawMessage
+		want   []int16
+	}{
+		{"insert sorts and deduplicates levels", json.RawMessage(`[{"lv1":7},{"lv1":"03"},{"lv1":7}]`), []int16{3, 7}},
+		{"update replaces old levels with expanded exponents", json.RawMessage(`[{"lv1":1e1},{"lv1":1.5e1}]`), []int16{10, 15}},
+		{"fractional exponent clears levels", json.RawMessage(`[{"lv1":7e-1}]`), nil},
+		{"negative zero becomes zero", json.RawMessage(`[{"lv1":-0}]`), []int16{0}},
+		{"decimal spelling is excluded even with zero fractional digits", json.RawMessage(`[{"lv1":7.0}]`), nil},
+		{"negative zero with an exponent becomes zero", json.RawMessage(`[{"lv1":-0.0e1}]`), []int16{0}},
+		{"SQL NULL clears levels", nil, nil},
+		{"write a level before the JSON null", json.RawMessage(`[{"lv1":4}]`), []int16{4}},
+		{"JSON null clears levels", json.RawMessage(`null`), nil},
+		{"write a level before the JSON object", json.RawMessage(`[{"lv1":6}]`), []int16{6}},
+		{"a non-array JSON object clears levels", json.RawMessage(`{"lv1":12}`), nil},
+		{"out of range numbers are excluded", json.RawMessage(`[{"lv1":16},{"lv1":-1},{"lv1":1e2},{"lv1":100}]`), nil},
+		{"non-digit strings and non-numeric values are excluded", json.RawMessage(`[{"lv1":"news"},{"lv1":"1e1"},{"lv1":true},{"lv1":null},{"lv1":[4]},4,{"LV1":8},{}]`), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			program.Genres = tc.genres
+			if err := f.Sync.UpsertPrograms(ctx, []store.EPGProgramUpsert{program}); err != nil {
+				t.Fatalf("upserting genres %q: %v", tc.genres, err)
+			}
+			detail, err := f.Reader.GetProgram(ctx, program.Site, program.ProgramID)
+			if err != nil {
+				t.Fatalf("reading program: %v", err)
+			}
+			if got := detail.Program.GenreLv1; !slices.Equal(got, tc.want) {
+				t.Fatalf("genre levels for %q = %v, want %v", tc.genres, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -338,6 +436,69 @@ func runEPGRegexValidation(t *testing.T, newFixture NewEPGFixture) {
 	}
 }
 
+func runEPGNotify(t *testing.T, newFixture NewEPGFixture) {
+	f := newFixture(t)
+	topic := f.ObserveNotification(t, func() {
+		if err := f.Sync.NotifyProgramsUpdated(context.Background()); err != nil {
+			t.Fatalf("notifying programs updated: %v", err)
+		}
+	})
+	if topic != "epg" {
+		t.Fatalf("notification topic = %q, want epg", topic)
+	}
+}
+
+func runEPGUpcomingSeries(t *testing.T, newFixture NewEPGFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	mark, err := f.Sync.SweepMark(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := mark.Add(time.Hour)
+	origin := epgProgram("default", 3000, 1, "天気 第1話", "", mark.Add(-2*time.Hour), 1_800_000, 0)
+	recordingID := f.CreateRecording(t, origin, "finished", nil)
+	programs := []store.EPGProgramUpsert{
+		epgProgram("default", 3001, 1, "天気 第2話", "", start, 1_800_000, 0),
+		epgProgram("other", 3001, 1, "天気 第2話", "", start, 1_800_000, 0),
+		epgProgram("default", 3002, 1, "天気 第3話", "", mark.Add(-time.Hour), 1_800_000, 0),
+		epgProgram("default", 3003, 1, "別番組 第2話", "", start, 1_800_000, 0),
+		epgProgram("default", 3004, 1, "中継 新作", "", start.Add(-time.Minute), 1_800_000, 0),
+	}
+	if err := f.Sync.UpsertPrograms(ctx, programs); err != nil {
+		t.Fatal(err)
+	}
+	// 番組と意図は別の寿命を持つ。skip した回もシリーズの次回には含まれる。
+	f.SetIntent(t, "default", 3001, "skip")
+	assertUpcoming := func(recordingID int64, want []string) {
+		t.Helper()
+		matches, err := f.Reader.ListUpcomingProgramsBySeries(ctx, recordingID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, match := range matches {
+			got = append(got, match.Site+"/"+strconv.FormatInt(match.ProgramID, 10))
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("upcoming for recording %d = %v, want %v", recordingID, got, want)
+		}
+	}
+	assertUpcoming(recordingID, []string{"default/3001", "other/3001"})
+	assertUpcoming(-1, nil)
+	empty := origin
+	empty.EventID++
+	empty.Name = "★"
+	assertUpcoming(f.CreateRecording(t, empty, "finished", nil), nil)
+
+	f.CreateSeriesLabel(t, "中継", "別枠", 0)
+	labelID := f.CreateSeriesLabel(t, "中継", "天気", 10)
+	labeled := origin
+	labeled.EventID += 2
+	labeled.Name = "中継 過去回"
+	assertUpcoming(f.CreateRecording(t, labeled, "finished", &labelID), []string{"default/3004", "default/3001", "other/3001"})
+}
+
 func epgService(site string, serviceID int32, name, channelType string) store.EPGServiceUpsert {
 	return store.EPGServiceUpsert{
 		Site: site, NetworkID: 1, ServiceID: serviceID, Type: 1,
@@ -356,6 +517,8 @@ func epgProgram(site string, id int64, serviceID int32, name, description string
 	}
 }
 
+// programMatchIDs は ProgramMatch のスライスから programId だけを取り出す
+// （site を無視して集合比較したいテスト向けの小さなヘルパー）。
 func programMatchIDs(matches []store.ProgramMatch) []int64 {
 	ids := make([]int64, len(matches))
 	for i, match := range matches {
