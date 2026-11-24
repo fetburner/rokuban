@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -104,4 +105,52 @@ func randomTitle(rng *rand.Rand) string {
 		b.WriteRune(rs[rng.IntN(len(rs))])
 	}
 	return b.String()
+}
+
+// TestIsAlnumMatchesPostgres は、Postgres の正規表現 [[:alnum:]] が英数字とする符号位置を、
+// IsAlnum がすべて英数字とすることを、U+0001〜U+10FFFF（サロゲートを除く）の全件で確かめる。
+//
+// 逆向き（IsAlnum だけが英数字とする符号位置）の数は固定せず t.Log で出すだけにする。
+// その数は DB の glibc の版で変わるので、版が上がるたびに落ちるテストにはしない。
+func TestIsAlnumMatchesPostgres(t *testing.T) {
+	t.Parallel()
+	pool := testutil.SetupDB(t)
+	rows, err := pool.Query(context.Background(),
+		`SELECT c FROM generate_series(1, 1114111) c WHERE c NOT BETWEEN 55296 AND 57343 AND chr(c) ~ '[[:alnum:]]'`)
+	if err != nil {
+		t.Fatalf("querying alnum code points: %v", err)
+	}
+	defer rows.Close()
+	pg := map[rune]bool{}
+	for rows.Next() {
+		var c rune
+		if err := rows.Scan(&c); err != nil {
+			t.Fatalf("scanning code point: %v", err)
+		}
+		pg[c] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterating code points: %v", err)
+	}
+
+	var pgOnly, goOnly int
+	for r := rune(1); r <= unicode.MaxRune; r++ {
+		if r >= 0xD800 && r <= 0xDFFF {
+			continue
+		}
+		g := IsAlnum(r)
+		switch {
+		case pg[r] && !g:
+			pgOnly++
+			if pgOnly <= 10 {
+				t.Errorf("U+%04X は Postgres だけが英数字とする", r)
+			}
+		case g && !pg[r]:
+			goOnly++
+		}
+	}
+	if pgOnly > 0 {
+		t.Errorf("Postgres だけが英数字とする符号位置: %d 件", pgOnly)
+	}
+	t.Logf("IsAlnum だけが英数字とする符号位置: %d 件（固定しない）", goOnly)
 }
