@@ -73,7 +73,7 @@ func (s *LoopMarkers) MarkTunerSync(ctx context.Context, site string) error {
 // 検査は TestLoopMarkersContract。
 func (s *LoopMarkers) ReadLoopMarkers(ctx context.Context, loop string) (map[string]time.Time, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT scope, last_success_at FROM loop_success_markers WHERE `+"`loop`"+` = ? ORDER BY scope
+		SELECT scope, last_success_at FROM loop_success_markers WHERE `+"`loop`"+` = ?
 	`, loop)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s markers: %w", loop, err)
@@ -106,7 +106,7 @@ func (s *LoopMarkers) mark(ctx context.Context, loop, scope string) error {
 }
 
 // upsertLoopMarker は時刻を DB の NOW(6) で書く。NOW() は文ごとに評価されるので、
-// 同じ tx の複数の印はそれぞれ別の時刻を持つ。
+// 同じ tx の複数の印が同じ時刻になるとは限らない（pgstore の now() は tx で 1 つ）。契約は同じ時刻を要求しない。
 func upsertLoopMarker(ctx context.Context, tx *sql.Tx, loop, scope string) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO loop_success_markers (`+"`loop`"+`, scope, last_success_at)
