@@ -23,31 +23,39 @@ func NewBreakers(db *sql.DB) *Breakers {
 // Trip はブレーカーの発動を記録し、発動中なら最初の発動時刻を保つ。
 // 検査は TestBreakersContract。
 func (s *Breakers) Trip(ctx context.Context, scope, name string, threshold int, sample store.BreakerSample) (time.Time, error) {
+	var trippedAt time.Time
+	err := runTx(ctx, s.db, func(tx *sql.Tx) error {
+		var err error
+		trippedAt, err = tripCircuitBreaker(ctx, tx, scope, name, threshold, sample, nil)
+		return err
+	})
+	if err != nil {
+		return time.Time{}, fmt.Errorf("tripping circuit breaker %q: %w", name, err)
+	}
+	return trippedAt, nil
+}
+
+// tripCircuitBreaker は呼び出し元の書き込みと同じ tx で発動を記録する。
+func tripCircuitBreaker(ctx context.Context, tx *sql.Tx, scope, name string, threshold int, sample store.BreakerSample, now *time.Time) (time.Time, error) {
 	detail, err := json.Marshal(store.TruncateBreakerSample(sample))
 	if err != nil {
 		return time.Time{}, fmt.Errorf("marshalling circuit breaker sample: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, `
+  INSERT INTO circuit_breakers (scope, name, pending, threshold, detail, tripped_at)
+  VALUES (?, ?, ?, ?, CAST(? AS JSON), COALESCE(?, CURRENT_TIMESTAMP(6))) AS incoming
+  ON DUPLICATE KEY UPDATE
+   pending = incoming.pending,
+   threshold = incoming.threshold,
+   detail = incoming.detail
+ `, scope, name, sample.Total, threshold, string(detail), now); err != nil {
+		return time.Time{}, fmt.Errorf("writing circuit breaker %q: %w", name, err)
+	}
 	var trippedAt time.Time
-	err = runTx(ctx, s.db, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO circuit_breakers (scope, name, pending, threshold, detail)
-			VALUES (?, ?, ?, ?, CAST(? AS JSON)) AS incoming
-			ON DUPLICATE KEY UPDATE
-				pending = incoming.pending,
-				threshold = incoming.threshold,
-				detail = incoming.detail
-		`, scope, name, sample.Total, threshold, string(detail)); err != nil {
-			return fmt.Errorf("writing circuit breaker %q: %w", name, err)
-		}
-		if err := tx.QueryRowContext(ctx, `
-			SELECT tripped_at FROM circuit_breakers WHERE scope = ? AND name = ?
-		`, scope, name).Scan(&trippedAt); err != nil {
-			return fmt.Errorf("reading tripped time for circuit breaker %q: %w", name, err)
-		}
-		return nil
-	})
-	if err != nil {
-		return time.Time{}, fmt.Errorf("tripping circuit breaker %q: %w", name, err)
+	if err := tx.QueryRowContext(ctx, `
+  SELECT tripped_at FROM circuit_breakers WHERE scope = ? AND name = ?
+ `, scope, name).Scan(&trippedAt); err != nil {
+		return time.Time{}, fmt.Errorf("reading tripped time for circuit breaker %q: %w", name, err)
 	}
 	return trippedAt, nil
 }

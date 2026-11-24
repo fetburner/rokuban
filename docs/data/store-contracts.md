@@ -215,10 +215,13 @@ API のレスポンス状態は `recordingFromListFields` で毎回導出する�
 
 正規表現の構文検査は `ProgramSearch.ValidateRegex` を使う。
 
+MySQL はスナップショットの行ロックを `FOR UPDATE` で取り、同じ番組への意図と上書きの書き込みを直列化する。射影から外れた番組も残っているスナップショットの行で直列化する。
+
 <details><summary>根拠</summary>
 
 - ドメイン契約: `internal/store.Rules` / `internal/store.RuleImport`
 - 録画意図・上書きの契約: `internal/store.Reservations`
+- MySQL の番組行ロック: `TestReservationsContract` の `concurrent field patches preserve both values`
 - マージの設定と reset: `TestMergeOverrides_SetsOnlyGivenFields` / `TestMergeOverrides_ResetClearsEachField`
 - reset の対象が Options と一致すること: `TestOverrideFieldsMatchOptions`
 - PostgreSQL 実装: `internal/store/pgstore.Rules`
@@ -243,11 +246,14 @@ ingest の転送前確認は `IngestPrecheck` に分ける。転送前確認が 
 
 経過時間の比較を DB の時計に任せる。契約は時刻ではなく `time.Duration` を受け取るので、worker の時計がずれても、公開前の名前の孤児を自動削除する時期（`agedUnpublishedOrphans`）と、孤児・実体無しを報告する時期は変わらない。一般則は [時刻](#時刻) にある。
 
+MySQL の `media_assets` は NULL のプロファイルを生成列で空文字に写し、録画・種類・プロファイルの組の一意性を通常の一意索引で守る。
+
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.MediaServing` / `MediaReconcile` / `IngestPrecheck` / `MediaReader` / `StorageObservation`
 - エンコード進捗の契約: `internal/store.EncodeProgressReporter`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
+- MySQL の資産の一意性: `00008_reservations.sql`
 - encode queue が除く profile と `Running`: `TestMediaStoreContract` の `encode queue filters desired profiles and attempts`
 - ドロップ統計の録画での絞り込み: `TestMediaStoreContract` の `drop stats are scoped to the target recording`
 - ドロップ位置の録画での絞り込み: `TestMediaStoreContract` の `drop positions are scoped to the target recording`
@@ -326,6 +332,14 @@ TS の計測結果は、対象の状態を再確認した上で一括して保�
 更新通知（NOTIFY）は、データを変えたドメインのメソッドの中で送る。汎用の発行 interface は作らず、payload の文字列も契約に出さない。
 
 方言ごとのクエリで書けば足りるので、発行側に interface を作る利益がない。
+
+MySQL の外部キーの CASCADE は子の表のトリガーを発火させないので、スナップショットの削除では、連鎖削除される予約・意図・上書きの通知を親行の削除トリガーで作る。
+
+<details><summary>根拠</summary>
+
+- スナップショット削除の通知: `TestSnapshotPruneNotifiesCascadedDeletes`
+
+</details>
 
 ### ロック後の判断
 
@@ -491,10 +505,17 @@ ruler は `RulerPass` から評価に必要なルール・意図・投資・予�
 
 時間窓の比較時刻を呼び出し側から受け取るのは、比べる相手（録画の `program_start_at`）が store の記録した時刻ではないからである（「時刻」節の規則）。
 
+MySQL は番組行を書いた後でサイトの入力版の行ロックを `FOR UPDATE` で取り、入力を書いた tx と同じロック順で照合する。予約の入力は `JSON_TABLE` で展開し、変更行の更新と新規行の挿入を分けて、通知と件数を実際の差分に揃える。
+
+MySQL の重複排除は対象ルールの録画履歴を SQL で絞り、類似度と同率時の順序を Go で決める。
+
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.RulerPass`
 - PostgreSQL 実装: `internal/store/pgstore.Reservations`
+- MySQL の最良一致と同率時の順序: `TestRulerPassContract` の `dedupe uses the configured title similarity`
+- MySQL の入力版と差分件数: `TestRulerPassContract` の `stale input revision writes nothing` と `upsert reports changed rows only`
+- MySQL の差分通知: `TestApplyPassNotifiesOnlyChangedReservations`
 - ループの成功時刻（ruler・record_sweep・全件パス・削除 reconcile）: `internal/store.LoopMarkers` / `TestLoopMarkersContract`
 
 </details>

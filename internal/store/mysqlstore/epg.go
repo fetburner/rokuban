@@ -253,7 +253,7 @@ func (s *EPG) NotifyProgramsUpdated(ctx context.Context) error {
 
 // ListServices は site のサービス射影を返す。
 func (s *EPG) ListServices(ctx context.Context, site string) ([]store.EPGService, error) {
-	return queryEPGRows(ctx, s.db, "EPG services", `
+	return queryRows(ctx, s.db, "EPG services", `
 SELECT s.site, s.network_id, s.service_id, s.name, s.channel_type, s.channel, s.remote_control_key_id, s.has_logo_data,
        EXISTS (SELECT 1 FROM epg_programs p WHERE p.site = s.site AND p.network_id = s.network_id AND p.service_id = s.service_id)
 FROM epg_services s
@@ -292,7 +292,7 @@ WHERE p.site = ? AND p.start_at < ? AND p.end_at > ?`
 		query += " AND (p.network_id, p.service_id) IN (" + strings.Join(pairs, ", ") + ")"
 	}
 	query += " ORDER BY p.start_at, p.network_id, p.service_id"
-	return queryEPGRows(ctx, s.db, "EPG programs", query, func(rows *sql.Rows) (store.EPGProgramListItem, error) {
+	return queryRows(ctx, s.db, "EPG programs", query, func(rows *sql.Rows) (store.EPGProgramListItem, error) {
 		var p store.EPGProgramListItem
 		var genres []byte
 		if err := rows.Scan(&p.Site, &p.ProgramID, &p.NetworkID, &p.ServiceID, &p.EventID,
@@ -332,7 +332,7 @@ func (s *EPG) GetProgram(ctx context.Context, site string, programID int64) (sto
 
 // ListUpcomingProgramsBySeries は録画の実効シリーズに対応する今後の番組を返す。
 func (s *EPG) ListUpcomingProgramsBySeries(ctx context.Context, recordingID int64) ([]store.ProgramMatch, error) {
-	return queryEPGRows(ctx, s.db, "upcoming EPG programs", "SELECT "+programMatchColumns+`
+	return queryRows(ctx, s.db, "upcoming EPG programs", "SELECT "+programMatchColumns+`
 FROM epg_program_series s
 JOIN epg_programs p ON p.site = s.site AND p.program_id = s.program_id
 WHERE s.value = (SELECT rs.value FROM recording_series rs WHERE rs.recording_id = ?)
@@ -346,26 +346,6 @@ func scanProgramMatch(rows *sql.Rows) (store.ProgramMatch, error) {
 	var p store.ProgramMatch
 	err := rows.Scan(&p.Site, &p.ProgramID, &p.NetworkID, &p.ServiceID, &p.StartAt, &p.DurationMs, &p.Name, &p.IsFree)
 	return p, err
-}
-
-func queryEPGRows[T any](ctx context.Context, db *sql.DB, entity, query string, scan func(*sql.Rows) (T, error), args ...any) ([]T, error) {
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("querying %s: %w", entity, err)
-	}
-	defer func() { _ = rows.Close() }()
-	results := make([]T, 0)
-	for rows.Next() {
-		row, err := scan(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scanning %s: %w", entity, err)
-		}
-		results = append(results, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("reading %s: %w", entity, err)
-	}
-	return results, nil
 }
 
 var _ store.EPGSync = (*EPG)(nil)

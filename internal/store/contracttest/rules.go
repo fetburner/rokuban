@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store"
@@ -44,6 +45,7 @@ func RunRules(t *testing.T, newFixture NewRulesFixture) {
 	t.Run("delete preserves reservations with intent", func(t *testing.T) { runRuleDeleteIntent(t, newFixture) })
 	t.Run("delete failure keeps reservations without intent", func(t *testing.T) { runRuleDeleteFailure(t, newFixture) })
 	t.Run("same-rule updates serialize", func(t *testing.T) { runRuleUpdateSerialization(t, newFixture) })
+	t.Run("delete bumps sites after a waiting scope update", func(t *testing.T) { runRuleDeleteAfterScopeUpdate(t, newFixture) })
 	t.Run("writes advance ruler input revisions", func(t *testing.T) { runRuleRevisions(t, newFixture) })
 	t.Run("EPGStation import uses stable identity atomically", func(t *testing.T) { runRuleImport(t, newFixture) })
 }
@@ -448,4 +450,46 @@ func rulerRevisions(t *testing.T, pass store.RulerPass, sites []string) map[stri
 		out[site] = currentRulerInputRevision(t, pass, site)
 	}
 	return out
+}
+
+func runRuleDeleteAfterScopeUpdate(t *testing.T, newFixture NewRulesFixture) {
+	f := newFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	a, b := f.AllSites[0], f.AllSites[1]
+	input := ruleInput("scope revision", 1, "scope")
+	input.Sites = []string{a}
+	rule, err := f.Store.Create(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := rulerRevisions(t, f.Pass, f.AllSites)
+	release := f.HoldRule(t, rule.ID)
+	input.Sites = []string{b}
+	updated := make(chan error, 1)
+	go func() { _, err := f.Store.Update(ctx, rule.ID, input); updated <- err }()
+	f.WaitForRuleWriters(t, 1)
+	deleted := make(chan error, 1)
+	go func() { _, err := f.Store.Delete(ctx, rule.ID); deleted <- err }()
+	f.WaitForRuleWriters(t, 2)
+	release()
+	if err := <-updated; err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if err := <-deleted; err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	after := rulerRevisions(t, f.Pass, f.AllSites)
+	for _, site := range f.AllSites {
+		var want int64
+		switch site {
+		case a:
+			want = 1
+		case b:
+			want = 2
+		}
+		if got := after[site] - before[site]; got != want {
+			t.Errorf("revision delta at %s = %d, want %d", site, got, want)
+		}
+	}
 }

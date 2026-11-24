@@ -31,11 +31,11 @@ func TestEPGContract(t *testing.T) {
 			MarkStale: func(t *testing.T, site string, serviceIDs []int32, programIDs []int64) {
 				t.Helper()
 				for _, id := range serviceIDs {
-					execEPGFixture(t, db, `
+					execFixture(t, db, `
 UPDATE epg_services SET observed_at = '1970-01-01 00:00:00' WHERE site = ? AND service_id = ?`, site, id)
 				}
 				for _, id := range programIDs {
-					execEPGFixture(t, db, `
+					execFixture(t, db, `
 UPDATE epg_programs SET observed_at = '1970-01-01 00:00:00' WHERE site = ? AND program_id = ?`, site, id)
 				}
 			},
@@ -59,13 +59,13 @@ UPDATE epg_programs SET observed_at = '1970-01-01 00:00:00' WHERE site = ? AND p
 				if key, ok := serieskey.SeriesKey(p.Name); ok {
 					series = key
 				}
-				id := epgFixtureID(t, execEPGFixture(t, db, `
+				id := fixtureID(t, execFixture(t, db, `
 INSERT INTO recordings (source, site, network_id, service_id, event_id, service_name, channel_type, channel,
                         title, program_start_at, program_duration_ms, status, series_key)
 VALUES ('manual', ?, ?, ?, ?, '局', 'GR', '27', ?, ?, ?, ?, ?)`,
 					p.Site, p.NetworkID, p.ServiceID, p.EventID, p.Name, p.StartAt, p.DurationMs, status, series))
 				if labelRuleID != nil {
-					execEPGFixture(t, db, "INSERT INTO label_rule_hits (recording_id, label_rule_id) VALUES (?, ?)", id, *labelRuleID)
+					execFixture(t, db, "INSERT INTO label_rule_hits (recording_id, label_rule_id) VALUES (?, ?)", id, *labelRuleID)
 				}
 				return id
 			},
@@ -75,33 +75,33 @@ VALUES ('manual', ?, ?, ?, ?, '局', 'GR', '27', ?, ?, ?, ?, ?)`,
 				if !ok {
 					t.Fatalf("invalid series label %q", value)
 				}
-				return epgFixtureID(t, execEPGFixture(t, db,
+				return fixtureID(t, execFixture(t, db,
 					"INSERT INTO label_rules (`key`, keyword, value, priority, value_key) VALUES ('series', ?, ?, ?, ?)",
 					keyword, value, priority, key))
 			},
 			SetIntent: func(t *testing.T, site string, programID int64, action string) {
 				t.Helper()
-				execEPGFixture(t, db, `
+				execFixture(t, db, `
 INSERT INTO program_snapshots (site, program_id, start_at, duration_ms, network_id, service_id, event_id,
                                service_name, channel_type, channel)
 SELECT site, program_id, start_at, duration_ms, network_id, service_id, event_id, '局', 'GR', '27'
 FROM epg_programs WHERE site = ? AND program_id = ?`, site, programID)
-				execEPGFixture(t, db, "INSERT INTO program_intents (site, program_id, action) VALUES (?, ?, ?)", site, programID, action)
+				execFixture(t, db, "INSERT INTO program_intents (site, program_id, action) VALUES (?, ?, ?)", site, programID, action)
 			},
 		}
 	})
 }
 
-func execEPGFixture(t *testing.T, db *sql.DB, query string, args ...any) sql.Result {
+func execFixture(t *testing.T, db *sql.DB, query string, args ...any) sql.Result {
 	t.Helper()
 	result, err := db.ExecContext(context.Background(), query, args...)
 	if err != nil {
-		t.Fatalf("writing EPG fixture: %v", err)
+		t.Fatalf("writing fixture: %v", err)
 	}
 	return result
 }
 
-func epgFixtureID(t *testing.T, result sql.Result) int64 {
+func fixtureID(t *testing.T, result sql.Result) int64 {
 	t.Helper()
 	id, err := result.LastInsertId()
 	if err != nil {
@@ -112,30 +112,30 @@ func epgFixtureID(t *testing.T, result sql.Result) int64 {
 
 func createEPGRule(t *testing.T, db *sql.DB, options contracttest.EPGRuleOptions) int64 {
 	t.Helper()
-	id := epgFixtureID(t, execEPGFixture(t, db, `
+	id := fixtureID(t, execFixture(t, db, `
 INSERT INTO rules (name, is_free, duration_min_ms, duration_max_ms) VALUES (?, ?, ?, ?)`,
 		options.Name, options.IsFree, options.DurationMinMs, options.DurationMaxMs))
 	for seq, match := range options.TextMatches {
-		execEPGFixture(t, db, `
+		execFixture(t, db, `
 INSERT INTO rule_text_matches (rule_id, seq, target, mode, value, case_sensitive, negate)
 VALUES (?, ?, ?, ?, ?, ?, ?)`, id, seq, match.Target, match.Mode, match.Value, match.CaseSensitive, match.Negate)
 	}
 	for _, service := range options.Services {
-		execEPGFixture(t, db, "INSERT INTO rule_services (rule_id, network_id, service_id) VALUES (?, ?, ?)",
+		execFixture(t, db, "INSERT INTO rule_services (rule_id, network_id, service_id) VALUES (?, ?, ?)",
 			id, service.NetworkID, service.ServiceID)
 	}
 	for _, channelType := range options.ChannelTypes {
-		execEPGFixture(t, db, "INSERT INTO rule_channel_types (rule_id, channel_type) VALUES (?, ?)", id, channelType)
+		execFixture(t, db, "INSERT INTO rule_channel_types (rule_id, channel_type) VALUES (?, ?)", id, channelType)
 	}
 	for _, genre := range options.Genres {
-		execEPGFixture(t, db, "INSERT INTO rule_genres (rule_id, genre_lv1) VALUES (?, ?)", id, genre)
+		execFixture(t, db, "INSERT INTO rule_genres (rule_id, genre_lv1) VALUES (?, ?)", id, genre)
 	}
 	for seq, window := range options.Times {
-		execEPGFixture(t, db, "INSERT INTO rule_times (rule_id, seq, weekdays, start_sec, end_sec) VALUES (?, ?, ?, ?, ?)",
+		execFixture(t, db, "INSERT INTO rule_times (rule_id, seq, weekdays, start_sec, end_sec) VALUES (?, ?, ?, ?, ?)",
 			id, seq, window.Weekdays, window.StartSec, window.EndSec)
 	}
 	for _, site := range options.Sites {
-		execEPGFixture(t, db, "INSERT INTO rule_sites (rule_id, site) VALUES (?, ?)", id, site)
+		execFixture(t, db, "INSERT INTO rule_sites (rule_id, site) VALUES (?, ?)", id, site)
 	}
 	return id
 }
@@ -226,7 +226,7 @@ func TestRulesNotificationTriggers(t *testing.T) {
 				t.Fatalf("rolling back rule %s: %v", stmt.name, err)
 			}
 			assertNotifications(t, i)
-			execEPGFixture(t, db, stmt.query, ruleID)
+			execFixture(t, db, stmt.query, ruleID)
 			assertNotifications(t, i+1)
 		})
 	}

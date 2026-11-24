@@ -39,8 +39,8 @@ type RulerDedupe interface {
 	// 類似度は pg_trgm の similarity() と同じ値で判定する。これは実装依存ではなく契約で、
 	// 実装が別の方式に替わっても同じ入力は同じ判定になる。返り値は候補ごとに最良一致
 	// 1 件（同率は録画 ID 昇順）で、マッチ無しの候補はマップに現れない。
-	// 検査: 「dedupe uses the configured title similarity」（完全一致の類似度 1 と、マッチ無しの候補が現れないこと）、
-	// 「dedupe time window uses the supplied time」。最良一致の選び方と同率の順序は契約テストでは未検証。
+	// 検査: 「dedupe uses the configured title similarity」（最良一致、完全一致の類似度 1、
+	// 同率の録画 ID 昇順、マッチ無しの候補が現れないこと）と「dedupe time window uses the supplied time」。
 	EvaluateDedupe(ctx context.Context, site string, candidates []RulerDedupeCandidate, now time.Time) (map[int64]RulerDedupeMatch, error)
 }
 

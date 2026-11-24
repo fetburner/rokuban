@@ -36,10 +36,18 @@ func TestRulerPassContract(t *testing.T) {
 					p.Status = "finished"
 					p.Site = program.Site
 					p.NetworkID = 32736
-					p.EventID = program.EventID + 10000
+					p.EventID = program.EventID
 					p.Title = title
 					p.ProgramStartAt = program.StartAt.Add(-48 * time.Hour)
 				})
+			},
+			SetRuleOrder: func(t *testing.T, ruleID int64, enabled bool, priority int32) {
+				if _, err := pool.Exec(context.Background(), `UPDATE rules SET enabled = $2, priority = $3 WHERE id = $1`, ruleID, enabled, priority); err != nil {
+					t.Fatal(err)
+				}
+			},
+			CommitOriginal: func(t *testing.T, recordingID int64) {
+				dbtest.MediaAsset(t, pool, recordingID)
 			},
 			SetProgramStarts: func(t *testing.T, program contracttest.RulerProgram, snapshotStart, projectionStart time.Time) {
 				setRulerPassProgramStarts(t, pool, program, snapshotStart, projectionStart)
