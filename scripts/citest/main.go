@@ -208,7 +208,7 @@ func (s packageSelection) matchesDeclarations(pkg listedPackage, target bool) (b
 // ディレクトリは配下のファイルに一致する。名前の前方一致だけでは別のディレクトリ（testdata と testdata2）にも一致するので、区切りで判定する。
 func (s packageSelection) matchesFile(decl string) bool {
 	return slices.ContainsFunc(s.paths, func(name string) bool {
-		return decl == "." || name == decl || strings.HasPrefix(name, decl+"/")
+		return name == decl || strings.HasPrefix(name, decl+"/")
 	})
 }
 

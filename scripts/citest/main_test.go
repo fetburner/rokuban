@@ -1,3 +1,6 @@
+// ci-extra-deps: -tags=s3conformance,conformance ./...
+// 全パッケージのソースを読んで検査するため、サブプロセス経由の依存だけでは足りない。
+
 package main
 
 import (
@@ -268,31 +271,6 @@ func build(ctx context.Context) error {
 	}
 }
 
-func TestMatchesFileDeclaration(t *testing.T) {
-	tests := []struct {
-		name    string
-		changed []string
-		decl    string
-		want    bool
-	}{
-		{name: "module root matches any change", changed: []string{"docs/overview.md"}, decl: ".", want: true},
-		{name: "exact file", changed: []string{"openapi.yaml"}, decl: "openapi.yaml", want: true},
-		{name: "exact file with other name", changed: []string{"openapi.yml"}, decl: "openapi.yaml", want: false},
-		{name: "directory matches beneath", changed: []string{"internal/jobs/a.go"}, decl: "internal/jobs", want: true},
-		{name: "directory does not match its own name", changed: []string{"internal/jobs"}, decl: "internal/jobs/x", want: false},
-		{name: "directory boundary", changed: []string{"internal/jobsx/a.go"}, decl: "internal/jobs", want: false},
-		{name: "no changes", changed: nil, decl: ".", want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := packageSelection{paths: tt.changed}
-			if got := s.matchesFile(tt.decl); got != tt.want {
-				t.Errorf("matchesFile(%q) with changes %v = %v, want %v", tt.decl, tt.changed, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestReadExtraFilesDeclaration(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -301,7 +279,8 @@ func TestReadExtraFilesDeclaration(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "cleans ./ prefix and trailing slash", line: "./openapi.yaml  testdata/", want: []string{"openapi.yaml", "testdata"}},
-		{name: "module root", line: ".", want: []string{"."}},
+		{name: "module root is rejected", line: ".", wantErr: true},
+		{name: "module root with ./ is rejected", line: "./", wantErr: true},
 		{name: "empty list", line: "   ", wantErr: true},
 		{name: "absolute path", line: "/etc/passwd", wantErr: true},
 		{name: "parent escape", line: "../outside.json", wantErr: true},

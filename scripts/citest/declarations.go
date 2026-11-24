@@ -80,7 +80,8 @@ func readDeclarations(path string) (*ast.File, declarations, error) {
 }
 
 // parseExtraFiles は ci-extra-files の値を読む。絶対パスと `..` を含むパスは、
-// 変更との照合が root の外を指すので拒む。
+// 変更との照合が root の外を指すので拒む。モジュールルート（.）は全変更に一致して
+// 意味が広すぎるので、現在は使う宣言が無く拒む。
 func parseExtraFiles(value string) ([]string, error) {
 	words := strings.Fields(value)
 	if len(words) == 0 {
@@ -88,10 +89,11 @@ func parseExtraFiles(value string) ([]string, error) {
 	}
 	files := make([]string, 0, len(words))
 	for _, word := range words {
-		if path.IsAbs(word) || slices.Contains(strings.Split(word, "/"), "..") {
+		clean := path.Clean(word)
+		if path.IsAbs(word) || slices.Contains(strings.Split(word, "/"), "..") || clean == "." {
 			return nil, fmt.Errorf("ci-extra-files: 不正なパス指定 %q", word)
 		}
-		files = append(files, path.Clean(word))
+		files = append(files, clean)
 	}
 	return files, nil
 }
