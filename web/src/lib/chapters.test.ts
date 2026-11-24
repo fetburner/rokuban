@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { ChapterSpan } from '@/api/generated'
+import type { ChapterReviewCandidate, ChapterSpan } from '@/api/generated'
 import {
   CHAPTER_SKIP_STORAGE_KEY,
   FRAME_SECONDS,
@@ -23,6 +23,7 @@ import {
   playbackSecondsToChapterBoundaryMs,
   saveChapterSkip,
   skipTarget,
+  unresolvedChapterReviewCandidates,
   type ChapterPlaybackEdit,
 } from '@/lib/chapters'
 
@@ -31,6 +32,32 @@ const op = (startMs: number, endMs: number): ChapterSpan => ({ startMs, endMs, l
 
 afterEach(() => {
   localStorage.clear()
+})
+
+describe('unresolvedChapterReviewCandidates', () => {
+  it.each<ChapterReviewCandidate['kind']>(['overcut_logo', 'overcut_grid'])(
+    '%s は一部でもカットなら未解決で、本編に戻すと解決する',
+    (kind) => {
+      const candidate = { kind, startMs: 10_000, endMs: 20_000 }
+      const review = (draft: ChapterSpan[]) => unresolvedChapterReviewCandidates([candidate], draft)
+      const kept = [cm(0, 10_000), op(10_000, 20_000), cm(20_000, 30_000)]
+      const cut = [cm(9_000, 11_000)]
+      expect(review(cut)).toEqual([candidate])
+      expect(review(kept)).toEqual([])
+      expect(review(cut)).toEqual([candidate])
+    },
+  )
+
+  it('見逃し候補は全体を切ると解決し、一部を本編に戻すと未解決に戻る', () => {
+    const candidate: ChapterReviewCandidate = { kind: 'missed_cm', startMs: 10_000, endMs: 20_000 }
+    const review = (draft: ChapterSpan[]) => unresolvedChapterReviewCandidates([candidate], draft)
+    const kept = [cm(9_000, 12_000), op(12_000, 13_000), cm(14_000, 22_000)]
+    expect(review([])).toEqual([candidate])
+    expect(review(kept)).toEqual([candidate])
+    expect(review([cm(15_000, 22_000), cm(9_000, 15_000)])).toEqual([])
+    expect(review([cm(9_000, 15_000), op(15_000, 16_000), cm(16_000, 22_000)])).toEqual([candidate])
+    expect(review([cm(9_000, 15_000), cm(16_000, 22_000)])).toEqual([candidate])
+  })
 })
 
 describe('skipTarget', () => {

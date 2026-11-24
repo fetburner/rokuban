@@ -1,7 +1,7 @@
 import { act, fireEvent, render, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { ChapterSpan } from '@/api/generated'
+import type { ChapterSpan, RecordingChapterReview } from '@/api/generated'
 import {
   RecordingChapterEditor,
   type ChapterEditorCommands,
@@ -9,6 +9,16 @@ import {
 import { FRAME_SECONDS } from '@/lib/chapters'
 
 const cm: ChapterSpan = { startMs: 10_000, endMs: 20_000, label: 'CM', cut: true }
+const chapterReview: RecordingChapterReview = {
+  materialsAvailable: true,
+  logoRanges: [],
+  autoSpans: [],
+  candidates: [
+    { kind: 'missed_cm', startMs: 35_125, endMs: 39_000 },
+    { kind: 'overcut_logo', startMs: 10_125, endMs: 18_000 },
+    { kind: 'overcut_grid', startMs: 25_125, endMs: 29_000 },
+  ],
+}
 
 function renderEditor(
   spans: ChapterSpan[],
@@ -45,6 +55,64 @@ function renderEditor(
 }
 
 describe('RecordingChapterEditor の編集専用画面', () => {
+  it('「切る」を切り替えると要確認の件数・理由・帯がすぐに変わる', () => {
+    const view = renderEditor([cm, { startMs: 35_000, endMs: 40_000, label: 'OP', cut: false }], { chapterReview })
+    const [cmRow, opRow] = view.getAllByTestId('chapter-span-row')
+    const overcut = within(cmRow).getByRole('checkbox', { name: '切る' })
+    const missed = within(opRow).getByRole('checkbox', { name: '切る' })
+    const status = within(view.getByTestId('chapter-filmstrip')).getByText('切りすぎ 1 件・見逃し 1 件')
+    const logoNotes = 'ロゴが出ています。本編かもしれません'
+    const missedNotes = 'CM の長さと一致する部分があります'
+    const bands = () => view.queryAllByTestId('chapter-review-candidate')
+    expect(status).toHaveAttribute('role', 'status')
+    expect(within(cmRow).getByText(logoNotes)).toBeInTheDocument()
+    expect(within(opRow).getByText(missedNotes)).toBeInTheDocument()
+    expect(bands()).toHaveLength(4)
+
+    fireEvent.click(overcut)
+    expect(status).toHaveTextContent('切りすぎ 0 件・見逃し 1 件')
+    expect(within(cmRow).queryByText(logoNotes)).toBeNull()
+    expect(bands()).toHaveLength(2)
+    fireEvent.click(missed)
+    expect(status).toHaveTextContent('切りすぎ 0 件・見逃し 0 件')
+    expect(within(opRow).queryByText(missedNotes)).toBeNull()
+    expect(bands()).toHaveLength(0)
+    expect(view.getByRole('button', { name: '次の要確認' })).toBeDisabled()
+
+    fireEvent.click(overcut)
+    fireEvent.click(missed)
+    expect(status).toHaveTextContent('切りすぎ 1 件・見逃し 1 件')
+    expect(bands()).toHaveLength(4)
+  })
+
+  it('N とボタンは未解決の次の候補へシークし、末尾からは先頭へ戻る', () => {
+    const getCurrentSeconds = vi.fn(() => 10.125)
+    const view = renderEditor([cm], { chapterReview, currentSeconds: 8, getCurrentSeconds })
+    const next = view.getByRole('button', { name: '次の要確認' })
+    expect(next).toHaveAttribute('title', '次の要確認（N）')
+    fireEvent.keyDown(view.getByRole('textbox', { name: 'ラベル' }), { key: 'n' })
+    fireEvent.keyDown(document.body, { key: 'n', ctrlKey: true })
+    fireEvent.keyDown(document.body, { key: 'n', repeat: true })
+    expect(view.jumpTo).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(document.body, { key: 'n' })
+    expect(view.jumpTo).toHaveBeenNthCalledWith(1, 35.125)
+    getCurrentSeconds.mockReturnValue(35.125)
+    fireEvent.keyDown(document.body, { key: 'n' })
+    expect(view.jumpTo).toHaveBeenNthCalledWith(2, 10.125)
+    fireEvent.click(next)
+    expect(view.jumpTo).toHaveBeenNthCalledWith(3, 10.125)
+    expect(view.onBoundaryAction).not.toHaveBeenCalled()
+  })
+
+  it('再生位置が候補の先頭の 1 µs 手前に丸められても N で次の候補へ進む', () => {
+    const view = renderEditor([cm], { chapterReview, getCurrentSeconds: () => 10.124999 })
+
+    fireEvent.keyDown(document.body, { key: 'n' })
+
+    expect(view.jumpTo).toHaveBeenCalledExactlyOnceWith(35.125)
+  })
+
   it('ラベルが空の区間は「切る」を外せない', () => {
     const { container } = renderEditor([{ startMs: 0, endMs: 10_000, cut: true }])
     const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!

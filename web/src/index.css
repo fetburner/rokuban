@@ -82,6 +82,9 @@
     --color-chapter-cut: var(--chapter-cut);
     --color-chapter-cut-muted: var(--chapter-cut-muted);
     --color-chapter-selection: var(--chapter-selection);
+    --color-chapter-review-logo: var(--chapter-review-logo);
+    --color-chapter-review-grid: var(--chapter-review-grid);
+    --color-chapter-review-missed: var(--chapter-review-missed);
     --color-tally-foreground: var(--tally-foreground);
     --color-tally: var(--tally);
     --color-accent-foreground: var(--accent-foreground);
@@ -131,6 +134,9 @@
     --chapter-cut: oklch(0.705 0.213 47.604); /* orange-500 */
     --chapter-cut-muted: oklch(0.75 0.183 55.934); /* orange-400 */
     --chapter-selection: oklch(0.705 0.213 47.604); /* orange-500 */
+    --chapter-review-logo: oklch(0.656 0.241 354.308); /* pink-500 */
+    --chapter-review-grid: oklch(0.606 0.250 292.717); /* violet-500 */
+    --chapter-review-missed: oklch(0.715 0.143 215.221); /* cyan-500 */
     --tone-100: oklch(0.967 0.001 286.375);
     --tone-200: oklch(0.92 0.004 286.32);
     --tone-400: oklch(0.705 0.015 286.067);

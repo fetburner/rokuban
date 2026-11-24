@@ -13,6 +13,7 @@ import {
 import type {
   EncodeProfileSummary,
   Recording,
+  RecordingChapterReview,
   RecordingChapters,
   DropStat,
   Rule,
@@ -171,6 +172,8 @@ function createFakeServer(options: {
   playbackState?: { positionMs?: number }
   chapters?: RecordingChapters
   chaptersResponse?: () => Promise<Response>
+  chapterReview?: RecordingChapterReview
+  chapterReviewResponse?: () => Response
   dropStats?: DropStat[]
   /**
    * seriesRecordings は `GET /api/recordings?seriesOf=` に返す行（「次の
@@ -325,6 +328,12 @@ function createFakeServer(options: {
       return options.chaptersResponse
         ? options.chaptersResponse()
         : Promise.resolve(jsonResponse(currentChapters))
+    }
+    if (/^\/api\/recordings\/\d+\/chapter-review$/.test(url.pathname) && method === 'GET') {
+      if (options.chapterReviewResponse) return Promise.resolve(options.chapterReviewResponse())
+      return Promise.resolve(jsonResponse(options.chapterReview ?? {
+        materialsAvailable: false, logoRanges: [], candidates: [], autoSpans: [],
+      }))
     }
     const chapterEditsMatch = /^\/api\/recordings\/(\d+)\/chapter-edits$/.exec(url.pathname)
     if (chapterEditsMatch && method === 'DELETE') {
@@ -2469,6 +2478,43 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
       await user.clear(label)
       await user.type(label, '直した')
     }
+
+    it.each([
+      [false, '検出の判定材料がありません'],
+      [true, '切りすぎ 0 件・見逃し 0 件'],
+    ])('編集画面で材料の有無（%s）と候補ゼロを区別する', async (materialsAvailable, message) => {
+      const user = userEvent.setup()
+      const origin = seriesEpisode(3, '2026-01-01T12:00:00Z')
+      const { fetchMock } = createFakeServer({
+        recording: origin,
+        chapters,
+        chapterReview: { materialsAvailable, logoRanges: [], candidates: [], autoSpans: [] },
+      })
+      renderAt('/recordings/3')
+      await screen.findByTestId('recording-player-frame')
+      const reviewRequests = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/3/chapter-review'))
+      expect(reviewRequests()).toHaveLength(0)
+      const editor = await enterEditing(user)
+      expect(await within(editor).findByText(message)).toBeInTheDocument()
+      expect(reviewRequests()).toHaveLength(1)
+      expect(within(editor).queryByText(materialsAvailable ? '検出の判定材料がありません' : '切りすぎ 0 件・見逃し 0 件')).toBeNull()
+    })
+
+    it('候補の取得が 500 で失敗したとき、取得失敗を表示する', async () => {
+      const user = userEvent.setup()
+      const origin = seriesEpisode(3, '2026-01-01T12:00:00Z')
+      createFakeServer({
+        recording: origin,
+        chapters,
+        chapterReviewResponse: () => jsonResponse({ error: 'unavailable' }, 500),
+      })
+      renderAt('/recordings/3')
+      const editor = await enterEditing(user)
+
+      expect(await within(editor).findByText('要確認の候補を読み込めませんでした')).toBeInTheDocument()
+      expect(within(editor).queryByText('切りすぎ 0 件・見逃し 0 件')).toBeNull()
+      expect(within(editor).queryByText('検出の判定材料がありません')).toBeNull()
+    })
 
     it('編集モードの出入りで <video> を作り直さず、再生位置を保つ', async () => {
       const user = userEvent.setup()

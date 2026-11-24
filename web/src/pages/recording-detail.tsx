@@ -2,7 +2,7 @@ import { Link, useBlocker, useNavigate, useParams, useSearch } from '@tanstack/r
 import { useCallback, useRef, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 
-import { useGetRecording } from '@/api/generated'
+import { useGetRecording, useGetRecordingChapterReview } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { ErrorState, ListSkeleton, PageHeader } from '@/components/page'
 import { RecordingActions } from '@/components/recording-actions'
@@ -41,6 +41,8 @@ export function RecordingDetailPage() {
   // 別の録画へ移った瞬間に捨てる（id の比較だけだと、戻ってきたときに編集モードが復活する）。
   if (editingId !== null && editingId !== idNum) setEditingId(null)
   const chapterEditing = editingId === idNum
+  // 候補は最新の自動検出に由来する。ユーザー層を保存したときは chapters だけを更新する。
+  const chapterReviewQuery = useGetRecordingChapterReview(idNum, { query: { enabled: chapterEditing } })
   const [confirmChapterExit, setConfirmChapterExit] = useState(false)
   const [chapterEditorStatus, setChapterEditorStatus] = useState<ChapterEditorStatus>({
     source: 'auto',
@@ -219,6 +221,7 @@ export function RecordingDetailPage() {
             onSelectAudio={selectAudio}
             startAtBeginning={search.fromBeginning}
             chapterEditing={chapterEditing}
+            chapterReview={chapterReviewQuery.isError ? 'error' : unwrap(chapterReviewQuery.data)}
             onEnterChapterEditing={() => {
               setConfirmChapterExit(false)
               setEditingId(idNum)

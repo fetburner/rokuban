@@ -20,6 +20,7 @@ import {
   useReencodeRecordingProfile,
   type ChapterSpan,
   type Recording,
+  type RecordingChapterReview,
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { DropStatsTable } from '@/components/drop-stats-table'
@@ -159,6 +160,7 @@ export function RecordingDetail({
   audio,
   startAtBeginning = false,
   chapterEditing = false,
+  chapterReview,
   onEnterChapterEditing,
   chapterEditorCommandsRef,
   onChapterEditorStatusChange,
@@ -171,6 +173,7 @@ export function RecordingDetail({
   /** ホームの「最初から」から来た場合は保存位置を復元しない。 */
   startAtBeginning?: boolean
   chapterEditing?: boolean
+  chapterReview?: RecordingChapterReview | 'error'
   onEnterChapterEditing?: () => void
   chapterEditorCommandsRef?: MutableRefObject<ChapterEditorCommands | null>
   onChapterEditorStatusChange?: (status: ChapterEditorStatus) => void
@@ -726,6 +729,7 @@ export function RecordingDetail({
               chapterVersion={chapters?.version}
               chapterDetectionPending={chapters?.detectionPending}
               chapterEditing={chapterEditing}
+              chapterReview={chapterReview}
               onEnterChapterEditing={onEnterChapterEditing}
               chapterEditorCommandsRef={chapterEditorCommandsRef}
               onChapterEditorStatusChange={onChapterEditorStatusChange}
@@ -779,6 +783,7 @@ export function RecordingDetail({
               chapterVersion={chapters?.version}
               chapterDetectionPending={chapters?.detectionPending}
               chapterEditing={chapterEditing}
+              chapterReview={chapterReview}
               onEnterChapterEditing={onEnterChapterEditing}
               chapterEditorCommandsRef={chapterEditorCommandsRef}
               onChapterEditorStatusChange={onChapterEditorStatusChange}

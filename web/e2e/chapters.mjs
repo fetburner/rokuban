@@ -5,7 +5,7 @@
 // 前後再生は `<video>` の実再生と `currentTime` の推移でしか観測できない。
 // CLAUDE.md §テスト規律のとおり、実装より先にここで判定手段を作る。
 //
-// 見るのは次の 20 点:
+// 見るのは次の 22 点:
 //   ① 目盛りの位置が区間の割合と一致し、cut と ラベル付きが別の見た目で出る
 //   ② 通常の再生で cut 区間の先頭に差し掛かると、その終端へ飛ぶ
 //   ③ 手動のシークで区間の中に入ったときは飛ばない（cut / ラベル付きの両方）
@@ -27,6 +27,8 @@
 //   ⑱ 編集中の → と次の境界ボタンが 1 回だけ移動し、選んだフレームから再生できる
 //   ⑲ 録画 HLS の編集中に → が 1 回だけシークし、次の境界ボタンでも次の境界を選べる
 //   ⑳ 狭い画面でフィルムストリップのホバーにコマ・時刻・区間名が出て、帯の左右と境界ボタンを塞がない
+//   ㉑ 要確認の帯が正しい位置に種類ごとの色と 3px 以上の太さで描かれ、N で先頭へ戻った後も次へ進める
+//   ㉒ 再生位置に追従して区間一覧がスクロールしても、1280×800 と 400×667 で残件数と次の要確認ボタンが見える
 //
 // フィクスチャは ffmpeg で作る（再生位置の推移が判定に要る）。無い環境では
 // この判定だけを skip として終了する。
@@ -60,6 +62,16 @@ const ng = []
 const CM_SPAN = { startMs: 30_000, endMs: 40_000, label: 'CM', cut: true }
 const OP_SPAN = { startMs: 60_000, endMs: 70_000, label: 'OP', cut: false }
 const CHAPTERS = { source: 'auto', version: 'auto:detected:1', detectionPending: false, spans: [CM_SPAN, OP_SPAN] }
+const CHAPTER_REVIEW = {
+  materialsAvailable: true,
+  logoRanges: [{ startMs: 30125, endMs: 38000 }],
+  candidates: [
+    { kind: 'overcut_logo', startMs: 30125, endMs: 38000 },
+    { kind: 'overcut_grid', startMs: 33500, endMs: 40000 },
+    { kind: 'missed_cm', startMs: 62125, endMs: 69000 },
+  ],
+  autoSpans: CHAPTERS.spans,
+}
 let currentChapters = CHAPTERS
 const chapterEditBodies = []
 const seekTileRequests = []
@@ -242,6 +254,7 @@ async function apiHandler({ path: apiPath, url, json, route }) {
   }
   if (/^\/api\/recordings\/1$/.test(apiPath) && method === 'GET') return json(activeRecording)
   if (/^\/api\/recordings\/1\/chapters$/.test(apiPath) && method === 'GET') return json(currentChapters)
+  if (apiPath === '/api/recordings/1/chapter-review' && method === 'GET') return json(CHAPTER_REVIEW)
   if (/^\/api\/recordings\/1\/chapter-edits$/.test(apiPath) && method === 'PUT') {
     const body = route.request().postDataJSON()
     chapterEditBodies.push(body)
@@ -1655,54 +1668,89 @@ async function readPixels(png, points) {
   )
 }
 
+// clip の小数座標の丸めと帯の縁のアンチエイリアスを見込み、画素と帯の矩形を各辺で 1px 広げる。
+const TILE_PIXEL_OVERLAP_PADDING = 1
+
 /**
- * checkTilePixels は表示中の各マスの 3 点（左寄り・中央・右寄り）の画素が、その時刻のタイルの色か
+ * checkTilePixels は表示中の各マスの四隅寄りの画素が、その時刻のタイルの色か
  * を見る。時刻→x だけでは「そのマスにどのフレームが出ているか」は分からない。
  */
 async function checkTilePixels(label) {
-  const trackBox = await page.locator('[data-testid="chapter-filmstrip-track"]').boundingBox()
-  const cells = await page.evaluate(() =>
-    Array.from(document.querySelectorAll('[data-testid="chapter-filmstrip-tile"]')).map((el) => {
+  const { trackBox, cells, reviewBands } = await page.evaluate(() => {
+    const track = document.querySelector('[data-testid="chapter-filmstrip-track"]')
+    const cells = Array.from(track?.querySelectorAll('[data-testid="chapter-filmstrip-tile"]') ?? [], (el) => {
       const r = el.getBoundingClientRect()
       return { seconds: Number(el.getAttribute('data-time-seconds')), x: r.x, y: r.y, width: r.width, height: r.height }
-    }),
-  )
+    })
+    const reviewBands = Array.from(track?.querySelectorAll('[data-testid="chapter-review-candidate"]') ?? [],
+      (el) => el.getBoundingClientRect().toJSON(),
+    ).filter(({ width, height }) => width > 0 && height > 0)
+    return { trackBox: track?.getBoundingClientRect().toJSON(), cells, reviewBands }
+  })
   if (!trackBox || cells.length === 0) {
     ng.push(`${label}: タイルのマスが取れない`)
     return
   }
   const png = await page.screenshot({ clip: { x: trackBox.x, y: trackBox.y, width: trackBox.width, height: trackBox.height } })
   let checked = 0
+  let readPoints = 0
+  let expectedPoints = 0
+  let excludedPoints = 0
   for (const cell of cells) {
     // 切る区間（CM）のマスは橙の幕が重なって画素が混ざる。幕のないマスで見る。
     const covered = cell.seconds >= CM_SPAN.startMs / 1000 && cell.seconds < CM_SPAN.endMs / 1000
     // 四隅を読むので、帯に全体が入っているマスだけを見る。
     const inside = cell.x >= trackBox.x - 0.5 && cell.x + cell.width <= trackBox.x + trackBox.width + 0.5
     if (!inside || cell.seconds >= 120 || covered) continue
-    // 四隅寄り（横・縦とも 20% / 80%）の 4 点。象限ごとに青が違うので、タイル全体が縮んで入っているかが分かる。
-    const points = []
-    for (const fy of [0.2, 0.8]) {
-      for (const fx of [0.2, 0.8]) {
-        points.push([Math.round(cell.x + cell.width * fx - trackBox.x), Math.round(cell.y + cell.height * fy - trackBox.y)])
-      }
-    }
-    const pixels = await readPixels(png, points)
-    const [wantR, wantG] = tileColor(cell.seconds)
-    for (const [i, px] of pixels.entries()) {
-      const want = [wantR, wantG, QUAD_BLUE[i]]
-      if (px.some((value, channel) => Math.abs(value - want[channel]) > 14)) {
-        ng.push(`${label}: ${cell.seconds}秒のマスの画素が違う（隅${i} 実際 rgb(${px}) / 期待 rgb(${want})）`)
-        break
-      }
-    }
     // 1 枚が収まっている: マスの縦横比は 16:9。
     if (Math.abs(cell.width / cell.height - 16 / 9) > 0.05) {
       ng.push(`${label}: ${cell.seconds}秒のマスが 16:9 でない（${cell.width.toFixed(1)}x${cell.height.toFixed(1)}）`)
     }
+    expectedPoints += 4
+    // 四隅寄り（横・縦とも 20% / 80%）の 4 点。象限ごとに青が違うので、タイル全体が縮んで入っているかが分かる。
+    const points = []
+    const corners = []
+    for (const fy of [0.2, 0.8]) {
+      for (const fx of [0.2, 0.8]) {
+        const x = Math.round(cell.x + cell.width * fx - trackBox.x)
+        const y = Math.round(cell.y + cell.height * fy - trackBox.y)
+        // スクリーンショットで読む画素の左上を、帯と同じビューポート座標に戻す。
+        const viewportX = trackBox.x + x
+        const viewportY = trackBox.y + y
+        const pixelLeft = viewportX - TILE_PIXEL_OVERLAP_PADDING
+        const pixelRight = viewportX + 1 + TILE_PIXEL_OVERLAP_PADDING
+        const pixelTop = viewportY - TILE_PIXEL_OVERLAP_PADDING
+        const pixelBottom = viewportY + 1 + TILE_PIXEL_OVERLAP_PADDING
+        if (reviewBands.some(({ left, right, top, bottom }) =>
+          pixelLeft < right + TILE_PIXEL_OVERLAP_PADDING && pixelRight > left - TILE_PIXEL_OVERLAP_PADDING &&
+          pixelTop < bottom + TILE_PIXEL_OVERLAP_PADDING && pixelBottom > top - TILE_PIXEL_OVERLAP_PADDING,
+        )) {
+          excludedPoints += 1
+          continue
+        }
+        points.push([x, y])
+        corners.push((fy === 0.8 ? 2 : 0) + (fx === 0.8 ? 1 : 0))
+      }
+    }
+    if (points.length === 0) continue
+    const pixels = await readPixels(png, points)
+    readPoints += pixels.length
+    const [wantR, wantG] = tileColor(cell.seconds)
+    for (const [i, px] of pixels.entries()) {
+      const corner = corners[i]
+      const want = [wantR, wantG, QUAD_BLUE[corner]]
+      if (px.some((value, channel) => Math.abs(value - want[channel]) > 14)) {
+        ng.push(`${label}: ${cell.seconds}秒のマスの画素が違う（隅${corner} 実際 rgb(${px}) / 期待 rgb(${want})）`)
+        break
+      }
+    }
     checked += 1
   }
-  log(`  ${label}: ${checked} マスの画素を確認`)
+  log(`  ${label}: ${checked} マスの ${readPoints} 点を確認（要確認候補の帯による除外 ${excludedPoints} 点）`)
   if (checked < 3) ng.push(`${label}: 画素を確認できたマスが ${checked} 個しかない`)
+  if (reviewBands.length === 0 && readPoints !== expectedPoints) {
+    ng.push(`${label}: 帯が無い状態で ${expectedPoints} 点のうち ${readPoints} 点しか読めない`)
+  }
 }
 
 async function editLayoutMetrics(viewport) {
@@ -1925,6 +1973,15 @@ const tilePosition = await page.evaluate(() => {
 })
 log(`  30秒 tile: ${JSON.stringify(tilePosition)}`)
 await checkTilePixels('#1019 全体表示のタイルの画素')
+// 同じ表示範囲で候補の帯を消し、対象マスの 4 点すべてを読めることも判定する。
+const hiddenReviewBands = await page.addStyleTag({
+  content: '[data-testid="chapter-filmstrip-track"] [data-testid="chapter-review-candidate"] { display: none !important; }',
+})
+try {
+  await checkTilePixels('#1019 全体表示のタイルの画素（要確認候補の帯なし）')
+} finally {
+  await hiddenReviewBands.evaluate((style) => style.remove())
+}
 if (!tilePosition || Math.abs(tilePosition.actualX - tilePosition.expectedX) > 2) {
   ng.push(`#1019: 30秒tileのx位置が表示範囲の時刻→x計算と一致しない（${JSON.stringify(tilePosition)}）`)
 }
@@ -2007,6 +2064,158 @@ log('\n=== ⑳ フィルムストリップのホバープレビュー ===')
   if (!(await preview.isVisible())) ng.push('⑳ 境界を選んだ後にプレビューが再表示されない')
   await page.mouse.move(0, y)
   if (await preview.isVisible()) ng.push('⑳ 帯の外へ移動してもプレビューが消えない')
+}
+
+log('\n=== ㉑ 要確認の帯の位置・色と N による移動 ===')
+{
+  await page.setViewportSize({ width: 1280, height: 800 })
+  const candidates = CHAPTER_REVIEW.candidates
+  const colorsByBand = []
+  for (const bandId of ['chapter-filmstrip-overview', 'chapter-filmstrip-track']) {
+    const band = page.getByTestId(bandId)
+    await band.getByTestId('chapter-review-candidate').last().waitFor({ state: 'attached', timeout: 3000 }).catch(() => {})
+    const geometry = await band.evaluate((element, expected) => {
+      const band = element.getBoundingClientRect()
+      const canvas = document.createElement('canvas')
+      canvas.width = canvas.height = 1
+      const ctx = canvas.getContext('2d')
+      return expected.map(({ kind, startMs, endMs }) => {
+        const marks = element.querySelectorAll(`[data-testid="chapter-review-candidate"][data-kind="${kind}"]`)
+        const mark = marks[0]
+        const rect = mark?.getBoundingClientRect()
+        const style = mark && getComputedStyle(mark)
+        ctx.clearRect(0, 0, 1, 1)
+        if (style) {
+          ctx.fillStyle = style.backgroundColor
+          ctx.fillRect(0, 0, 1, 1)
+        }
+        return {
+          kind,
+          count: marks.length,
+          positioned: !!rect && rect.height > 0 && rect.top >= band.top && rect.bottom <= band.bottom &&
+            Math.abs(rect.left - (band.left + band.width * startMs / 120000)) < 1 &&
+            Math.abs(rect.right - (band.left + band.width * endMs / 120000)) < 1,
+          color: style?.backgroundColor,
+          visible: style?.visibility === 'visible' && Number(style.opacity) > 0,
+          top: rect?.top,
+          bottom: rect?.bottom,
+          point: rect && [
+            Math.floor(rect.left - band.left + rect.width / 2),
+            Math.floor(rect.top - band.top + rect.height / 2),
+          ],
+          rgba: Array.from(ctx.getImageData(0, 0, 1, 1).data),
+        }
+      })
+    }, candidates)
+    if (geometry.some(({ count, positioned, visible }) => count !== 1 || !positioned || !visible)) {
+      ng.push(`㉑ ${bandId} で候補の帯が指定した区間に収まらない（${JSON.stringify(geometry)}）`)
+    }
+    if (geometry.some(({ top, bottom }) => !(bottom - top >= 3))) {
+      ng.push(`㉑ ${bandId} で候補の帯が 3px 未満（${JSON.stringify(geometry)}）`)
+    }
+    const colors = geometry.map(({ color }) => color)
+    if (geometry.some(({ rgba }) => rgba[3] !== 255) || new Set(colors).size !== candidates.length) {
+      ng.push(`㉑ ${bandId} の候補の種類ごとの色が異ならない（${JSON.stringify(geometry)}）`)
+    }
+    // 計算済みの色だけでなく、他の帯や画像の上にその色が描かれているかも判定する。
+    const sample = geometry.filter(({ positioned }) => positioned)
+    const png = await band.screenshot({ scale: 'css' })
+    const painted = await readPixels(png, sample.map(({ point }) => point))
+    for (const [index, { kind, rgba }] of sample.entries()) {
+      if (painted[index].some((channel, i) => Math.abs(channel - rgba[i]) > 12)) {
+        ng.push(`㉑ ${bandId} の ${kind} が帯に描かれていない（画素=${painted[index]}、期待=${rgba}）`)
+      }
+    }
+    const [logo, grid] = geometry
+    if (!(logo.bottom <= grid.top || grid.bottom <= logo.top)) {
+      ng.push(`㉑ ${bandId} で重なるロゴ候補と格子候補が互いの色を隠す（${JSON.stringify(geometry)}）`)
+    }
+    colorsByBand.push(colors)
+  }
+  if (colorsByBand[0].some((color, index) => color !== colorsByBand[1][index])) {
+    ng.push('㉑ 同じ種類の候補の色が概観とフィルムストリップで異なる')
+  }
+
+  const resumeAt = await video.evaluate((v) => v.currentTime)
+  for (const [from, expected] of [[32, 33.5], [70, 30.125], [null, 33.5]]) {
+    // 最後の N はシークを挟まず、直前の N が戻した先頭候補の位置から押す。
+    if (from !== null) await seek(from)
+    await page.evaluate(() => document.activeElement?.blur())
+    await page.keyboard.press('n')
+    const reached = await page.waitForFunction((seconds) => {
+      const v = document.querySelector('video')
+      return v.paused && !v.seeking && Math.abs(v.currentTime - seconds) < 0.003
+    }, expected, { timeout: 3000 }).then(() => true, () => false)
+    if (!reached) {
+      const actual = await video.evaluate((v) => v.currentTime)
+      ng.push(`㉑ ${from ?? 30.125} 秒で N を押して ${expected} 秒に移らない（実際は ${actual} 秒）`)
+    }
+  }
+  await seek(resumeAt)
+}
+
+log('\n=== ㉒ 一覧が再生位置に追従してスクロールしても要確認の操作が見える ===')
+{
+  // 後ろの区間行を画面下に隠すだけの長さを、通常の編集レイアウトで作る。
+  const reviewPage = await context.newPage()
+  const spans = [...CHAPTERS.spans, ...[75, 85, 95, 105].map((start) => ({
+    startMs: start * 1000,
+    endMs: (start + 5) * 1000,
+    label: '本編の目印',
+    cut: false,
+  }))]
+  await installApiStubs(reviewPage, (request) => request.path === '/api/recordings/1/chapters'
+    ? request.json({ ...CHAPTERS, spans })
+    : apiHandler(request))
+  await reviewPage.goto(URL_BASE + '/recordings/1', { waitUntil: 'domcontentloaded' })
+  await reviewPage.getByRole('button', { name: '再生設定' }).click()
+  await reviewPage.getByRole('menuitem', { name: 'チャプターを直す', exact: true }).click()
+
+  const list = reviewPage.getByTestId('chapter-span-list')
+  const reviewVideo = reviewPage.locator('video')
+  const count = reviewPage.getByText('切りすぎ 2 件・見逃し 1 件', { exact: true })
+  const next = reviewPage.getByRole('button', { name: '次の要確認', exact: true })
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 400, height: 667 }]) {
+    const size = `${viewport.width}×${viewport.height}`
+    await reviewPage.setViewportSize(viewport)
+    try {
+      await reviewPage.waitForFunction(() => document.querySelector('video')?.duration >= 110, undefined, { timeout: 5000 })
+      await list.evaluate((el) => { el.scrollTop = 0 }, undefined, { timeout: 3000 })
+      await reviewVideo.evaluate((v) => {
+        v.pause()
+        v.currentTime = 104
+      }, undefined, { timeout: 3000 })
+      await reviewPage.waitForFunction(() => {
+        const v = document.querySelector('video')
+        return v && !v.seeking && Math.abs(v.currentTime - 104) < 0.003
+      }, undefined, { timeout: 5000 })
+      await reviewVideo.evaluate((v) => {
+        v.muted = true
+        // 到達しなければ、後続のスクロール待ちが NG にする。
+        void v.play().catch(() => {})
+      }, undefined, { timeout: 3000 })
+      await reviewPage.waitForFunction(() => {
+        const list = document.querySelector('[data-testid="chapter-span-list"]')
+        const last = list?.querySelector('[data-testid="chapter-span-row"]:last-child')
+        return list?.scrollTop > 0 && last?.dataset.playing === 'true'
+      }, undefined, { timeout: 5000 })
+    } catch {
+      ng.push(`㉒ ${size}: 一覧が再生位置に追従して末尾の行までスクロールしない`)
+    }
+    await reviewVideo.evaluate((v) => v.pause(), undefined, { timeout: 1000 }).catch(() => {})
+
+    // 一覧の枠に切り取られる場合も、別の UI に覆われる場合も失敗させる。
+    for (const [label, locator] of [['残件数', count], ['次の要確認', next]]) {
+      const visible = await locator.evaluate((el) => {
+        const { left, right, top, bottom, width, height } = el.getBoundingClientRect()
+        if (width <= 0 || height <= 0 || left < 0 || top < 0 || right > innerWidth || bottom > innerHeight) return false
+        return [[left + 1, top + height / 2], [right - 1, top + height / 2], [left + width / 2, top + 1], [left + width / 2, bottom - 1]]
+          .every(([x, y]) => el.contains(document.elementFromPoint(x, y)))
+      }, undefined, { timeout: 3000 }).catch(() => false)
+      if (!visible) ng.push(`㉒ ${size}: ${label}が画面内に収まって見えていない`)
+    }
+  }
+  await reviewPage.close()
 }
 
 log('\n=== #1019 filmstrip: 境界選択・1 frame 調整・PUT ===')
