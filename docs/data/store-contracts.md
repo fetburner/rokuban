@@ -88,6 +88,10 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 
 MySQL の `NOW()` は文ごとに評価される。同じ tx の複数文で同じ時刻を使う必要がある場合は、最初に DB の時刻を読み、その値を後続の文へ渡す。
 
+MySQL の時刻列は `TIMESTAMP` でなく `DATETIME(6)` を使う。`TIMESTAMP` は 2038-01-19 より後を表せない。接続の time_zone を UTC に固定しているので、`DATETIME` も UTC として読み書きされる。
+
+未解決: `circuit_breakers.tripped_at` は `TIMESTAMP(6)` のまま。
+
 <details><summary>根拠</summary>
 
 - DB の時計で比べる前例（GC）: `internal/db/queries/reservations.sql` の `DeleteStaleNeverScheduledEvents`。`observed_at < now() - horizon` で比べ、`PruneNeverScheduled` が呼ぶ
@@ -449,7 +453,11 @@ mirakc から得た予定と欠測の観測は、書き手である reconciler �
 
 reconciler は、観測全量の置き換え、同期評価の候補、開始済みイベントの読み取りを `ScheduleSync` から使う。presync collector は、marker・観測一覧・同期評価の候補を `ScheduleSyncReader` から読み、marker が無いときだけ時刻を 0 として出す。実装は `pgstore.ScheduleSync` が両方を持つ。
 
-欠測の古い行の削除は、ruler の GC が同じ契約 `NeverScheduledEvents` を呼んで行う。実装は `pgstore.NeverScheduledEvents` が持つ。
+欠測の古い行の削除は、ruler の GC が同じ契約 `NeverScheduledEvents` を呼んで行う。実装は `pgstore.NeverScheduledEvents` と `mysqlstore.NeverScheduledEvents` が持つ。
+
+欠測の記録は、MySQL では素の INSERT を使い、tx の中の一意違反を「記録済み」（false）として扱う。`INSERT IGNORE` は strict モードでも値を切り詰めるので使わない。
+
+未解決: `pgstore` は生きている recordings 行がある放送イベントを記録しないが、MySQL は記録する。この条件は契約に無く、MySQL にはまだ recordings 表が無い。
 
 削除は幅（horizon）だけを受け取り、基準時刻は受け取らない。`observed_at` は DB の時計で記録されるので、呼び出し側の時計で基準時刻を渡すと、比べる 2 つの時計がずれる。
 
@@ -460,6 +468,7 @@ reconciler は、観測全量の置き換え、同期評価の候補、開始済
 - PostgreSQL 実装（予定の観測）: `internal/store/pgstore.ScheduleSync`
 - 欠測の記録と削除の契約: `internal/store.NeverScheduledEvents`
 - 欠測の PostgreSQL 実装: `internal/store/pgstore.NeverScheduledEvents`
+- 欠測の MySQL 実装: `internal/store/mysqlstore.NeverScheduledEvents`
 - 削除の呼び出し元: `internal/ruler/ruler.go` の GC
 
 </details>
