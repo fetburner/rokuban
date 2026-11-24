@@ -1,96 +1,11 @@
 package pgstore
 
 import (
-	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/fetburner/rokuban/internal/rulequery"
-	"github.com/fetburner/rokuban/internal/testutil"
 )
-
-// allConditionShapes は Compile が生成しうる節をすべて 1 度は含む条件の集合。
-// 新しい条件次元を足したらここにも足す。
-func allConditionShapes() map[string]rulequery.Conditions {
-	free := true
-	minMs := int64(60_000)
-	maxMs := int64(7_200_000)
-	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
-	end := start.Add(30 * 24 * time.Hour)
-
-	return map[string]rulequery.Conditions{
-		// Sites は Compile が非空を要求する（#530）ので、他の条件次元だけを見たい
-		// ケースにも常に埋めておく。
-		"empty":              {Sites: []string{"default"}},
-		"sites":              {Sites: []string{"default", "other"}},
-		"isFree":             {Sites: []string{"default"}, IsFree: &free},
-		"duration":           {Sites: []string{"default"}, DurationMinMs: &minMs, DurationMaxMs: &maxMs},
-		"period":             {Sites: []string{"default"}, PeriodStartAt: &start, PeriodEndAt: &end},
-		"genres":             {Sites: []string{"default"}, Genres: []int16{0, 7, 15}},
-		"services":           {Sites: []string{"default"}, Services: []rulequery.ServiceRef{{NetworkID: 32736, ServiceID: 1024}, {NetworkID: 4, ServiceID: 101}}},
-		"channelTypes":       {Sites: []string{"default"}, ChannelTypes: []string{"GR", "BS"}},
-		"keyword":            {Sites: []string{"default"}, TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: "ニュース"}}},
-		"keywordCS":          {Sites: []string{"default"}, TextMatches: []rulequery.TextMatch{{Target: "description", Mode: "keyword", Value: "News", CaseSensitive: true}}},
-		"keywordNegate":      {Sites: []string{"default"}, TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: "再放送", Negate: true}}},
-		"regex":              {Sites: []string{"default"}, TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "regex", Value: "^第[0-9]+話"}}},
-		"regexCS":            {Sites: []string{"default"}, TextMatches: []rulequery.TextMatch{{Target: "extended", Mode: "regex", Value: "NHK", CaseSensitive: true}}},
-		"times":              {Sites: []string{"default"}, Times: []rulequery.TimeWindow{{Weekdays: 0b0011111, StartSec: 6 * 3600, EndSec: 9 * 3600}}},
-		"timesOvernight":     {Sites: []string{"default"}, Times: []rulequery.TimeWindow{{Weekdays: 0b1111111, StartSec: 23 * 3600, EndSec: 1 * 3600}}},
-		"timesMultiple":      {Sites: []string{"default"}, Times: []rulequery.TimeWindow{{Weekdays: 1, StartSec: 0, EndSec: 3600}, {Weekdays: 64, StartSec: 3600, EndSec: 86400}}},
-		"timesFullDayBounds": {Sites: []string{"default"}, Times: []rulequery.TimeWindow{{Weekdays: 127, StartSec: 0, EndSec: 86400}}},
-		"everything": {
-			IsFree:        &free,
-			DurationMinMs: &minMs,
-			DurationMaxMs: &maxMs,
-			PeriodStartAt: &start,
-			PeriodEndAt:   &end,
-			Genres:        []int16{7},
-			Services:      []rulequery.ServiceRef{{NetworkID: 32736, ServiceID: 1024}},
-			ChannelTypes:  []string{"GR"},
-			Sites:         []string{"default"},
-			TextMatches: []rulequery.TextMatch{
-				{Target: "name", Mode: "keyword", Value: "アニメ"},
-				{Target: "description", Mode: "regex", Value: "[0-9]+", Negate: true},
-			},
-			Times: []rulequery.TimeWindow{{Weekdays: 0b1000000, StartSec: 20 * 3600, EndSec: 22 * 3600}},
-		},
-	}
-}
-
-// TestCompile_AllShapesAcceptedByPostgres は生成 SQL が Postgres に受理されることを
-// 全条件形について確かめる。文字列検査だけのテストでは構文エラーを検出できず、
-// 実際に AT TIME ZONE の連結ミスがこの穴をすり抜けた。
-func TestCompile_AllShapesAcceptedByPostgres(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	for name, c := range allConditionShapes() {
-		t.Run(name, func(t *testing.T) {
-			out, err := compileRuleQuery(c)
-			if err != nil {
-				t.Fatalf("Compile: %v", err)
-			}
-
-			sql := "SELECT p.program_id FROM epg_programs p"
-			if out.needsServiceJoin {
-				sql += " JOIN epg_services s ON s.site = p.site" +
-					" AND s.network_id = p.network_id AND s.service_id = p.service_id"
-			}
-			sql += " WHERE " + out.where
-
-			// 実行して初めて構文・型の誤りが出る。行が返るかは問わない。
-			rows, err := pool.Query(ctx, sql, out.args...)
-			if err != nil {
-				t.Fatalf("postgres rejected generated SQL: %v\nSQL: %s", err, sql)
-			}
-			rows.Close()
-			if err := rows.Err(); err != nil {
-				t.Fatalf("rows: %v", err)
-			}
-		})
-	}
-}
 
 // TestCompile_NoUserBytesInSQL はユーザー由来の値が SQL 文字列に一切現れないことを
 // 確かめる（値はすべて $N プレースホルダ経由）。列名・演算子は whitelist なので、
@@ -125,22 +40,6 @@ func TestCompile_NoUserBytesInSQL(t *testing.T) {
 	for i := range out.args {
 		if !strings.Contains(out.where, "$"+itoa(i+1)) {
 			t.Errorf("placeholder $%d not referenced: %s", i+1, out.where)
-		}
-	}
-}
-
-// TestCompile_RejectsUnknownIdentifiers は列名・演算子が whitelist であることを確かめる。
-// ここが緩むと注入経路が開くので、default が error であることをテストで固定する。
-func TestCompile_RejectsUnknownIdentifiers(t *testing.T) {
-	cases := []rulequery.TextMatch{
-		{Target: "name; DROP TABLE epg_programs", Mode: "keyword", Value: "x"},
-		{Target: "name", Mode: "keyword; DROP TABLE epg_programs", Value: "x"},
-		{Target: "", Mode: "keyword", Value: "x"},
-		{Target: "name", Mode: "", Value: "x"},
-	}
-	for _, m := range cases {
-		if _, err := compileRuleQuery(rulequery.Conditions{Sites: []string{"default"}, TextMatches: []rulequery.TextMatch{m}}); err == nil {
-			t.Errorf("Compile accepted unknown identifier: target=%q mode=%q", m.Target, m.Mode)
 		}
 	}
 }

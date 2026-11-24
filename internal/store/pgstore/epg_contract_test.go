@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -21,21 +22,11 @@ func TestEPGContract(t *testing.T) {
 			InvalidRegexPattern: "(?<name>news)",
 			CreateRule: func(t *testing.T, options contracttest.EPGRuleOptions) int64 {
 				t.Helper()
-				var isFree, durationMin, durationMax any
-				if options.IsFree != nil {
-					isFree = *options.IsFree
-				}
-				if options.DurationMinMs != nil {
-					durationMin = *options.DurationMinMs
-				}
-				if options.DurationMaxMs != nil {
-					durationMax = *options.DurationMaxMs
-				}
 				var ruleID int64
 				if err := pool.QueryRow(context.Background(), `
 INSERT INTO rules (name, is_free, duration_min_ms, duration_max_ms)
 VALUES ($1, $2, $3, $4)
-RETURNING id`, options.Name, isFree, durationMin, durationMax).Scan(&ruleID); err != nil {
+RETURNING id`, options.Name, options.IsFree, options.DurationMinMs, options.DurationMaxMs).Scan(&ruleID); err != nil {
 					t.Fatalf("creating rule fixture: %v", err)
 				}
 				for seq, match := range options.TextMatches {
@@ -99,31 +90,73 @@ WHERE site = $1 AND program_id = ANY($2::bigint[])`, site, programIDs); err != n
 					}
 				}
 			},
+			ObserveNotification: func(t *testing.T, notify func()) string {
+				t.Helper()
+				ctx := context.Background()
+				listener, err := pool.Acquire(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer listener.Release()
+				if _, err := listener.Exec(ctx, "LISTEN rokuban"); err != nil {
+					t.Fatal(err)
+				}
+				notify()
+				waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				defer cancel()
+				notification, err := listener.Conn().WaitForNotification(waitCtx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if notification.Channel != "rokuban" {
+					t.Fatalf("notification channel = %q, want rokuban", notification.Channel)
+				}
+				return notification.Payload
+			},
+			CreateRecording: func(t *testing.T, p store.EPGProgramUpsert, status string, labelRuleID *int64) int64 {
+				t.Helper()
+				ctx := context.Background()
+				var id int64
+				if err := pool.QueryRow(ctx, `
+INSERT INTO recordings (source, site, network_id, service_id, event_id, service_name, channel_type, channel,
+                        title, program_start_at, program_duration_ms, status)
+VALUES ('manual', $1, $2, $3, $4, '局', 'GR', '27', $5, $6, $7, $8)
+RETURNING id`, p.Site, p.NetworkID, p.ServiceID, p.EventID, p.Name, p.StartAt, p.DurationMs, status).Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+				if labelRuleID != nil {
+					if _, err := pool.Exec(ctx, `
+INSERT INTO label_rule_hits (recording_id, label_rule_id) VALUES ($1, $2)
+ON CONFLICT (recording_id) DO UPDATE SET label_rule_id = EXCLUDED.label_rule_id`, id, *labelRuleID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return id
+			},
+			CreateSeriesLabel: func(t *testing.T, keyword, value string, priority int) int64 {
+				t.Helper()
+				var id int64
+				if err := pool.QueryRow(context.Background(), `
+INSERT INTO label_rules (key, keyword, value, priority) VALUES ('series', $1, $2, $3) RETURNING id`,
+					keyword, value, priority).Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+				return id
+			},
+			SetIntent: func(t *testing.T, site string, programID int64, action string) {
+				t.Helper()
+				if _, err := pool.Exec(context.Background(), `
+INSERT INTO program_snapshots (site, program_id, start_at, duration_ms, network_id, service_id, event_id,
+                               service_name, channel_type, channel)
+SELECT site, program_id, start_at, duration_ms, network_id, service_id, event_id, '局', 'GR', '27'
+FROM epg_programs WHERE site = $1 AND program_id = $2`, site, programID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := pool.Exec(context.Background(), `
+INSERT INTO program_intents (site, program_id, action) VALUES ($1, $2, $3)`, site, programID, action); err != nil {
+					t.Fatal(err)
+				}
+			},
 		}
 	})
-}
-
-func TestEPGNotifyProgramsUpdated(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	listener, err := pool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("acquiring listener: %v", err)
-	}
-	defer listener.Release()
-	if _, err := listener.Exec(ctx, "LISTEN rokuban"); err != nil {
-		t.Fatalf("listening for notifications: %v", err)
-	}
-	if err := NewEPG(pool).NotifyProgramsUpdated(ctx); err != nil {
-		t.Fatalf("notifying programs updated: %v", err)
-	}
-	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	notification, err := listener.Conn().WaitForNotification(waitCtx)
-	if err != nil {
-		t.Fatalf("waiting for EPG notification: %v", err)
-	}
-	if notification.Channel != "rokuban" || notification.Payload != "epg" {
-		t.Fatalf("notification = %s/%s, want rokuban/epg", notification.Channel, notification.Payload)
-	}
 }
