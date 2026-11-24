@@ -363,7 +363,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Run MySQL store contract tests
-        run: go test -race -count=1 ./internal/mysqldb ./internal/mysqltest ./internal/store/mysqlstore
+        run: go test -race -count=1 ./internal/mysqldb ./internal/mysqltest ./internal/store/mysqlstore ./internal/notifier/mysqlsource
 
   # main の実行だけが見積もりを更新する。PR はこの保存を行わず、main のキャッシュを読むだけ。
   test-timings:

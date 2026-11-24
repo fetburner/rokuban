@@ -294,6 +294,7 @@ linters:
           files:
             - "${config-path}/internal/notifier/**"
             - "!${config-path}/internal/notifier/pgsource/**"
+            - "!${config-path}/internal/notifier/mysqlsource/**"
             - "!$test"
           deny:
             - pkg: github.com/jackc/pgx
