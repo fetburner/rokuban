@@ -21,10 +21,11 @@ import (
 // iswalnum に従う。Go の unicode.IsLetter / unicode.IsDigit だけでは一致しない。
 // 文字種 Nl（例: Ⅻ）と Other_Alphabetic（一部の結合文字）が glibc では英数字なので含める。
 //
-// 照合（Postgres 17、LC_CTYPE=en_US.utf8）で、Postgres が英数字とする codepoint の
-// 集合は、この判定の部分集合であった。差は glibc の Unicode 版より後に割り当てられた
-// 文字だけで、その差は全て Go 側が多く英数字とする側にある（2026-11 時点の測定）。
-// 差の仕方が変わったら照合テストで検出する。
+// 測定方法: Postgres 17（公式イメージ、LC_CTYPE=en_US.utf8）で正規表現 [[:alnum:]] を
+// 全 codepoint について走査した。結果、Postgres だけが英数字とする codepoint は 0、
+// この判定だけが英数字とする codepoint は 4,672 だった。後者は glibc の Unicode 版より
+// 後に割り当てられた文字である。英数字の判定は DB の glibc の版に依存し、その差は
+// このパッケージでは埋めない。
 func IsAlnum(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r) ||
 		unicode.Is(unicode.Nl, r) || unicode.Is(unicode.Other_Alphabetic, r)
@@ -37,17 +38,15 @@ func IsAlnum(r rune) bool {
 //
 // trigram の作り方は pg_trgm に従う。語は IsAlnum で区切って小文字化し、
 // 語の前に空白 2 つ、後ろに空白 1 つを付けて 3 文字ずつ切り出す。
-// 3 文字がすべて 1 バイトの文字なら、そのバイト列を trigram とし、
-// 1 つでもマルチバイトを含めば、3 文字の UTF-8 バイト列の CRC-32 (IEEE) の下位 3 バイトを
-// trigram とする。
+// 3 文字がすべて 1 バイトの文字なら、そのバイト列を trigram の鍵とし、
+// 1 つでもマルチバイトを含めば、3 文字の UTF-8 バイト列の legacy CRC-32 の
+// 下位 3 バイトを鍵とする（trigramKey）。
 //
-// 後者の CRC の扱いは pg_trgm のドキュメントに無い実装の詳細である。
-//
-// 照合の範囲: 境界の表と固定シードの乱数の対では、Postgres 17 とビット単位で一致した。
-// ただし show_trgm で見た Postgres の trigram の鍵は、この CRC の下位 3 バイトとは一致しなかった。
-// 多バイトの trigram と ASCII の 3 文字の trigram が同じ鍵になる組では食い違う
-// （similarity('nn8', '丞') は Postgres で 0.2、この実装では 0）。
-// 鍵の式を Postgres の実装から確定できていないので、その組は未解決である。
+// 鍵の式は pg_trgm のドキュメントに無い実装の詳細である。類似度に効くのは鍵の衝突の有無
+// だけなので、鍵の式が違っても大半の対は一致する。差が出るのは、多バイトの trigram と
+// ASCII の 3 文字の trigram が同じ鍵になる組だけである（例: similarity('nn8', '丞') は
+// Postgres で 0.2 になるが、多バイト側を標準の crc32.ChecksumIEEE で鍵にすると 0 になる）。
+// 照合テストは Postgres の版を上げたときのずれを検出する。
 func Similarity(a, b string) float32 {
 	ta := trigramSet(a)
 	tb := trigramSet(b)
@@ -67,7 +66,7 @@ func Similarity(a, b string) float32 {
 	return float32(common) / float32(len(ta)+len(tb)-common)
 }
 
-// trigramSet は s の trigram を重複なしの集合として返す。
+// trigramSet は s の trigram の鍵を重複なしの集合として返す。
 func trigramSet(s string) map[uint32]struct{} {
 	set := map[uint32]struct{}{}
 	for _, w := range words(s) {
@@ -103,11 +102,11 @@ func words(s string) [][]rune {
 	return out
 }
 
-// trigramKey は 3 文字の trigram を uint32 にする。
+// trigramKey は 3 文字の trigram の鍵を返す。鍵は 24 ビットで、比較は等価判定だけに使う。
 //
-// 3 文字がすべて ASCII ならバイトをそのまま下位から詰める。マルチバイトを含むなら
-// 3 文字の UTF-8 バイト列の crc32.ChecksumIEEE の下位 3 バイトを同じ順で詰める。
-// どちらも 24 ビットに収まるので、比較は等価判定だけで済む。
+// 3 文字がすべて ASCII なら、バイトを先頭から下位に詰める（r0 | r1<<8 | r2<<16）。
+// マルチバイトを含むなら、3 文字の UTF-8 バイト列の legacy CRC-32 の下位 3 バイトを
+// 同じ向きで詰める。これは pg_trgm の compact_trigram が使う式である。
 func trigramKey(r0, r1, r2 rune) uint32 {
 	if r0 < utf8.RuneSelf && r1 < utf8.RuneSelf && r2 < utf8.RuneSelf {
 		return uint32(r0) | uint32(r1)<<8 | uint32(r2)<<16
@@ -117,5 +116,17 @@ func trigramKey(r0, r1, r2 rune) uint32 {
 	n += utf8.EncodeRune(buf[n:], r0)
 	n += utf8.EncodeRune(buf[n:], r1)
 	n += utf8.EncodeRune(buf[n:], r2)
-	return crc32.ChecksumIEEE(buf[:n]) & 0xFFFFFF
+	return legacyCRC32(buf[:n]) & 0xFFFFFF
+}
+
+// legacyCRC32 は Postgres の legacy CRC-32（pg_crc.h の INIT/COMP/FIN_LEGACY_CRC32）を返す。
+//
+// 多項式は IEEE だが、標準の crc32.ChecksumIEEE とは値が一致しない別の式である。
+// 標準の関数で代用してはいけない。
+func legacyCRC32(b []byte) uint32 {
+	c := uint32(0xFFFFFFFF)
+	for _, x := range b {
+		c = crc32.IEEETable[byte(c>>24)^x] ^ (c << 8)
+	}
+	return c ^ 0xFFFFFFFF
 }
