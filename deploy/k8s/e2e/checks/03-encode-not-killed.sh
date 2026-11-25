@@ -108,7 +108,7 @@ find_running_job() {
   [ -n "$running_job" ]
 }
 if ! retry_until 240 "an encode job to start running" find_running_job; then
-  fail "3.1" "encode Job が起きない --- backlog=$(river_backlog "$queue") jobs=$(jobs_owned_by_scaledjob "$scaledjob")"
+  fail "3.1" "encode Job が起きない --- backlog=$(queue_backlog "$queue") jobs=$(jobs_owned_by_scaledjob "$scaledjob")"
   todo "3.2" "実行中の Job が無いので生存を観測していない"
   todo "3.3" "実行中の Job が無いので生存を観測していない"
   todo "3.4" "実行中の Job が無いので positive control を実施していない"
@@ -225,9 +225,9 @@ window=$(( 2 * ${polling:-30} ))
 
 log_step "draining ${queue} and watching ${running_job} for ${window}s"
 drain_queue "$queue"
-backlog_empty() { [ "$(river_backlog "$queue")" = "0" ]; }
+backlog_empty() { [ "$(queue_backlog "$queue")" = "0" ]; }
 if ! retry_until 60 "the backlog to reach 0" backlog_empty; then
-  log_step "backlog is still $(river_backlog "$queue")"
+  log_step "backlog is still $(queue_backlog "$queue")"
 fi
 
 outcome="$(observe_survival "$window")"

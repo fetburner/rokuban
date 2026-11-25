@@ -200,7 +200,7 @@ sys.exit(0 if doc else 1)
 if retry_until 240 "EPG projection to fill" programs_count; then
   pass "1.6" "番組表が見える（$(programs_count) 件）"
 else
-  fail "1.6" "epg-sync を投入したが番組表が空のまま --- backlog=$(river_backlog "$epg_queue") jobs=$(jobs_owned_by_scaledjob "$epg_scaledjob")"
+  fail "1.6" "epg-sync を投入したが番組表が空のまま --- backlog=$(queue_backlog "$epg_queue") jobs=$(jobs_owned_by_scaledjob "$epg_scaledjob")"
   if [ -z "${reconciler_missing:-}" ]; then
     todo "1.7" "予約の mirakc 反映: 番組表が空なので予約する番組を選べない"
     todo "1.8" "1.7 と同じ理由で遅延を測っていない"

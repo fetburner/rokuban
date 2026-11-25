@@ -494,6 +494,16 @@ observed_new_job_reached() {
   observed_new_jobs "$1" "$2" | grep -qx "$3"
 }
 
+# ---- 滞留の数え方と作り方（エンジンで分かれる）-----------------------------
+#
+# 判定が「待っている」と呼ぶ件数は 2 つの経路で数える。**集合の定義はどちらも
+# KEDA のトリガと同じでなければならない。** ずれると、ハーネスだけが待ち続ける。
+#
+#   - river:  river_job の state（下の riverBacklogStates）。
+#   - asynq:  件数の HTTP（notifier の deliverable-count）。トリガが読むものそのもの。
+#             ハーネスは同じ口を叩くので、集合の定義はサーバ側（asynqadapter の
+#             CountDeliverable）が 1 か所に持つ。
+
 # riverBacklogStates は「待っている」とみなす River の状態。
 #
 # **KEDA のトリガが数える集合とここは同じでなければならない。** ずれると、
@@ -505,8 +515,17 @@ observed_new_job_reached() {
 # **本物の ScaledJob への契約でもある**: そちらのトリガもこの集合を数えること。
 riverBacklogStates="'available','retryable'"
 
-# river_backlog <queue> --- 待ち行列にいるジョブ数（KEDA のトリガと同じ条件）。
-river_backlog() {
+# queue_backlog <queue> --- 待ち行列にいるジョブ数（KEDA のトリガと同じ条件）。
+#
+# 呼び出し元は判定（checks/）で、エンジンを知らなくてよい。asynq では件数の口を
+# ツールボックスから叩く（製品の Pod から叩くと、判定の観測が判定対象の生死に
+# 巻き込まれる --- tb_curl の注記）。
+queue_backlog() {
+  if [ "$E2E_ENGINE" = "asynq" ]; then
+    tb_curl -sS --fail "http://rokuban-notifier:40773/internal/queues/$1/deliverable-count" \
+      | sed -n 's/.*"value":\([0-9][0-9]*\).*/\1/p'
+    return
+  fi
   psql_q "SELECT count(*) FROM river_job WHERE queue = '$1' AND state IN (${riverBacklogStates})" \
     | tr -d '[:space:]'
 }
@@ -532,9 +551,34 @@ river_backlog() {
 # KEDA のポーリングとの前後関係次第で、**実物の worker 込みでは未測定**。
 insert_probe_job() {
   local queue="$1" count="${2:-1}"
+  if [ "$E2E_ENGINE" = "asynq" ]; then
+    asynq_insert_probe "$queue" "$count"
+    return
+  fi
   psql_q "INSERT INTO river_job (state, queue, kind, args, max_attempts, priority, scheduled_at)
           SELECT 'available', '$queue', 'e2e_probe', '{}'::jsonb, 1, 1, now()
           FROM generate_series(1, $count)" >/dev/null
+}
+
+# asynq_insert_probe <queue> [count] --- asynq の滞留を件数ぶん積む。
+#
+# asynq の内部キー（asynq:{...}）は書かない（不変条件 14）。投入は rokuban の契約
+# （internal/jobq）と adapter（internal/jobq/asynqadapter）を通す deploy/k8s/e2e/asynqprobe
+# が行う。Coalesce を false にした probe kind なので、件数ぶんの滞留になる。
+# Redis は kind の中なので、port-forward で手元に開いてから走らせる。
+asynq_insert_probe() {
+  local queue="$1" count="$2" pf rc=0 i
+  k port-forward svc/rokuban-redis "${E2E_REDIS_LOCAL_PORT}:6379" >/dev/null 2>&1 &
+  pf=$!
+  for i in $(seq 1 30); do
+    if (exec 3<>"/dev/tcp/127.0.0.1/${E2E_REDIS_LOCAL_PORT}") 2>/dev/null; then break; fi
+    sleep 0.5
+  done
+  (cd "$E2E_ROOT" && go run ./deploy/k8s/e2e/asynqprobe \
+    -redis "redis://127.0.0.1:${E2E_REDIS_LOCAL_PORT}/0" -queue "$queue" -count "$count") >/dev/null || rc=$?
+  kill "$pf" 2>/dev/null
+  wait "$pf" 2>/dev/null
+  return "$rc"
 }
 
 # ---- 判定 3 の producer（実物の encode を 1 件走らせる）--------------------

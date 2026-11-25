@@ -3,6 +3,8 @@
 #
 #   ./deploy/k8s/e2e/run.sh              5 項目を判定する
 #   E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run.sh
+#   E2E_OVERLAY=e2e-asynq ./deploy/k8s/e2e/run.sh
+#                                        ジョブエンジンを asynq（Redis）にして 1〜5 を回す（実測は docs/runbook/k8s.md）
 #                                        置き場 2 つの判定 6 だけを回す（1〜5 は走らない）
 #   ./deploy/k8s/e2e/run.sh --only 2,4   一部だけ
 #   ./deploy/k8s/e2e/run.sh --oracles    判定そのものを検査する（変異注入）
@@ -79,8 +81,8 @@ if [ -n "$only" ] && [ "$mode" != "checks" ]; then
   exit 64
 fi
 
-if [ "$E2E_OVERLAY" != "e2e" ] && [ "$E2E_OVERLAY" != "e2e-two-stores" ]; then
-  printf 'E2E_OVERLAY must be e2e or e2e-two-stores, got: %s\n' "$E2E_OVERLAY" >&2
+if [ "$E2E_OVERLAY" != "e2e" ] && [ "$E2E_OVERLAY" != "e2e-two-stores" ] && [ "$E2E_OVERLAY" != "e2e-asynq" ]; then
+  printf 'E2E_OVERLAY must be e2e, e2e-two-stores or e2e-asynq, got: %s\n' "$E2E_OVERLAY" >&2
   exit 64
 fi
 # オラクルと故障注入は 2 サイト・置き場 1 つの overlay（e2e）の足場に依存する。

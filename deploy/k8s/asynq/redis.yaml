@@ -1,0 +1,73 @@
+# asynq 構成のキュー（Redis）。
+#
+# **永続ボリュームは置かない。** 投入はヒントで、失っても定期 reconcile が拾う
+# （仕様: 「Redis に耐久性を求めない」）。Redis を再起動すると待機中のタスクは
+# 消えるが、それは「次の reconcile パスまでの遅れ」にしかならない。PVC を足すと
+# 起動順序と StorageClass の前提が増えるのに、得るものが無い。
+# `--save ""` と `--appendonly no` で RDB / AOF のどちらも書かせない。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rokuban-redis
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rokuban
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rokuban
+        app.kubernetes.io/component: redis
+    spec:
+      enableServiceLinks: false
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: redis:7
+          args: ["--save", "", "--appendonly", "no"]
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            tcpSocket:
+              port: redis
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rokuban-redis
+  labels:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: redis
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: rokuban
+    app.kubernetes.io/component: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis

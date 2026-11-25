@@ -20,6 +20,16 @@ kind・kubectl・kustomize と Docker を用意する。DB は使い捨てで立
 
 </details>
 
+### asynq 構成で立てる
+
+ジョブエンジンは既定の Postgres を使う River と、Redis を使う asynq から選べる。asynq で立てるときは次を足す。
+
+- overlay は overlays/asynq（本番形。名前空間は default）。判定ハーネスの形は overlays/e2e-asynq で、E2E_OVERLAY=e2e-asynq を渡す。
+- Secret `rokuban-secrets` に `REDIS_URL`（例: `redis://rokuban-redis.default.svc.cluster.local:6379/0`）を入れる。base は Secret を出荷しないので、供給は環境の仕事である。
+- Postgres は River 構成と同じく要る（asynq でも業務データは Postgres）。`migrate up` は River のスキーマを作らない。
+
+配置の理由と、River 構成との差分は [deploy/k8s/README.md](../../deploy/k8s/README.md) §asynq 構成 にある。
+
 ### 手順
 
 kind クラスタを作り、使い捨ての postgres を先に立ててから、イメージを載せて 1 式を適用する。postgres を先にするのは、migration Job が DB の居ない状態から始めると再試行を使い切って恒久失敗しうるからである。

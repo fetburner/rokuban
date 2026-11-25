@@ -65,14 +65,14 @@ fi
 drained() {
   local backlog active
   # 読めなかったことを「0 だった」に潰さない（`-z` は kubectl のエラーでも真）。
-  backlog="$(river_backlog "$queue")" || return 1
+  backlog="$(queue_backlog "$queue")" || return 1
   [ "$backlog" = "0" ] || return 1
   active="$(k get jobs -l "scaledjob.keda.sh/name=${scaledjob}" \
     -o jsonpath='{.items[?(@.status.active)].metadata.name}')" || return 1
   [ -z "$active" ]
 }
 if ! retry_until 180 "the queue and the worker jobs to drain" drained; then
-  fail "2.2" "開始時点で worker が 0 になっていない --- backlog=$(river_backlog "$queue") jobs=$(jobs_owned_by_scaledjob "$scaledjob")"
+  fail "2.2" "開始時点で worker が 0 になっていない --- backlog=$(queue_backlog "$queue") jobs=$(jobs_owned_by_scaledjob "$scaledjob")"
   # **宣言した id は必ず埋める。** 埋めないと集計側が「判定が黙って死んだ」と
   # 報告し、本物の突然死と区別が付かなくなる（lib/log.sh の plan）。
   todo "2.3" "開始状態が 0 でないので投入を観測していない"
@@ -154,6 +154,6 @@ spawned_and_drained() {
 if retry_until 240 "KEDA to spawn and drain a worker job" spawned_and_drained; then
   pass "2.4" "KEDA が起こした Job ${E2E_OBSERVED_JOB} が消化して落ちた（0 → 1 → 0 を watch で観測）"
 else
-  fail "2.4" "0 → 1 → 0 を観測できない --- 新しく起きた Job: [$(observed_new_jobs "$watch_file" | tr '\n' ' ')] backlog=$(river_backlog "$queue") watch: $(tr '\n' ';' <"$watch_file" | tail -c 300)"
+  fail "2.4" "0 → 1 → 0 を観測できない --- 新しく起きた Job: [$(observed_new_jobs "$watch_file" | tr '\n' ' ')] backlog=$(queue_backlog "$queue") watch: $(tr '\n' ';' <"$watch_file" | tail -c 300)"
 fi
 exit 0

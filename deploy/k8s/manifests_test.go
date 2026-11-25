@@ -667,6 +667,8 @@ func TestOverlayConfigsLoad(t *testing.T) {
 		checked++
 		t.Run(e.Name(), func(t *testing.T) {
 			t.Setenv("POSTGRES_PASSWORD", "s3cret")
+			// asynq の overlay は `${REDIS_URL}` を Secret から受ける（River の config では読まれない）。
+			t.Setenv("REDIS_URL", "redis://rokuban-redis.default.svc.cluster.local:6379/0")
 			cfg, err := config.Load(path)
 			if err != nil {
 				t.Fatalf("config.Load(%s): %v", path, err)

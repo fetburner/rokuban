@@ -1,0 +1,92 @@
+# 受け入れ判定ハーネス（deploy/k8s/e2e）の config。base/config.yml を
+# `behavior: replace` で置き換える。
+#
+# キーの網羅は config.example.yml が権威。ここに書くのは base との差分の理由だけ。
+
+server:
+  listen: ":40773"
+  # base と同じく締めたまま。ハーネスは Service 名で叩くので、`/api/...` を
+  # 叩くところは Host ヘッダを付ける（付け忘れると 400。docs/runbook/k8s.md）。
+  allowed_hosts: [rokuban.local]
+
+db:
+  host: postgres
+  port: 5432
+  user: rokuban
+  database: rokuban
+  sslmode: disable
+  password: >-
+    ${POSTGRES_PASSWORD}
+
+# **2 サイト。** 判定 5（サイト B の滞留でサイト A の Job が起きない）は
+# 1 サイトでは測れない。site 名は短くしてある --- site 単位のキュー名は
+# `<base>_<site>` に展開され、River のキュー名上限 64 文字を共有するため
+# （internal/config.MirakcSiteNameMaxLen = 53）。
+mirakcs:
+  - site: sitea
+    url: http://mirakc-sitea:40772
+  - site: siteb
+    url: http://mirakc-siteb:40772
+
+storage:
+  media_dir: /mnt/media
+  scratch_dir: /var/tmp/rokuban
+  stores:
+    main: { kind: fs }
+  originals:
+    - store: main
+  derived: main
+
+# 世代付き録画 HLS は base と同じ dedicated Deployment で起動する。
+recording_hls:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-recording-hls
+
+# site ごとのライブ streamer も同じ ConfigMap を読む。ハーネスはライブ経路を
+# 実再生しないが、出荷構成と同じ live.enabled / full image の起動条件を検査する。
+live:
+  enabled: true
+  segment_dir: /dev/shm/rokuban-live
+  max_sessions: 4
+  idle_timeout: 30s
+  tuner_priority: 1
+  profiles:
+    - name: h264
+      video_codec: libx264
+      audio_codec: aac
+      height: 720
+      preset: veryfast
+      segment_seconds: 2
+      playlist_size: 6
+
+# **判定 3（実行中の encode Job がスケールインで殺されない）のためだけにある。**
+# base の config.yml には `encode:` が無い（プロファイルはデプロイごとの選択で、
+# 参照実装が既定を決める話ではない）ので、ここで 1 つだけ定義する。
+#
+# **判定 3 の観測窓より長く動かすための fixture。** 240 秒の入力を `veryslow` / 720p /
+# crf 18 で処理する。1080p は worker の 1 GiB limit で OOM したが、720p は F1.4 で
+# encoded asset を公開して完了した（arm64 kind で約 590 秒）。
+encode:
+  ffmpeg: ffmpeg
+  ffprobe: ffprobe
+  concurrency: 1
+  thumbnail_concurrency: 1
+  profiles:
+    - name: e2e-slow
+      container: mp4
+      video_codec: libx264
+      audio_codec: aac
+      height: 720
+      crf: 18
+      preset: veryslow
+
+worker:
+  # ジョブエンジンは asynq（Redis）。River 構成（base）との差分はこの節だけである
+  # （deploy/k8s/README.md §asynq 構成）。REDIS_URL は Secret から入る（パスワードを
+  # 含みうるので env で渡す。POSTGRES と同じ扱い）。
+  engine: asynq
+  redis_url: "${REDIS_URL}"
+  periodic_jobs: false
+log:
+  level: info
+  format: json

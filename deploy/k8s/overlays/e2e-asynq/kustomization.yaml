@@ -1,0 +1,232 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# asynq 構成の受け入れ判定形 overlay。`overlays/e2e`（2 サイト・判定ハーネス用の短縮値）
+# の上に、asynq の差分だけを載せる。判定ハーネスは `E2E_OVERLAY=e2e-asynq` で立てる。
+#
+# 上の overlays/e2e の patch（CronJob の毎分化・pollingInterval・requests の削り）は
+# そのまま効く。**asynq の差分は overlays/asynq と同じ 3 つ**（config.yml・
+# ../../asynq component・トリガ 17 本）。
+#
+# 名前空間は rokuban-e2e 固定。トリガの URL と REDIS_URL（harness が Secret に入れる）
+# の FQDN もここに揃える。
+
+resources:
+  - ../e2e
+
+namespace: rokuban-e2e
+
+components:
+  - ../../asynq
+
+configMapGenerator:
+  - name: rokuban-config
+    behavior: replace
+    files:
+      - config.yml
+
+patches:
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-ruler
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/ruler/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-cleanup
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/cleanup/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-ingest-sitea
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/ingest_sitea/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-epg-sitea
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/epg_sitea/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-reconciler-sitea
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/reconciler_sitea/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-record-sweep-sitea
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/watcher_sitea/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-ingest-siteb
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/ingest_siteb/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-epg-siteb
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/epg_siteb/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-reconciler-siteb
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/reconciler_siteb/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-record-sweep-siteb
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/watcher_siteb/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-ts-scan
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/ts_scan_main/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-encode
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/encode_main/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-thumbnail
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/thumbnail_main/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-cm-detect
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/cm_detect_main/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-transfer
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/transfer_main/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-original
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/original_main/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-storage
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/storage_main/deliverable-count"
+              valueLocation: value
+              targetValue: "1"

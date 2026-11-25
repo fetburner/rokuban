@@ -188,6 +188,7 @@ deploy_scaffold() {
   k create secret generic rokuban-secrets \
     --from-literal=POSTGRES_PASSWORD="$E2E_PGPASSWORD" \
     --from-literal=POSTGRES_CONNECTION_STRING="$(e2e_postgres_connection_string)" \
+    --from-literal=REDIS_URL="redis://rokuban-redis.${E2E_NAMESPACE}.svc.cluster.local:6379/0" \
     --from-literal=AWS_ACCESS_KEY_ID="$E2E_S3_ACCESS_KEY" \
     --from-literal=AWS_SECRET_ACCESS_KEY="$E2E_S3_SECRET_KEY" \
     --dry-run=client -o yaml | k apply -f - >/dev/null || return 1
@@ -282,7 +283,24 @@ preflight_environment() {
   # `deploy/k8s/README.md` は「Job が immutable で apply に失敗しても
   # Deployment の apply は成功する」を名指ししており、最も踏みやすい破損。
   plan "0.4"
-  if psql_q "SELECT 1 FROM river_job LIMIT 0" >/dev/null 2>&1; then
+  if [ "$E2E_ENGINE" = "asynq" ]; then
+    # asynq 構成の migrate up は River のスキーマを作らない（river_job は無いのが正しい）。
+    # 代わりに、件数の口（notifier）が Redis を読めていることを見る。
+    # rollout 直後は notifier / Redis が立ち上がりきっていないので、数十秒は待つ。
+    local ok=0 i
+    for i in $(seq 1 60); do
+      if tb_curl -f "http://rokuban-notifier:40773/internal/queues/ruler/deliverable-count" 2>/dev/null | grep -q '"value"'; then
+        ok=1; break
+      fi
+      sleep 2
+    done
+    if [ "$ok" = "1" ]; then
+      pass "0.4" "DB に届き、件数の口（notifier → Redis）が値を返す"
+    else
+      fail "0.4" "件数の口が値を返さない --- notifier が起きていないか、Redis に届いていない"
+      return 1
+    fi
+  elif psql_q "SELECT 1 FROM river_job LIMIT 0" >/dev/null 2>&1; then
     pass "0.4" "DB に届き、マイグレーションが当たっている"
   else
     fail "0.4" "river_job を引けない --- postgres が上がっていないか、マイグレーションが当たっていない"

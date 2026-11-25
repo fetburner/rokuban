@@ -43,6 +43,18 @@ E2E_SITE_B="siteb"
 # 両方を当てると PVC と Pod セットが並び、判定が余計なワークロードを見る。
 E2E_OVERLAY="${E2E_OVERLAY:-e2e}"
 
+# ジョブエンジン。`e2e-asynq` だけ asynq（Redis）で、それ以外は River（Postgres）。
+# 判定の「滞留の数え方」（queue_backlog）と「滞留の作り方」（insert_probe_job）がこれで分かれる。
+# 名前は overlay から決めて、環境変数で独立に上書きさせない（overlay と食い違うと
+# 判定が「river_job を数える」まま asynq の製品を見る）。
+if [ "$E2E_OVERLAY" = "e2e-asynq" ]; then
+  E2E_ENGINE="asynq"
+else
+  E2E_ENGINE="river"
+fi
+# asynq の滞留を作るときに kubectl port-forward で開く Redis の host 側ポート。
+E2E_REDIS_LOCAL_PORT="${E2E_REDIS_LOCAL_PORT:-16379}"
+
 # 判定 6 の置き場。`overlays/e2e-two-stores/config.yml` の `storage.stores` と同じ名前で、
 # PVC は `rokuban-media-<置き場>`、root は `/mnt/stores/<置き場>`。**環境変数で上書きさせない**
 # （サイト名と同じ理由。config.yml と食い違うと判定 6 は「対象が無い」に化ける）。
