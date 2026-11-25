@@ -18,7 +18,9 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq/contracttest"
 )
 
+// TestContract は process death ケースで孤児の回収を実時間で待つ。並列で重ねてよい根拠は testQueue の doc comment。
 func TestContract(t *testing.T) {
+	t.Parallel()
 	options := redisOptions(t)
 	contracttest.Run(t, func(t *testing.T, registry *jobq.Registry, worker jobq.Worker[contracttest.Args], name string) contracttest.Fixture {
 		jobq.Register(registry, worker)
@@ -47,7 +49,11 @@ func TestEnqueuePreservesLongWorkTimeout(t *testing.T) {
 	}
 }
 
+// TestCrashExhaustsOnlyAttempt は MaxAttempts 1 の Work がプロセス死で最後の試行を使い切り、
+// 回収後に再配送されないことを確かめる。並列で重ねてよい根拠は testQueue の doc comment。
+// 回収を待つのは、使い切った後の状態が回収後にしか現れず、lease 切れの時刻は asynq の公開設定ではないため。
 func TestCrashExhaustsOnlyAttempt(t *testing.T) {
+	t.Parallel()
 	options := redisOptions(t)
 	var calls atomic.Int32
 	started := make(chan struct{})
@@ -282,6 +288,15 @@ func redisOptions(t *testing.T) *redis.Options {
 	return options
 }
 
+// testQueue はテストごとに分かれた物理キュー名を返す。UUID の接頭辞で、同じ Redis DB を
+// 共有するテスト同士のキューが衝突しない。回収を待つテストを t.Parallel で重ねてよい根拠は、
+// 次の asynq v0.26.0 の公開文書による。
+//   - TaskInfo.IsOrphaned の godoc: 孤児は「そのタスクのキューに対して server を走らせる」ことで回収される。
+//     よって、あるテストの server は自分のキューの孤児だけを回収し、別テストのキューには触れない。
+//   - Config.Queues の godoc: server が処理するのは列挙したキューだけで、nil なら "default" だけ。
+//     各テストの server は自分のキュー 1 本だけを列挙するので、別テストのキューを処理しない。
+//   - asynq.Unique の godoc: タスクの一意性は Task Type・Task Payload・Queue Name に基づく。
+//     同じ payload のタスクが別テストのキューで合流することはない。
 func testQueue(name string) string {
 	prefix := "test-" + uuid.NewString() + "-"
 	return prefix + name[:min(len(name), jobq.MaxQueueNameLen-len(prefix))]

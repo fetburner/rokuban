@@ -269,7 +269,11 @@ func TestRunOncePromotesDueSnoozedTask(t *testing.T) {
 	}
 }
 
+// TestRunOnceRecoversOrphanedTask は RunOnce の server が孤児を回収して実行することを確かめる。
+// 並列で重ねてよい根拠は testQueue の doc comment。
+// 回収を待つのは、孤児の状態が lease 切れを経てしか現れず、その時刻は asynq の公開設定ではないため。
 func TestRunOnceRecoversOrphanedTask(t *testing.T) {
+	t.Parallel()
 	options := redisOptions(t)
 	var calls atomic.Int32
 	started := make(chan struct{})

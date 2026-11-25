@@ -124,7 +124,12 @@ func TestCountDeliverableScheduledTaskOnlyAfterDue(t *testing.T) {
 	}
 }
 
+// TestCountDeliverableCountsOrphanedActiveTask は孤児の active を CountDeliverable が 1 件と数えることを確かめる。
+// 並列で重ねてよい根拠は testQueue の doc comment。
+// 孤児の状態は lease 切れを経てしか作れず、その時刻は asynq の公開設定ではないので待つ。
+// 回収の完了まで待つのは後片付けのため（キュー削除は active があると失敗する）。
 func TestCountDeliverableCountsOrphanedActiveTask(t *testing.T) {
+	t.Parallel()
 	started := make(chan struct{})
 	var calls atomic.Int32
 	registry := jobq.NewRegistry()
