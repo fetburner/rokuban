@@ -734,19 +734,48 @@ jobs:
 
   # 保守対象の Markdown 全体（README.md / CLAUDE.md / deploy/**/*.md / docs/**/*.md /
   # web/e2e/**/*.md）を textlint で検査する。プロファイルは 1 本で、違反 0 件が gate。
+  # 必須チェック名 docs-lint を担うので、ジョブは毎回走らせ、入力が変わらない PR では step だけ飛ばす。
+  # Markdown の対象の権威は package.json の docs:lint。filter はそれを写す。job 内で package.json から
+  # filter を組むより単純なので写す形にし、ずれは scripts/docslintpaths/ のテストが落とす。
   docs-lint:
     runs-on: ubuntu-slim
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: changes
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            docs:
+              - 'README.md'
+              - 'CLAUDE.md'
+              - 'deploy/**/*.md'
+              - 'docs/**/*.md'
+              - 'web/e2e/**/*.md'
+              - '.textlintrc.json'
+              - 'scripts/textlint-rules/**'
+              - 'scripts/textlint-*.js'
+              - 'scripts/*.allow.json'
+              - 'scripts/check-allow-total.mjs'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.node-version'
+              - '.github/**'
       - uses: actions/setup-node@v7
+        if: &docs_lint_needed ${{ github.event_name == 'push' || steps.changes.outputs.docs == 'true' }}
         with:
           node-version-file: .node-version
           cache: npm
       - run: npm ci
+        if: *docs_lint_needed
       - run: npm run docs:lint
+        if: *docs_lint_needed
       # 許容が base より増えていないこと（scripts/check-allow-total.mjs）。PR だけ見る。
       - name: Check allow counts
-        if: github.event_name == 'pull_request'
+        if: ${{ github.event_name == 'pull_request' && steps.changes.outputs.docs == 'true' }}
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |

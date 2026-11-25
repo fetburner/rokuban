@@ -68,6 +68,8 @@ PR の CI は、変更が Go の依存先に入るパッケージと、ソース
 
 `go.mod` や `.github/` を変えた PR と、main への push では全パッケージを回す。週次の検証（mirakc conformance の drift 検知）は別系統で、ここの選び方の対象ではない。
 
+docs-lint（textlint）も PR では入力が変わったときだけ回し、main への push では毎回回す。ジョブ自体は必須チェックとして毎回走る。
+
 ### k8s の故障注入
 
 強制終了した worker の仕事の再実行と、接続断の間に失った mirakc の schedule の再照合を、使い捨ての kind + KEDA suite で検査する。実デプロイのキュー・Pod・media volume を通すためである。
