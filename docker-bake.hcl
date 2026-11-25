@@ -19,6 +19,12 @@ variable "GITHUB_ACTIONS" {
   default = ""
 }
 
+# "false" のとき gha への書き出し（cache-to）だけを止める。読み取り（cache-from）は変えない。
+# 既定は書き出す。false を渡すのは ci.yml の docker ジョブの PR だけ（理由は ci.yml の docker ジョブ）。
+variable "GHA_CACHE_WRITE" {
+  default = "true"
+}
+
 # gha_cache は scope ごとのキャッシュ指定を返す。scope 名は target 名と同じにして、
 # 同じ target を組む workflow（ci / publish-sha / release）がキャッシュを共有する。
 function "gha_cache" {
@@ -37,7 +43,7 @@ target "image" {
   args       = { VERSION = VERSION }
   platforms  = ["linux/amd64", "linux/arm64"]
   cache-from = gha_cache("image", "")
-  cache-to   = gha_cache("image", ",mode=max")
+  cache-to   = GHA_CACHE_WRITE == "true" ? gha_cache("image", ",mode=max") : []
 }
 
 target "full" {
@@ -48,7 +54,7 @@ target "full" {
   contexts   = { base = "target:image" }
   platforms  = ["linux/amd64", "linux/arm64"]
   cache-from = gha_cache("full", "")
-  cache-to   = gha_cache("full", ",mode=max")
+  cache-to   = GHA_CACHE_WRITE == "true" ? gha_cache("full", ",mode=max") : []
 }
 
 group "default" {
