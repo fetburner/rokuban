@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"time"
 )
 
@@ -135,6 +136,20 @@ type RuleImport interface {
 	// ImportEPGStationRule は EPGStation rule ID のルールを作成または更新し、子条件を全置換する。
 	// 作成または更新と子条件は 1 つのトランザクションで確定する。
 	// 同じ tx で、Create / Update と同じ site の ruler 入力の版を 1 進める。
+	// 同じ新しい ID への同時の取り込みは 1 本だけが作成し、負けた側は更新になるか ErrConflict を返す。
 	// 検査: 「EPGStation import uses stable identity atomically」、版の前進は「writes advance ruler input revisions」。
 	ImportEPGStationRule(ctx context.Context, epgstationRuleID int64, in RuleInput) (created bool, err error)
+}
+
+// CanonicalizeStrings は encode_profiles の入力を保存用の正規形にする。空の値と重複を除き、昇順に並べる。
+// 結果は nil にならないので、JSON に直すと必ず配列になる。
+func CanonicalizeStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != "" && !slices.Contains(out, value) {
+			out = append(out, value)
+		}
+	}
+	slices.Sort(out)
+	return out
 }

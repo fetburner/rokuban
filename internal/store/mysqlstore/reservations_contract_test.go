@@ -104,6 +104,13 @@ func holdProgramSnapshot(t *testing.T, db *sql.DB, site string, programID int64)
 // waitSnapshotWaiters はこのテスト DB の program_snapshots で待機する tx を数える。
 func waitSnapshotWaiters(t *testing.T, db *sql.DB, want int) {
 	t.Helper()
+	waitLockWaiters(t, db, "program_snapshots", want)
+}
+
+// waitLockWaiters はこのテスト DB の table の行ロックで待機する tx が want 本になるまで待つ。
+// performance_schema.data_lock_waits を読むので、待機は実際にロック待ちでなければ数えられない。
+func waitLockWaiters(t *testing.T, db *sql.DB, table string, want int) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var got int
@@ -113,10 +120,10 @@ func waitSnapshotWaiters(t *testing.T, db *sql.DB, want int) {
   FROM performance_schema.data_lock_waits w
   JOIN performance_schema.data_locks l
     ON l.ENGINE = w.ENGINE AND l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID
-  WHERE l.OBJECT_SCHEMA = DATABASE() AND l.OBJECT_NAME = 'program_snapshots'
-  `).Scan(&got)
+  WHERE l.OBJECT_SCHEMA = DATABASE() AND l.OBJECT_NAME = ?
+  `, table).Scan(&got)
 		if err != nil {
-			t.Fatalf("observing snapshot lock waiters (%d observed, want %d): %v", got, want, err)
+			t.Fatalf("observing %s lock waiters (%d observed, want %d): %v", table, got, want, err)
 		}
 		if got >= want {
 			return

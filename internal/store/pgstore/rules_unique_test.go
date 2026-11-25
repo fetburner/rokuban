@@ -167,25 +167,6 @@ func TestCatalogEmptyRuleImportKeys(t *testing.T) {
 	assertImportMetadata(t, after.Rules[0].Metadata, string(doc.Rules[0].Metadata))
 }
 
-func TestRuleImportCreationRollsBackKey(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	rules := NewRules(pool, []string{"default"})
-	if _, err := rules.ImportEPGStationRule(t.Context(), 42, store.RuleInput{Name: "invalid", Sites: []string{"default", "default"}}); err == nil {
-		t.Fatal("invalid child accepted")
-	}
-	var rulesCount, keyCount int
-	if err := pool.QueryRow(t.Context(), "SELECT (SELECT count(*) FROM rules), (SELECT count(*) FROM rule_import_keys)").Scan(&rulesCount, &keyCount); err != nil {
-		t.Fatal(err)
-	}
-	if rulesCount != 0 || keyCount != 0 {
-		t.Fatalf("partial import: rules=%d keys=%d", rulesCount, keyCount)
-	}
-	created, err := rules.ImportEPGStationRule(t.Context(), 42, store.RuleInput{Name: "valid"})
-	if err != nil || !created {
-		t.Fatalf("retry = %t, %v, want creation", created, err)
-	}
-}
-
 func TestRuleImportPreservesConcurrentMetadata(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	rules := NewRules(pool, []string{"default"})

@@ -78,6 +78,26 @@ CREATE TRIGGER fail_rule_delete BEFORE DELETE ON rules FOR EACH ROW EXECUTE FUNC
 				t.Helper()
 				waitForRuleWriters(t, pool, n)
 			},
+			SeedRecording: func(t *testing.T, ruleID int64) int64 {
+				t.Helper()
+				var id int64
+				if err := pool.QueryRow(context.Background(), `
+INSERT INTO recordings (rule_id, source, site, network_id, service_id, event_id, service_name, channel_type, channel,
+                        title, program_start_at, program_duration_ms, status)
+VALUES ($1, 'rule', 'rules-contract', 1, 1, 1, 'store contract', 'GR', '27', 'recording', now(), 1800000, 'finished')
+RETURNING id`, ruleID).Scan(&id); err != nil {
+					t.Fatalf("seeding recording: %v", err)
+				}
+				return id
+			},
+			RecordingRuleID: func(t *testing.T, recordingID int64) *int64 {
+				t.Helper()
+				var ruleID *int64
+				if err := pool.QueryRow(context.Background(), `SELECT rule_id FROM recordings WHERE id = $1`, recordingID).Scan(&ruleID); err != nil {
+					t.Fatalf("reading recording %d: %v", recordingID, err)
+				}
+				return ruleID
+			},
 		}
 	})
 }

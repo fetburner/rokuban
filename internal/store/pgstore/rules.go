@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
@@ -363,7 +362,7 @@ func ruleCreateParams(in store.RuleInput) (sqlcgen.CreateRuleParams, error) {
 		params.KeepOriginal = *in.KeepOriginal
 	}
 	if in.EncodeProfiles != nil {
-		params.EncodeProfiles = canonicalizeStrings(*in.EncodeProfiles)
+		params.EncodeProfiles = store.CanonicalizeStrings(*in.EncodeProfiles)
 	}
 	if in.FilenameTemplate != nil {
 		params.FilenameTemplate = *in.FilenameTemplate
@@ -493,21 +492,4 @@ func intervalToSeconds(value pgtype.Interval) (int64, bool) {
 		return 0, false
 	}
 	return value.Microseconds / 1_000_000, true
-}
-
-func canonicalizeStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
 }
