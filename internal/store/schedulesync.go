@@ -27,8 +27,8 @@ type ObservedSchedule struct {
 // ScheduleSync は reconciler が schedule の観測と予約との差分を永続化・読む契約である。
 type ScheduleSync interface {
 	// ReplaceObserved は site の観測行を observed で置き換え、古い観測行を削除し、snapshot marker を更新する。
-	// この三つを 1 tx で原子的に確定する。古い観測行の判定時刻は DB の時計で付け、呼び出し側は時刻を渡さない（契約テストでは未検証）。
-	// 検査: contracttest.RunScheduleSync の「replace removes stale observations and advances marker」「failed replacement preserves prior observations and marker」「marker failure rolls back observations」「replacement is scoped to one site」。
+	// この三つを 1 tx で原子的に確定する。観測行と marker の時刻は DB の時計で付け、呼び出し側は時刻を渡さない（契約テストでは未検証）。
+	// 検査: contracttest.RunScheduleSync の「replace removes stale observations and advances marker」「failed replacement preserves prior observations and marker」「marker failure rolls back observations」「replacement is scoped to one site」「large replacement crosses statement limits」。
 	ReplaceObserved(ctx context.Context, site string, observed []ObservedSchedule) error
 	ListForSyncEvaluation(ctx context.Context, site string) ([]reservation.SyncEvaluationRow, error)
 	ListStartedBroadcastEventKeys(ctx context.Context, site string, keys []BroadcastEventKey, startedAfter time.Time) ([]BroadcastEventKey, error)
