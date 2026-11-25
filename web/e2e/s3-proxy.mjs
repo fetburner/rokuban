@@ -32,15 +32,16 @@ const PAGE_PORT = 4174
 // 調べた範囲（出典に書かれていることだけを書く。書かれていないものは「記載なし・未検証」）:
 // - streamer の本番 HTTP サーバー（cmd/rokuban/server.go）: ReadHeaderTimeout 10s、IdleTimeout 120s、
 //   ReadTimeout・WriteTimeout は未設定。https://pkg.go.dev/net/http#Server は IdleTimeout を「次のリクエストを待つ時間」、
-//   0 のとき ReadTimeout を使うと書く。応答の書き込み中の期限は記載なし（同ファイルのテストが実測を主張）。
+//   0 のとき ReadTimeout を使うと書く。応答の書き込み中の期限は文書に記載なし。書き込み中は切られないことを、リポジトリのテスト TestNewHTTPServer_LongRunningHandlerNotCutByIdleTimeout（cmd/rokuban/http_server_test.go）が実測している。
 // - conformance フィクスチャ（internal/streamer/conformance/main.go）: ReadHeaderTimeout 5s のみ。IdleTimeout・ReadTimeout は未設定で、
 //   net/http の doc によると keep-alive の待ちに期限は無い。ReadHeaderTimeout が keep-alive の待ちに効くとの記載は無い。
+//   本番の IdleTimeout 120s はこのフィクスチャに無く、この判定は 120s を跨いでいない。
 // - streamer の S3 クライアント（aws-sdk-go-v2）: https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/aws/transport/http の
 //   BuildableClient は既定 Transport を使う。DefaultHTTPTransportIdleConnTimeout は 90s（アイドルな接続の待ち）。
 //   ResponseHeaderTimeout は挙げていない。読み途中の応答本体の期限は記載なし。
 // - Node の throttle proxy（テスト専用。本番には無い）: https://nodejs.org/api/http.html の既定は server.timeout 0、
 //   keepAliveTimeout 5000 ms（応答を書き終えた後のアイドル）、requestTimeout 300000 ms（要求の受信）、headersTimeout は min(requestTimeout, 60000)。
-//   一時停止中の応答途中への効きは記載なし。判定を誤らせうるのは、テスト経路だけが持つ 5s の keep-alive 期限。
+//   一時停止中の応答途中への効きは記載なし・未検証。
 // - RustFS: 公式文書の該当項目は見つからなかった。GitHub issue rustfs/rustfs#3076 の maintainer は、
 //   RUSTFS_HTTP1_HEADER_READ_TIMEOUT（5s から 75s に変更と記載）が「idle な keep-alive 接続」を閉じる時間に効くと述べる。
 //   一時停止中の応答途中に効くかは記載なし・未検証。

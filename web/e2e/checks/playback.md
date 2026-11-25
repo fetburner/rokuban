@@ -239,9 +239,7 @@ CI では RustFS の MP4 を `delivery: proxy` の streamer 経由で実 Chrome 
 
 一時停止の長さは環境変数 `E2E_S3_PROXY_PAUSE_MS` で決まり、未設定なら 180000 ms である。main への push では 180000 ms、PR では 0 ms で回す（`ci.yml` の `browser-s3-302`）。PR の 0 ms は再開の経路だけを見る。
 
-跨ぐべき待ち時間は未特定である。調べた範囲と出典は `web/e2e/s3-proxy.mjs` の `PAUSE_MS` の隣のコメントにある。Chrome と RustFS の時間は、検索した公開文書に見つからなかった。
-
-跨ぐべき待ち時間は未特定である。Go の `net/http` の `ReadTimeout`・`WriteTimeout`・`IdleTimeout` は既定で無期限。HTML Standard は、取得の停止とデータの破棄を時間の条件無しに許す。Chrome の手放す時刻は公開文書に無い。したがって PR の 0 ms は再開の経路だけを見ており、待ちを跨ぐ失敗は main の実行でしか見ない。各シーク前に位置がバッファ外であることを確かめ、streamer の新しい Range 要求も数える。Playwright WebKit でも、ローカル診断として同じ判定を回せる。
+跨ぐべき待ち時間は未特定である。調べた範囲と出典は `web/e2e/s3-proxy.mjs` の `PAUSE_MS` の隣のコメントにある。Chrome と RustFS の時間は、検索した公開文書に見つからなかった。本番の streamer は IdleTimeout 120s を設定するが、フィクスチャはこの設定を使わないため、この判定はそれを跨いでいない。
 
 必要なのは `s3-302.mjs` と同じ RustFS、PostgreSQL、ffmpeg、ブラウザの準備である。CI の `browser-s3-302` は S3 streamer conformance バイナリを用意し、`node e2e/run.mjs --needs s3` を実行する。ローカルではその CI のサービスを起動し、リポジトリのルートから次を実行する。
 
