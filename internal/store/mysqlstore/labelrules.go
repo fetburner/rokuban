@@ -78,10 +78,10 @@ func (s *LabelRules) Create(ctx context.Context, key, value, keyword string, pri
 func (s *LabelRules) Update(ctx context.Context, id int64, value, keyword string, priority int32) (store.LabelRule, error) {
 	var updated store.LabelRule
 	err := runTx(ctx, s.db, func(tx *sql.Tx) error {
+		// 先読みで存在を見るのは、MySQL の UPDATE の件数が一致した行数でなく変わった行数だからである。
 		if err := lockLabelRule(ctx, tx, id); err != nil {
 			return err
 		}
-		// 先読みで存在を見るのは、MySQL の UPDATE の件数が一致した行数でなく変わった行数だからである。
 		valueKey, err := labelRuleValueKey(value)
 		if err != nil {
 			return err
