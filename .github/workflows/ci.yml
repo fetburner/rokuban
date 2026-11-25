@@ -890,6 +890,8 @@ jobs:
   # publish と同じ docker-bake.hcl で組むので、bake の定義が壊れたら main に入る前にここで落ちる。
   # gha キャッシュも bake の定義が持ち、publish-sha.yml / release.yml と共有する。
   # ただし組むのは amd64 だけで、arm64 へのクロスビルドは publish-sha.yml でしか通らない。
+  # PR では gha への書き出しを止める。書いたキャッシュは上限を超えると最終アクセスの古い順に追い出され、
+  # main の buildkit キャッシュや go-test-timings- まで消えるため。読み取りは残すので、PR は main のキャッシュを読む。
   docker:
     runs-on: ubuntu-latest
     steps:
@@ -907,6 +909,8 @@ jobs:
             *.platform=linux/amd64
             image.tags=rokuban:test
             full.tags=rokuban:test-full
+        env:
+          GHA_CACHE_WRITE: ${{ github.event_name != 'pull_request' }}
       - name: JLSE binaries start with their runtime libraries
         run: |
           docker run --rm --entrypoint sh rokuban:test-full -eu -c '
