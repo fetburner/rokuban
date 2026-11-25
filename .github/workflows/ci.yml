@@ -331,9 +331,44 @@ jobs:
       ROKUBAN_REQUIRE_FFMPEG: "1"
     steps:
       - uses: actions/checkout@v7
+      # setup-go の cache は使わず、モジュールと build キャッシュは下の actions/cache で持つ。
+      # setup-go の README: 「By default, the action looks for `go.mod` in the repository root and
+      # uses its hash as part of the cache key.」 shard が復元する setup-go キャッシュは 52 MiB で、
+      # hit した後も shard のログに `go: downloading` が出た。誰が保存したかは確かめていない。
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          cache: false
+      - id: go-dirs
+        shell: bash
+        run: |
+          {
+            echo "gocache=$(go env GOCACHE)"
+            echo "gomodcache=$(go env GOMODCACHE)"
+          } >> "$GITHUB_OUTPUT"
+      # build キャッシュは古いキーの中身でも再利用してよい。`go help cache` が「correctly accounts for
+      # changes to Go source files, compilers, compiler options, and so on」と書いており、中身が
+      # 合わなければ使われないだけで誤った結果にはならないため。
+      # キーは shard ごとに、go.mod と go.sum のハッシュで分ける。依存が変わったときだけ新しいキーになり、
+      # 直前のキーの中身は restore-keys の前方一致で読む。
+      # 保存は main への push で、完全一致が無かったときだけ行う（actions/cache の README:
+      # 「If the provided `key` matches an existing cache, a new cache is not created」）。
+      # PR は読むだけ。PR が main の cache を読めるのは actions/cache の README（Cache scopes 節）の
+      # 「The default branch cache is available to other branches.」による。
+      # ponytail: キーは go.mod / go.sum が変わるまで同じなので、中身は最初に保存した時点のまま残る。main が進むと、
+      # 自前パッケージのビルド結果は当たらなくなっていき、確実に効くのは std・race ランタイム・依存だけになる。
+      # ci-matrix の振り分けが変わると、shard 番号と中身もずれる。保存は 3 件で計 608 MiB（圧縮後）。
+      # 振り分けが変わった直後の PR の実測で、テストのビルドは 38〜92 秒から 8〜24 秒に縮んだ。
+      # 効きが落ちたら、run ごとのキーにして古い entry を消す形へ移る。
+      - id: race-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ steps.go-dirs.outputs.gocache }}
+            ${{ steps.go-dirs.outputs.gomodcache }}
+          key: go-race-build-${{ runner.os }}-${{ matrix.id }}-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: |
+            go-race-build-${{ runner.os }}-${{ matrix.id }}-
       - uses: ./.github/actions/install-apt-cached
       # API / streamer のテストは DistFS に fstest.MapFS を渡し、go:embed all:dist の置き場は追跡済みの web/dist/.gitkeep が満たす。そのためフロントエンドのビルドは要らない。
       # DB を使うテストはパッケージごとに専用データベースを作るため（internal/testutil.SetupDB）、
@@ -356,6 +391,20 @@ jobs:
         run: |
           read -r -a pkgs <<< "$PACKAGES"
           go run gotest.tools/gotestsum@v1.13.0 --jsonfile "$TIMING_FILE" -- -race -p 8 -count=1 -timeout 10m "${pkgs[@]}"
+      # restore が完全一致しなかった main の実行だけ保存する。cache-hit は完全一致のときだけ 'true'
+      # （actions/cache の README: 「A string value to indicate an exact match was found for the key.」）。
+      # main は cancel-in-progress で止めないので、続けて push されると 2 つの run が両方 miss して
+      # 同じキーを save しうる。2 本目の save の振る舞いは README に書かれていない。キャッシュ保存の
+      # 失敗でテストジョブを赤くしないため continue-on-error にする。
+      - name: Save go build cache
+        if: github.event_name == 'push' && steps.race-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ steps.go-dirs.outputs.gocache }}
+            ${{ steps.go-dirs.outputs.gomodcache }}
+          key: go-race-build-${{ runner.os }}-${{ matrix.id }}-${{ hashFiles('go.mod', 'go.sum') }}
       - uses: actions/upload-artifact@v7
         with:
           name: go-test-timing-${{ matrix.id }}
