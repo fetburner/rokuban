@@ -43,7 +43,9 @@ jobs:
             web:
               - 'web/**'
               - '.node-version'
-              - '.github/**'
+              # 全件にする範囲は scripts/citest の requiresAllPackages と一致させる（TestBrowserE2EPathFiltersMatchAllPackagesRule が検査）。
+              - '.github/workflows/ci.yml'
+              - '.github/actions/**'
       - name: Fetch PR base
         if: github.event_name == 'pull_request'
         env:
@@ -285,7 +287,7 @@ jobs:
           packages_file="$RUNNER_TEMP/packages.txt"
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
             git diff --name-only -z --no-renames "$BASE_SHA" HEAD |
-              go run ./scripts/citest ./... > "$packages_file"
+              go run ./scripts/citest -base "$BASE_SHA" ./... > "$packages_file"
           else
             go list ./... > "$packages_file"
           fi
@@ -536,7 +538,7 @@ jobs:
           packages_file="$RUNNER_TEMP/packages.txt"
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
             git diff --name-only -z --no-renames "$BASE_SHA" HEAD |
-              go run ./scripts/citest -tags conformance ./internal/mirakc/conformance/... > "$packages_file"
+              go run ./scripts/citest -base "$BASE_SHA" -tags conformance ./internal/mirakc/conformance/... > "$packages_file"
           else
             go list -tags conformance ./internal/mirakc/conformance/... > "$packages_file"
           fi

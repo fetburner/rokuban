@@ -4,12 +4,18 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
+	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/goccy/go-yaml"
 )
 
 func writeSelectionFixture(t *testing.T) (string, map[string]string) {
@@ -202,10 +208,13 @@ func TestSelectPackages(t *testing.T) {
 			want:    allConformance,
 		},
 		{
-			name:    "GitHub workflow",
+			name:    "GitHub workflow ci.yml",
 			changed: ".github/workflows/ci.yml",
 			want:    allConformance,
 		},
+		{name: "GitHub composite action", changed: ".github/actions/install-apt-cached/action.yml", want: allConformance},
+		{name: "GitHub publish-sha workflow does not select everything", changed: ".github/workflows/publish-sha.yml", want: nil},
+		{name: "dependabot config does not select everything", changed: ".github/dependabot.yml", want: nil},
 		{
 			name:    "selector change",
 			changed: "scripts/citest/main.go",
@@ -250,7 +259,7 @@ func TestSelectPackages(t *testing.T) {
 					}
 				})
 			}
-			got, err := selectPackages(root, "conformance", false, []string{"./conformance/..."}, []string{tt.changed})
+			got, err := selectPackages(root, "conformance", "", false, []string{"./conformance/..."}, []string{tt.changed})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -296,14 +305,14 @@ func TestBodyOnlySelection(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := selectPackages(root, "", false, []string{"./internal/body"}, []string{tt.changed})
+			got, err := selectPackages(root, "", "", false, []string{"./internal/body"}, []string{tt.changed})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !slices.Equal(got, tt.wantDefault) {
 				t.Errorf("default packages for %q = %v, want %v", tt.changed, got, tt.wantDefault)
 			}
-			got, err = selectPackages(root, "", true, []string{"./internal/body"}, []string{tt.changed})
+			got, err = selectPackages(root, "", "", true, []string{"./internal/body"}, []string{tt.changed})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -417,4 +426,243 @@ func missingGoDeclarations(root string) ([]string, error) {
 		return nil
 	})
 	return missing, err
+}
+
+// runIn は dir で外部コマンドを実行し、失敗したら出力を添えて止める。
+func runIn(t *testing.T, dir, name string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
+// writeProxyModule は file:// のモジュールプロキシに 1 版を置く。src は pkg.go の中身。
+func writeProxyModule(t *testing.T, proxy, module, version, goMod, src string) {
+	t.Helper()
+	dir := filepath.Join(proxy, filepath.FromSlash(module), "@v")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	list, err := os.OpenFile(filepath.Join(dir, "list"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintln(list, version); err != nil {
+		t.Fatal(err)
+	}
+	if err := list.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var zipped bytes.Buffer
+	zw := zip.NewWriter(&zipped)
+	for name, body := range map[string]string{"go.mod": goMod, "pkg.go": src} {
+		w, err := zw.Create(module + "@" + version + "/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		version + ".info": []byte(`{"Version":"` + version + `","Time":"2020-01-01T00:00:00Z"}`),
+		version + ".mod":  []byte(goMod),
+		version + ".zip":  zipped.Bytes(),
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// writeModuleFixture は版の上げ下げを実物の go list に通す最小モジュールを作り、base を git の commit として返す。
+// モジュールは file:// のプロキシに置いて外へ出ない。各判定は git checkout で base に戻してから変更を入れる。
+func writeModuleFixture(t *testing.T) (string, string) {
+	t.Helper()
+	t.Setenv("GOWORK", "off")
+	t.Setenv("GOSUMDB", "off")
+	proxy := t.TempDir()
+	t.Setenv("GOPROXY", "file://"+proxy)
+	const goMod = "module %s\n\ngo 1.24\n"
+	writeProxyModule(t, proxy, "example.com/mfix/dep", "v1.0.0", fmt.Sprintf(goMod, "example.com/mfix/dep"),
+		"package dep\n\nfunc Name() string { return \"dep\" }\n")
+	writeProxyModule(t, proxy, "example.com/mfix/dep", "v1.0.1", fmt.Sprintf(goMod, "example.com/mfix/dep"),
+		"package dep\n\nfunc Name() string { return \"dep\" }\n")
+	midMod := fmt.Sprintf(goMod, "example.com/mfix/mid") + "\nrequire example.com/mfix/dep v1.0.0\n"
+	midSrc := "package mid\n\nimport \"example.com/mfix/dep\"\n\nfunc Name() string { return dep.Name() }\n"
+	writeProxyModule(t, proxy, "example.com/mfix/mid", "v1.0.0", midMod, midSrc)
+	writeProxyModule(t, proxy, "example.com/mfix/mid", "v1.0.1", midMod, midSrc)
+
+	root := t.TempDir()
+	files := map[string]string{
+		"go.mod":                 "module example.com/mfix\n\ngo 1.24\n\nrequire example.com/mfix/mid v1.0.0\n",
+		"viamid/viamid.go":       "package viamid\n\nimport \"example.com/mfix/mid\"\n\nvar Name = mid.Name()\n",
+		"unrelated/unrelated.go": "package unrelated\n",
+		"cmd/tool/main.go":       "package main\n\nfunc main() {}\n",
+		// viamid の依存を ci-extra-deps で宣言するだけで、モジュールは import しない。版上げはこの宣言経由でも選ぶ。
+		"declared/declared.go": "// ci-extra-deps: ./viamid\n\npackage declared\n",
+		// dep をテストファイルからだけ import する。通常の判定はテストの依存で選び、-body-only は選ばない。
+		"testonly/testonly.go":      "package testonly\n",
+		"testonly/testonly_test.go": "package testonly\n\nimport _ \"example.com/mfix/dep\"\n",
+	}
+	for name, body := range files {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runIn(t, root, "go", "mod", "tidy")
+	runIn(t, root, "git", "init", "-q")
+	runIn(t, root, "git", "add", "-A")
+	runIn(t, root, "git", "-c", "user.name=citest", "-c", "user.email=citest@example.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "base")
+	base := strings.TrimSpace(runIn(t, root, "git", "rev-parse", "HEAD"))
+	return root, base
+}
+
+func TestSelectModuleChanges(t *testing.T) {
+	root, base := writeModuleFixture(t)
+	allModule := []string{"example.com/mfix/cmd/tool", "example.com/mfix/declared", "example.com/mfix/testonly", "example.com/mfix/unrelated", "example.com/mfix/viamid"}
+
+	bumpDep := func(t *testing.T, root string) { runIn(t, root, "go", "get", "example.com/mfix/dep@v1.0.1") }
+	tests := []struct {
+		name     string
+		bodyOnly bool
+		edit     func(t *testing.T, root string)
+		want     []string
+	}{
+		{
+			name: "間接依存だけの版上げは、それを推移的に使うパッケージと、その依存を ci-extra-deps で宣言したパッケージを選ぶ",
+			edit: bumpDep,
+			want: []string{"example.com/mfix/declared", "example.com/mfix/testonly", "example.com/mfix/viamid"},
+		},
+		{
+			name: "テストファイルからだけ使う版上げは、通常の判定では選ぶ",
+			edit: bumpDep,
+			want: []string{"example.com/mfix/declared", "example.com/mfix/testonly", "example.com/mfix/viamid"},
+		},
+		{
+			name:     "テストファイルからだけ使う版上げは、-body-only では選ばない",
+			bodyOnly: true,
+			edit:     bumpDep,
+			want:     []string{"example.com/mfix/declared", "example.com/mfix/viamid"},
+		},
+		{
+			name: "直接依存の版上げは、それを使うパッケージを選ぶ",
+			edit: func(t *testing.T, root string) { runIn(t, root, "go", "get", "example.com/mfix/mid@v1.0.1") },
+			want: []string{"example.com/mfix/declared", "example.com/mfix/viamid"},
+		},
+		{
+			name: "go 行の変更は全件",
+			edit: func(t *testing.T, root string) {
+				p := filepath.Join(root, "go.mod")
+				body, err := os.ReadFile(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, bytes.Replace(body, []byte("go 1.24"), []byte("go 1.25"), 1), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: allModule,
+		},
+		{
+			name: "godebug 行の変更は全件（既定の GODEBUG は全パッケージの実行時に効く）",
+			edit: func(t *testing.T, root string) { runIn(t, root, "go", "mod", "edit", "-godebug=default=go1.21") },
+			want: allModule,
+		},
+		{
+			name: "tool 行だけの変更は選ばない",
+			edit: func(t *testing.T, root string) {
+				runIn(t, root, "go", "mod", "edit", "-tool=example.com/mfix/cmd/tool")
+			},
+			want: nil,
+		},
+		{
+			name: "go.sum のハッシュ行の追加だけは選ばない",
+			edit: func(t *testing.T, root string) {
+				f, err := os.OpenFile(filepath.Join(root, "go.sum"), os.O_APPEND|os.O_WRONLY, 0o600)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.WriteString("example.com/mfix/unused v1.0.0 h1:AAAA=\n"); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.Close(); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runIn(t, root, "git", "checkout", "-q", "--", ".")
+			tt.edit(t, root)
+			got, err := selectPackages(root, "", base, tt.bodyOnly, []string{"./..."}, []string{"go.mod", "go.sum"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("selected = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBrowserE2EPathFiltersMatchAllPackagesRule は ci.yml の browser-e2e-plan の paths-filter にある
+// .github/ 始まりのエントリが、requiresAllPackages が全件にする範囲（githubAllPackagesPaths）と完全一致することを検査する。
+// 両方向のずれ（Go 側の追加・削除と、YAML 側の変更）を落とす。
+func TestBrowserE2EPathFiltersMatchAllPackagesRule(t *testing.T) {
+	data, err := os.ReadFile("../../.github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Uses string         `yaml:"uses"`
+				With map[string]any `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatalf("ci.yml を YAML として読めない: %v", err)
+	}
+	var filters string
+	for _, step := range workflow.Jobs["browser-e2e-plan"].Steps {
+		if strings.HasPrefix(step.Uses, "dorny/paths-filter@") {
+			filters, _ = step.With["filters"].(string)
+		}
+	}
+	if filters == "" {
+		t.Fatal("browser-e2e-plan に dorny/paths-filter の filters がありません")
+	}
+	// filters 文字列は、フィルタ名から glob の一覧への YAML である。
+	var defined map[string][]string
+	if err := yaml.Unmarshal([]byte(filters), &defined); err != nil {
+		t.Fatalf("paths-filter の filters を YAML として読めない: %v", err)
+	}
+	var got []string
+	for _, entry := range defined["web"] {
+		if strings.HasPrefix(entry, ".github/") {
+			got = append(got, entry)
+		}
+	}
+	want := slices.Clone(githubAllPackagesPaths)
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("paths-filter の .github/ 系 = %v, requiresAllPackages の範囲 = %v", got, want)
+	}
 }
