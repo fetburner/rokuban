@@ -68,7 +68,7 @@ PR の CI は、変更が Go の依存先に入るパッケージと、ソース
 
 `go.mod` や `.github/` を変えた PR と、main への push では全パッケージを回す。週次の検証（mirakc conformance の drift 検知）は別系統で、ここの選び方の対象ではない。
 
-PR の docs-lint（textlint）は入力（一覧は `.github/workflows/ci.yml` の `docs-lint` の filter）が変わったときだけ回し、Markdown だけなら変わったファイルだけを検査する。
+PR の docs-lint は入力（一覧は `.github/workflows/ci.yml` の `docs-lint` の filter）が変わったときだけ回し、Markdown だけが変わったときは変わったファイルだけを検査する。
 
 ### k8s の故障注入
 

@@ -782,7 +782,13 @@ jobs:
         env:
           MD_FILES: ${{ steps.changes.outputs.md_files }}
         run: |
-          mapfile -t files < <(node -e 'for (const f of JSON.parse(process.env.MD_FILES || "[]")) console.log(f)')
+          # プロセス置換の中の失敗は -e で止まらないので、一度ファイルに書いて失敗を step に伝える。
+          node -e 'for (const f of JSON.parse(process.env.MD_FILES)) console.log(f)' > "$RUNNER_TEMP/md_files"
+          mapfile -t files < "$RUNNER_TEMP/md_files"
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::md の変更があるのに一覧が空。dorny の出力を確かめる"
+            exit 1
+          fi
           existing=()
           for f in "${files[@]}"; do
             if [ -e "$f" ]; then existing+=("$f"); fi
