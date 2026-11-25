@@ -8,26 +8,34 @@ import (
 	"testing"
 )
 
-// 期待値はすべてリテラルで書く。実装の定数（setupSec など）と比べるとテストは何も主張しない。
+// 期待値はすべてリテラルで書く。実装の定数や式と比べるとテストは何も主張しない。
+// test ジョブは parallel=3・準備 50 秒（境界 300 / 900）、
+// mirakc-conformance ジョブは parallel=1・準備 40 秒（境界 80 / 240）。
 func TestShardCount(t *testing.T) {
 	cases := []struct {
 		name       string
 		total      float64
 		unmeasured bool
+		parallel   int
+		setup      float64
 		want       int
 	}{
-		{"空に近い", 0, false, 1},
-		{"100 秒未満は 1 本", 99, false, 1},
-		{"100 秒で 2 本目", 100, false, 2},
-		{"300 秒未満は 2 本", 299, false, 2},
-		{"300 秒で 3 本目", 300, false, 3},
-		{"上限は 3 本", 5000, false, 3},
-		{"実測の無いパッケージは 1 秒でも上限", 10, true, 3},
+		{"test: 空に近い", 0, false, 3, 50, 1},
+		{"test: 299 秒は 1 本", 299, false, 3, 50, 1},
+		{"test: 300 秒で 2 本", 300, false, 3, 50, 2},
+		{"test: 899 秒は 2 本", 899, false, 3, 50, 2},
+		{"test: 900 秒で 3 本", 900, false, 3, 50, 3},
+		{"test: 上限は 3 本", 5000, false, 3, 50, 3},
+		{"test: 実測の無いパッケージは 1 秒でも上限", 10, true, 3, 50, 3},
+		{"conformance: 79 秒は 1 本", 79, false, 1, 40, 1},
+		{"conformance: 80 秒で 2 本", 80, false, 1, 40, 2},
+		{"conformance: 239 秒は 2 本", 239, false, 1, 40, 2},
+		{"conformance: 240 秒で 3 本", 240, false, 1, 40, 3},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := shardCount(tc.total, tc.unmeasured); got != tc.want {
-				t.Fatalf("shardCount(%v, %v) = %d, want %d", tc.total, tc.unmeasured, got, tc.want)
+			if got := shardCount(tc.total, tc.unmeasured, tc.parallel, tc.setup); got != tc.want {
+				t.Fatalf("shardCount(%v, %v, %d, %v) = %d, want %d", tc.total, tc.unmeasured, tc.parallel, tc.setup, got, tc.want)
 			}
 		})
 	}
@@ -51,19 +59,22 @@ func TestRun(t *testing.T) {
 	write("timing-1.json", `{"Action":"fail","Package":"ex/b","Elapsed":50}`+"\n")
 
 	cases := []struct {
-		name  string
-		input string
-		want  string
+		name     string
+		input    string
+		parallel int
+		setup    float64
+		want     string
 	}{
-		{"合計 110 秒は 2 本", "ex/a\nex/b\n", "2\n"},
-		{"テスト無しは 0 秒として実測済み", "ex/none\n", "1\n"},
-		{"実測の無いパッケージが混じると 3 本", "ex/a\nex/new\n", "3\n"},
-		{"空行は無視する", "\nex/a\n\n", "1\n"},
+		{"test: 合計 110 秒は 1 本（300 秒未満）", "ex/a\nex/b\n", 3, 50, "1\n"},
+		{"conformance: 合計 110 秒は 2 本（80 秒以上）", "ex/a\nex/b\n", 1, 40, "2\n"},
+		{"テスト無しは 0 秒として実測済み", "ex/none\n", 3, 50, "1\n"},
+		{"実測の無いパッケージが混じると 3 本", "ex/a\nex/new\n", 3, 50, "3\n"},
+		{"空行は無視する", "\nex/a\n\n", 1, 40, "1\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer
-			if err := run(strings.NewReader(tc.input), &out, filepath.Join(dir, "timing-*.json")); err != nil {
+			if err := run(strings.NewReader(tc.input), &out, filepath.Join(dir, "timing-*.json"), tc.parallel, tc.setup); err != nil {
 				t.Fatal(err)
 			}
 			if out.String() != tc.want {

@@ -245,10 +245,12 @@ jobs:
   # 対象が空になるのは PR で変更がテストに影響しないときだけで、その場合は planned_skip を出して
   # shard を作らず、集約ジョブ test がそれを成功とみなす（mirakc-conformance と同じ形）。
   # PR の shard 数は選ばれたパッケージの見積もり（main の実測の合計）から決める（scripts/shardcount）。
-  # 準備は 1 本あたり約 50 秒（run 45419813791 の実測）かかり、本数を 1 つ増やすとその分のランナー時間が
-  # 増える。待ち時間は合計 ÷ 本数の差だけ縮むので、縮みが準備の分以上あるときだけ増やす。
-  # 結果は合計 100 秒で 2 本、300 秒で 3 本、上限 3 本。小さな PR のランナー時間を、わずかな待ち時間の
-  # 短縮のために増やさないための線である。main は今どおり 3 本で全件を回す。
+  # 1 本の準備は run 45591817397 の実測で 40〜51 秒（job 開始から「Run go test shard」開始まで。
+  # 3 本の値は 49・51・40 秒）。ここでは 50 秒を使う。本数を 1 つ増やすとこの準備分のランナー時間が増える。
+  # shard 内は -p 8 で並行に回るので、実時間は合計 ÷ 約 3 になる（同じ run の shard 1: 合計 540 秒・step 184 秒、
+  # shard 2: 合計 569 秒・step 178 秒。step にはビルドも入る）。そこで並行度 3 を shardcount に渡す。
+  # 縮みが準備以上のときだけ 1 本増やす。結果は合計 300 秒で 2 本、900 秒で 3 本、上限 3 本。
+  # 最長パッケージが実時間の下限になる点は式に入れていない。その分は本数が多い側（従来寄り）に外れる。
   # 実測の無いパッケージが 1 つでもあれば 3 本にする。重さが分からない見積もりの欠けは、ランナー時間が
   # 余る側に寄せる（今までの振り分けと同じ）。0 秒と見なして本数を減らすと、待ちが延びる側に外れる。
   test-matrix:
@@ -293,7 +295,7 @@ jobs:
           fi
 
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            shards=$(go run ./scripts/shardcount --timing-files 'timings/*.json' < "$packages_file")
+            shards=$(go run ./scripts/shardcount --timing-files 'timings/*.json' --parallel 3 --setup-sec 50 < "$packages_file")
             if [[ "$shards" -eq 1 ]]; then
               # ci-matrix は 2 以上の分割しか受けないので、1 本だけは直接作る。
               matrix=$(jq -Rsc '{include: [{id: 0, packages: (split("\n") | map(select(. != "")) | join(" ")), description: "0 - all"}]}' < "$packages_file")
@@ -452,9 +454,8 @@ jobs:
   # 各病態ケースは独立したパッケージなので、長い EventIDReset / ingest resume / TestRecordLifecycle なども
   # パッケージ単位で分散できる。Postgres は ingestresume がどのシャードへ入っても使えるよう全てに置く。
   # 必須チェック名 `mirakc-conformance` は下の集約ジョブが担う。
-  # PR の本数は見積もり（この job の実測）の合計から test-matrix と同じ式で決める。準備の 50 秒は
-  # test-shard の実測を流用している。この job の準備（Postgres・mirakc の起動）は未計測なので、
-  # 実際に重ければ本数を増やす価値はここで見た線より大きい（この線は少なめ）。
+  # PR の本数は見積もり（この job の実測）の合計から、test-matrix と同じ式（実効並列度 1、準備 40 秒）で決める。
+  # 実効並列度は 1 なので、合計がそのまま待ち時間になる。線は 80 秒で 2 本、240 秒で 3 本。
   mirakc-conformance-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -495,10 +496,11 @@ jobs:
             exit 0
           fi
 
-          # PR の shard 数の決め方は test-matrix と同じ（scripts/shardcount）。shard 内は -p 1 の直列なので、
-          # 待ち時間は見積もりの合計 ÷ 本数にほぼ等しい。
+          # PR の shard 数は test-matrix と同じ式（scripts/shardcount）で決める。shard 内は -p 1 の直列なので
+          # 実効並列度は 1。準備は run 45591817397 の実測で 33・33・40 秒（job 開始から「Run conformance shard」
+          # 開始まで）なので 40 秒を渡す。
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            shards=$(go run ./scripts/shardcount --timing-files 'timings/*.json' < "$packages_file")
+            shards=$(go run ./scripts/shardcount --timing-files 'timings/*.json' --parallel 1 --setup-sec 40 < "$packages_file")
             if [[ "$shards" -eq 1 ]]; then
               # ci-matrix は 2 以上の分割しか受けないので、1 本だけは直接作る。
               matrix=$(jq -Rsc '{include: [{id: 0, packages: (split("\n") | map(select(. != "")) | join(" ")), description: "0 - all"}]}' < "$packages_file")
