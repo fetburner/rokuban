@@ -150,7 +150,7 @@ func (s *EPG) SearchPrograms(ctx context.Context, conditions rulequery.Condition
 	if err != nil {
 		return nil, err
 	}
-	return queryEPGRows(ctx, s.db, "program matches",
+	return queryRows(ctx, s.db, "program matches",
 		"SELECT "+programMatchColumns+clause+" ORDER BY p.program_id, p.site", scanProgramMatch, args...)
 }
 
@@ -168,7 +168,7 @@ func (s *EPG) MatchProgramIDsForRule(ctx context.Context, site string, ruleID in
 	if err != nil {
 		return nil, err
 	}
-	return queryEPGRows(ctx, s.db, "program IDs matching rule", "SELECT p.program_id"+clause,
+	return queryRows(ctx, s.db, "program IDs matching rule", "SELECT p.program_id"+clause,
 		func(rows *sql.Rows) (int64, error) {
 			var id int64
 			err := rows.Scan(&id)

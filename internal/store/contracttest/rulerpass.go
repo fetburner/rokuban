@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -30,6 +32,8 @@ type RulerPassFixture struct {
 	NewProgram           func(t *testing.T, title string) RulerProgram
 	NewRule              func(t *testing.T, name string, dedupeEnabled bool, threshold float32) int64
 	NewFinishedRecording func(t *testing.T, ruleID int64, program RulerProgram, title string) int64
+	SetRuleOrder         func(t *testing.T, ruleID int64, enabled bool, priority int32)
+	CommitOriginal       func(t *testing.T, recordingID int64)
 	SetProgramStarts     func(t *testing.T, program RulerProgram, snapshotStart, projectionStart time.Time)
 	SetDedupeWindow      func(t *testing.T, ruleID int64, window time.Duration)
 	SetRecordingStartAt  func(t *testing.T, recordingID int64, start time.Time)
@@ -44,11 +48,13 @@ func RunRulerPass(t *testing.T, newStore NewRulerPassStore) {
 	t.Helper()
 	checkedStore := func(t *testing.T) RulerPassFixture {
 		f := newStore(t)
-		if f.Pass == nil || f.Bumper == nil || f.Reservations == nil || f.Breakers == nil || f.NewProgram == nil || f.NewRule == nil || f.NewFinishedRecording == nil || f.SetProgramStarts == nil || f.SetDedupeWindow == nil || f.SetRecordingStartAt == nil || f.FailBreakerTrip == nil {
+		if f.Pass == nil || f.Bumper == nil || f.Reservations == nil || f.Breakers == nil || f.NewProgram == nil || f.NewRule == nil || f.NewFinishedRecording == nil || f.SetProgramStarts == nil || f.SetDedupeWindow == nil || f.SetRecordingStartAt == nil || f.FailBreakerTrip == nil || f.SetRuleOrder == nil || f.CommitOriginal == nil {
 			t.Fatal("incomplete ruler pass fixture")
 		}
 		return f
 	}
+	t.Run("evaluation reads winner order, skip intents and projected candidates", func(t *testing.T) { runRulerEvaluationReads(t, checkedStore) })
+	t.Run("original commit fulfills the broadcast event without a reservation", func(t *testing.T) { runRulerFulfilled(t, checkedStore) })
 	t.Run("matching input revision commits the pass", func(t *testing.T) { runRulerRevisionMatch(t, checkedStore) })
 	t.Run("stale input revision writes nothing", func(t *testing.T) { runRulerRevisionMismatch(t, checkedStore) })
 	t.Run("bump advances the input revision by one", func(t *testing.T) { runRulerBump(t, checkedStore) })
@@ -221,23 +227,42 @@ func runRulerDedupeSimilarity(t *testing.T, newStore NewRulerPassStore) {
 	sameTitle := f.NewProgram(t, "再放送テスト 第1話")
 	widthDifference := f.NewProgram(t, "NEWS 123")
 	unrelated := f.NewProgram(t, "ニュース天気予報")
+	unrelatedHistory := f.NewProgram(t, "別の放送イベント")
+	bestTitle := f.NewProgram(t, "alpha bravo charlie")
+	partialHistory := f.NewProgram(t, "partial history")
+	exactHistory := f.NewProgram(t, "exact history")
 	sameRule := f.NewRule(t, "same title", true, 0.5)
 	widthRule := f.NewRule(t, "fullwidth and halfwidth", true, 0.9)
 	unrelatedRule := f.NewRule(t, "unrelated title", true, 0.5)
-	sameRecording := f.NewFinishedRecording(t, sameRule, sameTitle, "再放送テスト 第1話")
-	f.NewFinishedRecording(t, widthRule, widthDifference, "ＮＥＷＳ １２３")
-	f.NewFinishedRecording(t, unrelatedRule, unrelated, "完全に別の題名")
+	bestRule := f.NewRule(t, "best title", true, 0.5)
+	sameRecording := f.NewFinishedRecording(t, sameRule, unrelated, "再放送テスト 第1話")
+	tie := f.NewFinishedRecording(t, sameRule, widthDifference, "再放送テスト 第1話")
+	if tie <= sameRecording {
+		t.Fatalf("second recording ID = %d, want greater than %d", tie, sameRecording)
+	}
+	f.NewFinishedRecording(t, widthRule, sameTitle, "ＮＥＷＳ １２３")
+	f.NewFinishedRecording(t, unrelatedRule, unrelatedHistory, "完全に別の題名")
+	partialRecording := f.NewFinishedRecording(t, bestRule, partialHistory, "alpha bravo")
+	bestRecording := f.NewFinishedRecording(t, bestRule, exactHistory, "alpha bravo charlie")
+	if bestRecording <= partialRecording {
+		t.Fatalf("exact recording ID = %d, want greater than partial recording ID %d", bestRecording, partialRecording)
+	}
 
 	matches, err := f.Pass.EvaluateDedupe(ctx, sameTitle.Site, []store.RulerDedupeCandidate{
 		{ProgramID: sameTitle.ProgramID, RuleID: sameRule},
 		{ProgramID: widthDifference.ProgramID, RuleID: widthRule},
 		{ProgramID: unrelated.ProgramID, RuleID: unrelatedRule},
+		{ProgramID: bestTitle.ProgramID, RuleID: bestRule},
 	}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("EvaluateDedupe: %v", err)
 	}
-	if len(matches) != 1 || matches[sameTitle.ProgramID].RecordingID != sameRecording || matches[sameTitle.ProgramID].Similarity != 1 {
-		t.Fatalf("EvaluateDedupe matches = %+v, want only exact-title match %d with similarity 1", matches, sameRecording)
+	want := map[int64]store.RulerDedupeMatch{
+		sameTitle.ProgramID: {RecordingID: sameRecording, Similarity: 1},
+		bestTitle.ProgramID: {RecordingID: bestRecording, Similarity: 1},
+	}
+	if !maps.Equal(matches, want) {
+		t.Fatalf("EvaluateDedupe matches = %+v, want %+v", matches, want)
 	}
 }
 
@@ -249,9 +274,9 @@ func runRulerDedupeWindow(t *testing.T, newStore NewRulerPassStore) {
 	outside := f.NewProgram(t, "xray yankee zulu")
 	ruleID := f.NewRule(t, "dedupe supplied time", true, 0.5)
 	f.SetDedupeWindow(t, ruleID, 7*24*time.Hour)
-	insideRecording := f.NewFinishedRecording(t, ruleID, inside, "alpha bravo charlie")
+	insideRecording := f.NewFinishedRecording(t, ruleID, outside, "alpha bravo charlie")
 	f.SetRecordingStartAt(t, insideRecording, now.Add(-6*24*time.Hour))
-	outOfWindowRecording := f.NewFinishedRecording(t, ruleID, outside, "xray yankee zulu")
+	outOfWindowRecording := f.NewFinishedRecording(t, ruleID, inside, "xray yankee zulu")
 	f.SetRecordingStartAt(t, outOfWindowRecording, now.Add(-8*24*time.Hour))
 
 	matches, err := f.Pass.EvaluateDedupe(ctx, inside.Site, []store.RulerDedupeCandidate{
@@ -437,5 +462,64 @@ func runRulerBump(t *testing.T, newStore NewRulerPassStore) {
 	}
 	if got := currentRulerInputRevision(t, f.Pass, program.Site) - before; got != 1 {
 		t.Fatalf("revision delta after one bump = %d, want 1", got)
+	}
+}
+
+func runRulerEvaluationReads(t *testing.T, newStore NewRulerPassStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	low := f.NewRule(t, "low", false, 0)
+	high := f.NewRule(t, "high", true, 0.5)
+	tie := f.NewRule(t, "tie", false, 0)
+	disabled := f.NewRule(t, "disabled", false, 0)
+	f.SetRuleOrder(t, low, true, 1)
+	f.SetRuleOrder(t, high, true, 5)
+	f.SetRuleOrder(t, tie, true, 5)
+	f.SetRuleOrder(t, disabled, false, 10)
+	rules, err := f.Pass.ListEnabled(ctx)
+	if err != nil || !slices.Equal(ruleIDs(rules), []int64{high, tie, low}) {
+		t.Fatalf("ListEnabled() = (%v, %v), want rule IDs [%d %d %d]", rules, err, high, tie, low)
+	}
+	if !rules[0].DedupeEnabled || rules[0].Priority != 5 || rules[0].KeepOriginal != "always" {
+		t.Fatalf("winning rule options = %+v", rules[0])
+	}
+	skipped := f.NewProgram(t, "skipped")
+	other := f.NewProgram(t, "not a delete candidate")
+	if err := f.Reservations.PutIntent(ctx, skipped.Site, skipped.ProgramID, "skip"); err != nil {
+		t.Fatal(err)
+	}
+	intents, err := f.Pass.ListProgramIntents(ctx, skipped.Site)
+	if err != nil || len(intents) != 1 || intents[0].ProgramID != skipped.ProgramID || intents[0].Action != "skip" {
+		t.Fatalf("ListProgramIntents() = (%v, %v), want skip intent for %d", intents, err, skipped.ProgramID)
+	}
+	if intents, err := f.Pass.ListProgramIntents(ctx, "another-site"); err != nil || len(intents) != 0 {
+		t.Fatalf("ListProgramIntents(other site) = (%v, %v), want empty", intents, err)
+	}
+	ids, err := f.Pass.ListProjectedProgramIDs(ctx, other.Site, []int64{skipped.ProgramID, -1})
+	if err != nil || !slices.Equal(ids, []int64{skipped.ProgramID}) {
+		t.Fatalf("ListProjectedProgramIDs() = (%v, %v), want [%d]", ids, err, skipped.ProgramID)
+	}
+	for _, ids := range [][]int64{nil, {skipped.ProgramID}} {
+		if got, err := f.Pass.ListProjectedProgramIDs(ctx, "another-site", ids); err != nil || len(got) != 0 {
+			t.Fatalf("ListProjectedProgramIDs(other site, %v) = (%v, %v), want empty", ids, got, err)
+		}
+	}
+}
+
+func runRulerFulfilled(t *testing.T, newStore NewRulerPassStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	program := f.NewProgram(t, "fulfilled event")
+	rule := f.NewRule(t, "fulfilled event", false, 0)
+	recording := f.NewFinishedRecording(t, rule, program, program.Title)
+	if ids, err := f.Pass.ListFulfilledProgramIDs(ctx, program.Site); err != nil || len(ids) != 0 {
+		t.Fatalf("ListFulfilledProgramIDs(before original commit) = (%v, %v), want empty", ids, err)
+	}
+	f.CommitOriginal(t, recording)
+	if ids, err := f.Pass.ListFulfilledProgramIDs(ctx, program.Site); err != nil || !slices.Equal(ids, []int64{program.ProgramID}) {
+		t.Fatalf("ListFulfilledProgramIDs(after original commit) = (%v, %v), want [%d]", ids, err, program.ProgramID)
+	}
+	if ids, err := f.Pass.ListFulfilledProgramIDs(ctx, "another-site"); err != nil || len(ids) != 0 {
+		t.Fatalf("ListFulfilledProgramIDs(other site) = (%v, %v), want empty", ids, err)
 	}
 }

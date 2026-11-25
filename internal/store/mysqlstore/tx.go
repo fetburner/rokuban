@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/fetburner/rokuban/internal/mysqldb"
 	"github.com/fetburner/rokuban/internal/store"
@@ -37,4 +38,36 @@ func translateError(err error) error {
 		return fmt.Errorf("%w: %w", store.ErrConflict, err)
 	}
 	return err
+}
+
+type rowQuerier interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func queryRows[T any](ctx context.Context, db rowQuerier, entity, query string, scan func(*sql.Rows) (T, error), args ...any) ([]T, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("querying %s: %w", entity, err)
+	}
+	defer func() { _ = rows.Close() }()
+	results := make([]T, 0)
+	for rows.Next() {
+		row, err := scan(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning %s: %w", entity, err)
+		}
+		results = append(results, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading %s: %w", entity, err)
+	}
+	return results, nil
+}
+
+func transactionTime(ctx context.Context, tx *sql.Tx) (time.Time, error) {
+	var now time.Time
+	if err := tx.QueryRowContext(ctx, "SELECT CURRENT_TIMESTAMP(6)").Scan(&now); err != nil {
+		return time.Time{}, fmt.Errorf("reading transaction time: %w", err)
+	}
+	return now, nil
 }
