@@ -732,11 +732,9 @@ jobs:
         with:
           version: v2.13.2
 
-  # 保守対象の Markdown 全体（README.md / CLAUDE.md / deploy/**/*.md / docs/**/*.md /
-  # web/e2e/**/*.md）を textlint で検査する。プロファイルは 1 本で、違反 0 件が gate。
+  # 保守対象の Markdown（対象の権威は package.json の docs:lint）を textlint で検査する。プロファイルは 1 本で、違反 0 件が gate。
   # 必須チェック名 docs-lint を担うので、ジョブは毎回走らせ、入力が変わらない PR では step だけ飛ばす。
-  # Markdown の対象の権威は package.json の docs:lint。filter はそれを写す。job 内で package.json から
-  # filter を組むより単純なので写す形にし、ずれは scripts/docslintpaths/ のテストが落とす。
+  # filter は docs:lint の一覧を写す形にし（job 内で組むより単純）、ずれは scripts/docslintpaths/ のテストが落とす。
   docs-lint:
     runs-on: ubuntu-slim
     permissions:
