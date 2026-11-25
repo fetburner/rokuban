@@ -94,7 +94,7 @@ CREATE TABLE recording_chapter_spans (
     label LONGTEXT,
     cut BOOLEAN NOT NULL,
     KEY recording_chapter_spans_recording (recording_id, start_ms),
-    FOREIGN KEY (recording_id) REFERENCES recordings(id),
+    FOREIGN KEY (recording_id) REFERENCES recording_chapter_ownership(recording_id) ON DELETE CASCADE,
     CHECK (label IS NOT NULL OR cut),
     CHECK (start_ms < end_ms)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4 COLLATE=utf8mb4_0900_as_cs;

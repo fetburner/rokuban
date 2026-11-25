@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strconv"
+	"time"
 
 	"github.com/fetburner/rokuban/internal/catalogdoc"
 	"github.com/fetburner/rokuban/internal/serieskey"
@@ -23,7 +23,7 @@ import (
 // drop_stats → drop_positions → media_asset_ts_scans → 分類ルールの全件再評価 → ruler 入力の版の更新。
 // 全部 1 トランザクションで、途中失敗なら何も残さない。
 //
-// ID の採番は、明示 ID の挿入で AUTO_INCREMENT が最大値 + 1 以上に進むことに任せる。
+// ID の採番は、明示 ID の挿入で AUTO_INCREMENT が最大値 + 1 以上に進むことに任せる（検査: TestCatalogRestoreAdvancesAutoIncrement）。
 // Postgres 版のように下げることはしない（MySQL で下げるには ALTER TABLE が要り、tx を暗黙に commit する）。
 // 下がらないので欠番は残るが、復元後の挿入が既存の ID と衝突することは無い。
 func (s *Catalog) Restore(ctx context.Context, doc *catalogdoc.Document, options store.RestoreOptions) (*store.RestoreResult, error) {
@@ -56,16 +56,31 @@ type snapshotKey struct {
 }
 
 // insertableSnapshot は snapshot 行が MySQL の制約を通るかを返す。Postgres 版と同じく、
-// DB が実際に拒否するものだけを見る。channel_type の CHECK と、site の VARCHAR(255) の長さ。
-// 放送を同定できないことや空の名前では落とさない（行を落とすと、ユーザーの意図を表す
-// program_intents / program_overrides も連動して落ちる）。
+// DB が実際に拒否するものだけを見る。見るのは次の列の制約だけで、それ以外の列は NOT NULL か
+// 型の範囲（INT・BIGINT・LONGTEXT）に収まるので、拒否されない。
+//   - channel_type: VARCHAR(3) と CHECK (channel_type IN ('GR', 'BS', 'CS', 'SKY'))
+//   - site: VARCHAR(255)。256 文字以上は strict モードで拒否される
+//   - start_at / updated_at: DATETIME(6)。年が 1〜9999 の外は、接続の driver が書く前に拒否する（年 0 も
+//     driver の範囲 [1, 9999] の外。年 10000 は MySQL が拒否する。検査: TestMySQLDatetimeRangeRejectsYearsAbove9999）
+//
+// **放送を同定できないことや空の名前では落とさない。** 行を落とすと FK 先を失う program_intents /
+// program_overrides も連動して落ちる。それは「この番組を録れ / 録るな」というユーザーが明示した意図で、
+// 導出できない。ここの責務は「1 行の INSERT が落ちて tx 全体が巻き戻るのを防ぐ」ことに限る。
+// 検査: TestInsertableSnapshot（境界の行）と TestCatalogRestoreSkipsSnapshotsMySQLRejects（実 MySQL）。
 func insertableSnapshot(s catalogdoc.ProgramSnapshot) bool {
 	switch s.ChannelType {
 	case "GR", "BS", "CS", "SKY":
 	default:
 		return false
 	}
-	return len([]rune(s.Site)) <= 255
+	return len([]rune(s.Site)) <= 255 && datetimeInRange(s.StartAt) && datetimeInRange(s.UpdatedAt)
+}
+
+// datetimeInRange は t が DATETIME(6) として書ける年（driver が受け入れる 1〜9999）にあるかを返す。
+// 接続の時刻帯は UTC なので、判定も UTC で行う。
+func datetimeInRange(t time.Time) bool {
+	year := t.UTC().Year()
+	return year >= 1 && year <= 9999
 }
 
 // applyDocument は 1 つの tx の中で catalogdoc.Document の各表を FK 順に復元する。
@@ -405,13 +420,11 @@ func upsertRecording(ctx context.Context, tx *sql.Tx, r catalogdoc.Recording) er
 	if key, ok := serieskey.SeriesKey(r.Title); ok {
 		seriesKey = key
 	}
-	genreLv1, err := genreLv1Of(r.Genres)
-	if err != nil {
-		return fmt.Errorf("deriving genre_lv1 of recording %d: %w", r.ID, err)
-	}
+	// genre_lv1 は genres から導く。規則は EPG の射影と共通の epgGenreLevels に 1 つだけ置く。
+	genreLv1 := epgGenreLevels(r.Genres)
 
 	var locked int64
-	err = tx.QueryRowContext(ctx, `SELECT id FROM recordings WHERE id = ? FOR UPDATE`, r.ID).Scan(&locked)
+	err := tx.QueryRowContext(ctx, `SELECT id FROM recordings WHERE id = ? FOR UPDATE`, r.ID).Scan(&locked)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		_, err = tx.ExecContext(ctx, `
@@ -424,7 +437,7 @@ func upsertRecording(ctx context.Context, tx *sql.Tx, r catalogdoc.Recording) er
 			r.ChannelType, r.Channel, r.Title, optionalValue(r.Description), optionalBytes(r.Extended), optionalBytes(r.Genres),
 			r.IsFree, r.ProgramStartAt, r.ProgramDurationMs, r.Status, optionalValue(r.StartedAt), optionalValue(r.EndedAt),
 			string(qe), *reported, optionalValue(r.DeletedAt), optionalValue(r.SupersededAt), optionalValue(r.PurgedAt),
-			r.CreatedAt, r.UpdatedAt, string(genreLv1), seriesKey)
+			r.CreatedAt, r.UpdatedAt, genreLv1, seriesKey)
 	case err == nil:
 		_, err = tx.ExecContext(ctx, `
  UPDATE recordings SET rule_id = ?, source = ?, site = ?, network_id = ?, service_id = ?, event_id = ?,
@@ -437,53 +450,12 @@ func upsertRecording(ctx context.Context, tx *sql.Tx, r catalogdoc.Recording) er
 			r.ServiceName, r.ChannelType, r.Channel, r.Title, optionalValue(r.Description), optionalBytes(r.Extended), optionalBytes(r.Genres),
 			r.IsFree, r.ProgramStartAt, r.ProgramDurationMs, r.Status, optionalValue(r.StartedAt), optionalValue(r.EndedAt),
 			string(qe), *reported, optionalValue(r.DeletedAt), optionalValue(r.SupersededAt), optionalValue(r.PurgedAt),
-			r.CreatedAt, r.UpdatedAt, string(genreLv1), seriesKey, r.ID)
+			r.CreatedAt, r.UpdatedAt, genreLv1, seriesKey, r.ID)
 	}
 	if err != nil {
 		return err
 	}
 	return nil
-}
-
-// genreLv1Of は genres の JSON 配列から lv1 の集合を昇順で JSON 配列にして返す。
-// Postgres の genre_lv1_of と同じ規則: lv1 が 0〜15 の整数の文字列表現（数字だけ）であるものだけを数える。
-// 配列でない値・lv1 の無い要素は無視する。
-func genreLv1Of(genres []byte) ([]byte, error) {
-	seen := make(map[int]struct{})
-	if len(genres) != 0 {
-		dec := json.NewDecoder(bytes.NewReader(genres))
-		dec.UseNumber()
-		var top any
-		if err := dec.Decode(&top); err != nil {
-			return nil, fmt.Errorf("decoding genres: %w", err)
-		}
-		if elements, ok := top.([]any); ok {
-			for _, e := range elements {
-				obj, ok := e.(map[string]any)
-				if !ok {
-					continue
-				}
-				text := ""
-				switch v := obj["lv1"].(type) {
-				case string:
-					text = v
-				case json.Number:
-					text = v.String()
-				}
-				level, err := strconv.ParseUint(text, 10, 8)
-				if err != nil || level > 15 {
-					continue
-				}
-				seen[int(level)] = struct{}{}
-			}
-		}
-	}
-	levels := make([]int, 0, len(seen))
-	for level := range seen {
-		levels = append(levels, level)
-	}
-	sort.Ints(levels)
-	return json.Marshal(levels)
 }
 
 // applyRecordingPurgeRequests は recording_purge_requests を復元し、件数を res.RecordingPurgeRequests に書く。
@@ -564,20 +536,20 @@ func applyRecordingChapterOwnerships(ctx context.Context, tx *sql.Tx, rows []cat
 }
 
 // applyRecordingChapterSpans は recording_chapter_spans を復元し、件数を res.RecordingChapterSpans に書く。
-// 足すだけで消さない。同じ行が既にあれば入れない（再実行で二重にならない）。
-// 区間の重なりは、この表の制約として MySQL では書いていない（チャプターのタスクが検査を足す）。
-// 未解決: Postgres 版は重なる区間を DO NOTHING で黙って捨てる。この版は重なりを入れるので、重なる文書は
-// チャプターのタスクの検査が入るまで Postgres と異なる。
+// 足すだけで消さない。Postgres 版の排他制約（同じ録画の区間は重ならない）に当たる区間は、
+// ON CONFLICT DO NOTHING と同じく黙って飛ばす。先に入った区間が残る。同一区間も重なりに含むので、再実行で二重にならない。
+// 表の制約としては写さない（重なりの検査は MySQL の区間のタスクの範囲）。この判定だけを揃える。
 func applyRecordingChapterSpans(ctx context.Context, tx *sql.Tx, rows []catalogdoc.RecordingChapterSpan, res *store.RestoreResult) error {
 	for _, s := range rows {
-		var existing int
+		var overlapping int
+		// 区間は [start_ms, end_ms) なので、重なりは start_ms < 既存の end_ms かつ 既存の start_ms < end_ms。
 		if err := tx.QueryRowContext(ctx, `
  SELECT COUNT(*) FROM recording_chapter_spans
- WHERE recording_id = ? AND start_ms = ? AND end_ms = ? AND label <=> ? AND cut = ?`,
-			s.RecordingID, s.StartMs, s.EndMs, optionalValue(s.Label), s.Cut).Scan(&existing); err != nil {
+ WHERE recording_id = ? AND start_ms < ? AND end_ms > ?`,
+			s.RecordingID, s.EndMs, s.StartMs).Scan(&overlapping); err != nil {
 			return fmt.Errorf("checking recording_chapter_span [%d,%d) of %d: %w", s.StartMs, s.EndMs, s.RecordingID, err)
 		}
-		if existing > 0 {
+		if overlapping > 0 {
 			continue
 		}
 		if _, err := tx.ExecContext(ctx, `

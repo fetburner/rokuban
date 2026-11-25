@@ -3,6 +3,7 @@ package mysqlstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -143,52 +144,87 @@ func truncateCatalogTables(t *testing.T, db *sql.DB) {
 	}
 }
 
-// TestGenreLv1Of は genres から導く genre_lv1 が Postgres の genre_lv1_of と同じ規則に従うことを確かめる。
-// 数字の文字列か整数の lv1 だけを数え、0〜15 の範囲外・小数・欠けた要素は無視する。
-func TestGenreLv1Of(t *testing.T) {
+// TestInsertableSnapshot は、MySQL が拒否する snapshot の行だけを落とすことを境界の値で確かめる。
+// 拒否の実際は TestMySQLDatetimeRangeRejectsYearsAbove9999 が実 MySQL で確かめる。
+func TestInsertableSnapshot(t *testing.T) {
+	inside := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	base := catalogdoc.ProgramSnapshot{Site: "default", ChannelType: "GR", StartAt: inside, UpdatedAt: inside}
 	for _, tc := range []struct {
-		name, genres, want string
+		name string
+		edit func(*catalogdoc.ProgramSnapshot)
+		want bool
 	}{
-		{"empty", ``, `[]`},
-		{"not array", `{"lv1":3}`, `[]`},
-		{"sorted and distinct", `[{"lv1":5},{"lv1":1},{"lv1":5}]`, `[1,5]`},
-		{"string level", `[{"lv1":"7"}]`, `[7]`},
-		{"out of range", `[{"lv1":16},{"lv1":-1},{"lv1":15}]`, `[15]`},
-		{"fraction is not a level", `[{"lv1":3.0}]`, `[]`},
-		{"missing key", `[{"lv2":3}]`, `[]`},
-		{"not an object", `[3]`, `[]`},
+		{"GR", func(*catalogdoc.ProgramSnapshot) {}, true},
+		{"unknown channel type", func(s *catalogdoc.ProgramSnapshot) { s.ChannelType = "XX" }, false},
+		{"site of 255 characters", func(s *catalogdoc.ProgramSnapshot) { s.Site = strings.Repeat("s", 255) }, true},
+		{"site of 256 characters", func(s *catalogdoc.ProgramSnapshot) { s.Site = strings.Repeat("s", 256) }, false},
+		{"start at year 0 (outside the driver's range)", func(s *catalogdoc.ProgramSnapshot) { s.StartAt = time.Date(0, 1, 1, 0, 0, 0, 0, time.UTC) }, false},
+		{"start at year 999", func(s *catalogdoc.ProgramSnapshot) { s.StartAt = time.Date(999, 1, 1, 0, 0, 0, 0, time.UTC) }, true},
+		{"start at 9999-12-31 23:59:59.999999", func(s *catalogdoc.ProgramSnapshot) {
+			s.StartAt = time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC)
+		}, true},
+		{"start at year 10000", func(s *catalogdoc.ProgramSnapshot) { s.StartAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC) }, false},
+		{"updated at year 10000", func(s *catalogdoc.ProgramSnapshot) { s.UpdatedAt = time.Date(10000, 6, 1, 0, 0, 0, 0, time.UTC) }, false},
+		{"updated at 0999", func(s *catalogdoc.ProgramSnapshot) { s.UpdatedAt = time.Date(999, 6, 1, 0, 0, 0, 0, time.UTC) }, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := genreLv1Of([]byte(tc.genres))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(got) != tc.want {
-				t.Fatalf("genreLv1Of(%s) = %s, want %s", tc.genres, got, tc.want)
+			s := base
+			tc.edit(&s)
+			if got := insertableSnapshot(s); got != tc.want {
+				t.Fatalf("insertableSnapshot = %t, want %t", got, tc.want)
 			}
 		})
 	}
 }
 
-// TestInsertableSnapshot は、MySQL が拒否する snapshot の行だけを落とすことを確かめる。
-func TestInsertableSnapshot(t *testing.T) {
-	base := catalogdoc.ProgramSnapshot{Site: "default", ChannelType: "GR"}
-	if !insertableSnapshot(base) {
-		t.Fatal("a GR snapshot is rejected")
+// TestMySQLDatetimeRangeRejectsYearsAbove9999 は、insertableSnapshot が写す DATETIME(6) の範囲が
+// 実際の MySQL の拒否と一致することを確かめる。年 999 と 9999 は入り、10000 年は入らない。
+func TestMySQLDatetimeRangeRejectsYearsAbove9999(t *testing.T) {
+	db := mysqltest.SetupDB(t)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		value time.Time
+		want  bool
+	}{
+		{time.Date(999, 12, 31, 23, 59, 59, 999999000, time.UTC), true},
+		{time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC), true},
+		{time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC), false},
+	} {
+		// 値は driver の時刻の書き方（UTC で整形）を通す。insertableSnapshot が見るのと同じ経路。
+		_, err := db.ExecContext(ctx, `
+INSERT INTO program_snapshots (site, program_id, title, start_at, duration_ms, network_id, service_id,
+    channel_type, channel, event_id, service_name)
+VALUES ('default', 1, 't', ?, 1000, 1, 1, 'GR', 'ch', 1, 'svc')`, tc.value)
+		if got := err == nil; got != tc.want {
+			t.Fatalf("inserting start_at %s: accepted = %t (err %v), want %t", tc.value, got, err, tc.want)
+		}
+		execFixture(t, db, `DELETE FROM program_snapshots`)
 	}
-	bad := base
-	bad.ChannelType = "XX"
-	if insertableSnapshot(bad) {
-		t.Fatal("an unknown channel type is accepted")
+}
+
+// TestCatalogRestoreSkipsSnapshotsMySQLRejects は、MySQL が拒否する（年 10000 の）snapshot と、それに従属する意図を
+// 落として、残りの復元を続けることを確かめる（落とす判定は insertableSnapshot）。
+func TestCatalogRestoreSkipsSnapshotsMySQLRejects(t *testing.T) {
+	db := mysqltest.SetupDB(t)
+	ctx := context.Background()
+	catalog := NewCatalog(db, []string{"default"}, catalogContractStoreName)
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	doc := &catalogdoc.Document{
+		Version: catalogdoc.Version,
+		ProgramSnapshots: []catalogdoc.ProgramSnapshot{{
+			Site: "default", ProgramID: 7, Title: "old", StartAt: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC),
+			DurationMs: 1000, NetworkID: 1, ServiceID: 1, ChannelType: "GR", Channel: "ch", EventID: 1,
+			ServiceName: "svc", UpdatedAt: at,
+		}},
+		ProgramIntents: []catalogdoc.ProgramIntent{{Site: "default", ProgramID: 7, Action: "record", CreatedAt: at, UpdatedAt: at}},
 	}
-	long := base
-	long.Site = strings.Repeat("s", 255)
-	if !insertableSnapshot(long) {
-		t.Fatal("a 255-character site is rejected")
+	res, err := catalog.Restore(ctx, doc, store.RestoreOptions{})
+	if err != nil {
+		t.Fatalf("Restore with an out-of-range snapshot: %v", err)
 	}
-	long.Site = strings.Repeat("s", 256)
-	if insertableSnapshot(long) {
-		t.Fatal("a 256-character site is accepted, but site is VARCHAR(255)")
+	if res.SkippedProgramSnapshots != 1 || res.SkippedProgramIntents != 1 || res.ProgramSnapshots != 0 {
+		t.Fatalf("skipped snapshots/intents = %d/%d, restored snapshots = %d; want 1/1/0",
+			res.SkippedProgramSnapshots, res.SkippedProgramIntents, res.ProgramSnapshots)
 	}
 }
 
@@ -241,4 +277,77 @@ func TestCatalogRestoreWritesDerivedKeys(t *testing.T) {
 	if _, err := catalog.Restore(ctx, noKey, store.RestoreOptions{}); err == nil {
 		t.Fatal("Restore accepted a label rule whose value has no series key")
 	}
+}
+
+// TestCatalogRestoreAdvancesAutoIncrement は、明示 ID で復元した後の採番が復元した ID を避けることを確かめる。
+// Restore の doc comment の「明示 ID の挿入で AUTO_INCREMENT が最大値 + 1 以上に進む」の検査。
+func TestCatalogRestoreAdvancesAutoIncrement(t *testing.T) {
+	db := mysqltest.SetupDB(t)
+	ctx := context.Background()
+	catalog := NewCatalog(db, []string{"default"}, catalogContractStoreName)
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	doc := &catalogdoc.Document{
+		Version: catalogdoc.Version,
+		Rules:   []catalogdoc.Rule{{ID: 100, Name: "restored", KeepOriginal: "always", EncodeProfiles: []string{}, Metadata: json.RawMessage(`{}`), CreatedAt: at, UpdatedAt: at}},
+	}
+	if _, err := catalog.Restore(ctx, doc, store.RestoreOptions{}); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	res, err := db.ExecContext(ctx, `INSERT INTO rules (name) VALUES ('after restore')`)
+	if err != nil {
+		t.Fatalf("inserting a rule without an id: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id < 101 {
+		t.Fatalf("id after restoring id 100 = %d, want at least 101", id)
+	}
+}
+
+// TestCatalogRestoreRederivesKeysOnUpdate は、既存の録画を再復元（UPDATE の経路）したときも、
+// 題名から導く series_key と genres から導く genre_lv1 が新しい値に変わることを確かめる。
+// 新規の INSERT の経路は TestCatalogRestoreWritesDerivedKeys と TestCatalogRestoreAdvancesAutoIncrement が見る。
+func TestCatalogRestoreRederivesKeysOnUpdate(t *testing.T) {
+	db := mysqltest.SetupDB(t)
+	ctx := context.Background()
+	catalog := NewCatalog(db, []string{"default"}, catalogContractStoreName)
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	restoreTitle := func(title string, genres string) {
+		t.Helper()
+		doc := &catalogdoc.Document{
+			Version: catalogdoc.Version,
+			Recordings: []catalogdoc.Recording{{
+				ID: 1, Source: "manual", Site: "default", NetworkID: 1, ServiceID: 1, EventID: 1,
+				ServiceName: "test", ChannelType: "GR", Channel: "27", Title: title, IsFree: true,
+				Genres: json.RawMessage(genres), ProgramStartAt: at, ProgramDurationMs: 1000, Status: "recording",
+				CreatedAt: at, UpdatedAt: at,
+			}},
+		}
+		if _, err := catalog.Restore(ctx, doc, store.RestoreOptions{}); err != nil {
+			t.Fatalf("Restore of title %q: %v", title, err)
+		}
+	}
+	// 題名から鍵が取れなければ NULL、取れれば鍵。genre_lv1 は JSON の配列で、JSON_CONTAINS で読む。
+	check := func(name string, wantKey sql.NullString, wantLevel5 bool) {
+		t.Helper()
+		var key sql.NullString
+		var level5 bool
+		if err := db.QueryRowContext(ctx, `SELECT series_key, JSON_CONTAINS(genre_lv1, '5') FROM recordings WHERE id = 1`).Scan(&key, &level5); err != nil {
+			t.Fatalf("%s: reading recording: %v", name, err)
+		}
+		if key != wantKey {
+			t.Fatalf("%s: series_key = %v, want %v", name, key, wantKey)
+		}
+		if level5 != wantLevel5 {
+			t.Fatalf("%s: genre_lv1 contains 5 = %t, want %t", name, level5, wantLevel5)
+		}
+	}
+	restoreTitle("Hello World 第2話", `[{"lv1":3}]`)
+	check("insert", sql.NullString{String: "Hello", Valid: true}, false)
+	restoreTitle("▽★", `[{"lv1":5}]`)
+	check("update to a title without a key", sql.NullString{}, true)
+	restoreTitle("Foo Bar", `[{"lv1":5}]`)
+	check("update to a title with a key", sql.NullString{String: "Foo", Valid: true}, true)
 }
