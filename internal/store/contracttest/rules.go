@@ -31,12 +31,16 @@ type RulesFixture struct {
 	FailRuleDeletion func(t *testing.T) (restore func())
 	// WaitForRuleWriters は同一ルールへの書き込みが n 本待つまで待つ。
 	WaitForRuleWriters func(t *testing.T, n int)
+	// SeedRecording はルールに属する録画を 1 件作り、その ID を返す。
+	SeedRecording func(t *testing.T, ruleID int64) int64
+	// RecordingRuleID は録画の rule_id を読む。参照が外れていれば nil を返す。録画が無ければ失敗する。
+	RecordingRuleID func(t *testing.T, recordingID int64) *int64
 }
 
 // NewRulesFixture はルール契約の実装とフィクスチャを作る。
 type NewRulesFixture func(t *testing.T) RulesFixture
 
-// RunRules はルールの PostgreSQL 実装に要求する共通の振る舞いを検証する。
+// RunRules はルールの実装（方言）に要求する共通の振る舞いを検証する。
 func RunRules(t *testing.T, newFixture NewRulesFixture) {
 	t.Helper()
 	t.Run("CRUD and site lookup", func(t *testing.T) { runRuleCRUD(t, newFixture) })
@@ -87,6 +91,15 @@ func runRuleCRUD(t *testing.T, newFixture NewRulesFixture) {
 	}
 	if sites, err := f.Store.Sites(ctx, low.ID); err != nil || len(sites) != 0 {
 		t.Fatalf("Sites(all sites rule) = %v, %v, want empty, nil", sites, err)
+	}
+	// encode_profiles は空の値と重複を除き、昇順に保存する。
+	profiles := []string{"h264", "", "aac", "h264"}
+	withProfiles, err := f.Store.Create(ctx, store.RuleInput{Name: "profiles", EncodeProfiles: &profiles})
+	if err != nil {
+		t.Fatalf("Create(profiles) error = %v", err)
+	}
+	if want := []string{"aac", "h264"}; !slices.Equal(withProfiles.EncodeProfiles, want) {
+		t.Fatalf("EncodeProfiles = %v, want %v", withProfiles.EncodeProfiles, want)
 	}
 }
 
@@ -159,9 +172,14 @@ func runRuleDeleteIntent(t *testing.T, newFixture NewRulesFixture) {
 	}
 	intentSite, intentProgramID := f.SeedReservation(t, rule.ID, true)
 	plainSite, plainProgramID := f.SeedReservation(t, rule.ID, false)
+	recordingID := f.SeedRecording(t, rule.ID)
 	result, err := f.Store.Delete(ctx, rule.ID)
 	if err != nil {
 		t.Fatalf("Delete(rule) error = %v", err)
+	}
+	// 録画は残し、ルール参照だけ外れる。
+	if got := f.RecordingRuleID(t, recordingID); got != nil {
+		t.Fatalf("recording rule_id after Delete = %d, want NULL", *got)
 	}
 	if result.DeletedReservations != 1 || result.DetachedReservations != 1 {
 		t.Fatalf("Delete result = %+v, want one deleted and one detached", result)
@@ -311,6 +329,75 @@ func runRuleImport(t *testing.T, newFixture NewRulesFixture) {
 	if err != nil || len(afterFailure) != 1 || afterFailure[0].Name != "epg after manual edit" ||
 		len(afterFailure[0].TextMatches) != 1 || afterFailure[0].TextMatches[0].Value != "updated" {
 		t.Fatalf("rules after failed import = %+v, %v, want previous import unchanged", afterFailure, err)
+	}
+
+	// 作成の途中で失敗した取り込みは行を残さず、同じ ID の再取り込みで作成される。
+	creation := store.RuleInput{Name: "must not create", Sites: []string{"duplicate-site", "duplicate-site"}}
+	if _, err := f.Import.ImportEPGStationRule(ctx, 4322, creation); err == nil {
+		t.Fatal("ImportEPGStationRule(invalid child on create) error = nil, want failure")
+	}
+	if rows, err := f.Store.List(ctx); err != nil || len(rows) != 1 {
+		t.Fatalf("List(after failed create import) = %d, %v, want only the previous rule", len(rows), err)
+	}
+	if created, err := f.Import.ImportEPGStationRule(ctx, 4322, store.RuleInput{Name: "created on retry"}); err != nil || !created {
+		t.Fatalf("ImportEPGStationRule(retry) = %t, %v, want true, nil", created, err)
+	}
+
+	// ルールを削除すると取り込みの対応も消え、同じ ID の取り込みは新しいルールを作る。
+	if _, err := f.Store.Delete(ctx, afterFailure[0].ID); err != nil {
+		t.Fatalf("Delete(imported rule) error = %v", err)
+	}
+	if created, err := f.Import.ImportEPGStationRule(ctx, 4321, store.RuleInput{Name: "reimported"}); err != nil || !created {
+		t.Fatalf("ImportEPGStationRule(after delete) = %t, %v, want true, nil", created, err)
+	}
+
+	runRuleImportRace(t, f)
+}
+
+// runRuleImportRace は、新しい ID への同時取り込みが 1 本だけ作成することを確かめる。
+// 負けた取り込みは既存への更新になるか、一意違反として ErrConflict を返す。
+func runRuleImportRace(t *testing.T, f RulesFixture) {
+	ctx := context.Background()
+	const racers = 8
+	before, err := f.Store.List(ctx)
+	if err != nil {
+		t.Fatalf("List(before race) error = %v", err)
+	}
+	type outcome struct {
+		created bool
+		err     error
+	}
+	for id := int64(9001); id <= 9003; id++ {
+		start := make(chan struct{})
+		outcomes := make(chan outcome, racers)
+		for range racers {
+			go func() {
+				<-start
+				created, err := f.Import.ImportEPGStationRule(ctx, id, store.RuleInput{Name: "race"})
+				outcomes <- outcome{created: created, err: err}
+			}()
+		}
+		close(start)
+		creations := 0
+		for range racers {
+			got := <-outcomes
+			switch {
+			case got.err == nil:
+				if got.created {
+					creations++
+				}
+			case errors.Is(got.err, store.ErrConflict):
+			default:
+				t.Fatalf("concurrent ImportEPGStationRule(%d) error = %v", id, got.err)
+			}
+		}
+		if creations != 1 {
+			t.Fatalf("concurrent imports of %d created %d rules, want 1", id, creations)
+		}
+	}
+	after, err := f.Store.List(ctx)
+	if err != nil || len(after) != len(before)+3 {
+		t.Fatalf("List(after race) = %d rules, %v, want %d", len(after), err, len(before)+3)
 	}
 }
 
