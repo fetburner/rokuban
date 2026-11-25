@@ -18,9 +18,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq/contracttest"
 )
 
-// TestContract は process death ケースで孤児の回収を実時間で待つので、t.Parallel で他の回収待ちと重ねる。
-// 重ねて安全な根拠は TestCrashExhaustsOnlyAttempt の doc comment と同じ（キュー名の分離と、
-// asynq v0.26.0 の IsOrphaned の godoc「そのキューに対して server を走らせることで回収される」）。
+// TestContract は process death ケースで孤児の回収を実時間で待つ。並列で重ねてよい根拠は testQueue の doc comment。
 func TestContract(t *testing.T) {
 	t.Parallel()
 	options := redisOptions(t)
@@ -52,14 +50,8 @@ func TestEnqueuePreservesLongWorkTimeout(t *testing.T) {
 }
 
 // TestCrashExhaustsOnlyAttempt は MaxAttempts 1 の Work がプロセス死で最後の試行を使い切り、
-// 回収後に再配送されないことを確かめる。回収そのものを待つので t.Parallel で重ねる。
-// 根拠（asynq v0.26.0 の公開文書）: TaskInfo.IsOrphaned の godoc は「この task は、その task の
-// あるキューに対して server を走らせることで回収される」と書く。Config.Queues の godoc は、
-// server が処理するのは列挙したキューであり、nil なら "default" だけだと書く。テストは testQueue の
-// UUID 接頭辞で各テストのキューを分け、各 server は自分のキューだけを購読する。よって別テストの server が
-// このテストの孤児を回収する、と公開文書からは読めない。
-// 未確認: Redis のキー（unique 等）がキュー名で分かれること。公開文書には無く、asynq のソース
-// （internal/base の UniqueKey）で読んだだけの内部の事実であり、このテストの判定は依存しない。
+// 回収後に再配送されないことを確かめる。並列で重ねてよい根拠は testQueue の doc comment。
+// 回収を待つのは、使い切った後の状態が回収後にしか現れず、lease 切れの時刻は asynq の公開設定ではないため。
 func TestCrashExhaustsOnlyAttempt(t *testing.T) {
 	t.Parallel()
 	options := redisOptions(t)
@@ -296,6 +288,15 @@ func redisOptions(t *testing.T) *redis.Options {
 	return options
 }
 
+// testQueue はテストごとに分かれた物理キュー名を返す。UUID の接頭辞で、同じ Redis DB を
+// 共有するテスト同士のキューが衝突しない。回収を待つテストを t.Parallel で重ねてよい根拠は、
+// 次の asynq v0.26.0 の公開文書による。
+//   - TaskInfo.IsOrphaned の godoc: 孤児は「そのタスクのキューに対して server を走らせる」ことで回収される。
+//     よって、あるテストの server は自分のキューの孤児だけを回収し、別テストのキューには触れない。
+//   - Config.Queues の godoc: server が処理するのは列挙したキューだけで、nil なら "default" だけ。
+//     各テストの server は自分のキュー 1 本だけを列挙するので、別テストのキューを処理しない。
+//   - asynq.Unique の godoc: タスクの一意性は Task Type・Task Payload・Queue Name に基づく。
+//     同じ payload のタスクが別テストのキューで合流することはない。
 func testQueue(name string) string {
 	prefix := "test-" + uuid.NewString() + "-"
 	return prefix + name[:min(len(name), jobq.MaxQueueNameLen-len(prefix))]

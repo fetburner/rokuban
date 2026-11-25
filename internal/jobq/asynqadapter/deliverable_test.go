@@ -125,8 +125,9 @@ func TestCountDeliverableScheduledTaskOnlyAfterDue(t *testing.T) {
 }
 
 // TestCountDeliverableCountsOrphanedActiveTask は孤児の active を CountDeliverable が 1 件と数えることを確かめる。
-// 孤児になるまで待つので t.Parallel で他の回収待ちと重ねる。根拠は TestCrashExhaustsOnlyAttempt の doc comment と同じ。
-// 回収後の片付け（キュー削除は active があると失敗する）のため、回収の完了まで待つ。
+// 並列で重ねてよい根拠は testQueue の doc comment。
+// 孤児の状態は lease 切れを経てしか作れず、その時刻は asynq の公開設定ではないので待つ。
+// 回収の完了まで待つのは後片付けのため（キュー削除は active があると失敗する）。
 func TestCountDeliverableCountsOrphanedActiveTask(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{})
