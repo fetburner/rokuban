@@ -64,6 +64,21 @@ func queryRows[T any](ctx context.Context, db rowQuerier, entity, query string, 
 	return results, nil
 }
 
+// lockRecordingState は録画の行を排他で取る（pgstore の lockRecordingState に当たる）。
+// 録画の行に触れる最初の文として呼ぶ。ごみ箱・消去済みの判定は呼び出し側が行う。
+// 録画が無ければ store.ErrNotFound を返す。
+func lockRecordingState(ctx context.Context, tx *sql.Tx, recordingID int64) error {
+	var locked int64
+	err := tx.QueryRowContext(ctx, `SELECT id FROM recordings WHERE id = ? FOR UPDATE`, recordingID).Scan(&locked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("locking recording %d: %w", recordingID, err)
+	}
+	return nil
+}
+
 func transactionTime(ctx context.Context, tx *sql.Tx) (time.Time, error) {
 	var now time.Time
 	if err := tx.QueryRowContext(ctx, "SELECT CURRENT_TIMESTAMP(6)").Scan(&now); err != nil {

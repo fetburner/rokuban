@@ -107,6 +107,31 @@ func RunRecordObservations(t *testing.T, newStore NewRecordObservationStore) {
 	t.Run("record source", func(t *testing.T) { runRecordSource(t, checkedStore) })
 	t.Run("failed event source follows intent", func(t *testing.T) { runFailedEventSource(t, checkedStore) })
 	t.Run("failed schedule source follows intent", func(t *testing.T) { runFailedScheduleSource(t, checkedStore) })
+	t.Run("reservation existence is decided per site and program", func(t *testing.T) { runHasReservation(t, checkedStore) })
+}
+
+// runHasReservation は watcher が失敗の観測を絞るときの問い（予約の有無）を検査する。
+// 番組のスナップショットだけがあっても予約は無い。予約は (site, program_id) で決まり、他の site の同じ番組 ID には及ばない。
+func runHasReservation(t *testing.T, newStore NewRecordObservationStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	observation := f.NewObservation("has-reservation", "failed")
+	requireHasReservation := func(site string, want bool) {
+		t.Helper()
+		got, err := f.Store.HasReservation(ctx, site, observation.ProgramID)
+		if err != nil {
+			t.Fatalf("HasReservation(%q) = %v", site, err)
+		}
+		if got != want {
+			t.Fatalf("HasReservation(%q, %d) = %t, want %t", site, observation.ProgramID, got, want)
+		}
+	}
+	requireHasReservation(observation.Site, false)
+	f.SeedProgramSnapshot(t, observation)
+	requireHasReservation(observation.Site, false)
+	f.SeedReservation(t, observation)
+	requireHasReservation(observation.Site, true)
+	requireHasReservation("another-site", false)
 }
 
 func runRecordStatusProgression(t *testing.T, newStore NewRecordObservationStore) {
@@ -674,8 +699,15 @@ func runRecordSerialization(t *testing.T, newStore NewRecordObservationStore) {
 	// grace は、先発が確保を通過してから、後発が追いつくのを待つ時間である。
 	const grace = 500 * time.Millisecond
 	var arrived atomic.Int32
+	// inside は同期点の中に居る観測の数である。同期点は排他を持つ間だけ呼ばれるので、2 つ以上は同時に居ない。
+	var inside atomic.Int32
+	var overlapInside atomic.Bool
 	overlapped := make(chan struct{})
 	f.SetAfterRecordAcquired(t, func() {
+		if inside.Add(1) > 1 {
+			overlapInside.Store(true)
+		}
+		defer inside.Add(-1)
 		if arrived.Add(1) == contenders {
 			close(overlapped)
 		}
@@ -697,6 +729,9 @@ func runRecordSerialization(t *testing.T, newStore NewRecordObservationStore) {
 	}
 	wg.Wait()
 	close(errs)
+	if overlapInside.Load() {
+		t.Fatal("two observations were inside the sync point at once, want the sync point to run while the record_sync row is held")
+	}
 	for err := range errs {
 		if err != nil {
 			t.Fatalf("ProcessRecord(concurrent) = %v, want every observation to succeed", err)

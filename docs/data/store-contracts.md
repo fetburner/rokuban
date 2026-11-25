@@ -175,6 +175,8 @@ watcher は mirakc の record を観測するたびに、record の同期行・�
 
 ingest をヒントにできるのは、取りこぼしを sweep が拾い直すからである。mirakc の record は ingest の DB commit 後にしか消えず、定期の record sweep は録画中・完了の record を再処理するたびに ingest を投入し直す。
 
+MySQL では、record 同期行の確保を `ON DUPLICATE KEY UPDATE` が既存行に取る行ロックで行う。record 同期行の一意キーは主キーだけである。録画を upsert する文は ID を渡さず自動採番に任せるので主キーでは衝突しない。`ON DUPLICATE KEY UPDATE` は生きた放送イベントの一意キーでだけ発火する（明示 ID を渡す catalog の restore とは違う）。
+
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.RecordObservations` / `IngestTarget` / `RecordBacklog`
@@ -366,7 +368,7 @@ Dex の updater 関数（`UpdateClient(id, func(old) (new, error))`）も同じ�
 
 メソッドの doc コメントには、何と何を直列化するかを書き、機構（`FOR UPDATE`・advisory lock）は書かない。機構を書くと、別の実装が同じ保証を別の手段で満たせなくなる。
 
-録画の行ロックは pgstore の共通ヘルパ（`lockRecordingState`、またはその上で消去済み・ごみ箱を弾く `lockRecording`）だけで取り、録画の行に触れる最初の文にする。ロックを取る前に読んだ古い値で判断すると、書き手どうしが互いの書き込みを観測できなくなるからである。
+録画の行ロックは各方言の共通ヘルパだけで取り、録画の行に触れる最初の文にする（pgstore の `lockRecordingState` / `lockRecording`、mysqlstore の `lockRecordingState`）。ロックを取る前に読んだ古い値で判断すると、書き手どうしが互いの書き込みを観測できなくなるからである。
 
 それより先に取るロック（局の advisory lock など）があれば、その順序をメソッドの doc コメントに書く。書き手ごとに取る順序が違うと、デッドロックしうるからである。
 
