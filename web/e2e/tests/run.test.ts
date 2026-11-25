@@ -103,9 +103,9 @@ describe('e2e/run.mjs の CI 対象選別', () => {
       expect(() => validateGoDepsDeclarations()).not.toThrow()
       const productionGoChecks = discoverScripts().filter(({ goDeps }) => goDeps.length > 0)
       expect(productionGoChecks.map(({ name, goDeps }) => [name, goDeps])).toEqual([
-        ['home-resume-frame.mjs', ['./internal/worker', './internal/streamer', './internal/testutil']],
-        ['recording-playback-timeline.mjs', ['./internal/worker', './internal/streamer', './internal/testutil']],
-        ['recording-segmented-vod.mjs', ['./internal/streamer', './internal/testutil']],
+        ['home-resume-frame.mjs', ['./internal/worker', './internal/streamer']],
+        ['recording-playback-timeline.mjs', ['./internal/worker', './internal/streamer']],
+        ['recording-segmented-vod.mjs', ['./internal/streamer']],
       ])
     } finally {
       rmSync(directory, { recursive: true, force: true })
