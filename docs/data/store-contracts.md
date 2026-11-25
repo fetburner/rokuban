@@ -458,6 +458,8 @@ CM 検出の結果とチャプター編集は、カット版の作り直し要�
 
 ルール値のキーの正規化を Go に複製せず DB 側の 1 箇所に置くのは、`label_rules.value_key` の生成列と片方だけ変わるのを防ぐためである。
 
+MySQL では `series_key` を生成列に書けないので、`value_key` はアプリが Go の関数で書く。全件の再評価の直列化は、名前付きロックの行（`named_locks`）を `FOR UPDATE` で取って代える。`GET_LOCK` は接続に結び付き commit をまたぐので、tx 単位の直列化には使わない。
+
 <details><summary>根拠</summary>
 
 - API の CRUD と値キー: `internal/store.LabelRules`

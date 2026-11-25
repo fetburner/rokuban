@@ -65,7 +65,8 @@ INSERT INTO recordings (source, site, network_id, service_id, event_id, service_
 VALUES ('manual', ?, ?, ?, ?, '局', 'GR', '27', ?, ?, ?, ?, ?)`,
 					p.Site, p.NetworkID, p.ServiceID, p.EventID, p.Name, p.StartAt, p.DurationMs, status, series))
 				if labelRuleID != nil {
-					execFixture(t, db, "INSERT INTO label_rule_hits (recording_id, label_rule_id) VALUES (?, ?)", id, *labelRuleID)
+					// 録画の INSERT のトリガーが題名から当たりを作るので、フィクスチャの当たりで置き換える。
+					execFixture(t, db, "REPLACE INTO label_rule_hits (recording_id, label_rule_id) VALUES (?, ?)", id, *labelRuleID)
 				}
 				return id
 			},

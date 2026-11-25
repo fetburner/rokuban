@@ -23,6 +23,9 @@ type LabelRuleFixture struct {
 	// 書き直されないことを、行バージョンで確かめる。行バージョンを返す読み取りが契約に無いので、
 	// フックのまま残す。
 	LabelRuleHit func(t *testing.T, recordingID int64) (ruleID int64, rowVersion string, exists bool)
+	// TakeRecordingsNotifications は前回の呼び出し以降に recordings トピックへ届いた通知の数を返し、
+	// 数え終わった通知を捨てる。届いたかどうかは、コミット後に観測するので、実装は通知の到着を待つ。
+	TakeRecordingsNotifications func(t *testing.T) int
 }
 
 // NewLabelRuleStore は分類ルール契約の実装とフィクスチャを作る。
@@ -35,6 +38,7 @@ func RunLabelRules(t *testing.T, newStore NewLabelRuleStore) {
 	t.Run("reevaluation applies the committed rule set", func(t *testing.T) { runLabelRuleChange(t, newStore) })
 	t.Run("unchanged hits are not rewritten", func(t *testing.T) { runUnchangedLabelRuleHits(t, newStore) })
 	t.Run("reevaluation waits for the current rule set", func(t *testing.T) { runLabelRuleReevaluationSerialization(t, newStore) })
+	t.Run("reevaluation notifies recordings only when hits change", func(t *testing.T) { runLabelRuleNotifications(t, newStore) })
 }
 
 func runLabelRuleCRUD(t *testing.T, newStore NewLabelRuleStore) {
@@ -101,6 +105,7 @@ func runLabelRuleChange(t *testing.T, newStore NewLabelRuleStore) {
 	if err != nil {
 		t.Fatalf("Create(rule) error = %v", err)
 	}
+	f.TakeRecordingsNotifications(t)
 	if changed, err := f.Reevaluation.ReevaluateAll(ctx); err != nil || changed != 0 {
 		t.Fatalf("ReevaluateAll before edit = %d, %v, want 0, nil", changed, err)
 	}
@@ -110,6 +115,7 @@ func runLabelRuleChange(t *testing.T, newStore NewLabelRuleStore) {
 	if _, err := f.Store.Update(ctx, rule.ID, rule.Value, "target", rule.Priority); err != nil {
 		t.Fatalf("Update(rule) error = %v", err)
 	}
+	f.TakeRecordingsNotifications(t)
 	if changed, err := f.Reevaluation.ReevaluateAll(ctx); err != nil || changed != 1 {
 		t.Fatalf("ReevaluateAll after edit = %d, %v, want 1, nil", changed, err)
 	}
@@ -178,6 +184,34 @@ func runLabelRuleReevaluationSerialization(t *testing.T, newStore NewLabelRuleSt
 	}
 	if gotRuleID, _, exists := f.LabelRuleHit(t, recordingID); !exists || gotRuleID != rule.ID {
 		t.Fatalf("recording hit = (%d, %t), want rule %d after committed rule update", gotRuleID, exists, rule.ID)
+	}
+}
+
+// runLabelRuleNotifications は、当たりが変わった再評価だけが recordings を通知することを確かめる。
+// 分類ルールの編集は label_rules の通知を出すので、評価の前に数えて捨てる。
+func runLabelRuleNotifications(t *testing.T, newStore NewLabelRuleStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	f.NewRecording(t, "notify target")
+	rule, err := f.Store.Create(ctx, "series", "Notify", "no match", 0)
+	if err != nil {
+		t.Fatalf("Create(rule) error = %v", err)
+	}
+	if _, err := f.Store.Update(ctx, rule.ID, rule.Value, "notify target", rule.Priority); err != nil {
+		t.Fatalf("Update(rule) error = %v", err)
+	}
+	f.TakeRecordingsNotifications(t)
+	if changed, err := f.Reevaluation.ReevaluateAll(ctx); err != nil || changed != 1 {
+		t.Fatalf("ReevaluateAll changed = %d, %v, want 1, nil", changed, err)
+	}
+	if n := f.TakeRecordingsNotifications(t); n != 1 {
+		t.Fatalf("recordings notifications after a changed re-evaluation = %d, want 1", n)
+	}
+	if changed, err := f.Reevaluation.ReevaluateAll(ctx); err != nil || changed != 0 {
+		t.Fatalf("ReevaluateAll unchanged = %d, %v, want 0, nil", changed, err)
+	}
+	if n := f.TakeRecordingsNotifications(t); n != 0 {
+		t.Fatalf("recordings notifications after an unchanged re-evaluation = %d, want 0", n)
 	}
 }
 
