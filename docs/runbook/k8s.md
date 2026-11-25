@@ -27,6 +27,7 @@ kind・kubectl・kustomize と Docker を用意する。DB は使い捨てで立
 - overlay は overlays/asynq（本番形。名前空間は default）。判定ハーネスの形は overlays/e2e-asynq で、E2E_OVERLAY=e2e-asynq を渡す。
 - Secret `rokuban-secrets` に `REDIS_URL`（例: `redis://rokuban-redis.default.svc.cluster.local:6379/0`）を入れる。base は Secret を出荷しないので、供給は環境の仕事である。
 - Postgres は River 構成と同じく要る（asynq でも業務データは Postgres）。`migrate up` は River のスキーマを作らない。
+- 別の名前空間に入れるときは、overlay のトリガの URL（13 本、e2e は 17 本）と REDIS_URL の名前空間を直す。直し漏れると、そのキューだけが黙ってスケールしない。`deploy/k8s/asynq_test.go` は 1 overlay 内の URL が揃っていることは見るが、Secret の値は見ない。
 
 配置の理由と、River 構成との差分は [deploy/k8s/README.md](../../deploy/k8s/README.md) §asynq 構成 にある。
 

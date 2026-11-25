@@ -81,6 +81,13 @@ if ! retry_until 180 "the queue and the worker jobs to drain" drained; then
 fi
 pass "2.2" "開始時点で worker Job は 0（待ち行列も空）"
 
+# latest_cronjob_job <cronjob> --- その CronJob が作った Job のうち最新の名前。
+# CronJob の Job は `<CronJob 名>-<時刻>` と名付けられる。ラベルは版によって付かないので使わない。
+latest_cronjob_job() {
+  k get jobs -o name --sort-by=.metadata.creationTimestamp 2>/dev/null \
+    | sed 's#^job.batch/##' | grep "^${1}-[0-9]" | tail -1
+}
+
 # ---- 2.3 / 2.4 CronJob の自然な発火から 0 → 1 → 0 まで --------------------
 
 watch_file="$(mktemp)"
@@ -93,12 +100,6 @@ watch_jobs_start "$scaledjob" "$watch_file"
 if ! before_schedule="$(k get cronjob "$cronjob" -o jsonpath='{.status.lastScheduleTime}')"; then
   fail "2.3" "CronJob ${cronjob} の lastScheduleTime を読めない --- 発火を観測できない"
   todo "2.4" "投入を観測していないので 0 → 1 → 0 も観測していない"
-  exit 0
-fi
-if ! before_inserted="$(psql_q "SELECT count(*) FROM river_job WHERE queue = '$queue'" | tr -d '[:space:]')" ||
-   [ -z "$before_inserted" ]; then
-  fail "2.3" "${queue} の現在のジョブ件数を読めない --- 投入を観測できない"
-  todo "2.4" "同上"
   exit 0
 fi
 
@@ -114,18 +115,21 @@ if ! retry_until 180 "the CronJob to fire" cronjob_fired; then
   exit 0
 fi
 
-# **投入されたことを DB 側でも見る。** CronJob が発火しただけでは足りない
+# **投入されたことを製品の出力で見る。** CronJob が発火しただけでは足りない
 # （`rokuban enqueue` が失敗していても lastScheduleTime は進む）。
+# 見るのは発火で生まれた enqueue Job の出力（`inserted job ...`）であり、
+# エンジンに依らない。River の行数や asynq の件数を直接読まない。
+# 合流したとき（`job ... already pending, not inserted`）は、入らなかったとして数えない。
 inserted() {
-  local now
-  now="$(psql_q "SELECT count(*) FROM river_job WHERE queue = '$queue'" | tr -d '[:space:]')" || return 1
-  [ -n "$now" ] || return 1
-  [ "$now" -gt "$before_inserted" ]
+  local job
+  job="$(latest_cronjob_job "$cronjob")" || return 1
+  [ -n "$job" ] || return 1
+  k logs "job/${job}" 2>/dev/null | grep -q '^inserted job '
 }
 if retry_until 120 "a job to be inserted into ${queue}" inserted; then
-  pass "2.3" "worker が 0 のまま CronJob が ${queue} にジョブを投入した"
+  pass "2.3" "worker が 0 のまま CronJob が ${queue} にジョブを投入した（enqueue Job の出力で確認）"
 else
-  fail "2.3" "CronJob は発火したが ${queue} にジョブが入らない --- $(k logs "job/$(k get jobs -l "batch.kubernetes.io/cronjob-name=${cronjob}" -o jsonpath='{.items[-1:].metadata.name}')" 2>&1 | tail -3 | tr '\n' ' ')"
+  fail "2.3" "CronJob は発火したが ${queue} にジョブが入らない --- $(k logs "job/$(latest_cronjob_job "$cronjob")" 2>&1 | tail -3 | tr '\n' ' ')"
   todo "2.4" "投入が起きていないので 0 → 1 → 0 を観測していない"
   exit 0
 fi

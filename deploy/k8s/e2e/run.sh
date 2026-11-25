@@ -96,6 +96,13 @@ if [ "$E2E_OVERLAY" = "e2e-two-stores" ] && [ "$E2E_NAMESPACE" != "rokuban-e2e-s
   printf 'E2E_OVERLAY=e2e-two-stores needs E2E_NAMESPACE=rokuban-e2e-stores, got: %s\n' "$E2E_NAMESPACE" >&2
   exit 64
 fi
+# e2e-asynq は overlay の namespace: と、トリガの URL（notifier の FQDN）が rokuban-e2e に
+# 固定されている。REDIS_URL だけ E2E_NAMESPACE に従うと、Redis には届くのにトリガだけが
+# 空振りする。e2e-two-stores と同じく、食い違いは走らせる前に拒む。
+if [ "$E2E_OVERLAY" = "e2e-asynq" ] && [ "$E2E_NAMESPACE" != "rokuban-e2e" ]; then
+  printf 'E2E_OVERLAY=e2e-asynq needs E2E_NAMESPACE=rokuban-e2e, got: %s\n' "$E2E_NAMESPACE" >&2
+  exit 64
+fi
 if [ "$E2E_OVERLAY" = "e2e-two-stores" ]; then
   E2E_SUMMARY_SUBJECT="置き場 2 つの判定 6 は"
   export E2E_SUMMARY_SUBJECT

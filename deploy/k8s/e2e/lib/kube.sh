@@ -522,9 +522,14 @@ riverBacklogStates="'available','retryable'"
 # 巻き込まれる --- tb_curl の注記）。
 queue_backlog() {
   if [ "$E2E_ENGINE" = "asynq" ]; then
-    tb_curl -sS --fail "http://rokuban-notifier:40773/internal/queues/$1/deliverable-count" \
-      | sed -n 's/.*"value":\([0-9][0-9]*\).*/\1/p'
-    return
+    # 読めなかったときは 0 にせず非 0 を返す（River 側と同じ規律）。パイプの終了状態は
+    # 最後のコマンド（sed）のものになるので、取得は変数に受けて個別に確かめる。
+    local body value
+    body="$(tb_curl -sS --fail "http://rokuban-notifier:40773/internal/queues/$1/deliverable-count")" || return 1
+    value="$(printf '%s' "$body" | sed -n 's/.*"value":\([0-9][0-9]*\).*/\1/p')"
+    [ -n "$value" ] || return 1
+    printf '%s\n' "$value"
+    return 0
   fi
   psql_q "SELECT count(*) FROM river_job WHERE queue = '$1' AND state IN (${riverBacklogStates})" \
     | tr -d '[:space:]'
@@ -623,8 +628,10 @@ e2e_seed_media_file() {
 
 produce_real_encode_job() {
   # 前の周回の残骸を落とす。**media_assets を先に消す**（recordings への FK は
-  # ON DELETE CASCADE ではない）。
-  psql_q "DELETE FROM river_job WHERE queue = 'encode'" >/dev/null || return 1
+  # ON DELETE CASCADE ではない）。asynq の待ちは river_job に無いので、消すのは製品の表だけ。
+  if [ "$E2E_ENGINE" = "river" ]; then
+    psql_q "DELETE FROM river_job WHERE queue = 'encode'" >/dev/null || return 1
+  fi
   psql_q "DELETE FROM media_assets WHERE recording_id IN
             (SELECT id FROM recordings WHERE title = '${E2E_ENCODE_TITLE}')" >/dev/null || return 1
   psql_q "DELETE FROM recordings WHERE title = '${E2E_ENCODE_TITLE}'" >/dev/null || return 1
@@ -659,6 +666,20 @@ produce_real_encode_job() {
           INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
           SELECT id, 'main', '${E2E_ENCODE_REL_PATH}', 0, 'active' FROM asset" >/dev/null || return 1
 
+  if [ "$E2E_ENGINE" = "asynq" ]; then
+    # asynq では製品の経路で積む（River の行を直接 INSERT しない）。
+    #   1. desired に encode プロファイルを足す（判定 6.2 と同じ API。追加専用で 204）
+    #   2. encode-reconcile が、desired と原本の揃った録画について encode を積む
+    local code
+    code="$(tb_curl -X POST -H 'Host: rokuban.local' -H 'Content-Type: application/json' \
+      -d "{\"profiles\":[\"${E2E_ENCODE_PROFILE}\"]}" -o /dev/null -w '%{http_code}' \
+      "http://rokuban-api:40773/api/recordings/${rec_id}/encode-profiles")" || return 1
+    [ "$code" = "204" ] || { log_step "encode-profiles が 204 を返さない（${code:-なし}）"; return 1; }
+    tb_rokuban enqueue encode-reconcile >/dev/null 2>&1 || { log_step "encode-reconcile を投入できない"; return 1; }
+    log_step "queued a real encode via the product path (recording_id=${rec_id}, profile=${E2E_ENCODE_PROFILE}, source ${size} bytes)"
+    return 0
+  fi
+
   # **`max_attempts` は 1。** 失敗したら `discarded` になって滞留が消える ---
   # 再試行で新しい Job が起き続けると、判定 3 が「どの Job を見ているのか」を
   # 見失う。
@@ -674,6 +695,12 @@ produce_real_encode_job() {
 # running は触らない。触ると判定 3（実行中の Job が殺されないこと）で、
 # ハーネス自身が実行中のジョブを終わったことにしてしまう。
 drain_queue() {
+  if [ "$E2E_ENGINE" = "asynq" ]; then
+    # asynq の公開の契約には、待ちを捨てる経路が無い。ここでは何もしない。
+    # 判定 3 は encode を 1 件だけ積むので、掴まれた後の待ちは 0 のままになる。
+    # 掴まれた後の Job は止めず、待ちを消すこともしない。
+    return 0
+  fi
   psql_q "UPDATE river_job SET state = 'completed', finalized_at = now()
           WHERE queue = '$1' AND state IN ('available','retryable','scheduled')" >/dev/null
 }

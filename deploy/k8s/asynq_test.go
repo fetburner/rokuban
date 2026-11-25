@@ -28,19 +28,96 @@ const (
 	e2eOverlayDir     = "overlays/e2e"
 )
 
-// asynqOverlay は、トリガを当てる overlay が 1 つ分の名前付けを持つことを表す。
+// asynqOverlay は、トリガを当てる overlay の名前付けを表す。値は overlay の
+// kustomization.yaml（namespace・resources・nameSuffix）から読む。手書きにすると、
+// overlay を変えてもテストが通ったまま、トリガだけが空振りする。
 type asynqOverlay struct {
 	dir       string
-	sites     []string // site 束縛キューを複製する site 名
+	sites     []string // site 束縛キューを複製する site 名（overlay の resources から読む）
 	suffixed  bool     // site の ScaledJob 名に nameSuffix（`-<site>`）が付くか
-	namespace string   // notifier の FQDN の名前空間（URL の唯一の出どころ）
+	namespace string   // notifier の FQDN の名前空間（overlay の namespace: から読む。無ければ default）
 	stores    []string // 置き場名（nameSuffix は付かない）
 }
 
-var asynqOverlays = []asynqOverlay{
-	{dir: asynqOverlayDir, sites: []string{baseSiteName}, suffixed: false, namespace: "default", stores: []string{baseStoreName}},
-	{dir: asynqE2EDir, sites: []string{"sitea", "siteb"}, suffixed: true, namespace: "rokuban-e2e", stores: []string{baseStoreName}},
+// kustomizationFields は overlay の kustomization.yaml のうち名前付けに効く欄。
+type kustomizationFields struct {
+	Namespace  string   `yaml:"namespace"`
+	NameSuffix string   `yaml:"nameSuffix"`
+	Resources  []string `yaml:"resources"`
 }
+
+func readKustomizationFields(t *testing.T, dir string) kustomizationFields {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, "kustomization.yaml"))
+	if err != nil {
+		t.Fatalf("reading %s/kustomization.yaml: %v", dir, err)
+	}
+	var k kustomizationFields
+	if err := yaml.Unmarshal(raw, &k); err != nil {
+		t.Fatalf("decoding %s/kustomization.yaml: %v", dir, err)
+	}
+	return k
+}
+
+// asynqOverlayOf は overlay dir の名前付けを、kustomization の resources を辿って読む。
+// site/ を直接含む resource はサイト 1 つ（既定名・suffix 無し）、site/ を含む
+// サブ overlay（`sites/<name>`）はサイト 1 つ（名前はディレクトリ名、suffix は nameSuffix）、
+// store/ を含む resource は置き場 1 つ、それ以外の overlay は再帰して取り込む。
+// 名前は overlays/e2e の `sites/<name>` のディレクトリ名と argv の site 名が一致する前提である
+// （同じ前提は deploy/k8s/overlays/e2e/sites/ の kustomization に書いてある）。
+func asynqOverlayOf(t *testing.T, dir string) asynqOverlay {
+	t.Helper()
+	k := readKustomizationFields(t, dir)
+	o := asynqOverlay{dir: dir, namespace: "default"}
+	if k.Namespace != "" {
+		o.namespace = k.Namespace
+	}
+	for _, r := range k.Resources {
+		target := filepath.Clean(filepath.Join(dir, r))
+		switch {
+		case target == siteDir:
+			o.sites = append(o.sites, baseSiteName)
+		case target == storeDir:
+			o.stores = append(o.stores, baseStoreName)
+		case isSiteOverlay(t, target):
+			tk := readKustomizationFields(t, target)
+			o.sites = append(o.sites, filepath.Base(target))
+			if tk.NameSuffix != "" {
+				o.suffixed = true
+			}
+		case !hasKustomization(target):
+			// ファイルの resource（base の manifest）は overlay ではない。
+		default:
+			child := asynqOverlayOf(t, target)
+			o.sites = append(o.sites, child.sites...)
+			o.stores = append(o.stores, child.stores...)
+			o.suffixed = o.suffixed || child.suffixed
+		}
+	}
+	return o
+}
+
+// hasKustomization は dir が kustomization.yaml を持つ（overlay / base）かを返す。
+func hasKustomization(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, "kustomization.yaml"))
+	return err == nil
+}
+
+// isSiteOverlay は target が site/ を resources に持つ（サイト 1 組ぶんの中間 overlay）かを返す。
+func isSiteOverlay(t *testing.T, target string) bool {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(target, "kustomization.yaml")); err != nil {
+		return false
+	}
+	for _, r := range readKustomizationFields(t, target).Resources {
+		if filepath.Clean(filepath.Join(target, r)) == siteDir {
+			return true
+		}
+	}
+	return false
+}
+
+var asynqOverlayDirs = []string{asynqOverlayDir, asynqE2EDir}
 
 // asynqTriggerPatches は overlay の patches のうち ScaledJob に当たるものを、
 // target 名 → 置き換えたトリガ列で返す。同じ名前を 2 回当てると落とす。
@@ -116,7 +193,8 @@ func expectedAsynqTargets(t *testing.T, o asynqOverlay) map[string]string {
 // asynq 構成では river_job を見ない = 永久に 0）。論理名で引く。短い Service 名で書く。
 // e2e の nameSuffix と patch の名前がずれる（黙って無視される）。
 func TestAsynqOverlaysRetargetEveryScaledJobExactly(t *testing.T) {
-	for _, o := range asynqOverlays {
+	for _, dir := range asynqOverlayDirs {
+		o := asynqOverlayOf(t, dir)
 		t.Run(o.dir, func(t *testing.T) {
 			patched := asynqTriggerPatches(t, o.dir)
 			want := expectedAsynqTargets(t, o)
@@ -164,7 +242,8 @@ func TestAsynqOverlaysRetargetEveryScaledJobExactly(t *testing.T) {
 // （FQDN）を指すことを固定する。直書きが 1 か所でも残ると、その 1 キューだけが
 // 黙ってスケールしなくなる。
 func TestAsynqOverlaysShareOneNotifierHost(t *testing.T) {
-	for _, o := range asynqOverlays {
+	for _, dir := range asynqOverlayDirs {
+		o := asynqOverlayOf(t, dir)
 		hosts := map[string]bool{}
 		for _, triggers := range asynqTriggerPatches(t, o.dir) {
 			for _, tr := range triggers {

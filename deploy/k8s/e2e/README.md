@@ -44,6 +44,23 @@ Ingress controller は kind に無いので、6.5 は Ingress の行き先の Se
 
 中断時は EXIT trap が selector と CronJob を戻す。trap が走らなかった場合は、次回の `run.sh` が `deploy_scaffold` で `scaffold.yaml` を再適用して selector を戻す。CronJob は `restore_cronjobs` が戻す（この復元経路は未検証）。preflight は Service selector を見ない。
 
+## asynq 構成で回す
+
+ジョブエンジンを asynq（Redis）にした判定は、overlay を asynq 用に切り替えて立てる。名前空間は rokuban-e2e に固定し、それ以外の指定は run.sh が拒む。判定 6 は asynq の対象ではない。
+
+    E2E_OVERLAY=e2e-asynq ./deploy/k8s/e2e/run.sh
+
+判定 2 と 3 は、asynq で観測する手段が River と違う。滞留の数え方と作り方を次のように変えている。
+
+- 滞留の数え方は notifier の件数の口を、ツールボックスから読む（queue_backlog）。読めないときは 0 にせず失敗させる。
+- 滞留の作り方は asynqprobe が積む。投入は rokuban の契約（internal/jobq）と adapter を通す。Redis の内部キーには触れない。
+- asynqprobe は手元の Go で go run する。kube.sh が kubectl port-forward で Redis を手元に開いてから呼ぶので、Go と kubectl が要る。
+- 判定 3 の encode の producer は River の表に直接書いているため、asynq では扱えない。判定 3 は FAIL か TODO のまま残る。
+
+**CI では回さない。** 判定 1〜5 は 40 分前後かかる。Dockerfile.full（ffmpeg）を含むイメージを焼く必要がある。KEDA を入れて単一ノードの kind に全ロールを載せるのも重い。
+
+CI は代わりに overlays/asynq と overlays/e2e-asynq を kustomize build して kubeconform に掛ける。場所は .github/workflows/ci.yml の manifests ジョブである。判定の結果は、実行した時点の値として runbook の実測の節に書く。
+
 ## 出力は 3 値である
 
 |  | 意味 |

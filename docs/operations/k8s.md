@@ -318,11 +318,12 @@ asynq 構成では、常駐 notifier の HTTP ハンドラが物理キューご�
 
 件数を出す notifier が止まっている間は、滞留があっても Job は起きない（e2e で 60 秒観測）。復旧後は件数が読め、Job が起きて消化する。
 
+asynq 構成では notifier が ruler を消化しないため、PUT から反映までは ruler の pollingInterval に縛られる（e2e で約 10 秒。River は 1 秒以内）。判定 1.8 は閾値 3 秒を超える。
+
 asynq 構成の notifier Pod は worker ロールとキュー購読の引数を外し、`ruler` の実行を ScaledJob に任せる（`deploy/k8s/asynq/` component）。watcher の常駐 worker は、両エンジンでサイトごとの reconciler を引くために残す。定期投入は引き続き CronJob が担う。ScaledJob のトリガは overlay ごとに持つ（`overlays/asynq`・`overlays/e2e-asynq`）。配置の理由と River 構成との差分は [deploy/k8s/README.md](../../deploy/k8s/README.md) §asynq 構成にある。
 
 River 構成の KEDA は DB を SQL で数えるため、件数パスは asynq 構成でだけ公開する。クラスタ内の KEDA が直接読む件数パスは Host 検査の対象外とする。
 
-asynq の滞留は、rokuban の契約（`internal/jobq`）越しに `deploy/k8s/e2e/asynqprobe` が積む。Redis の内部キーには触れない。
 
 <details><summary>根拠</summary>
 

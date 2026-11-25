@@ -129,6 +129,13 @@ pass "3.1" "encode Job が起きて実行中になった（${running_job}）"
 # 起動が速いので滅多に出ず、実物の worker で出る**。
 claimed() {
   local n
+  if [ "$E2E_ENGINE" = "asynq" ]; then
+    # asynq では、掴まれたタスクは件数（deliverable）から外れる。件数が 1 から 0 に
+    # 落ちたとき、起きた Job がそのタスクを掴んでいる。件数を読めなければ失敗（0 に潰さない）。
+    n="$(queue_backlog "$queue")" || return 1
+    [ "$n" = "0" ] && [ -n "$running_job" ]
+    return
+  fi
   n="$(psql_q "SELECT count(*) FROM river_job WHERE queue = '$queue' AND state = 'running'" | tr -d '[:space:]')" || return 1
   [ -n "$n" ] && [ "$n" -ge 1 ]
 }

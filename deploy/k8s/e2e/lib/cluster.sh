@@ -294,10 +294,11 @@ preflight_environment() {
       fi
       sleep 2
     done
-    if [ "$ok" = "1" ]; then
-      pass "0.4" "DB に届き、件数の口（notifier → Redis）が値を返す"
+    # DB は river_job ではなく製品の表で見る（asynq の migrate up は River のスキーマを作らない）。
+    if [ "$ok" = "1" ] && psql_q "SELECT 1 FROM recordings LIMIT 0" >/dev/null 2>&1; then
+      pass "0.4" "DB に届き、マイグレーションが当たっている（recordings を引ける）。件数の口も値を返す"
     else
-      fail "0.4" "件数の口が値を返さない --- notifier が起きていないか、Redis に届いていない"
+      fail "0.4" "件数の口が値を返さない（または recordings を引けない）--- notifier が起きていないか、Redis / マイグレーションに届いていない"
       return 1
     fi
   elif psql_q "SELECT 1 FROM river_job LIMIT 0" >/dev/null 2>&1; then
