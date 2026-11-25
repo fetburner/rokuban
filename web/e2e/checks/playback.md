@@ -235,7 +235,11 @@ CI の `browser-s3-302` は実 Chrome で回す。Playwright WebKit はローカ
 
 中継での再生、バッファ外へのシーク、停止後の再開を実ブラウザで確認する。
 
-CI では RustFS の MP4 を `delivery: proxy` の streamer 経由で実 Chrome に再生させる。保存位置への移動と再生、一時停止の後の再開も確認し、シーク開始から `seeked` までの時間を出力する。一時停止の長さは環境変数 `E2E_S3_PROXY_PAUSE_MS` で決まり、未設定なら 180000 ms である。main への push では 180000 ms、PR では 0 ms で回す（`ci.yml` の `browser-s3-302`）。
+CI では RustFS の MP4 を `delivery: proxy` の streamer 経由で実 Chrome に再生させる。保存位置への移動と再生、一時停止の後の再開も確認し、シーク開始から `seeked` までの時間を出力する。各シーク前に位置がバッファ外であることを確かめ、streamer の新しい Range 要求も数える。Playwright WebKit でも、ローカル診断として同じ判定を回せる。
+
+一時停止の長さは環境変数 `E2E_S3_PROXY_PAUSE_MS` で決まり、未設定なら 180000 ms である。main への push では 180000 ms、PR では 0 ms で回す（`ci.yml` の `browser-s3-302`）。PR の 0 ms は再開の経路だけを見る。
+
+跨ぐべき待ち時間は未特定である。調べた範囲と出典は `web/e2e/s3-proxy.mjs` の `PAUSE_MS` の隣のコメントにある。Chrome と RustFS の時間は、検索した公開文書に見つからなかった。
 
 跨ぐべき待ち時間は未特定である。Go の `net/http` の `ReadTimeout`・`WriteTimeout`・`IdleTimeout` は既定で無期限。HTML Standard は、取得の停止とデータの破棄を時間の条件無しに許す。Chrome の手放す時刻は公開文書に無い。したがって PR の 0 ms は再開の経路だけを見ており、待ちを跨ぐ失敗は main の実行でしか見ない。各シーク前に位置がバッファ外であることを確かめ、streamer の新しい Range 要求も数える。Playwright WebKit でも、ローカル診断として同じ判定を回せる。
 
