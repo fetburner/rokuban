@@ -175,6 +175,8 @@ watcher は mirakc の record を観測するたびに、record の同期行・�
 
 ingest をヒントにできるのは、取りこぼしを sweep が拾い直すからである。mirakc の record は ingest の DB commit 後にしか消えず、定期の record sweep は録画中・完了の record を再処理するたびに ingest を投入し直す。
 
+MySQL では、record 同期行の確保を `ON DUPLICATE KEY UPDATE` が既存行に取る行ロックで行い、録画の行ロックは `FOR UPDATE` で取る。録画の upsert が狙うのは生きた放送イベントのキーだけで、主キーは自動採番なので衝突せず、狙わないキーで発火しない。
+
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.RecordObservations` / `IngestTarget` / `RecordBacklog`
