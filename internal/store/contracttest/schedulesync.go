@@ -35,6 +35,31 @@ func RunScheduleSync(t *testing.T, newStore NewScheduleSyncStore) {
 	t.Run("marker failure rolls back observations", func(t *testing.T) { testScheduleSyncMarkerFailure(t, newStore) })
 	t.Run("replacement is scoped to one site", func(t *testing.T) { testScheduleSyncSiteScope(t, newStore) })
 	t.Run("sync reads are scoped to one site", func(t *testing.T) { testScheduleSyncReadSiteScope(t, newStore) })
+	t.Run("large replacement crosses statement limits", func(t *testing.T) { testScheduleSyncLargeReplacement(t, newStore) })
+}
+
+func testScheduleSyncLargeReplacement(t *testing.T, newStore NewScheduleSyncStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	const site = "contract-schedule-sync-large"
+	// 1 行 7 プレースホルダで、MySQL の 1 文の上限（65535）を超える行数。実装はこの件数を文やバッチに分けて書く。
+	const count = 10_001
+	observed := make([]store.ObservedSchedule, 0, count)
+	for i := range count {
+		observed = append(observed, store.ObservedSchedule{
+			ProgramID: int64(i + 1), State: "scheduled", Options: json.RawMessage(`{}`), Tags: []string{},
+		})
+	}
+	if err := f.Writer.ReplaceObserved(ctx, site, observed); err != nil {
+		t.Fatalf("replacing %d observations: %v", count, err)
+	}
+	rows, err := f.Reader.ListObserved(ctx, site)
+	if err != nil {
+		t.Fatalf("listing observations after large replacement: %v", err)
+	}
+	if len(rows) != count || rows[0].ProgramID != 1 || rows[len(rows)-1].ProgramID != count {
+		t.Fatalf("observations after large replacement = %d rows, want %d rows 1..%d", len(rows), count, count)
+	}
 }
 
 func testScheduleSyncReplacement(t *testing.T, newStore NewScheduleSyncStore) {

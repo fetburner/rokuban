@@ -474,7 +474,9 @@ mirakc から得た予定と欠測の観測は、書き手である reconciler �
 
 観測行の置き換えと snapshot marker の更新は、1 つのトランザクションで確定する。marker を観測より先に確定すると、collector が不完全な観測を新鮮と誤認するからである。
 
-reconciler は、観測全量の置き換え、同期評価の候補、開始済みイベントの読み取りを `ScheduleSync` から使う。presync collector は、marker・観測一覧・同期評価の候補を `ScheduleSyncReader` から読み、marker が無いときだけ時刻を 0 として出す。実装は `pgstore.ScheduleSync` が両方を持つ。
+reconciler は、観測全量の置き換え、同期評価の候補、開始済みイベントの読み取りを `ScheduleSync` から使う。presync collector は、marker・観測一覧・同期評価の候補を `ScheduleSyncReader` から読み、marker が無いときだけ時刻を 0 として出す。実装は `pgstore.ScheduleSync` と `mysqlstore.ScheduleSync` が両方を持つ。
+
+MySQL では、観測の置き換えを site の全行の削除と挿入にし、基準時刻を tx の開始時に 1 回読んで観測行と marker に同じ値を書く。観測は全量なので、site の行を全部消して入れ直せば、時刻を比べて古い行を選ぶ必要が無い。時計の値によって古い行が残ったり、新しい行が消えたりすることもない。
 
 欠測の古い行の削除は、ruler の GC が同じ契約 `NeverScheduledEvents` を呼んで行う。実装は `pgstore.NeverScheduledEvents` と `mysqlstore.NeverScheduledEvents` が持つ。
 
