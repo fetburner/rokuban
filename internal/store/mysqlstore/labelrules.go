@@ -11,12 +11,12 @@ import (
 )
 
 // labelRuleReconcileLock は全件の再評価を直列化する名前付きロックの行の名前。
-// 行は migration 00012 で置く。
+// 行は、この表を作る migration で置く。
 const labelRuleReconcileLock = "label_rule_reconcile"
 
 // LabelRules は MySQL で分類ルールの CRUD と全件の再評価を実装する。
 // 再評価は labelRuleReconcileLock の行を FOR UPDATE で取り、直列化する。
-// 録画の書き込みによる当たりの維持は、migration 00012 のトリガーが行う。
+// 録画の書き込みによる当たりの維持は、同じ migration のトリガーが行う。
 type LabelRules struct {
 	db *sql.DB
 }
@@ -81,6 +81,7 @@ func (s *LabelRules) Update(ctx context.Context, id int64, value, keyword string
 		if err := lockLabelRule(ctx, tx, id); err != nil {
 			return err
 		}
+		// 先読みで存在を見るのは、MySQL の UPDATE の件数が一致した行数でなく変わった行数だからである。
 		valueKey, err := labelRuleValueKey(value)
 		if err != nil {
 			return err
@@ -103,11 +104,16 @@ func (s *LabelRules) Update(ctx context.Context, id int64, value, keyword string
 // Delete は id の分類ルールを削除する。当たりは FK の CASCADE で消え、次点への移動は再評価が行う。
 func (s *LabelRules) Delete(ctx context.Context, id int64) error {
 	return runTx(ctx, s.db, func(tx *sql.Tx) error {
-		if err := lockLabelRule(ctx, tx, id); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM label_rules WHERE id = ?`, id); err != nil {
+		res, err := tx.ExecContext(ctx, `DELETE FROM label_rules WHERE id = ?`, id)
+		if err != nil {
 			return fmt.Errorf("deleting label rule %d: %w", id, err)
+		}
+		deleted, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("counting deleted label rules: %w", err)
+		}
+		if deleted == 0 {
+			return fmt.Errorf("label rule %d: %w", id, store.ErrNotFound)
 		}
 		return nil
 	})
@@ -155,41 +161,52 @@ func lockLabelRuleReconcile(ctx context.Context, tx *sql.Tx) error {
 }
 
 // reevaluateLabelRules は当たりが変わる録画だけを書き直し、変わった録画数を返す。
+// 差分は 1 文で読み、読んだ行だけを適用する。文ごとに読み直すと、途中で commit された
+// ルールの編集や録画の書き込みで、数えた値と適用した値がずれるからである。
 // 呼び出し側の tx が再評価のロックを保持している前提である。
 // 変化の数え方は、勝者が変わった録画の数（Postgres の upsert と removed の合計と同じ）。
 func reevaluateLabelRules(ctx context.Context, tx *sql.Tx) (int64, error) {
-	var changed int64
-	if err := tx.QueryRowContext(ctx, `
- SELECT COUNT(*)
+	type change struct {
+		recordingID int64
+		winner      sql.NullInt64
+	}
+	changes, err := queryRows(ctx, tx, "changed label rule hits", `
+ SELECT w.recording_id, w.label_rule_id
  FROM label_rule_winners w
  LEFT JOIN label_rule_hits h ON h.recording_id = w.recording_id
  WHERE NOT (h.label_rule_id <=> w.label_rule_id)
- `).Scan(&changed); err != nil {
-		return 0, fmt.Errorf("counting changed label rule hits: %w", err)
+ `, func(rows *sql.Rows) (change, error) {
+		var c change
+		err := rows.Scan(&c.recordingID, &c.winner)
+		return c, err
+	})
+	if err != nil {
+		return 0, err
 	}
-	if changed == 0 {
+	// ponytail: 1 録画ずつ書く。全件の差分が大きい再評価（ルール追加直後など）は遅くなるので、
+	// 件数が問題になったら多行の VALUES にまとめる。
+	for _, c := range changes {
+		if c.winner.Valid {
+			// label_rule_hits の一意キーは PK（recording_id）だけなので、ON DUPLICATE KEY UPDATE が
+			// 発火するのは狙った行の衝突だけである。録画の INSERT トリガーが先に行を作っても衝突しない。
+			_, err = tx.ExecContext(ctx, `
+ INSERT INTO label_rule_hits (recording_id, label_rule_id) VALUES (?, ?) AS new
+ ON DUPLICATE KEY UPDATE label_rule_id = new.label_rule_id
+ `, c.recordingID, c.winner.Int64)
+		} else {
+			_, err = tx.ExecContext(ctx, `DELETE FROM label_rule_hits WHERE recording_id = ?`, c.recordingID)
+		}
+		if err != nil {
+			return 0, fmt.Errorf("applying label rule hit for recording %d: %w", c.recordingID, err)
+		}
+	}
+	if len(changes) == 0 {
 		return 0, nil
-	}
-	if _, err := tx.ExecContext(ctx, `
- DELETE h FROM label_rule_hits h
- JOIN label_rule_winners w ON w.recording_id = h.recording_id
- WHERE NOT (h.label_rule_id <=> w.label_rule_id)
- `); err != nil {
-		return 0, fmt.Errorf("removing stale label rule hits: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `
- INSERT INTO label_rule_hits (recording_id, label_rule_id)
- SELECT w.recording_id, w.label_rule_id
- FROM label_rule_winners w
- WHERE w.label_rule_id IS NOT NULL
-   AND NOT EXISTS (SELECT 1 FROM label_rule_hits h WHERE h.recording_id = w.recording_id)
- `); err != nil {
-		return 0, fmt.Errorf("inserting label rule hits: %w", err)
 	}
 	if err := NotifyTopic(ctx, tx, "recordings"); err != nil {
 		return 0, fmt.Errorf("notifying recordings after label rule re-evaluation: %w", err)
 	}
-	return changed, nil
+	return int64(len(changes)), nil
 }
 
 // labelRuleValueKey は value の series_key を求める。キーが無い値は label_rules の制約（value_key が NULL でない）に反するので拒む。

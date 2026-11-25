@@ -105,7 +105,6 @@ func runLabelRuleChange(t *testing.T, newStore NewLabelRuleStore) {
 	if err != nil {
 		t.Fatalf("Create(rule) error = %v", err)
 	}
-	f.TakeRecordingsNotifications(t)
 	if changed, err := f.Reevaluation.ReevaluateAll(ctx); err != nil || changed != 0 {
 		t.Fatalf("ReevaluateAll before edit = %d, %v, want 0, nil", changed, err)
 	}
@@ -115,7 +114,6 @@ func runLabelRuleChange(t *testing.T, newStore NewLabelRuleStore) {
 	if _, err := f.Store.Update(ctx, rule.ID, rule.Value, "target", rule.Priority); err != nil {
 		t.Fatalf("Update(rule) error = %v", err)
 	}
-	f.TakeRecordingsNotifications(t)
 	if changed, err := f.Reevaluation.ReevaluateAll(ctx); err != nil || changed != 1 {
 		t.Fatalf("ReevaluateAll after edit = %d, %v, want 1, nil", changed, err)
 	}

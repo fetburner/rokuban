@@ -12,14 +12,14 @@ CREATE TABLE named_locks (
 INSERT INTO named_locks (name) VALUES ('label_rule_reconcile');
 
 -- 録画のタイトルの勝者。Postgres の label_rule_winner(recordings.title) と同じ式にする。
--- 正規化（全角英数と全角空白を半角へ写し、LOWER する）は epg_programs.search_name（00006）と
--- label_rules.keyword_key（00007）と同じ写像で、DB 側の式を 3 箇所に持つ。
+-- 正規化（全角英数と全角空白を半角へ写し、LOWER する）は epg_programs.search_name と
+-- label_rules.keyword_key と同じ写像で、DB 側の式を 3 箇所に持つ。
 -- 勝者は priority DESC, id ASC の先頭（label_rule_winner の ORDER BY と同じ）。
 CREATE VIEW label_rule_winners AS
 SELECT r.id AS recording_id,
        (SELECT lr.id
         FROM label_rules lr
-        WHERE LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(r.title, 'Ａ', 'A'), 'Ｂ', 'B'), 'Ｃ', 'C'), 'Ｄ', 'D'), 'Ｅ', 'E'), 'Ｆ', 'F'), 'Ｇ', 'G'), 'Ｈ', 'H'), 'Ｉ', 'I'), 'Ｊ', 'J'), 'Ｋ', 'K'), 'Ｌ', 'L'), 'Ｍ', 'M'), 'Ｎ', 'N'), 'Ｏ', 'O'), 'Ｐ', 'P'), 'Ｑ', 'Q'), 'Ｒ', 'R'), 'Ｓ', 'S'), 'Ｔ', 'T'), 'Ｕ', 'U'), 'Ｖ', 'V'), 'Ｗ', 'W'), 'Ｘ', 'X'), 'Ｙ', 'Y'), 'Ｚ', 'Z'), 'ａ', 'a'), 'ｂ', 'b'), 'ｃ', 'c'), 'ｄ', 'd'), 'ｅ', 'e'), 'ｆ', 'f'), 'ｇ', 'g'), 'ｈ', 'h'), 'ｉ', 'i'), 'ｊ', 'j'), 'ｋ', 'k'), 'ｌ', 'l'), 'ｍ', 'm'), 'ｎ', 'n'), 'ｏ', 'o'), 'ｐ', 'p'), 'ｑ', 'q'), 'ｒ', 'r'), 'ｓ', 's'), 'ｔ', 't'), 'ｕ', 'u'), 'ｖ', 'v'), 'ｗ', 'w'), 'ｘ', 'x'), 'ｙ', 'y'), 'ｚ', 'z'), '０', '0'), '１', '1'), '２', '2'), '３', '3'), '４', '4'), '５', '5'), '６', '6'), '７', '7'), '８', '8'), '９', '9'), ' ', ' '))
+        WHERE LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE( REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(r.title, 'Ａ', 'A'), 'Ｂ', 'B'), 'Ｃ', 'C'), 'Ｄ', 'D'), 'Ｅ', 'E'), 'Ｆ', 'F'), 'Ｇ', 'G'), 'Ｈ', 'H'), 'Ｉ', 'I'), 'Ｊ', 'J'), 'Ｋ', 'K'), 'Ｌ', 'L'), 'Ｍ', 'M'), 'Ｎ', 'N'), 'Ｏ', 'O'), 'Ｐ', 'P'), 'Ｑ', 'Q'), 'Ｒ', 'R'), 'Ｓ', 'S'), 'Ｔ', 'T'), 'Ｕ', 'U'), 'Ｖ', 'V'), 'Ｗ', 'W'), 'Ｘ', 'X'), 'Ｙ', 'Y'), 'Ｚ', 'Z'), 'ａ', 'a'), 'ｂ', 'b'), 'ｃ', 'c'), 'ｄ', 'd'), 'ｅ', 'e'), 'ｆ', 'f'), 'ｇ', 'g'), 'ｈ', 'h'), 'ｉ', 'i'), 'ｊ', 'j'), 'ｋ', 'k'), 'ｌ', 'l'), 'ｍ', 'm'), 'ｎ', 'n'), 'ｏ', 'o'), 'ｐ', 'p'), 'ｑ', 'q'), 'ｒ', 'r'), 'ｓ', 's'), 'ｔ', 't'), 'ｕ', 'u'), 'ｖ', 'v'), 'ｗ', 'w'), 'ｘ', 'x'), 'ｙ', 'y'), 'ｚ', 'z'), '０', '0'), '１', '1'), '２', '2'), '３', '3'), '４', '4'), '５', '5'), '６', '6'), '７', '7'), '８', '8'), '９', '9'), '　', ' '))
             COLLATE utf8mb4_0900_bin LIKE CONCAT('%', lr.keyword_key, '%') ESCAPE '!'
         ORDER BY lr.priority DESC, lr.id ASC
         LIMIT 1) AS label_rule_id

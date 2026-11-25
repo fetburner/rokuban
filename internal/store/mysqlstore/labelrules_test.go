@@ -53,18 +53,34 @@ func TestLabelRuleHitsFollowRecordingTitles(t *testing.T) {
 	}
 }
 
-// TestLabelRuleWinnerNormalizesWidth は、タイトルとキーワードの全角英数・全角空白と大文字を
-// Postgres の normalize_search_text と同じく半角の小文字へ写して照合することを確かめる。
+// TestLabelRuleWinnerNormalizesWidth は、Postgres の normalize_search_text が写す全 63 字
+// （全角英大文字・小文字・数字・全角空白）を、タイトルとキーワードの両方で半角の小文字へ
+// 正規化して照合することを確かめる。写し間違いは 1 字でも不一致になる。
 func TestLabelRuleWinnerNormalizesWidth(t *testing.T) {
+	const fullWidth = "ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ０１２３４５６７８９\u3000"
+	// 全角の大文字と小文字は、どちらも半角の小文字になる。
+	const halfWidth = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz0123456789 "
+	if n := len([]rune(fullWidth)); n != 63 {
+		t.Fatalf("fixture has %d runes, want 63", n)
+	}
 	db := mysqltest.SetupDB(t)
 	ctx := t.Context()
-	rule, err := NewLabelRules(db).Create(ctx, "series", "作品Z", "ＡＢＣ", 0)
+	rule, err := NewLabelRules(db).Create(ctx, "series", "作品Z", halfWidth+"x", 0)
 	if err != nil {
 		t.Fatalf("Create(rule) error = %v", err)
 	}
-	recordingID := seedLabelRuleRecording(t, db, "abc　第１話")
+	recordingID := seedLabelRuleRecording(t, db, fullWidth+"x")
 	if got, exists := readLabelRuleHit(t, db, recordingID); !exists || got != rule.ID {
-		t.Fatalf("hit for fullwidth-normalized title = (%d, %t), want rule %d", got, exists, rule.ID)
+		t.Fatalf("hit for full-width title = (%d, %t), want rule %d", got, exists, rule.ID)
+	}
+	// 同じ字を全角のキーワードで書いても、同じ当たりになる。
+	rule2, err := NewLabelRules(db).Create(ctx, "series", "作品W", fullWidth+"y", 9)
+	if err != nil {
+		t.Fatalf("Create(full-width keyword) error = %v", err)
+	}
+	recordingID2 := seedLabelRuleRecording(t, db, halfWidth+"y")
+	if got, exists := readLabelRuleHit(t, db, recordingID2); !exists || got != rule2.ID {
+		t.Fatalf("hit for half-width title with full-width keyword = (%d, %t), want rule %d", got, exists, rule2.ID)
 	}
 }
 
