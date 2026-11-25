@@ -244,6 +244,13 @@ jobs:
   # PR は citest で変更の影響を受けるパッケージだけを選ぶ。main は go list の全件。
   # 対象が空になるのは PR で変更がテストに影響しないときだけで、その場合は planned_skip を出して
   # shard を作らず、集約ジョブ test がそれを成功とみなす（mirakc-conformance と同じ形）。
+  # PR の shard 数は選ばれたパッケージの見積もり（main の実測の合計）から決める（scripts/shardcount）。
+  # 準備は 1 本あたり約 50 秒（run 45419813791 の実測）かかり、本数を 1 つ増やすとその分のランナー時間が
+  # 増える。待ち時間は合計 ÷ 本数の差だけ縮むので、縮みが準備の分以上あるときだけ増やす。
+  # 結果は合計 100 秒で 2 本、300 秒で 3 本、上限 3 本。小さな PR のランナー時間を、わずかな待ち時間の
+  # 短縮のために増やさないための線である。main は今どおり 3 本で全件を回す。
+  # 実測の無いパッケージが 1 つでもあれば 3 本にする。重さが分からない見積もりの欠けは、ランナー時間が
+  # 余る側に寄せる（今までの振り分けと同じ）。0 秒と見なして本数を減らすと、待ちが延びる側に外れる。
   test-matrix:
     # 全シャードの開始を待たせる。ubuntu-slim では setup-go と gotestsum のビルドで 24s → 110s に伸びた。
     runs-on: ubuntu-latest
@@ -285,10 +292,18 @@ jobs:
             exit 0
           fi
 
-          matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions 3 < "$packages_file")
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            # 少数パッケージを割り当てたときに残る空のシャードを除く。
-            matrix=$(jq -ce '.include |= map(select(.packages != "")) | select(.include | length > 0)' <<< "$matrix")
+            shards=$(go run ./scripts/shardcount --timing-files 'timings/*.json' < "$packages_file")
+            if [[ "$shards" -eq 1 ]]; then
+              # ci-matrix は 2 以上の分割しか受けないので、1 本だけは直接作る。
+              matrix=$(jq -Rsc '{include: [{id: 0, packages: (split("\n") | map(select(. != "")) | join(" ")), description: "0 - all"}]}' < "$packages_file")
+            else
+              matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions "$shards" < "$packages_file")
+              # 少数パッケージを割り当てたときに残る空のシャードを除く。
+              matrix=$(jq -ce '.include |= map(select(.packages != "")) | select(.include | length > 0)' <<< "$matrix")
+            fi
+          else
+            matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions 3 < "$packages_file")
           fi
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
@@ -437,6 +452,9 @@ jobs:
   # 各病態ケースは独立したパッケージなので、長い EventIDReset / ingest resume / TestRecordLifecycle なども
   # パッケージ単位で分散できる。Postgres は ingestresume がどのシャードへ入っても使えるよう全てに置く。
   # 必須チェック名 `mirakc-conformance` は下の集約ジョブが担う。
+  # PR の本数は見積もり（この job の実測）の合計から test-matrix と同じ式で決める。準備の 50 秒は
+  # test-shard の実測を流用している。この job の準備（Postgres・mirakc の起動）は未計測なので、
+  # 実際に重ければ本数を増やす価値はここで見た線より大きい（この線は少なめ）。
   mirakc-conformance-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -477,10 +495,20 @@ jobs:
             exit 0
           fi
 
-          matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions 3 < "$packages_file")
+          # PR の shard 数の決め方は test-matrix と同じ（scripts/shardcount）。shard 内は -p 1 の直列なので、
+          # 待ち時間は見積もりの合計 ÷ 本数にほぼ等しい。
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            # 少数パッケージを割り当てたときに残る空のシャードを除く。
-            matrix=$(jq -ce '.include |= map(select(.packages != "")) | select(.include | length > 0)' <<< "$matrix")
+            shards=$(go run ./scripts/shardcount --timing-files 'timings/*.json' < "$packages_file")
+            if [[ "$shards" -eq 1 ]]; then
+              # ci-matrix は 2 以上の分割しか受けないので、1 本だけは直接作る。
+              matrix=$(jq -Rsc '{include: [{id: 0, packages: (split("\n") | map(select(. != "")) | join(" ")), description: "0 - all"}]}' < "$packages_file")
+            else
+              matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions "$shards" < "$packages_file")
+              # 少数パッケージを割り当てたときに残る空のシャードを除く。
+              matrix=$(jq -ce '.include |= map(select(.packages != "")) | select(.include | length > 0)' <<< "$matrix")
+            fi
+          else
+            matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions 3 < "$packages_file")
           fi
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
