@@ -28,13 +28,28 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const STREAMER_PORT = 4176
 const S3_PROXY_PORT = 4175
 const PAGE_PORT = 4174
-const PAUSE_MS = 180000
+// PAUSE_MS は一時停止から再開までの待ち（ms）。
+// 跨ぐ待ち時間は未特定。調べた範囲: Go の net/http Server の ReadTimeout・WriteTimeout・IdleTimeout は
+// いずれも 0 で期限なし（https://pkg.go.dev/net/http#Server）。Transport.IdleConnTimeout は
+// アイドルな keep-alive 接続だけが対象（https://pkg.go.dev/net/http#Transport）。読み途中の S3 応答は対象外。
+// HTML Standard は、取得の停止やデータの破棄をユーザーエージェントが行ってよいと定め、時間の条件は書いていない
+// （https://html.spec.whatwg.org/multipage/media.html）。Chrome がいつ手放すかは公開文書に無く、測っていない。
+// 180000 は main 向けの従来値で、根拠は無い。PR では ci.yml が 0 を渡す（再開の経路だけを見る。
+// 待ちを跨ぐ失敗は見ない）。環境変数が無いときは 180000 なので、ローカル実行の既定は変わらない。
+const PAUSE_MS = parsePauseMs(process.env.E2E_S3_PROXY_PAUSE_MS)
 const SEEK_TARGETS = [40, 80, 120]
 const VIDEO_SECONDS = 300
 // makeS3Video の目標 bitrate は映像 1,000 kbit/s + 音声 96 kbit/s。合計の 3 倍を上限にして、再生より速く先読みしすぎない範囲で Chrome の所要時間を抑える。
 const VIDEO_BYTES_PER_SECOND = (1000 + 96) * 1000 / 8 * 3
 const BROWSER = process.env.E2E_BROWSER ?? 'chrome'
 let streamerOrigin = ''
+
+/** parsePauseMs は E2E_S3_PROXY_PAUSE_MS を解釈する。未設定は 180000、0 以上の整数以外は例外にする。 */
+function parsePauseMs(raw) {
+  if (raw === undefined) return 180000
+  if (!/^\d+$/.test(raw)) throw new Error('E2E_S3_PROXY_PAUSE_MS must be a non-negative integer of milliseconds: ' + JSON.stringify(raw))
+  return Number(raw)
+}
 
 async function waitFor(fn, label, timeout = 20000) {
   return waitForFixture(fn, label, timeout)
