@@ -227,6 +227,8 @@ jobs:
         env:
           E2E_S3_URL: http://127.0.0.1:9000
           E2E_STREAMER_FIXTURE_BINARY: ${{ runner.temp }}/rokuban-s3streamer-conformance
+          # s3-proxy の一時停止。main は従来値、PR は再開の経路だけを見る 0 ms（跨ぐ待ちは未特定。web/e2e/s3-proxy.mjs の PAUSE_MS を参照）
+          E2E_S3_PROXY_PAUSE_MS: ${{ github.event_name == 'push' && '180000' || '0' }}
       - name: RustFS logs on failure
         if: failure()
         env:

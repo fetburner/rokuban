@@ -28,13 +28,42 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const STREAMER_PORT = 4176
 const S3_PROXY_PORT = 4175
 const PAGE_PORT = 4174
-const PAUSE_MS = 180000
+// PAUSE_MS は一時停止から再開までの待ち（ms）。跨ぐ待ち時間は未特定。
+// 調べた範囲（出典に書かれていることだけを書く。書かれていないものは「記載なし・未検証」）:
+// - streamer の本番 HTTP サーバー（cmd/rokuban/server.go）: ReadHeaderTimeout 10s、IdleTimeout 120s、
+//   ReadTimeout・WriteTimeout は未設定。https://pkg.go.dev/net/http#Server は IdleTimeout を「次のリクエストを待つ時間」、
+//   0 のとき ReadTimeout を使うと書く。応答の書き込み中の期限は文書に記載なし。書き込み中は切られないことを、リポジトリのテスト TestNewHTTPServer_LongRunningHandlerNotCutByIdleTimeout（cmd/rokuban/http_server_test.go）が実測している。
+// - conformance フィクスチャ（internal/streamer/conformance/main.go）: ReadHeaderTimeout 5s のみ。IdleTimeout・ReadTimeout は未設定で、
+//   net/http の doc によると keep-alive の待ちに期限は無い。ReadHeaderTimeout が keep-alive の待ちに効くとの記載は無い。
+//   本番の IdleTimeout 120s はこのフィクスチャに無く、この判定は 120s を跨いでいない。
+// - streamer の S3 クライアント（aws-sdk-go-v2）: https://pkg.go.dev/github.com/aws/aws-sdk-go-v2/aws/transport/http の
+//   BuildableClient は既定 Transport を使う。DefaultHTTPTransportIdleConnTimeout は 90s（アイドルな接続の待ち）。
+//   ResponseHeaderTimeout は挙げていない。読み途中の応答本体の期限は記載なし。
+// - Node の throttle proxy（テスト専用。本番には無い）: https://nodejs.org/api/http.html の既定は server.timeout 0、
+//   keepAliveTimeout 5000 ms（応答を書き終えた後のアイドル）、requestTimeout 300000 ms（要求の受信）、headersTimeout は min(requestTimeout, 60000)。
+//   一時停止中の応答途中への効きは記載なし・未検証。
+// - RustFS: 公式文書の該当項目は見つからなかった。GitHub issue rustfs/rustfs#3076 の maintainer は、
+//   RUSTFS_HTTP1_HEADER_READ_TIMEOUT（5s から 75s に変更と記載）が「idle な keep-alive 接続」を閉じる時間に効くと述べる。
+//   一時停止中の応答途中に効くかは記載なし・未検証。
+// - Chrome: 検索（"Chromium media element paused stops fetching buffer discard idle socket timeout" ほか）では、
+//   取得の停止と idle ソケットの閉じ方を定めた現行の公開文書は見つからなかった。HTML Standard の media 節は、
+//   取得の停止とデータの破棄をユーザーエージェントが行ってよいと定め、時間の条件は書いていない。
+// 180000 は main 向けの従来値で、根拠は無い。PR では ci.yml が 0 を渡す（再開の経路だけを見る。待ちを跨ぐ失敗は見ない）。
+// 環境変数が無いときは 180000 なので、ローカル実行の既定は変わらない。
+const PAUSE_MS = parsePauseMs(process.env.E2E_S3_PROXY_PAUSE_MS)
 const SEEK_TARGETS = [40, 80, 120]
 const VIDEO_SECONDS = 300
 // makeS3Video の目標 bitrate は映像 1,000 kbit/s + 音声 96 kbit/s。合計の 3 倍を上限にして、再生より速く先読みしすぎない範囲で Chrome の所要時間を抑える。
 const VIDEO_BYTES_PER_SECOND = (1000 + 96) * 1000 / 8 * 3
 const BROWSER = process.env.E2E_BROWSER ?? 'chrome'
 let streamerOrigin = ''
+
+/** parsePauseMs は E2E_S3_PROXY_PAUSE_MS を解釈する。未設定は 180000、0 以上の整数以外は例外にする。 */
+function parsePauseMs(raw) {
+  if (raw === undefined) return 180000
+  if (!/^\d+$/.test(raw)) throw new Error('E2E_S3_PROXY_PAUSE_MS must be a non-negative integer of milliseconds: ' + JSON.stringify(raw))
+  return Number(raw)
+}
 
 async function waitFor(fn, label, timeout = 20000) {
   return waitForFixture(fn, label, timeout)
