@@ -250,15 +250,7 @@ watcher Deployment の常駐 client も worker ロールを持つので全 kind 
 
 両者とも全 kind を登録している。したがって、どちらの client が leader でも、同じ締切で同じ kind を rescue すると読める。leader の交代を跨いだ挙動は実測していない（未検証）。
 
-asynq 構成では、常駐 notifier の HTTP ハンドラが物理キューごとの配送可能件数を返し、KEDA の metrics-api トリガが読む。KEDA が起こした Job の Server は、購読するキューで期限が来たタスクの昇格と孤児の回収を担う。回収可能になるまでの猶予中に起きた Job は、空振りで終わりうる。
-
-待機中、期限が来た再試行待ちと予約済み、孤児の実行中を数える。lease が有効な実行中タスクは数えない。KEDA の accurate 戦略は実行中を件数に含めない前提である。
-
-期限前の再試行待ちと予約済みタスクは数えない。Snooze 中に数えると、KEDA の巡回ごとに空振りの Job が起き続けるためである。
-
-常駐 Pod が停止すると KEDA に件数を返せず、worker が起きなくなる。KEDA が HTTP 5xx や接続失敗にどう振る舞うかは未検証である。
-
-`ruler` の ScaledJob は残すため、両 client は同じ queue の job を claim する。`worker.periodic_jobs: false` は維持し、定期投入は CronJob が担う。rescue の判定は [故障注入 suite の F3](../../deploy/k8s/e2e/README.md) が固定する。
+River 構成では、`ruler` キューを常駐 client と ScaledJob の両方が購読する。回収の判定は [故障注入 suite の F3](../../deploy/k8s/e2e/README.md) が固定する。
 
 ##### reconciler を常駐 client に引かせる
 
@@ -266,11 +258,19 @@ reconciler の待ちに ScaledJob の Pod 起動を挟まないよう、常駐 c
 
 reconciler の `reconciler_<site>` は、site ごとの watcher Deployment に同居させた常駐 client が引く。起動形は `--roles watcher,worker --sites <site> --queues reconciler --stores=` で、`--once` は付けない。watcher は mirakc に届く場所に常駐する。そのため reconcile パスは KEDA のポーリングと Pod 起動を待たずに起きられる。
 
-ScaledJob の reconciler は残す。ruler と同じく両 client が同じキューを claim する。常駐が止まっている間（ロールアウト・ノード退避・設定誤り）の回収を受けるためである。
+ScaledJob の reconciler は残す。常駐 worker と ScaledJob が同じキューを購読する。常駐が止まっている間（ロールアウト・ノード退避・設定誤り）の回収を受けるためである。
 
 通常時にも ScaledJob の Job は起きる。判定の e2e で、約 8 分に sitea の ScaledJob が 1 件の Job を起こした。その Job は 0 件を claim して終わった（空振り）。同じ期間に常駐 client の watcher が sitea で 16 件、siteb で 16 件の `reconcile_pass` を claim した。siteb の ScaledJob の Job は数えていない。本番での頻度は未検証である。
 
-watcher Deployment は 2 レプリカでも worker ロールが両方で動く。リーダー選出が止めるのは watcher ロールだけだからである。並走は River の claim（1 件を 1 client にだけ渡す）と `reconcile_pass` の一意制約（サイト単位。待機中と実行中を含む）が防ぐ。
+watcher Deployment は 2 レプリカでも worker ロールが両方で動く。リーダー選出が止めるのは watcher ロールだけだからである。River 構成では並走を claim（1 件を 1 client にだけ渡す）と `reconcile_pass` の一意制約（サイト単位。待機中と実行中を含む）で防ぐ。
+
+asynq 構成では、`asynq.Unique` のロックが有効な間は同じサイトの `reconcile_pass` の重複投入が合流する。ロックは実行の成功時か TTL の満了時に解放される。TTL 満了後も旧パスが動いている場合の並走は未検証である。
+
+<details><summary>根拠</summary>
+
+- 合流の有効期間と判定対象: [asynq.Unique の公開契約](https://pkg.go.dev/github.com/hibiken/asynq@v0.26.0#Unique)
+
+</details>
 
 判定 1.8（kind の e2e。ScaledJob の `pollingInterval` は 10 秒）で、常駐経路の PUT から mirakc の schedule までは 0〜1 秒だった（3 番組、2 周。閾値 3 秒）。同じ判定を常駐の無い構成（ScaledJob だけ）で回した値は 7〜11 秒である。常駐の経路が ScaledJob の Pod 起動より速いことの根拠は、この 2 つの分布が重ならないことだけである。本番の値は未検証。
 
@@ -292,9 +292,9 @@ worker を同居させると、watcher Pod のプール上限が変わる。
 
 ロールアウトで ctx を切られた実行中のジョブは、「実行中のジョブを打ち切る条件」で実測したとおりに扱われる想定である。その実測では、猶予 5 秒で ctx が切られたジョブは `available` に戻り、`attempt` も `errors` も残らなかった。`reconcile_pass` は次の CronJob の投入（1 分以内）と、再起動後の client の claim で再走する想定である。ただし実際の再走までの時間は未測定である。
 
-notifier Deployment の全レプリカが止まると（ロールアウトの失敗・設定誤りなど）、SSE 配送と ruler の常時購読が止まる（ruler の ScaledJob は残る）。回収と昇格は、watcher Deployment の常駐 client が leader になっていれば続く。notifier を落としたときに leader がどの client へ移るかは未検証である。1 つの Pod だけが落ちた場合は、残りのレプリカが SSE クライアントを受け、落ちた Pod の SSE クライアントは再接続する。以上は manifest（`replicas: 2`）と River の leader 選出からの導出で、測っていない。
+River 構成で notifier Deployment の全レプリカが止まると、SSE 配送と ruler の常時購読が止まる（ruler の ScaledJob は残る）。回収と昇格は、watcher Deployment の常駐 client が leader になっていれば続く。notifier を落としたときに leader がどの client へ移るかは未検証である。1 つの Pod だけが落ちた場合は、残りのレプリカが SSE クライアントを受け、落ちた Pod の SSE クライアントは再接続する。以上は manifest（`replicas: 2`）と River の leader 選出からの導出で、測っていない。
 
-実行中のまま死んだジョブは、回収されるまで同じ種類・同じサイトの投入を飲み込む。その行が一意キーを占有するので、同じ kind × site の後続の投入は既存行に合流して消える（投入は気づかないうちに無かったことになる）。
+River 構成では、実行中のまま死んだジョブが回収されるまで、同じ種類・同じサイトの投入が合流する。その行が一意キーを占有するので、同じ kind × site の後続の投入は既存行に合流して消える（投入は気づかないうちに無かったことになる）。
 
 - 通常の既定は `worker.rescue_stuck_jobs_after: 6m` で、client のジョブ timeout（既定 1 分）より長い。worker 固有の timeout が設定値より長ければ、その長い時間を rescue 判定に使う。
 - ingest は Timeout 5 分なので、停止した Work は約 6 分で retry が予約される。encode の締切は enqueue 時に録画実尺と profile rate から args へ保存する。実尺が不明な場合と締切のない旧 args は 12 時間を使う。
@@ -305,6 +305,26 @@ notifier Deployment の全レプリカが止まると（ロールアウトの失
 
 - ジョブの timeout: `JobTimeout` / `Timeout()` / `Timeout() < 0`
 - JobRescuer の回収条件: [故障注入 suite の F3](../../deploy/k8s/e2e/README.md)
+
+</details>
+
+#### asynq の配送可能件数と回収
+
+asynq 構成では、常駐 notifier の HTTP ハンドラが物理キューごとの配送可能件数を返し、KEDA の metrics-api トリガが読む。KEDA が起こした Job の Server は、購読するキューで期限が来たタスクの昇格と孤児の回収を担う。回収可能になるまでの猶予中に起きた Job は、空振りで終わりうる。
+
+待機中、期限が来た再試行待ちと予約済み、孤児の実行中を数える。lease が有効な実行中タスクは数えない。KEDA の accurate 戦略は実行中を件数に含めない前提である。
+
+期限前の再試行待ちと予約済みタスクは数えない。Snooze 中に数えると、KEDA の巡回ごとに空振りの Job が起き続けるためである。
+
+常駐 Pod が停止すると KEDA に件数を返せず、worker が起きなくなる。KEDA が HTTP 5xx や接続失敗にどう振る舞うかは未検証である。
+
+配布する `deploy/k8s/` のマニフェストは River 構成である。asynq 構成の notifier Pod は worker ロールとキュー購読の引数を外し、`ruler` の実行を ScaledJob に任せる。watcher の常駐 worker は、両エンジンでサイトごとの reconciler を引くために残す。定期投入は引き続き CronJob が担う。
+
+River 構成の KEDA は DB を SQL で数えるため、件数パスは asynq 構成でだけ公開する。クラスタ内の KEDA が直接読む件数パスは Host 検査の対象外とする。
+
+<details><summary>根拠</summary>
+
+- HTTP 配線と Host 検査: `TestBuildHTTPServer_QueueCountHostExemption`
 
 </details>
 

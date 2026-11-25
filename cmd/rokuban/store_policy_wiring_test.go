@@ -8,7 +8,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/ingest"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
 	"github.com/fetburner/rokuban/internal/ruler"
 	"github.com/fetburner/rokuban/internal/store"
@@ -58,7 +57,7 @@ func TestWorkerDepsBindStoragePolicyToUnscopedMedia(t *testing.T) {
 	testutil.RequireNoError(t, err, "building the storage policy")
 	roots := map[string]string{"tokyo": cfg.Storage.Stores["tokyo"].Root, "nagoya": cfg.Storage.Stores["nagoya"].Root}
 
-	deps, _, err := newWorkerDeps(context.Background(), cfg, policy, nil, []string{"nagoya", "tokyo"}, roots, riveradapter.Config{Queues: []string{"ruler"}}, pool, nil, false)
+	deps, _, err := newWorkerDeps(context.Background(), cfg, policy, nil, []string{"nagoya", "tokyo"}, roots, []string{"ruler"}, pool, nil, false)
 	testutil.RequireNoError(t, err, "building worker deps")
 
 	requireBoundOriginalRules(t, "Deps.IngestStores", deps.IngestStores)
@@ -108,7 +107,7 @@ func TestWorkerDepsFillRulerConfigAndStores(t *testing.T) {
 	testutil.RequireNoError(t, err, "building the storage policy")
 	roots := map[string]string{"tokyo": cfg.Storage.Stores["tokyo"].Root, "nagoya": cfg.Storage.Stores["nagoya"].Root}
 
-	deps, _, err := newWorkerDeps(context.Background(), cfg, policy, nil, []string{"nagoya", "tokyo"}, roots, riveradapter.Config{Queues: []string{"ruler"}}, pool, nil, false)
+	deps, _, err := newWorkerDeps(context.Background(), cfg, policy, nil, []string{"nagoya", "tokyo"}, roots, []string{"ruler"}, pool, nil, false)
 	testutil.RequireNoError(t, err, "building worker deps")
 
 	want := ruler.Config{RetentionGrace: 36 * time.Hour, MaxDeletesPerPass: 17, RetractGrace: 2 * time.Hour}
@@ -138,7 +137,7 @@ func TestWorkerDepsFillIngestConfigAndStores(t *testing.T) {
 	testutil.RequireNoError(t, err, "building the storage policy")
 	roots := map[string]string{"tokyo": cfg.Storage.Stores["tokyo"].Root, "nagoya": cfg.Storage.Stores["nagoya"].Root}
 
-	deps, _, err := newWorkerDeps(context.Background(), cfg, policy, nil, []string{"nagoya", "tokyo"}, roots, riveradapter.Config{Queues: []string{"ingest"}}, pool, nil, false)
+	deps, _, err := newWorkerDeps(context.Background(), cfg, policy, nil, []string{"nagoya", "tokyo"}, roots, []string{"ingest"}, pool, nil, false)
 	testutil.RequireNoError(t, err, "building worker deps")
 	want := ingest.Config{RecordingHLSEnabled: true, StallTimeout: 45 * time.Second}
 	if !reflect.DeepEqual(deps.Ingest, want) {

@@ -191,8 +191,10 @@ reconciler:
                                  # 処理に遅れがあるため、猶予が短すぎると正常な録画開始でも
                                  # 毎回誤検知してアラートが常時鳴る
 
-# worker ロールの River クライアント
+# ジョブキューと worker ロールの設定
 worker:
+  engine: river                  # river（既定、Postgres）または asynq（Redis）。
+  # redis_url: "${REDIS_URL}"    # asynq では必須。redis:// または rediss:// の URL。
   periodic_jobs: true            # プロセス内で定期ジョブ（epg_sync / tuner_sync / ruler_pass /
                                  # reconcile_pass / record_sweep / catalog_export /
                                  # delete_reconcile / label_rule_reconcile /
@@ -204,8 +206,9 @@ worker:
                                  # ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob。
                                  # 同じものを `--queues` で argv からも指定でき、両方指定は起動エラー
                                  # （k8s は ConfigMap 1 個を共有し Pod 差分を argv に寄せる。docs/operations.md §5）
-  rescue_stuck_jobs_after: 6m    # running のまま残ったジョブを River の rescuer が死んだ実行と
-                                 # みなすまでの時間。既定 6m。0 を明示すると River の既定（1h）。
+  # rescue_stuck_jobs_after: 6m   # River 専用。asynq では指定不可。
+                                 # running のまま残ったジョブを River の rescuer が死んだ実行と
+                                 # みなすまでの時間。既定 6m。0s を明示すると River の既定（1h）。
                                  # client JobTimeout より長くする。worker 固有の Timeout が
                                  # これより長ければ、rescuer はその時間まで待つ。
                                  # Timeout が -1 の kind は各 reconcile が回収する。正で 1m 未満だと

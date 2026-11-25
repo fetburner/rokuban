@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -134,12 +135,27 @@ type ReconcilerConfig struct {
 	StartDelayGrace time.Duration `yaml:"start_delay_grace"`
 }
 
-// WorkerConfig は worker ロールの River クライアント設定。
+// JobEngine は各ロールが共有するジョブキューの実装を表す。
+type JobEngine string
+
+const (
+	// JobEngineRiver は Postgres を使う既定のエンジン。
+	JobEngineRiver JobEngine = "river"
+	// JobEngineAsynq は Redis を使うエンジン。
+	JobEngineAsynq JobEngine = "asynq"
+)
+
+// WorkerConfig はジョブキューと worker ロールの設定。
 type WorkerConfig struct {
+	// Engine は投入・実行・件数取得に使うジョブエンジン。
+	Engine JobEngine `yaml:"engine"`
+	// RedisURL は asynq が接続する Redis の URL。
+	RedisURL string `yaml:"redis_url"`
+
 	// PeriodicJobs はプロセス内で定期ジョブ（epg_sync / ruler_pass / reconcile_pass /
 	// record_sweep）を投入するか。
 	// k8s では false にし、CronJob から `rokuban enqueue` で投入する。
-	// true だと ScaledJob の 1 件消化モード（--once）が起動を拒む（internal/worker/worker.go）。
+	// true だと ScaledJob の 1 件消化モード（--once）が起動を拒む。
 	// 投入元は CronJob に一本化する（docs/data.md §2「定期実行の契機はデプロイ形態に委ねる」）。
 	PeriodicJobs bool `yaml:"periodic_jobs"`
 
@@ -157,5 +173,26 @@ type WorkerConfig struct {
 	// 正で 1 分未満だと worker が起動しない（River は RescueStuckJobsAfter >= JobTimeout を
 	// 要求し、rokuban は JobTimeout を設定しないので River の既定 1 分が効く）。
 	// k8s で rescuer を誰が動かすかは docs/data/jobs.md §2。
-	RescueStuckJobsAfter time.Duration `yaml:"rescue_stuck_jobs_after"`
+	// asynq では指定できない。nil と明示的な 0 を区別して検証する。
+	RescueStuckJobsAfter *time.Duration `yaml:"rescue_stuck_jobs_after"`
+}
+
+func (c *WorkerConfig) validate() error {
+	switch c.Engine {
+	case JobEngineRiver:
+		if c.RescueStuckJobsAfter == nil {
+			after := defaultRescueStuckJobsAfter
+			c.RescueStuckJobsAfter = &after
+		}
+	case JobEngineAsynq:
+		if strings.TrimSpace(c.RedisURL) == "" {
+			return fmt.Errorf("worker.redis_url is required with worker.engine: asynq")
+		}
+		if c.RescueStuckJobsAfter != nil {
+			return fmt.Errorf("worker.rescue_stuck_jobs_after is only supported with worker.engine: river")
+		}
+	default:
+		return fmt.Errorf("worker.engine must be river or asynq, got %q", c.Engine)
+	}
+	return nil
 }

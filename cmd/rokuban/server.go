@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -25,7 +26,7 @@ import (
 	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/ingest"
 	"github.com/fetburner/rokuban/internal/jobq"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
+	"github.com/fetburner/rokuban/internal/jobq/queuecounthttp"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -141,7 +142,7 @@ func shutdownBudget(softStopTimeout time.Duration) time.Duration {
 	return softStopTimeout + hardStopGrace
 }
 
-// stopRiverForShutdown は常駐 worker の停止で runner の Stop に与える締切を
+// stopWorkerForShutdown は常駐 worker の停止で runner の Stop に与える締切を
 // 決めて呼ぶ。
 //
 // **締切を固定値にしない**ことがこの関数の全部である。固定だと、
@@ -153,14 +154,14 @@ func shutdownBudget(softStopTimeout time.Duration) time.Duration {
 // 「猶予より長く走るジョブ」が要り、テストの所要が猶予そのものになる
 // （TestStopRiverForShutdown_DeadlineFollowsSoftStopTimeout と
 // TestServerCmd_SigtermDrainsRunningJob のコメント）。
-func stopRiverForShutdown(stopRiver func(context.Context) error, softStopTimeout time.Duration) {
+func stopWorkerForShutdown(stopWorker func(context.Context) error, softStopTimeout time.Duration) {
 	stopCtx, cancel := context.WithTimeout(context.Background(), shutdownBudget(softStopTimeout))
 	defer cancel()
 	// shutdown 中は呼び出し元に返す先がない。タイムアウトを付けている以上
 	// 「実行中のジョブが終わらずタイムアウトした」は起こりうるので、
 	// 握り潰さずログに残す（issue #58）。
-	if err := stopRiver(stopCtx); err != nil {
-		slog.Error("stopping river client", "err", err)
+	if err := stopWorker(stopCtx); err != nil {
+		slog.Error("stopping job queue adapter", "err", err)
 	}
 }
 
@@ -270,9 +271,9 @@ func newServerCmd() *cobra.Command {
 	// --soft-stop-timeout も同じ「起動形態」の軸（softStopTimeoutFlagName の
 	// コメント）。対になる k8s の terminationGracePeriodSeconds は
 	// shutdownBudget を包む長さにする。
-	cmd.Flags().Duration(softStopTimeoutFlagName, riveradapter.DefaultSoftStopTimeout,
+	cmd.Flags().Duration(softStopTimeoutFlagName, defaultSoftStopTimeout,
 		"how long a running job may keep going after SIGTERM before its context is cancelled "+
-			"(the pod's terminationGracePeriodSeconds must cover this)")
+			"(the pod's terminationGracePeriodSeconds must cover this; asynq --once waits for Work to finish)")
 
 	return cmd
 }
@@ -384,9 +385,16 @@ func newObjectStore(ctx context.Context, name string, configured config.StoreCon
 // newServerCmd から切り出してあるのは、フラグ登録を本体の直後に置くため
 // （RunE の中に本体を直接書くと cmd.Flags() の並びが本体の向こう側になる）。
 //
-// pool.Close と終了時の drain はこの関数に残す。once 購読は RunOnce が解除する。
+// DB・Redis の close と終了時の drain はこの関数に残す。once 購読は RunOnce が解除する。
 // defer は登録した関数を終了時に逆順で実行するため、これらを構築ヘルパーへ
 // 移すと pool.Close が River の drain より先に走り、running の Job 行を残す。
+// asynq でも Server の停止完了まで Redis クライアントが必要になる。
+//
+// ロールの指定どおりに購読を開始する。River の notifier 同居 worker は回収と昇格を
+// 担う（TestNotifierRunsResidentRescuerClient）。asynq の昇格と回収は購読側 Server が
+// 担うため、notifier の運用には worker を併設する必要がない（TestRunOncePromotesDueSnoozedTask /
+// TestRunOnceRecoversOrphanedTask）。watcher 同居 worker はどちらの構成でも reconciler を
+// 引く役を持つ（起動形は TestWatcherRunsResidentReconcilerClient）。
 func runServer(cmd *cobra.Command, _ []string) error {
 	roles, err := resolveRoles(cmd)
 	if err != nil {
@@ -409,7 +417,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 	warnIfAllowedHostsEmpty(slog.Default(), cfg.Server.AllowedHosts)
 
-	// 以降の判定（validateSiteBinding / RequiresEncodeTools / riveradapter.Config.Queues）は
+	// 以降の判定（validateSiteBinding / RequiresEncodeTools / adapter の購読）は
 	// すべてこの解決済みの queues を見る --- 片方だけが config を直接見ると、
 	// argv で絞った Pod が「絞ったつもりで検査だけ全キュー基準」になる
 	// （resolveWorkerQueues のコメント参照）。
@@ -441,8 +449,6 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-
-	workerCfg := newWorkerClientConfig(cfg, bound, mounted, queues, once, softStopTimeout)
 
 	ctx, stop := installSignalHandler(cmd.Context())
 	defer stop()
@@ -479,11 +485,46 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	// 汎用 webhook（M3-11）。URL 空なら no-op。worker（record_sweep）と
+	// watcher の両方から同じ Client を使う。
+	webhookClient := webhook.New(cfg.Webhook)
+
+	var workerAdapter workerQueue
+	if slices.Contains(roles, "worker") {
+		workerCfg := newWorkerClientConfig(cfg, bound, mounted, queues, once, softStopTimeout)
+		base, deferred, err := newWorkerDeps(ctx, cfg, storagePolicy, bound, mounted, roots, queues, pool, webhookClient, ingestStorageProbed)
+		if err != nil {
+			return err
+		}
+		adapter, closeAdapter, err := newJobAdapter(ctx, cfg, pool, base, workerCfg)
+		if err != nil {
+			return err
+		}
+		defer closeJobAdapter(closeAdapter)
+		deferred.Set(adapter)
+		workerAdapter = adapter
+	}
+
+	var insertOnly jobq.Enqueuer
+	if slices.Contains(roles, "api") || slices.Contains(roles, "notifier") ||
+		(workerAdapter == nil && slices.Contains(roles, "watcher")) {
+		enqueuer, closeAdapter, err := newInsertOnlyEnqueuer(ctx, cfg, pool)
+		if err != nil {
+			return err
+		}
+		defer closeJobAdapter(closeAdapter)
+		insertOnly = enqueuer
+	}
+	// 件数取得を実装する adapter だけを公開する。River 構成の KEDA は DB を SQL で数える。
+	counter, _ := insertOnly.(jobq.DeliverableCounter)
+	watcherEnqueuer := insertOnly
+	if workerAdapter != nil {
+		watcherEnqueuer = workerAdapter
+	}
+
 	slog.Info("starting server", "roles", roles)
-
 	eg, egCtx := errgroup.WithContext(ctx)
-
-	srv, err := buildHTTPServer(egCtx, cfg, storagePolicy, roles, bound, roots, pool, eg, noRecordingHLS)
+	srv, err := buildHTTPServer(egCtx, cfg, storagePolicy, roles, bound, roots, pool, eg, noRecordingHLS, insertOnly, counter)
 	if err != nil {
 		return err
 	}
@@ -501,17 +542,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return srv.Shutdown(shutdownCtx)
 	})
 
-	// 汎用 webhook（M3-11）。URL 空なら no-op。worker（record_sweep）と
-	// watcher の両方から同じ Client を使う。
-	webhookClient := webhook.New(cfg.Webhook)
-
-	var workerAdapter *riveradapter.Adapter
-	if slices.Contains(roles, "worker") {
-		workerAdapter, err = buildWorkerAdapter(egCtx, cfg, storagePolicy, bound, mounted, roots, workerCfg, pool, webhookClient, ingestStorageProbed)
-		if err != nil {
-			return err
-		}
-
+	if workerAdapter != nil {
+		defer stopWorkerForShutdown(workerAdapter.Stop, softStopTimeout)
 		var startErr error
 		if once {
 			_, startErr = workerAdapter.RunOnce(egCtx, ctx, onceIdleTimeout, stop)
@@ -519,30 +551,16 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			startErr = workerAdapter.Start(ctx)
 		}
 		if startErr != nil {
-			return fmt.Errorf("starting job queue adapter: %w", startErr)
+			stop()
+			startErr = fmt.Errorf("starting job queue adapter: %w", startErr)
+			return errors.Join(startErr, eg.Wait())
 		}
-		defer func() { stopRiverForShutdown(workerAdapter.Stop, softStopTimeout) }()
 	}
 
-	var watcherEnqueuer jobq.Enqueuer
-	if slices.Contains(roles, "watcher") {
-		if workerAdapter != nil {
-			watcherEnqueuer = workerAdapter
-		} else {
-			watcherEnqueuer, err = newInsertOnlyEnqueuer(pool)
-			if err != nil {
-				return err
-			}
-		}
-	}
 	superviseSingletons(egCtx, roles, bound, eg, pool, watcherEnqueuer, webhookClient)
 
-	eg.Go(func() error {
-		<-egCtx.Done()
-		return nil
-	})
-
 	err = eg.Wait()
+	stop()
 	slog.Info("shutting down")
 	return err
 }
@@ -610,14 +628,14 @@ func liveProfileSummaries(profiles []config.LiveProfile) []api.LiveProfileSummar
 // buildHTTPServer は HTTP ルーターとサーバーを構築する。
 //
 // HTTP リスナーはロールに関わらず 1 本立てる。ヘルスチェックと /metrics は
-// どのロールでも必要で、SPA・SSE・バイト配信だけを担当ロールに登録する。
+// どのロールでも必要で、SPA・SSE・バイト配信・キュー件数は担当ロールに登録する。
 //
 // **この関数は eg に goroutine を登録するので、登録より後で error を
 // 返してはならない。** `runServer` はこの関数がエラーを返すと `eg.Wait()` を
 // 呼ばずに return する。登録済みの goroutine は誰にも回収されないまま、
 // `defer pool.Close()` が閉じた pool を使い続けることになる。現在の実装は
 // error return がすべて `eg.Go` より前にあるのでこの形にはならない。
-func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy store.StoragePolicy, roles []string, bound []config.MirakcSite, roots map[string]string, pool *pgxpool.Pool, eg *errgroup.Group, noRecordingHLS bool) (*http.Server, error) {
+func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy store.StoragePolicy, roles []string, bound []config.MirakcSite, roots map[string]string, pool *pgxpool.Pool, eg *errgroup.Group, noRecordingHLS bool, enqueuer jobq.Enqueuer, counter jobq.DeliverableCounter) (*http.Server, error) {
 	// api と streamer は置き場に束ねない。置き場は URL（原本）か DB の行（派生物）が決める。
 	mediaStore := pgstore.NewMediaUnbound(pool)
 	metricCollectors := newBoundBacklogCollectors(pool, bound)
@@ -697,16 +715,14 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy st
 			return nil, fmt.Errorf("embedded dist/ not found: %w", err)
 		}
 		routerCfg.DistFS = distFS
-		apiEnqueuer, err := newInsertOnlyEnqueuer(pool)
-		if err != nil {
-			return nil, err
-		}
-		routerCfg.Enqueuer = apiEnqueuer
+		routerCfg.Enqueuer = enqueuer
 		routerCfg.EncodeProfileNames = cfg.Encode.ProfileNames()
 		routerCfg.CutProfileNames = cfg.Encode.CutProfileNames()
 	}
 
 	var mounters api.Mounters
+	var liveStreamers liveSites
+	var recordingHLS *streamer.RecordingHLS
 	if slices.Contains(roles, "streamer") {
 		objectStores, err := newStreamerObjectStores(egCtx, cfg.Storage, roots)
 		if err != nil {
@@ -738,11 +754,8 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy st
 				return nil, err
 			}
 			liveConfig := convertLiveConfig(cfg.Live)
-			liveStreamers := newLiveStreamersBySite(bound, liveConfig)
+			liveStreamers = newLiveStreamersBySite(bound, liveConfig)
 			mounters = append(mounters, liveStreamers)
-			// idle GC ループ。egCtx が終わったら全セッションを止めて mirakc の
-			// 接続を閉じる（チューナー解放。crash-only の唯一の例外の後始末）。
-			eg.Go(func() error { return liveStreamers.Run(egCtx) })
 		}
 		if cfg.RecordingHLS.Enabled && !noRecordingHLS && len(roots) > 1 {
 			// 録画 HLS は 1 つのプロセスで 1 つの置き場の入力だけを読む（置き場ごとの Pod の組）。
@@ -760,7 +773,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy st
 			if err := streamer.ValidateFFmpegDecoders(egCtx, cfg.Live.FFmpeg, cfg.Live.Captions); err != nil {
 				return nil, err
 			}
-			recordingHLS, err := streamer.NewRecordingHLS(pgstore.NewMediaInStoreWithoutPolicy(pool, hlsStore), streamer.RecordingHLSConfig{
+			recordingHLS, err = streamer.NewRecordingHLS(pgstore.NewMediaInStoreWithoutPolicy(pool, hlsStore), streamer.RecordingHLSConfig{
 				StoreName:       hlsStore,
 				MediaDir:        roots[hlsStore],
 				SegmentDir:      cfg.RecordingHLS.SegmentDir,
@@ -779,8 +792,15 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy st
 				return nil, err
 			}
 			mounters = append(mounters, recordingHLS)
-			eg.Go(func() error { return recordingHLS.Run(egCtx) })
 		}
+	}
+	if liveStreamers != nil {
+		// idle GC ループ。egCtx が終わったら全セッションを止めて mirakc の
+		// 接続を閉じる（チューナー解放。crash-only の唯一の例外の後始末）。
+		eg.Go(func() error { return liveStreamers.Run(egCtx) })
+	}
+	if recordingHLS != nil {
+		eg.Go(func() error { return recordingHLS.Run(egCtx) })
 	}
 	if slices.Contains(roles, "notifier") {
 		hub := notifier.NewEventHub()
@@ -796,37 +816,21 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy st
 	if len(mounters) > 0 {
 		routerCfg.Mounter = mounters
 	}
-	return newProductionHTTPServer(cfg.Server.Listen, api.NewRouter(routerCfg)), nil
-}
-
-// newWorkerClientConfig は worker ロールの River 設定を組み立てる。
-//
-// **pool に依存しない。** worker ロールが無いプロセスでは使われないが、
-// 組み立て自体は無害。
-func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, mounted []string, queues []string, once bool, softStopTimeout time.Duration) riveradapter.Config {
-	return riveradapter.Config{
-		// 何を購読し何を定期投入するかは製品の仕様（workerspec.go）。
-		// 以下は起動形態だけである。
-		Spec:                 newWorkerSpec(cfg, bound, mounted),
-		SchedulePeriodicJobs: cfg.Worker.PeriodicJobs,
-		Queues:               queues,
-		Once:                 once,
-		SoftStopTimeout:      softStopTimeout,
-		RescueStuckJobsAfter: cfg.Worker.RescueStuckJobsAfter,
+	handler := api.NewRouter(routerCfg)
+	if slices.Contains(roles, "notifier") && counter != nil {
+		mux := chi.NewRouter()
+		mux.Get("/internal/queues/{queue}/deliverable-count", queuecounthttp.NewHandler(counter).ServeHTTP)
+		// 件数パスの他メソッドも含め、残りは API ルーターで Host を検証する。
+		mux.NotFound(handler.ServeHTTP)
+		mux.MethodNotAllowed(handler.ServeHTTP)
+		handler = mux
 	}
-}
-
-// newInsertOnlyEnqueuer は api / watcher / enqueue CLI が使う投入専用の adapter を作る。
-// 投入先の物理キューは jobs.PhysicalQueueFor で決める。worker の購読側の物理名は
-// newWorkerSpec が jobs.PhysicalQueueName で展開していて、別の経路である。
-// 両者の食い違いは、NewAdapter が定期ジョブについて起動時に検査する。
-func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
-	return riveradapter.NewInsertOnlyEnqueuer(pool, jobs.PhysicalQueueFor)
+	return newProductionHTTPServer(cfg.Server.Listen, handler), nil
 }
 
 // newWorkerDeps は worker ロール用の worker.Deps と、adapter を後から差し込む Enqueuer を組み立てる。
 // サイトごとの mirakc クライアントをここで作る。
-func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.StoragePolicy, bound []config.MirakcSite, mounted []string, roots map[string]string, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*worker.Deps, *jobq.Deferred, error) {
+func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.StoragePolicy, bound []config.MirakcSite, mounted []string, roots map[string]string, queues []string, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*worker.Deps, *jobq.Deferred, error) {
 	// until_encoded の原本の削除判定は storage.derived を使う。
 	mediaStore := pgstore.NewMediaUnboundWithPolicy(pool, storagePolicy)
 	storageObjects := make(map[string]objstore.Store)
@@ -850,7 +854,7 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 	breakersStore := pgstore.NewBreakers(pool)
 	neverScheduledStore := pgstore.NewNeverScheduledEvents(pool)
 	scheduleSyncStore := pgstore.NewScheduleSync(pool)
-	if jobs.RequiresEncodeTools(clientCfg.Queues) {
+	if jobs.RequiresEncodeTools(queues) {
 		if err := cfg.Encode.ValidateTools(); err != nil {
 			return nil, nil, err
 		}
@@ -858,7 +862,7 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 			return nil, nil, err
 		}
 	}
-	if cfg.CMDetect.Enabled && jobs.RequiresCMDetectTools(clientCfg.Queues) {
+	if cfg.CMDetect.Enabled && jobs.RequiresCMDetectTools(queues) {
 		if err := cfg.CMDetect.ValidateTools(cfg.Encode.FFprobe); err != nil {
 			return nil, nil, err
 		}
@@ -926,7 +930,6 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 			ProgramSearch: pgstore.NewEPG(pool),
 		},
 		ReconcileStartDelayGrace: cfg.Reconciler.StartDelayGrace,
-		RecoveryGrace:            clientCfg.RecoveryGrace(),
 		Webhook:                  webhookClient,
 		Cleanup:                  cfg.Cleanup,
 	}
@@ -935,22 +938,6 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 		return nil, nil, err
 	}
 	return base, deferred, nil
-}
-
-// buildWorkerAdapter は worker ロール用のワーカー群と jobq adapter を構築する。
-// キュー設定は runServer で解決済みのものを使う。
-func buildWorkerAdapter(ctx context.Context, cfg *config.Config, storagePolicy store.StoragePolicy, bound []config.MirakcSite, mounted []string, roots map[string]string, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
-	base, deferred, err := newWorkerDeps(ctx, cfg, storagePolicy, bound, mounted, roots, clientCfg, pool, webhookClient, ingestStorageProbed)
-	if err != nil {
-		return nil, err
-	}
-	workers := worker.NewWorkers(base)
-	adapter, err := riveradapter.NewAdapter(pool, workers, jobs.PhysicalQueueFor, clientCfg)
-	if err != nil {
-		return nil, err
-	}
-	deferred.Set(adapter)
-	return adapter, nil
 }
 
 // newPerStoreWorkerDeps は、サーバーがマウントした FS 置き場ごとに worker.StoreDeps を作る。

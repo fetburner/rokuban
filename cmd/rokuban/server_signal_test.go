@@ -161,7 +161,7 @@ func testSecondSigterm(t *testing.T, once bool, marker string) {
 	mock := newBlockingMirakc(t)
 
 	var out bytes.Buffer
-	if err := runEnqueue(context.Background(), pool, "epg-sync", "home", &out); err != nil {
+	if err := runEnqueue(context.Background(), newRiverEnqueuer(t, pool), "epg-sync", "home", &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 	// httptest も config も親のものだが、子は同じホストの別プロセスなので

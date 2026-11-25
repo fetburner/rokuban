@@ -223,6 +223,42 @@ func TestStopDrainsWorkAndStartRestartsDelivery(t *testing.T) {
 	await(t, second, 4*time.Second)
 }
 
+func TestStartSoftStopCancelsWork(t *testing.T) {
+	options := redisOptions(t)
+	queue := testQueue("soft-stop")
+	testInspector(t, options, queue)
+	cfg := Config{
+		Spec: jobq.WorkerSpec{Queues: []jobq.QueueSpec{{
+			Logical: "default", Physical: []string{queue}, MaxWorkers: 1,
+		}}},
+		SoftStopTimeout: 250 * time.Millisecond,
+	}
+	started := make(chan struct{}, 1)
+	finished := make(chan error, 1)
+	adapter := redisTestAdapter(t, options, func(jobq.Args) (string, error) { return queue, nil }, cfg,
+		func(ctx context.Context, _ contracttest.Args) error {
+			started <- struct{}{}
+			<-ctx.Done()
+			finished <- ctx.Err()
+			return ctx.Err()
+		})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	if err := adapter.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	enqueueTestJob(t, adapter, contracttest.Args{TimeoutMS: 10000})
+	await(t, started, 4*time.Second)
+	signaled := time.Now()
+	cancel()
+	if err := await(t, finished, 4*time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Work error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(signaled); elapsed < 250*time.Millisecond {
+		t.Errorf("Work canceled after %s, want at least 250ms", elapsed)
+	}
+}
+
 func redisTestAdapter(t *testing.T, options *redis.Options, queueFor QueueFunc, cfg Config, work testWorker) *Adapter {
 	t.Helper()
 	registry := jobq.NewRegistry()

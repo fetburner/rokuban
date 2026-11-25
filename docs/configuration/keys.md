@@ -230,6 +230,14 @@ Work slice 内の転送で無進捗を検知する時間で、既定は 30 秒�
 
 </details>
 
+### ジョブエンジンの選択
+
+投入元と実行側は同じジョブエンジンを選ぶ。API と watcher が投入したジョブを worker が受け取るためである。
+
+Postgres 構成では、キューのための基盤を足さずに運用できるよう River を既定にする。River は Postgres 専用なので、MySQL 構成では asynq を選ぶ。Postgres 構成で Redis をキューに使う場合も asynq を選ぶ。asynq を選んだら全ロールと投入 CLI で接続先を揃える。設定は `config.example.yml` を参照する。
+
+未解決: DB を選ぶ設定が入るまで、MySQL + River を起動時に拒む検査は無い。
+
 ### worker.periodic_jobs と worker.queues
 
 定期ジョブの設定は、プロセス内で定期ジョブを投入するかを決め、k8s では無効にして外部の CronJob から投入する。キューの設定は、worker が引くキューを絞る。空なら全部で、引数でも指定できるが両方指定は起動エラーになる。

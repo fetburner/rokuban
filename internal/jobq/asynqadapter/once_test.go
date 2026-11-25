@@ -34,7 +34,7 @@ func TestNewAdapterValidatesOnceMode(t *testing.T) {
 		{name: "no queues", want: "exactly one physical queue"},
 		{name: "multiple logical queues", queues: []jobq.QueueSpec{queue, {Logical: "encode", Physical: []string{"encode"}, MaxWorkers: 1}}, want: "exactly one physical queue"},
 		{name: "multiple sites", queues: []jobq.QueueSpec{{Logical: "ingest", Physical: []string{"ingest_tokyo", "ingest_osaka"}, MaxWorkers: 1}}, want: "exactly one physical queue"},
-		{name: "parallel workers", queues: []jobq.QueueSpec{{Logical: "default", Physical: []string{"default"}, MaxWorkers: 2}}, want: "MaxWorkers=1"},
+		{name: "parallel workers limited to one", queues: []jobq.QueueSpec{{Logical: "default", Physical: []string{"default"}, MaxWorkers: 2}}},
 		{name: "periodic scheduling", queues: []jobq.QueueSpec{queue}, schedule: true, want: "periodic scheduling"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -51,6 +51,9 @@ func TestNewAdapterValidatesOnceMode(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			if got := adapter.queues["default"]; got != 1 {
+				t.Errorf("server concurrency for default = %d, want 1", got)
 			}
 			if err := adapter.Start(t.Context()); err == nil {
 				t.Fatal("Start accepted a one-task adapter")

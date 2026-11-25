@@ -1,8 +1,8 @@
 > [data.md](../data.md) §1 §2 §3 §7 の一部。索引から辿る
 
-## 1. 方針: PostgreSQL 一本
+## 1. データベースの選択
 
-データベースは PostgreSQL 一本にする。決め手は、コミットに連動する通知の仕組みが MySQL には無いことと、その上に載る既製のジョブキューライブラリが MySQL には育っていないことである。
+構成ごとにアプリのデータベースは 1 つとし、既定は PostgreSQL とする。コミットに連動する通知と、DB に載るジョブキューを利用できるためである。asynq 構成ではキューを Redis に置く。
 
 ### MySQL との比較
 
@@ -25,9 +25,9 @@
 
 </details>
 
-## 2. ジョブキュー: River（Postgres バックエンド）
+## 2. ジョブキュー
 
-エンコード・取り込み・サムネイル・掃除は、すべて [River](https://github.com/riverqueue/river) のジョブとして動かす。ジョブは at-least-once で再実行されるので、冪等に書く。常駐シングルトンのロールは watcher だけで、ruler と reconciler はジョブとして動かす。
+エンコード・取り込み・サムネイル・掃除はジョブとして動かす。Postgres 構成の既定である River は DB に、asynq は Redis にキューを持つ。ジョブは at-least-once で再実行されるので、冪等に書く。常駐シングルトンのロールは watcher だけで、ruler と reconciler はジョブとして動かす。
 
 ### 契約と adapter の境界
 
@@ -84,7 +84,7 @@ River と asynq の adapter は構築時に、登録済みのすべての kind �
 
 ### ジョブの確保と再実行
 
-ワーカーは行ロックでジョブを 1 件ずつ確保し、複数ワーカーが同時に来ても同一ジョブの二重実行はトランザクション分離の性質として起きない。再実行は at-least-once なので、ジョブは冪等に書く。
+複数の worker が同時に取りに来ても、River は DB の行ロックで同じジョブを 1 つの worker にだけ渡す。asynq は Redis 上の lease が有効な間、実行中のジョブを回収の対象から外す。lease が有効な間に同じジョブを別の worker が実行しないことは、adapter では未検証である。
 
 タイムアウトは必須の有限値で、締切に達すると Work の context は締切超過になる。実行中にプロセスが死んだ場合も、締切と adapter の復旧猶予以内に再配送対象となる。古い Work が止まったことや同じ job ID であることは保証しない。
 
@@ -95,6 +95,7 @@ at-least-once なので、ジョブは冪等に書く。出力は一時パスに
 <details><summary>根拠</summary>
 
 - 1 件の確保: `FOR UPDATE SKIP LOCKED`
+- asynq の期限切れ lease の回収: [asynq のリリースノート](https://github.com/hibiken/asynq/releases/tag/v0.22.0)
 - 必須の有限タイムアウト: `Spec.Timeout`、締切超過は `DeadlineExceeded`
 - 失敗回数の保険: `Spec.MaxAttempts`
 - DB 登録の吸収: `ON CONFLICT`
@@ -200,10 +201,10 @@ River の `PeriodicJobs` は、リーダーに選出されたクライアント�
 
 | デプロイ形態 | 定期投入の担い手 |
 |---|---|
-| Docker（monolith） | プロセス内の River `PeriodicJobs`（既定で有効） |
+| Docker（monolith） | プロセス内の定期投入（既定で有効） |
 | k8s | CronJob が `rokuban enqueue <job>` を叩く |
 
-k8s の CronJob は、insert-only クライアントで 1 件投入して即終了する。`PeriodicJobs` の登録は設定で切れるようにし、k8s では無効にする。両方有効だと二重投入になる。`UniqueOpts` で合流するので害は小さいが、意図が曖昧になる。副次的な利点として、k8s では何がいつ走るかが CronJob の spec に一元化される。Go のコードと YAML に散らない。
+k8s の CronJob は、insert-only クライアントで 1 件投入して即終了する。プロセス内の定期投入は無効にする。両方有効でも同じジョブの投入が合流する間は影響が小さいが、定期投入をどちらで管理するかが曖昧になる。CronJob に揃えると、何がいつ走るかがその spec に一元化される。
 
 **k8s の JobRescuer / JobScheduler は、leader になった常駐 River client が担う。**
 
@@ -271,6 +272,16 @@ Postgres 構成では River を既定にし、Redis は置かない。理由は�
 2. スループットが要らない: このシステムの負荷は「1 日数十件、1 件数十分」のジョブである。DB キューの弱点である数千 jobs/sec での vacuum・ロック競合には遠く及ばない。
 
 dual-write は理由にならない。ジョブ投入は commit 後のヒントであり、消えたヒントは定期 reconcile が拾う。同じ tx で投入しない理由も [store 契約](store-contracts.md) §ジョブ投入にある。
+
+asynq 構成でも Redis にヒントの永続化を求めない。
+
+asynq 構成の `rokuban migrate up` はアプリのスキーマだけを作る。River のスキーマは River 構成で作る。
+
+<details><summary>根拠</summary>
+
+- エンジン別のスキーマ作成: `TestMigrateUpSelectsEngineSchema`
+
+</details>
 
 ## 3. イベント通知: LISTEN/NOTIFY
 

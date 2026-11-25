@@ -407,19 +407,15 @@ func TestNewWorkerSpec_PeriodicKindsResolveInWorkerRegistry(t *testing.T) {
 	}
 }
 
-// 起動形態（--queues / worker.periodic_jobs / --once / 停止猶予 / 救済閾値）が仕様とは別に写る。
+// 起動形態（--queues / worker.periodic_jobs / --once / 停止猶予）が仕様とは別に写る。
 // false でも仕様の一覧は空にならない。
 func TestNewWorkerClientConfig_StartupShape(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
-	cfg.Worker.RescueStuckJobsAfter = 3 * time.Minute
 	for _, periodic := range []bool{true, false} {
 		cfg.Worker.PeriodicJobs = periodic
 		got := newWorkerClientConfig(cfg, cfg.Registry(), cfg.Storage.FSStoreNames(), []string{"ruler"}, true, 9*time.Second)
 		if !got.Once {
 			t.Error("Once mode was not passed through")
-		}
-		if got.RescueStuckJobsAfter != 3*time.Minute {
-			t.Errorf("RescueStuckJobsAfter = %s, want 3m", got.RescueStuckJobsAfter)
 		}
 		if got.SchedulePeriodicJobs != periodic {
 			t.Errorf("SchedulePeriodicJobs = %v, want %v", got.SchedulePeriodicJobs, periodic)

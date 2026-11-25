@@ -758,7 +758,7 @@ storage:
 		t.Fatalf("building storage policy: %v", err)
 	}
 	var eg errgroup.Group
-	server, err := buildHTTPServer(ctx, cfg, storagePolicy, []string{"api"}, nil, nil, pool, &eg, true)
+	server, err := buildHTTPServer(ctx, cfg, storagePolicy, []string{"api"}, nil, nil, pool, &eg, true, newRiverEnqueuer(t, pool), nil)
 	if err != nil {
 		t.Fatalf("building API HTTP server: %v", err)
 	}
@@ -816,7 +816,7 @@ storage:
 	}
 	var eg errgroup.Group
 	httpServer, err := buildHTTPServer(ctx, cfg, storagePolicy, []string{"streamer"}, nil,
-		map[string]string{dbtest.StoreName: mediaDir}, pool, &eg, true)
+		map[string]string{dbtest.StoreName: mediaDir}, pool, &eg, true, nil, nil)
 	if err != nil {
 		t.Fatalf("building streamer HTTP server: %v", err)
 	}
@@ -1278,7 +1278,7 @@ func TestServerCmd_OnceModeTerminates(t *testing.T) {
 
 	t.Run("1 件あれば消化して終了する", func(t *testing.T) {
 		var out bytes.Buffer
-		if err := runEnqueue(ctx, pool, "delete-reconcile", dbtest.StoreName, &out); err != nil {
+		if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "delete-reconcile", dbtest.StoreName, &out); err != nil {
 			t.Fatalf("runEnqueue: %v", err)
 		}
 
@@ -1335,10 +1335,7 @@ func TestServerCmd_OnceModeExitsOnUnhandledJobKind(t *testing.T) {
 	// **max_attempts はハーネスの 1 ではなく 25 にする** ---
 	// 1 だと最初の失敗で discarded になり、壊れた実装でも掴み直せないので
 	// 下の attempt の主張が何も検出しなくなる。
-	enqueuer, err := newInsertOnlyEnqueuer(pool)
-	if err != nil {
-		t.Fatalf("creating insert-only enqueuer: %v", err)
-	}
+	enqueuer := newRiverEnqueuer(t, pool)
 	if _, err := enqueuer.Enqueue(ctx, e2eProbeArgs{}); err != nil {
 		t.Fatalf("inserting unhandled-kind job: %v", err)
 	}
@@ -1347,7 +1344,7 @@ func TestServerCmd_OnceModeExitsOnUnhandledJobKind(t *testing.T) {
 	// これを超えると runServerCmdBounded が Fatalf で落ちるので、ここに
 	// elapsed の比較を足しても到達しない（何も主張しない 3 行になる）。
 	logs := captureServerLogs(t)
-	_, err = runServerCmdBounded(t, 20*time.Second, path,
+	_, err := runServerCmdBounded(t, 20*time.Second, path,
 		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=60s")
 	if err != nil {
 		t.Fatalf("server --once: %v", err)
@@ -1660,7 +1657,7 @@ func TestServerCmd_OnceModeExitsZeroOnJobFailure(t *testing.T) {
 	path := writeOnceModeConfig(t)
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "epg-sync", "home", &out); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "epg-sync", "home", &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
@@ -1742,14 +1739,14 @@ func TestHTTPShutdownTimeout_IsPinnedToTheManifestBudget(t *testing.T) {
 // そこでは固定値が drain を黙って打ち切る。だから固定値では通らない大きさ
 // （6 時間）で見る。
 //
-// 実測: `stopRiverForShutdown` の締切を `30*time.Second` に戻す変異で赤くなる
+// 実測: `stopWorkerForShutdown` の締切を `30*time.Second` に戻す変異で赤くなる
 // ことを確認した。
 func TestStopRiverForShutdown_DeadlineFollowsSoftStopTimeout(t *testing.T) {
 	const soft = 6 * time.Hour
 
 	var deadline time.Time
 	var hasDeadline bool
-	stopRiverForShutdown(func(stopCtx context.Context) error {
+	stopWorkerForShutdown(func(stopCtx context.Context) error {
 		deadline, hasDeadline = stopCtx.Deadline()
 		return nil
 	}, soft)
@@ -1831,7 +1828,7 @@ func (p *workerProc) wait(t *testing.T, limit time.Duration, what string) error 
 func startWorkerWithRunningJob(t *testing.T, pool *pgxpool.Pool, mock *blockingMirakc, softStop time.Duration) *workerProc {
 	t.Helper()
 	var out bytes.Buffer
-	if err := runEnqueue(context.Background(), pool, "epg-sync", "home", &out); err != nil {
+	if err := runEnqueue(context.Background(), newRiverEnqueuer(t, pool), "epg-sync", "home", &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 	path := writeWorkerTestConfig(t, mock.url)
@@ -1951,7 +1948,7 @@ func TestServerCmd_SigtermDrainsRunningJob(t *testing.T) {
 			t.Errorf("SIGTERM から終了まで %s、want >= %s（猶予を待たずに打ち切っている）", elapsed, softStop)
 		}
 		// **上限も見る。** 下限だけだと、`--soft-stop-timeout` が River に
-		// 渡っておらず既定値（riveradapter.DefaultSoftStopTimeout = 5 秒）で
+		// 渡っておらず CLI の既定値（5 秒）で
 		// 待っている場合も通ってしまう --- フラグの配線を落とす変異が
 		// そのまま緑になる。
 		//
@@ -2178,7 +2175,7 @@ VALUES ($1, 'until_encoded', ARRAY['h264'], false)`, recordingID); err != nil {
 		t.Fatal(err)
 	}
 	var enqueueOut bytes.Buffer
-	if err := runEnqueue(ctx, pool, "delete-reconcile", dbtest.StoreName, &enqueueOut); err != nil {
+	if err := runEnqueue(ctx, newRiverEnqueuer(t, pool), "delete-reconcile", dbtest.StoreName, &enqueueOut); err != nil {
 		t.Fatalf("enqueueing delete-reconcile: %v", err)
 	}
 

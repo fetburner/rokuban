@@ -243,8 +243,8 @@ func defaults() Config {
 			RetentionGrace: 24 * time.Hour,
 		},
 		Worker: WorkerConfig{
-			PeriodicJobs:         true,
-			RescueStuckJobsAfter: defaultRescueStuckJobsAfter,
+			Engine:       JobEngineRiver,
+			PeriodicJobs: true,
 		},
 		Encode: EncodeConfig{
 			FFmpeg:               "ffmpeg",
@@ -352,6 +352,9 @@ func loadFromString(raw string) (*Config, error) {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
 	if err := cfg.Ruler.validate(); err != nil {
+		return nil, fmt.Errorf("validating config: %w", err)
+	}
+	if err := cfg.Worker.validate(); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
 

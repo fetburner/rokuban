@@ -1,6 +1,6 @@
-# データ層: PostgreSQL 一本化（索引）
+# データ層（索引）
 
-ステートフルな基盤を PostgreSQL に集約し、キュー・通知・排他・検索を担わせる。Redis / NATS / 専用ジョブキューは置かない。
+既定構成は PostgreSQL にキュー・通知・排他・検索を集約する。ジョブキューに asynq を選ぶ構成では Redis を使う。
 
 ```mermaid
 flowchart LR
@@ -18,7 +18,7 @@ flowchart LR
 
 | 節 | 内容 | ファイル |
 |---|---|---|
-| §1 §2 §3 §7 | 方針: PostgreSQL 一本 / ジョブキュー River（定期実行の契機 / ジョブ一意性の注意 / Postgres 構成で Redis を既定にしない理由）/ LISTEN/NOTIFY と notifier ロール / DB 輻輳時の隔離 | [data/jobs.md](data/jobs.md) |
+| §1 §2 §3 §7 | データベースの選択 / ジョブキュー（定期実行の契機はデプロイ形態に委ねる / 合流と優先度の指定 / River のジョブ一意性の注意 / Postgres 構成で Redis を既定にしない理由）/ LISTEN/NOTIFY と notifier ロール / DB 輻輳時の隔離 | [data/jobs.md](data/jobs.md) |
 | §4 §6 | スキーマ設計: desired / observed の分離 / EPG プロジェクション（UI 完全 / ローリングウィンドウ / 非正規化スナップショット / サービスロゴ） | [data/projections.md](data/projections.md) |
 | §5 | 検索とルール評価の統一（POSIX ARE / pg_trgm / 全角半角正規化 / 録画検索と rulequery の境界） | [data/search.md](data/search.md) |
 | §6.5 | チューナー射影と容量超過の判定（Hall 条件 / twin vertices / 累積和 / 下界に限る原則） | [data/capacity.md](data/capacity.md) |
