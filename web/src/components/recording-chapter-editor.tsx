@@ -31,6 +31,13 @@ export type ChapterEditorStatus = {
   stale: boolean
 }
 
+/** ChapterDetectionRetry は編集画面から再検出する操作を表す。 */
+export type ChapterDetectionRetry = {
+  enabled: boolean
+  pending: boolean
+  run: (source: RecordingChaptersSource) => void
+}
+
 /** ChapterBoundaryNavigation は編集バーから選べる前後の境界への操作を表す。 */
 export type ChapterBoundaryNavigation = {
   previous?: () => void
@@ -43,6 +50,7 @@ type RecordingChapterEditorProps = {
   /** `spans` の版（GET が返す）。保存時にそのまま返す。 */
   version: string
   chapterReview?: RecordingChapterReview | 'error'
+  chapterRetry?: ChapterDetectionRetry
   /** 検出が終端に達していない。空の `spans` は「CM 無し」ではないので編集させない。 */
   detectionPending: boolean
   /** どの層を編集しているか。 */
@@ -99,6 +107,7 @@ function ChapterDraftEditor({
   spans,
   version,
   chapterReview,
+  chapterRetry,
   source,
   seekTilesUrl,
   currentSeconds,
@@ -119,9 +128,10 @@ function ChapterDraftEditor({
   onStatusChange,
 }: RecordingChapterEditorProps) {
   const [draft, setDraft] = useState<ChapterSpan[]>(spans)
-  const reviewCandidates = chapterReview !== 'error' && chapterReview?.materialsAvailable
-    ? chapterReview.candidates
+  const reviewMaterials = chapterReview !== 'error' && chapterReview?.materialsAvailable
+    ? chapterReview
     : undefined
+  const reviewCandidates = reviewMaterials?.candidates
   const unresolvedReview = useMemo(() => reviewCandidates
     ? unresolvedChapterReviewCandidates(reviewCandidates, draft)
     : [], [reviewCandidates, draft])
@@ -174,6 +184,7 @@ function ChapterDraftEditor({
   const dirty = useMemo(() => !sameSpans(draft, base.spans), [draft, base.spans])
   const [selectedBoundaryValue, setSelectedBoundaryValue] = useState<number | null>(null)
   const [pendingStartMs, setPendingStartMs] = useState<number | null>(null)
+  const retryDiscardsDraft = source === 'auto' && (dirty || pendingStartMs !== null)
   // selectBoundary を安定した参照に保つ（キー処理の effect を毎レンダー貼り直さない）。
   const onBoundaryActionRef = useRef(onBoundaryAction)
   useLayoutEffect(() => {
@@ -438,6 +449,7 @@ function ChapterDraftEditor({
           isPlaying={isPlaying}
           spans={draft}
           reviewCandidates={unresolvedReview}
+          reviewMaterials={reviewMaterials}
           reviewControls={chapterReview && (
             <div className="flex items-center gap-1 md:gap-2">
               <span role="status">
@@ -445,7 +457,7 @@ function ChapterDraftEditor({
                   ? '要確認の候補を読み込めませんでした'
                   : reviewCandidates
                     ? `切りすぎ ${unresolvedReview.length - missedCount} 件・見逃し ${missedCount} 件`
-                    : '検出の判定材料がありません'}
+                    : '再検出するとロゴの区間が出ます'}
               </span>
               {reviewCandidates && (
                 <Button
@@ -460,6 +472,21 @@ function ChapterDraftEditor({
                 >
                   <span className="md:hidden">次へ</span>
                   <span className="hidden md:inline">次の要確認</span>
+                </Button>
+              )}
+              {chapterReview !== 'error' && !chapterReview.materialsAvailable && chapterRetry && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-9 shrink-0 px-2 text-xs md:h-8"
+                  disabled={!chapterRetry.enabled || chapterRetry.pending || retryDiscardsDraft || pending}
+                  title={retryDiscardsDraft
+                    ? '未保存の変更がある間は再検出できません'
+                    : source === 'user' ? '確認済みの区間は保持されます' : undefined}
+                  onClick={() => chapterRetry.run(source)}
+                >
+                  再検出
                 </Button>
               )}
             </div>

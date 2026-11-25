@@ -1,6 +1,7 @@
+import { Popover } from '@base-ui/react/popover'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 
-import type { ChapterReviewCandidate, ChapterSpan } from '@/api/generated'
+import type { ChapterReviewCandidate, ChapterSpan, RecordingChapterReview } from '@/api/generated'
 import { Button } from '@/components/ui/button'
 import {
   defaultFilmstripRangeSeconds,
@@ -47,6 +48,12 @@ const reviewCandidateBands: Record<ChapterReviewCandidate['kind'], string> = {
   missed_cm: 'bottom-[6px] bg-chapter-review-missed',
 }
 
+const overviewBandStyles = {
+  draft: { row: 'top-0 h-3', color: 'bg-chapter-cut', label: '下書きの CM' },
+  logo: { row: 'top-3 z-10 h-[3px]', color: 'bg-chapter-overview-logo', label: 'ロゴが出ている区間' },
+  auto: { row: 'top-[15px] z-10 h-[3px]', color: 'bg-chapter-overview-auto', label: '最新の自動検出（「自動に戻す」の戻り先）' },
+}
+
 function ChapterReviewBands({ candidates, range }: {
   candidates?: readonly ChapterReviewCandidate[]
   range: FilmstripRange
@@ -81,6 +88,7 @@ type RecordingChapterFilmstripProps = {
   isPlaying: boolean
   spans: ChapterSpan[]
   reviewCandidates?: readonly ChapterReviewCandidate[]
+  reviewMaterials?: Pick<RecordingChapterReview, 'logoRanges' | 'autoSpans'>
   reviewControls?: ReactNode
   selectedBoundary: number | null
   selectedBoundaryMeaning: string
@@ -126,6 +134,7 @@ export function RecordingChapterFilmstrip({
   isPlaying,
   spans,
   reviewCandidates,
+  reviewMaterials,
   reviewControls,
   selectedBoundary,
   selectedBoundaryMeaning,
@@ -188,6 +197,11 @@ export function RecordingChapterFilmstrip({
   const selectedForDisplay = dragPreview === null ? selectedBoundary : dragPreview.ms / 1000
   const overviewStart = durationSeconds > 0 ? (range.startSeconds / durationSeconds) * 100 : 0
   const overviewWidth = durationSeconds > 0 ? (rangeLength / durationSeconds) * 100 : 100
+  const overviewBands = {
+    draft: previewSpans.filter(({ cut }) => cut),
+    logo: reviewMaterials?.logoRanges,
+    auto: reviewMaterials?.autoSpans.filter(({ cut }) => cut),
+  }
   const cellPercent = rangeLength > 0 ? (SEEK_TILES_INTERVAL_SECONDS / rangeLength) * 100 : 0
   const entries = useMemo(() => chapterEntries(spans, durationSeconds), [spans, durationSeconds])
   const hoverSeconds = hover === null ? 0 : filmstripXToTime(hover.x, range, hover.width)
@@ -365,7 +379,7 @@ export function RecordingChapterFilmstrip({
     <section data-testid="chapter-filmstrip" aria-label="チャプターフィルムストリップ" className="flex min-w-0 flex-col gap-1.5">
       <div
         data-testid="chapter-filmstrip-overview"
-        className="relative my-0.5 h-3 min-w-0 touch-none rounded bg-muted"
+        className={`relative my-0.5 min-w-0 touch-none rounded bg-muted ${reviewMaterials ? 'h-[18px]' : 'h-3'}`}
         onPointerDown={overviewPanStart}
         onPointerMove={(event) => {
           if (event.currentTarget.hasPointerCapture?.(event.pointerId)) panToX(event.clientX, event.currentTarget)
@@ -375,22 +389,35 @@ export function RecordingChapterFilmstrip({
         onLostPointerCapture={overviewPanEnd}
         aria-label="表示している時間範囲"
       >
-        {durationSeconds > 0 && previewSpans.filter((span) => span.cut).map((span, index) => (
-          <span
-            key={`${span.startMs}-${span.endMs}-${index}`}
-            className="absolute inset-y-0 bg-chapter-cut"
-            style={{
-              left: `${(span.startMs / 1000 / durationSeconds) * 100}%`,
-              width: `${((span.endMs - span.startMs) / 1000 / durationSeconds) * 100}%`,
-            }}
-          />
-        ))}
+        {durationSeconds > 0 && (['draft', 'logo', 'auto'] as const).map((kind) => {
+          const { row, color } = overviewBandStyles[kind]
+          const durationMs = durationSeconds * 1000
+          return overviewBands[kind]?.map(({ startMs, endMs }, index) => {
+            const start = Math.max(0, startMs)
+            const end = Math.min(durationMs, endMs)
+            if (start >= end) return null
+            return (
+              <span
+                key={`${kind}-${startMs}-${endMs}-${index}`}
+                data-testid={`chapter-overview-${kind}`}
+                aria-hidden="true"
+                className={`pointer-events-none absolute ${color} ${row}`}
+                style={{
+                  left: `${start / durationMs * 100}%`,
+                  width: `${(end - start) / durationMs * 100}%`,
+                }}
+              />
+            )
+          })
+        })}
         <span
           data-testid="chapter-filmstrip-visible-window"
           className="absolute -inset-y-1 rounded-sm border-2 border-foreground bg-foreground/10"
           style={{ left: `${overviewStart}%`, width: `${overviewWidth}%` }}
         />
-        <ChapterReviewBands candidates={reviewCandidates} range={{ startSeconds: 0, endSeconds: durationSeconds }} />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-3">
+          <ChapterReviewBands candidates={reviewCandidates} range={{ startSeconds: 0, endSeconds: durationSeconds }} />
+        </div>
         {durationSeconds > 0 && (
           <span
             data-testid="chapter-filmstrip-overview-playhead"
@@ -409,6 +436,25 @@ export function RecordingChapterFilmstrip({
           </span>
         </span>
         {reviewControls}
+        {reviewMaterials && (
+          <Popover.Root>
+            <Popover.Trigger render={<Button type="button" size="sm" variant="outline" className={`${action} px-2 text-xs`} />}>
+              凡例
+            </Popover.Trigger>
+            <Popover.Portal>
+              <Popover.Positioner side="top" align="start" sideOffset={6} className="z-50">
+                <Popover.Popup aria-label="概観の凡例" className="max-w-[calc(100vw-2rem)] space-y-1 rounded-md border border-border bg-popover p-2 text-xs text-popover-foreground shadow-md">
+                  {Object.values(overviewBandStyles).map(({ color, label }) => (
+                    <div key={label} className="flex items-baseline gap-2">
+                      <span aria-hidden="true" className={`h-0.5 w-4 shrink-0 self-center ${color}`} />
+                      <span>{label}</span>
+                    </div>
+                  ))}
+                </Popover.Popup>
+              </Popover.Positioner>
+            </Popover.Portal>
+          </Popover.Root>
+        )}
         <span className="ml-auto flex shrink-0 gap-1">
           <Button type="button" size="sm" variant="outline" className={action} onClick={() => setUserRange({ startSeconds: 0, endSeconds: durationSeconds })} disabled={durationSeconds <= 0}>
             全体

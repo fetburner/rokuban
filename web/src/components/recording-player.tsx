@@ -13,6 +13,7 @@ import type { ChapterSpan, EncodedAsset, KeepRange, RecordingChapterReview, Reco
 import {
   RecordingChapterEditor,
   type ChapterBoundaryNavigation,
+  type ChapterDetectionRetry,
   type ChapterEditorCommands,
   type ChapterEditorStatus,
 } from '@/components/recording-chapter-editor'
@@ -114,6 +115,7 @@ type RecordingPlayerProps = {
   /** `chapters` の版。保存時にそのまま返す。 */
   chapterVersion?: string
   chapterReview?: RecordingChapterReview | 'error'
+  chapterRetry?: ChapterDetectionRetry
   /** 検出中。編集 UI を出さずに理由を表示する。 */
   chapterDetectionPending?: boolean
   /**
@@ -170,6 +172,7 @@ export function RecordingPlayer({
   chapterSource = 'auto',
   chapterVersion,
   chapterReview,
+  chapterRetry,
   chapterDetectionPending = false,
   onSaveChapters,
   onResetChapters,
@@ -767,6 +770,7 @@ export function RecordingPlayer({
             spans={chapters ?? []}
             version={chapterVersion}
             chapterReview={chapterReview}
+            chapterRetry={chapterRetry}
             detectionPending={false}
             source={chapterSource}
             seekTilesUrl={media.seekTilesUrl}

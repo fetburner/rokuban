@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { recordingMedia } from '@/test/recording-media'
 
 import {
+  getGetCapabilitiesQueryKey,
   getGetEncodeQueueQueryKey,
   getGetRecordingChaptersQueryKey,
   getRecordingChapters,
@@ -334,6 +335,13 @@ function createFakeServer(options: {
       return Promise.resolve(jsonResponse(options.chapterReview ?? {
         materialsAvailable: false, logoRanges: [], candidates: [], autoSpans: [],
       }))
+    }
+    if (/^\/api\/recordings\/\d+\/cm-detection\/retry$/.test(url.pathname) && method === 'POST' && recording) {
+      recording = { ...recording, cmDetection: { state: 'detecting' } }
+      if (currentChapters.source === 'auto') {
+        currentChapters = { source: 'auto', detectionPending: true, version: 'detecting', spans: [] }
+      }
+      return Promise.resolve(jsonResponse(null, 204))
     }
     const chapterEditsMatch = /^\/api\/recordings\/(\d+)\/chapter-edits$/.exec(url.pathname)
     if (chapterEditsMatch && method === 'DELETE') {
@@ -2478,9 +2486,11 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
       await user.clear(label)
       await user.type(label, '直した')
     }
+    const retryRequests = (fetchMock: ReturnType<typeof createFakeServer>['fetchMock']) =>
+      fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith('/3/cm-detection/retry') && init?.method === 'POST')
 
     it.each([
-      [false, '検出の判定材料がありません'],
+      [false, '再検出するとロゴの区間が出ます'],
       [true, '切りすぎ 0 件・見逃し 0 件'],
     ])('編集画面で材料の有無（%s）と候補ゼロを区別する', async (materialsAvailable, message) => {
       const user = userEvent.setup()
@@ -2497,7 +2507,101 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
       const editor = await enterEditing(user)
       expect(await within(editor).findByText(message)).toBeInTheDocument()
       expect(reviewRequests()).toHaveLength(1)
-      expect(within(editor).queryByText(materialsAvailable ? '検出の判定材料がありません' : '切りすぎ 0 件・見逃し 0 件')).toBeNull()
+      expect(within(editor).queryByText(materialsAvailable ? '再検出するとロゴの区間が出ます' : '切りすぎ 0 件・見逃し 0 件')).toBeNull()
+      expect(within(editor).queryByRole('button', { name: '再検出' }) !== null).toBe(!materialsAvailable)
+    })
+
+    it('確認済みでも最新の自動検出の CM とロゴを下書きとは別の帯に出す', async () => {
+      const user = userEvent.setup()
+      createFakeServer({
+        recording: seriesEpisode(3, '2026-01-01T12:00:00Z'),
+        chapters: { ...chapters, source: 'user' },
+        chapterReview: {
+          materialsAvailable: true,
+          logoRanges: [{ startMs: 2000, endMs: 9000 }],
+          candidates: [],
+          autoSpans: [
+            { startMs: 30_000, endMs: 45_000, cut: true },
+            { startMs: 50_000, endMs: 60_000, cut: false },
+          ],
+        },
+      })
+      renderAt('/recordings/3')
+      const video = await screen.findByLabelText('録画映像')
+      Object.defineProperty(video, 'duration', { value: 100 })
+      fireEvent.loadedMetadata(video)
+      const editor = await enterEditing(user)
+      const overview = within(editor).getByTestId('chapter-filmstrip-overview')
+      expect(within(editor).getByTestId('chapter-source')).toHaveTextContent('確認済み')
+      expect(await within(overview).findByTestId('chapter-overview-auto')).toHaveStyle({ left: '30%', width: '15%' })
+      expect(within(overview).getByTestId('chapter-overview-logo')).toHaveStyle({ left: '2%' })
+      expect(within(overview).getByTestId('chapter-overview-draft')).toHaveStyle({ left: '10%', width: '10%' })
+      expect(within(editor).queryByRole('button', { name: '再検出' })).toBeNull()
+    })
+
+    it.each([true, false])('材料が無い録画の再検出は原本の有無（%s）で可否が変わる', async (hasOriginal) => {
+      const user = userEvent.setup()
+      const { fetchMock } = createFakeServer({
+        recording: seriesEpisode(3, '2026-01-01T12:00:00Z', {
+          sizeBytes: hasOriginal ? 1_000_000 : undefined,
+          cmDetection: { state: 'detected' },
+        }),
+        chapters,
+        cmDetectCapability: true,
+        chapterReview: { materialsAvailable: false, logoRanges: [], candidates: [], autoSpans: chapters.spans },
+      })
+      const { queryClient } = renderAt('/recordings/3')
+      const video = await screen.findByLabelText('録画映像')
+      Object.defineProperty(video, 'duration', { value: 100 })
+      fireEvent.loadedMetadata(video)
+      const editor = await enterEditing(user)
+      expect(await within(editor).findByText('再検出するとロゴの区間が出ます')).toBeInTheDocument()
+      await waitFor(() => expect(queryClient.getQueryState(getGetCapabilitiesQueryKey())?.status).toBe('success'))
+      expect(within(editor).getByTestId('chapter-overview-draft')).toBeInTheDocument()
+      expect(within(editor).queryByTestId('chapter-overview-logo')).toBeNull()
+      expect(within(editor).queryByTestId('chapter-overview-auto')).toBeNull()
+      const retry = within(editor).getByRole('button', { name: '再検出' })
+      expect(retry).toHaveProperty('disabled', !hasOriginal)
+      await user.click(retry)
+      if (hasOriginal) {
+        expect(await screen.findByTestId('chapter-detecting')).toBeInTheDocument()
+        expect(retryRequests(fetchMock)).toHaveLength(1)
+      } else {
+        expect(retryRequests(fetchMock)).toHaveLength(0)
+      }
+    })
+
+    it.each(['auto', 'user'] as const)('下書きがある録画（%s）は再検出で編集内容を失わない', async (source) => {
+      const user = userEvent.setup()
+      const { fetchMock } = createFakeServer({
+        recording: seriesEpisode(3, '2026-01-01T12:00:00Z', {
+          sizeBytes: 1_000_000,
+          cmDetection: { state: 'detected' },
+        }),
+        chapters: { ...chapters, source },
+        cmDetectCapability: true,
+      })
+      renderAt('/recordings/3')
+      const editor = await enterEditing(user)
+      const retry = await within(editor).findByRole('button', { name: '再検出' })
+      await waitFor(() => expect(retry).toBeEnabled())
+      await dirtyDraft(user, editor)
+      if (source === 'auto') {
+        expect(retry).toBeDisabled()
+        await user.click(retry)
+        expect(retryRequests(fetchMock)).toHaveLength(0)
+      } else {
+        expect(retry).toBeEnabled()
+        await user.click(retry)
+        expect(await screen.findByText('CM 検出を再試行します')).toBeInTheDocument()
+        expect(retryRequests(fetchMock)).toHaveLength(1)
+        for (const path of ['/3/chapters', '/3/chapter-review']) {
+          await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith(path))).toHaveLength(2))
+        }
+        await waitFor(() => expect(retry).toBeDisabled())
+      }
+      expect(within(editor).getByLabelText('ラベル')).toHaveValue('直した')
+      expect(screen.getByTestId('chapter-edit-layout')).toBe(editor)
     })
 
     it('候補の取得が 500 で失敗したとき、取得失敗を表示する', async () => {
@@ -2513,7 +2617,7 @@ describe('RecordingDetailPage シリーズの導線と終端カードの移動 (
 
       expect(await within(editor).findByText('要確認の候補を読み込めませんでした')).toBeInTheDocument()
       expect(within(editor).queryByText('切りすぎ 0 件・見逃し 0 件')).toBeNull()
-      expect(within(editor).queryByText('検出の判定材料がありません')).toBeNull()
+      expect(within(editor).queryByText('再検出するとロゴの区間が出ます')).toBeNull()
     })
 
     it('編集モードの出入りで <video> を作り直さず、再生位置を保つ', async () => {

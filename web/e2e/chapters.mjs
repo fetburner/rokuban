@@ -5,7 +5,7 @@
 // 前後再生は `<video>` の実再生と `currentTime` の推移でしか観測できない。
 // CLAUDE.md §テスト規律のとおり、実装より先にここで判定手段を作る。
 //
-// 見るのは次の 22 点:
+// 見るのは次の 24 点:
 //   ① 目盛りの位置が区間の割合と一致し、cut と ラベル付きが別の見た目で出る
 //   ② 通常の再生で cut 区間の先頭に差し掛かると、その終端へ飛ぶ
 //   ③ 手動のシークで区間の中に入ったときは飛ばない（cut / ラベル付きの両方）
@@ -29,6 +29,8 @@
 //   ⑳ 狭い画面でフィルムストリップのホバーにコマ・時刻・区間名が出て、帯の左右と境界ボタンを塞がない
 //   ㉑ 要確認の帯が正しい位置に種類ごとの色と 3px 以上の太さで描かれ、N で先頭へ戻った後も次へ進める
 //   ㉒ 再生位置に追従して区間一覧がスクロールしても、1280×800 と 400×667 で残件数と次の要確認ボタンが見える
+//   ㉓ 概観の帯が原本の時刻位置に合い、下書きの高さを保ち、追加の帯が 3px 以上で重ならず、凡例が見切れない
+//   ㉔ 材料が無いときの案内と再検出が狭い画面の操作行に収まる
 //
 // フィクスチャは ffmpeg で作る（再生位置の推移が判定に要る）。無い環境では
 // この判定だけを skip として終了する。
@@ -41,7 +43,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import os from 'node:os'
 import path from 'node:path'
 
-import { ListRecordingsResponseItem } from '../src/api/zod.ts'
+import { GetRecordingChapterReviewResponse, ListRecordingsResponseItem } from '../src/api/zod.ts'
 import {
   finish,
   installApiStubs,
@@ -70,6 +72,12 @@ const CHAPTER_REVIEW = {
     { kind: 'overcut_grid', startMs: 33500, endMs: 40000 },
     { kind: 'missed_cm', startMs: 62125, endMs: 69000 },
   ],
+  autoSpans: [{ startMs: 34_000, endMs: 47_000, cut: true }, OP_SPAN],
+}
+const CHAPTER_REVIEW_WITHOUT_MATERIALS = {
+  materialsAvailable: false,
+  logoRanges: [],
+  candidates: [],
   autoSpans: CHAPTERS.spans,
 }
 let currentChapters = CHAPTERS
@@ -303,6 +311,8 @@ log('\n=== 契約検証: フィクスチャの zod parse ===')
 await validateFixturesOrExit([
   ['recording', ListRecordingsResponseItem, recording],
   ['recording HLS', ListRecordingsResponseItem, recordingHls],
+  ['chapter review', GetRecordingChapterReviewResponse, CHAPTER_REVIEW],
+  ['chapter review without materials', GetRecordingChapterReviewResponse, CHAPTER_REVIEW_WITHOUT_MATERIALS],
 ], ng)
 
 log('\n=== ⓪ 配っている bundle と dist/ の一致 ===')
@@ -2154,6 +2164,15 @@ log('\n=== ㉑ 要確認の帯の位置・色と N による移動 ===')
   await seek(resumeAt)
 }
 
+function textFitsViewport(el) {
+  const range = document.createRange()
+  range.selectNodeContents(el)
+  const rects = [...range.getClientRects()]
+  return rects.length > 0 && rects.every(({ left, right, top, bottom, width, height }) =>
+    width > 0 && height > 0 && left >= 0 && right <= innerWidth && top >= 0 && bottom <= innerHeight &&
+    [left + 1, right - 1].every((x) => el.contains(document.elementFromPoint(x, (top + bottom) / 2))))
+}
+
 log('\n=== ㉒ 一覧が再生位置に追従してスクロールしても要確認の操作が見える ===')
 {
   // 後ろの区間行を画面下に隠すだけの長さを、通常の編集レイアウトで作る。
@@ -2215,7 +2234,121 @@ log('\n=== ㉒ 一覧が再生位置に追従してスクロールしても要�
       if (!visible) ng.push(`㉒ ${size}: ${label}が画面内に収まって見えていない`)
     }
   }
+
+  log('\n=== ㉓ 概観のロゴ・自動検出・下書きの帯の位置と凡例 ===')
+  await count.waitFor({ state: 'visible' })
+  const expectedBands = [
+    { id: 'chapter-overview-draft', spans: [CM_SPAN] },
+    { id: 'chapter-overview-logo', spans: CHAPTER_REVIEW.logoRanges },
+    { id: 'chapter-overview-auto', spans: CHAPTER_REVIEW.autoSpans.filter(({ cut }) => cut) },
+  ]
+  const viewports = [{ width: 1280, height: 800 }, { width: 400, height: 667 }]
+  const draftHeightsWithoutMaterials = []
+  const comparisonPage = await context.newPage()
+  try {
+    await installApiStubs(comparisonPage, (request) => {
+      if (request.path === '/api/recordings/1/chapters') return request.json({ ...CHAPTERS, spans })
+      if (request.path === '/api/recordings/1/chapter-review') return request.json(CHAPTER_REVIEW_WITHOUT_MATERIALS)
+      return apiHandler(request)
+    })
+    await comparisonPage.goto(URL_BASE + '/recordings/1', { waitUntil: 'domcontentloaded' })
+    await comparisonPage.getByRole('button', { name: '再生設定' }).click()
+    await comparisonPage.getByRole('menuitem', { name: 'チャプターを直す', exact: true }).click()
+    await comparisonPage.getByText('再検出するとロゴの区間が出ます', { exact: true }).waitFor({ state: 'visible' })
+    for (const viewport of viewports) {
+      await comparisonPage.setViewportSize(viewport)
+      const draft = await comparisonPage.getByTestId('chapter-overview-draft').boundingBox({ timeout: 3000 })
+      draftHeightsWithoutMaterials.push(draft?.height)
+    }
+  } finally {
+    await comparisonPage.close()
+  }
+  for (const [index, viewport] of viewports.entries()) {
+    await reviewPage.setViewportSize(viewport)
+    const size = `${viewport.width}×${viewport.height}`
+    const overview = reviewPage.getByTestId('chapter-filmstrip-overview')
+    const durationMs = 1000 * Number(await reviewPage.getByTestId('chapter-filmstrip-track').getAttribute('data-duration-seconds'))
+    const geometry = await overview.evaluate((el, { expectedBands, durationMs }) => {
+      const axis = el.getBoundingClientRect()
+      return expectedBands.map(({ id, spans }) => {
+        const marks = [...el.querySelectorAll(`[data-testid="${id}"]`)]
+        return {
+          id,
+          count: marks.length,
+          positioned: marks.length === spans.length && marks.every((mark, i) => {
+            const { startMs, endMs } = spans[i]
+            const rect = mark.getBoundingClientRect()
+            return rect.width > 0 && rect.height > 0 && rect.top >= axis.top && rect.bottom <= axis.bottom &&
+              getComputedStyle(mark).visibility === 'visible' &&
+              Math.abs(rect.left - (axis.left + axis.width * startMs / durationMs)) < 1 &&
+              Math.abs(rect.right - (axis.left + axis.width * endMs / durationMs)) < 1
+          }),
+          rows: marks.map((mark) => {
+            const { top, bottom, height } = mark.getBoundingClientRect()
+            return { top, bottom, height }
+          }),
+        }
+      })
+    }, { expectedBands, durationMs })
+    if (!(durationMs > 0) || geometry.some(({ positioned }) => !positioned)) {
+      ng.push(`㉓ ${size}: 概観の帯が原本の時刻位置に合わない（${JSON.stringify(geometry)}）`)
+    }
+    const [draft, logo, auto] = geometry
+    const draftHeightWithoutMaterials = draftHeightsWithoutMaterials[index]
+    if (draftHeightWithoutMaterials !== 12 || draft.rows.some(({ height }) => height !== draftHeightWithoutMaterials)) {
+      ng.push(`㉓ ${size}: 下書きの帯が材料の有無によらず 12px にならない（材料なし=${draftHeightWithoutMaterials}、材料あり=${JSON.stringify(draft.rows)}）`)
+    }
+    if ([logo, auto].some(({ rows }) => rows.some(({ height }) => height < 3))) {
+      ng.push(`㉓ ${size}: ロゴまたは自動検出の帯が 3px 未満（${JSON.stringify(geometry)}）`)
+    }
+    if (geometry.slice(1).some(({ rows }, i) =>
+      rows.some(({ top }) => geometry[i].rows.some(({ bottom }) => top < bottom)))) {
+      ng.push(`㉓ ${size}: 概観の帯が下書き・ロゴ・自動検出の順に重ならずに並んでいない（${JSON.stringify(geometry)}）`)
+    }
+
+    const legendButton = reviewPage.getByRole('button', { name: '凡例', exact: true })
+    try {
+      await legendButton.click({ timeout: 1500 })
+      for (const label of ['下書きの CM', 'ロゴが出ている区間', '最新の自動検出（「自動に戻す」の戻り先）']) {
+        const visible = await reviewPage.getByText(label, { exact: true }).evaluate(textFitsViewport, undefined, { timeout: 1500 })
+        if (!visible) ng.push(`㉓ ${size}: 凡例の「${label}」が見切れる`)
+      }
+    } catch (error) {
+      ng.push(`㉓ ${size}: 凡例を表示できない（${error.message.split('\n')[0]}）`)
+    } finally {
+      await reviewPage.keyboard.press('Escape')
+    }
+  }
   await reviewPage.close()
+}
+
+log('\n=== ㉔ 材料が無いときの案内と再検出の配置 ===')
+{
+  const legacyPage = await context.newPage()
+  try {
+    await legacyPage.setViewportSize({ width: 400, height: 667 })
+    await installApiStubs(legacyPage, (request) => {
+      if (request.path === '/api/recordings/1/chapter-review') return request.json(CHAPTER_REVIEW_WITHOUT_MATERIALS)
+      if (request.path === '/api/capabilities') return request.json({ live: false, cmDetect: true })
+      return apiHandler(request)
+    })
+    await legacyPage.goto(URL_BASE + '/recordings/1', { waitUntil: 'domcontentloaded' })
+    await legacyPage.getByRole('button', { name: '再生設定' }).click()
+    await legacyPage.getByRole('menuitem', { name: 'チャプターを直す', exact: true }).click()
+    const hint = legacyPage.getByText('再検出するとロゴの区間が出ます', { exact: true })
+    const retry = legacyPage.getByRole('button', { name: '再検出', exact: true })
+    await retry.click({ trial: true, timeout: 3000 })
+    const [hintBox, retryBox] = await Promise.all([hint.boundingBox({ timeout: 3000 }), retry.boundingBox({ timeout: 3000 })])
+    const visible = await hint.evaluate(textFitsViewport, undefined, { timeout: 3000 })
+    if (!visible || !hintBox || !retryBox || hintBox.x + hintBox.width > retryBox.x ||
+        Math.abs(hintBox.y + hintBox.height / 2 - retryBox.y - retryBox.height / 2) > 1) {
+      ng.push('㉔ 400×667: 案内の全文と再検出ボタンが同じ操作行に収まらない')
+    }
+  } catch (error) {
+    ng.push(`㉔ 400×667: 案内と再検出を確認できない（${error.message.split('\n')[0]}）`)
+  } finally {
+    await legacyPage.close()
+  }
 }
 
 log('\n=== #1019 filmstrip: 境界選択・1 frame 調整・PUT ===')
