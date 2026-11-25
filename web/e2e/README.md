@@ -181,7 +181,14 @@ PR では `web/`・`.node-version`・`.github/` の変更で全判定を回す�
 - `s3`: RustFS などの S3 サービスが必要。専用ジョブは `node e2e/run.mjs --needs s3` で対象を選ぶ
 - `manual`: 通常の CI 判定に入れず、必要なときだけ手動で起動する。宣言の隣に理由を書く
 
-ffmpeg は browser-e2e が常に用意するため宣言しない。Go を子プロセスで起動する判定は、冒頭コメントに `// e2e-go-deps: ./internal/streamer` のように、起動するパッケージをモジュールルートから書く。推移依存のパスは宣言に書かない。依存先の変更は `scripts/citest` が依存グラフから拾うためである。Go を子プロセスで起動するのに宣言の無い判定は、`run.test.ts` の検査が落とす。
+ffmpeg は browser-e2e が常に用意するため宣言しない。Go を子プロセスで起動する判定は、冒頭コメントに `// e2e-go-deps: ./internal/worker ./internal/streamer` のように Go パッケージを書く。書くのは次の 2 種類である。
+
+- `go test` で起動するパッケージ（fixture を持つパッケージ）
+- fixture のテストファイルが import するパッケージのうち、起動パッケージの本体の依存に入らないもの。例: worker の fixture は streamer の公開 API を呼ぶが、worker の本体は streamer に依存しない
+
+`scripts/citest -body-only` は、宣言したパッケージの本体（自身の `_test.go` と testdata を含む）と、テストを除いた依存だけで判定する。テストの依存だけが変わった PR では、この判定は回らない。外してよい前提は、テスト専用依存のパッケージ初期化（`init` とパッケージ変数の初期化）に、fixture の出力へ効く副作用が無いことである。
+
+2 種類目の書き漏れは検査されない。PR では緑で通り、main の全件実行で初めて落ちる。fixture の import を足したら宣言も見直す。Go を子プロセスで起動するのに宣言そのものが無い判定は、`run.test.ts` の検査が落とす。
 
 `E2E_BROWSER=webkit` など任意の診断モードを持つだけなら追加要件ではない。`lib.mjs` などの共有部品は別スクリプトからの import で除く。`finish(` を呼ばない実行判定があり、実行判定ではない fixture builder のような部品もあるため、`finish(` の有無では判別しない。
 

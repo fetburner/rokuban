@@ -103,8 +103,8 @@ describe('e2e/run.mjs の CI 対象選別', () => {
       expect(() => validateGoDepsDeclarations()).not.toThrow()
       const productionGoChecks = discoverScripts().filter(({ goDeps }) => goDeps.length > 0)
       expect(productionGoChecks.map(({ name, goDeps }) => [name, goDeps])).toEqual([
-        ['home-resume-frame.mjs', ['./internal/worker']],
-        ['recording-playback-timeline.mjs', ['./internal/worker']],
+        ['home-resume-frame.mjs', ['./internal/worker', './internal/streamer']],
+        ['recording-playback-timeline.mjs', ['./internal/worker', './internal/streamer']],
         ['recording-segmented-vod.mjs', ['./internal/streamer']],
       ])
     } finally {
@@ -285,7 +285,7 @@ describe('e2e/run.mjs の CI 計画', () => {
 
       expect(commands).toEqual([
         { command: 'git', args: ['diff', '--name-only', '-z', '--no-renames', 'base-sha', 'HEAD'], input: undefined },
-        { command: 'go', args: ['run', './scripts/citest', './internal/worker', './internal/streamer'], input: 'internal/worker/file.go\0' },
+        { command: 'go', args: ['run', './scripts/citest', '-body-only', './internal/worker', './internal/streamer'], input: 'internal/worker/file.go\0' },
       ])
       expect(plan.scripts).toBe('worker')
       expect(plan.matrix).toEqual({ include: [{ shard: '1', count: '5', needs_go: true }] })

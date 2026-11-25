@@ -4,6 +4,8 @@
 // モジュールルートで go run ./scripts/citest -tags conformance ./internal/mirakc/conformance/... を実行する。
 // 標準入力には git diff --name-only -z --no-renames のように NUL 区切りの相対パスを渡す。
 // 標準出力は選ばれたパッケージの import path を 1 行に 1 つずつ返す。
+// -body-only を付けると、テスト対象の _test.go の import 先（テストの依存）を除き、
+// 実行されるコードの依存だけで判定する。対象パッケージ自身の _test.go と testdata は含む。
 package main
 
 import (
@@ -23,18 +25,19 @@ import (
 
 func main() {
 	tags := flag.String("tags", "", "comma-separated Go build tags")
+	bodyOnly := flag.Bool("body-only", false, "テストの依存を除き、本体の依存だけで判定する")
 	flag.Parse()
 	if flag.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "citest: specify at least one Go package pattern")
 		os.Exit(2)
 	}
-	if err := run(os.Stdin, os.Stdout, *tags, flag.Args()); err != nil {
+	if err := run(os.Stdin, os.Stdout, *tags, *bodyOnly, flag.Args()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run(in io.Reader, out io.Writer, tags string, patterns []string) error {
+func run(in io.Reader, out io.Writer, tags string, bodyOnly bool, patterns []string) error {
 	raw, err := io.ReadAll(in)
 	if err != nil {
 		return fmt.Errorf("read changed files: %w", err)
@@ -43,7 +46,7 @@ func run(in io.Reader, out io.Writer, tags string, patterns []string) error {
 	if err != nil {
 		return fmt.Errorf("find module root: %w", err)
 	}
-	selected, err := selectPackages(root, tags, patterns, strings.Split(string(raw), "\x00"))
+	selected, err := selectPackages(root, tags, bodyOnly, patterns, strings.Split(string(raw), "\x00"))
 	if err != nil {
 		return err
 	}
@@ -72,7 +75,7 @@ type listedPackage struct {
 // 判定は同じ一覧を使う。
 type changedFiles map[string][]string
 
-func selectPackages(root, tags string, patterns, changed []string) ([]string, error) {
+func selectPackages(root, tags string, bodyOnly bool, patterns, changed []string) ([]string, error) {
 	files := make(changedFiles)
 	var paths []string
 	all := false
@@ -102,7 +105,7 @@ func selectPackages(root, tags string, patterns, changed []string) ([]string, er
 		return nil, err
 	}
 	check := packageSelection{
-		root: root, changed: files, paths: paths,
+		root: root, changed: files, paths: paths, bodyOnly: bodyOnly,
 		declarations: make(map[string]declarations),
 		extraMatches: make(map[extraDependency]bool),
 	}
@@ -133,6 +136,8 @@ func requiresAllPackages(name string) bool {
 type packageSelection struct {
 	root    string
 	changed changedFiles
+	// bodyOnly は対象のテストの依存（go list -test が加える派生パッケージ）を依存グラフから外す。
+	bodyOnly bool
 	// paths は変更されたファイルのモジュールルートからの相対パス。ci-extra-files の照合に使う。
 	paths        []string
 	declarations map[string]declarations
@@ -143,7 +148,12 @@ type packageSelection struct {
 const graphFields = "-json=ImportPath,Dir,Module,GoFiles,CgoFiles,TestGoFiles,XTestGoFiles,EmbedPatterns,TestEmbedPatterns,XTestEmbedPatterns"
 
 func (s packageSelection) affectedPackage(tags, target string) (bool, error) {
-	graph, err := goList(s.root, tags, graphFields, "-deps", "-test", target)
+	deps := []string{"-deps", "-test", target}
+	if s.bodyOnly {
+		// go list -deps の対象自身の TestGoFiles・XTestGoFiles は残るので、対象の _test.go は判定に入る。
+		deps = []string{"-deps", target}
+	}
+	graph, err := goList(s.root, tags, graphFields, deps...)
 	if err != nil {
 		return false, err
 	}

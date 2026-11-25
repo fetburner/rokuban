@@ -207,7 +207,8 @@ export function createCIPlan({ full, baseSha, outputFile, runCommand = defaultCo
     const packages = [...new Set(scripts.flatMap(({ goDeps }) => goDeps))]
     const affected = new Set()
     if (packages.length > 0) {
-      const result = runCommand('go', ['run', './scripts/citest', ...packages], changed)
+      // -body-only はテスト専用依存を判定から外す。外してよい前提と宣言の規則は README §CI 判定の要件宣言。
+      const result = runCommand('go', ['run', './scripts/citest', '-body-only', ...packages], changed)
       for (const name of result.split(/\r?\n/).filter(Boolean)) affected.add(name)
     }
     const modulePath = readFileSync(path.join(path.dirname(WEB_DIR), 'go.mod'), 'utf8').match(/^module\s+(\S+)/m)?.[1]
