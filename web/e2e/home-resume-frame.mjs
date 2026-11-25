@@ -1,4 +1,4 @@
-// e2e-go-deps: ./internal/worker
+// e2e-go-deps: ./internal/worker ./internal/streamer ./internal/testutil
 // ホームの主役が保存位置のフレームを見せるかを実ブラウザで判定する。
 //
 // フレーム番号ごとに位置が違う白い目印を付けた encoded MP4 を使い、見えている

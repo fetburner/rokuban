@@ -1,5 +1,5 @@
 // 録画 HLS の再起動境界と、録画中 EVENT の playlist 成長・commit 境界を実ブラウザで測る。使い方は web/e2e/checks/playback.md。
-// e2e-go-deps: ./internal/streamer
+// e2e-go-deps: ./internal/streamer ./internal/testutil
 import { createServer } from 'node:http'
 import { readFileSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'

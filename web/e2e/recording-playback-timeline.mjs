@@ -1,4 +1,4 @@
-// e2e-go-deps: ./internal/worker
+// e2e-go-deps: ./internal/worker ./internal/streamer ./internal/testutil
 // 録画 HLS の時間軸・ingest 世代の切り替え・チャプター保存を実ブラウザで判定する。
 // fixture は Go のテストが製品の HLS 引数ビルダーで作る。
 //   cd web && pnpm build

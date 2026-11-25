@@ -207,7 +207,9 @@ export function createCIPlan({ full, baseSha, outputFile, runCommand = defaultCo
     const packages = [...new Set(scripts.flatMap(({ goDeps }) => goDeps))]
     const affected = new Set()
     if (packages.length > 0) {
-      const result = runCommand('go', ['run', './scripts/citest', ...packages], changed)
+      // -body-only は fixture の go test が使うテストの依存（pgstoretest など）を判定から外す。
+      // 外してよい前提は、テスト専用依存に init() が無いこと（grep で確認）。fixture が使う testutil などは宣言に書く。
+      const result = runCommand('go', ['run', './scripts/citest', '-body-only', ...packages], changed)
       for (const name of result.split(/\r?\n/).filter(Boolean)) affected.add(name)
     }
     const modulePath = readFileSync(path.join(path.dirname(WEB_DIR), 'go.mod'), 'utf8').match(/^module\s+(\S+)/m)?.[1]

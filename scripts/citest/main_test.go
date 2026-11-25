@@ -250,12 +250,65 @@ func TestSelectPackages(t *testing.T) {
 					}
 				})
 			}
-			got, err := selectPackages(root, "conformance", []string{"./conformance/..."}, []string{tt.changed})
+			got, err := selectPackages(root, "conformance", false, []string{"./conformance/..."}, []string{tt.changed})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !slices.Equal(got, tt.want) {
 				t.Errorf("packages for %q = %v, want %v", tt.changed, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBodyOnlySelection は -body-only の判定範囲を、テストの依存を含む既定の判定と並べて確かめる。
+// 期待値はリテラルで書き、既定の判定の結果も同時に見ることで、-body-only が既定を壊していないことも確かめる。
+func TestBodyOnlySelection(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("GOWORK", "off")
+	files := map[string]string{
+		"go.mod":                        "module example.com/fixture\n\ngo 1.24\n",
+		"internal/body/body.go":         "package body\n\nimport _ \"example.com/fixture/internal/dep\"\n",
+		"internal/body/body_test.go":    "package body\n\nimport _ \"example.com/fixture/internal/testonly\"\n",
+		"internal/dep/dep.go":           "package dep\n",
+		"internal/testonly/testonly.go": "package testonly\n",
+	}
+	for name, body := range files {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const body = "example.com/fixture/internal/body"
+	tests := []struct {
+		name        string
+		changed     string
+		wantDefault []string
+		wantBody    []string
+	}{
+		{name: "test-only dependency", changed: "internal/testonly/testonly.go", wantDefault: []string{body}, wantBody: nil},
+		{name: "body dependency", changed: "internal/dep/dep.go", wantDefault: []string{body}, wantBody: []string{body}},
+		{name: "target own test file", changed: "internal/body/body_test.go", wantDefault: []string{body}, wantBody: []string{body}},
+		{name: "target source file", changed: "internal/body/body.go", wantDefault: []string{body}, wantBody: []string{body}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := selectPackages(root, "", false, []string{"./internal/body"}, []string{tt.changed})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, tt.wantDefault) {
+				t.Errorf("default packages for %q = %v, want %v", tt.changed, got, tt.wantDefault)
+			}
+			got, err = selectPackages(root, "", true, []string{"./internal/body"}, []string{tt.changed})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, tt.wantBody) {
+				t.Errorf("body-only packages for %q = %v, want %v", tt.changed, got, tt.wantBody)
 			}
 		})
 	}
