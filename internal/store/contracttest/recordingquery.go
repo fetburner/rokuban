@@ -40,6 +40,28 @@ type RecordingQueryRecording struct {
 	EncodeAttempts      []RecordingQueryEncodeAttempt
 	IngestWrittenBytes  *int64
 	IngestExpectedBytes *int64
+
+	// CMRanges は CM 検出の区間（[start, end)、ミリ秒）。仕込みの順によらず、読み出しは startMs の昇順になる。
+	CMRanges [][2]int64
+	// ChapterSpans はチャプターの区間。1 つでもあれば録画はチャプターを所有する。
+	ChapterSpans []RecordingQueryChapterSpan
+	// EncodedAssets は active な encoded 版。KeepRanges が nil なら保持区間の無い版（カットでない）。
+	EncodedAssets []RecordingQueryEncodedAsset
+}
+
+// RecordingQueryChapterSpan は契約テストで仕込むチャプターの区間。Label が空なら label は NULL になる。
+type RecordingQueryChapterSpan struct {
+	StartMs int64
+	EndMs   int64
+	Label   string
+	Cut     bool
+}
+
+// RecordingQueryEncodedAsset は契約テストで仕込む encoded 版。KeepRanges は保持区間（[start, end)、ミリ秒）。
+type RecordingQueryEncodedAsset struct {
+	Profile    string
+	SizeBytes  int64
+	KeepRanges [][2]int64
 }
 
 // RecordingQueryEncodeAttempt は、Get の契約テストで仕込むエンコード試行の profile と state を表す。
@@ -57,6 +79,11 @@ type RecordingQueryFixture struct {
 	NewRecording NewQueryRecording
 	RuleID       int64
 	OtherRuleID  int64
+	// StoreWithoutName は置き場名を持たない API プロセスの読み取り。全置き場の active コピーを見る。
+	StoreWithoutName store.RecordingQuery
+	// ArrangeUntilEncoded は録画の原本のコピーを削除済みにし、別の置き場に encoded 版（profile "api-only"、5678 バイト）
+	// だけを残す。NewRecording で Playable にした録画に対して使う。
+	ArrangeUntilEncoded func(t *testing.T, recordingID int64)
 }
 
 // NewRecordingQueryStore は実在の契約実装とフィクスチャを作る。
@@ -67,6 +94,7 @@ func RunRecordingQuery(t *testing.T, newStore NewRecordingQueryStore) {
 	t.Helper()
 	t.Run("get reports missing and preserves trash facts", func(t *testing.T) { runRecordingQueryGet(t, newStore) })
 	t.Run("get reports playback, policy, attempts, and ingest readback fields", func(t *testing.T) { runRecordingQueryGetReadbackFields(t, newStore) })
+	t.Run("get reports cm ranges, chapter spans, and encoded asset keep ranges in order", func(t *testing.T) { runRecordingQueryGetShapes(t, newStore) })
 	t.Run("list applies every filter axis", func(t *testing.T) { runRecordingQueryFilterAxes(t, newStore) })
 	t.Run("keyword target and LIKE characters", func(t *testing.T) { runRecordingQueryKeyword(t, newStore) })
 	t.Run("series and trash scope", func(t *testing.T) { runRecordingQuerySeriesAndTrash(t, newStore) })
@@ -74,6 +102,56 @@ func RunRecordingQuery(t *testing.T, newStore NewRecordingQueryStore) {
 	t.Run("keyset order and cursor", func(t *testing.T) { runRecordingQueryCursor(t, newStore) })
 	t.Run("continue watching uses playback and watched facts", func(t *testing.T) { runRecordingQueryContinueWatching(t, newStore) })
 	t.Run("shelves share filtered population with list", func(t *testing.T) { runRecordingQueryShelves(t, newStore) })
+	t.Run("store-less reader sees active copies of every store", func(t *testing.T) { runRecordingQueryWithoutStoreName(t, newStore) })
+}
+
+// runRecordingQueryWithoutStoreName は置き場名を持たない読み取りが、原本を外した後の encoded 版を
+// 全置き場から見ることを確かめる。Get・List・Shelves の 3 経路が同じ可視性を使う。
+func runRecordingQueryWithoutStoreName(t *testing.T, newStore NewRecordingQueryStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	id := f.NewRecording(t, queryRecording("API only copy visibility fixture", time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC), RecordingQueryRecording{Playable: true}))
+	f.ArrangeUntilEncoded(t, id)
+
+	row, err := f.StoreWithoutName.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get(%d) without a configured store: %v", id, err)
+	}
+	if row.OriginalSizeBytes != nil {
+		t.Fatalf("original size = %v, want nil after the original copy was removed", row.OriginalSizeBytes)
+	}
+	var available []struct {
+		Profile   string `json:"profile"`
+		SizeBytes int64  `json:"sizeBytes"`
+	}
+	if err := json.Unmarshal(row.AvailableEncodedAssets, &available); err != nil {
+		t.Fatalf("decoding available encoded assets %s: %v", row.AvailableEncodedAssets, err)
+	}
+	if len(available) != 1 || available[0].Profile != "api-only" || available[0].SizeBytes != 5678 {
+		t.Fatalf("available encoded assets = %+v, want api-only at 5678 bytes", available)
+	}
+
+	rows, err := f.StoreWithoutName.List(ctx, store.RecordingFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("List() without a configured store: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != id || rows[0].OriginalSizeBytes != nil {
+		t.Fatalf("List() = %+v, want recording %d with no original size", rows, id)
+	}
+	if err := json.Unmarshal(rows[0].AvailableEncodedAssets, &available); err != nil {
+		t.Fatalf("decoding listed encoded assets %s: %v", rows[0].AvailableEncodedAssets, err)
+	}
+	if len(available) != 1 || available[0].Profile != "api-only" || available[0].SizeBytes != 5678 {
+		t.Fatalf("List() available encoded assets = %+v, want api-only at 5678 bytes", available)
+	}
+
+	shelves, err := f.StoreWithoutName.Shelves(ctx, store.RecordingFilter{})
+	if err != nil {
+		t.Fatalf("Shelves() without a configured store: %v", err)
+	}
+	if len(shelves) != 1 || shelves[0].PlayableCount != 1 {
+		t.Fatalf("Shelves() = %+v, want one playable recording in its shelf", shelves)
+	}
 }
 
 func runRecordingQueryGetReadbackFields(t *testing.T, newStore NewRecordingQueryStore) {
@@ -85,7 +163,7 @@ func runRecordingQueryGetReadbackFields(t *testing.T, newStore NewRecordingQuery
 	id := f.NewRecording(t, queryRecording("readback fields", updatedAt, RecordingQueryRecording{
 		PlaybackPositionMs: &position, PlaybackUpdatedAt: &updatedAt, WatchedAt: &watchedAt,
 		KeepOriginal: "until_encoded", EncodeProfiles: []string{"h264", "h265"},
-		EncodeAttempts:     []RecordingQueryEncodeAttempt{{Profile: "h264", State: "failed"}, {Profile: "h265", State: "running"}},
+		EncodeAttempts:     []RecordingQueryEncodeAttempt{{Profile: "h265", State: "running"}, {Profile: "h264", State: "failed"}},
 		IngestWrittenBytes: &written, IngestExpectedBytes: &expected,
 	}))
 	row, err := f.Store.Get(ctx, id)
@@ -116,6 +194,104 @@ func runRecordingQueryGetReadbackFields(t *testing.T, newStore NewRecordingQuery
 	}
 	if row.IngestExpectedBytes == nil || *row.IngestExpectedBytes != expected {
 		t.Errorf("Get readback field IngestExpectedBytes = %s, want %d", ptrText(row.IngestExpectedBytes), expected)
+	}
+}
+
+// runRecordingQueryGetShapes は読み出しの JSON 形と並びを検査する。仕込みは降順で、読み出しは昇順になる。
+// cut は真偽値の JSON、label は空なら null。保持区間の無い版は keepRanges が null。
+func runRecordingQueryGetShapes(t *testing.T, newStore NewRecordingQueryStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
+	id := f.NewRecording(t, queryRecording("読み出しの形", base, RecordingQueryRecording{
+		CMRanges: [][2]int64{{5000, 6000}, {1000, 2000}},
+		ChapterSpans: []RecordingQueryChapterSpan{
+			{StartMs: 5000, EndMs: 9000, Label: "本編"},
+			{StartMs: 1000, EndMs: 4000, Cut: true},
+		},
+		EncodedAssets: []RecordingQueryEncodedAsset{
+			{Profile: "h265", SizeBytes: 2000, KeepRanges: [][2]int64{{5000, 6000}, {1000, 2000}}},
+			{Profile: "h264", SizeBytes: 1000},
+		},
+	}))
+	empty := f.NewRecording(t, queryRecording("何も持たない", base.Add(time.Minute), RecordingQueryRecording{}))
+
+	row, err := f.Store.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get(shapes) error = %v", err)
+	}
+	if !row.CMDetected {
+		t.Errorf("Get(shapes) CMDetected = false, want true")
+	}
+	var cm []struct {
+		StartMs int64 `json:"startMs"`
+		EndMs   int64 `json:"endMs"`
+	}
+	if err := json.Unmarshal(row.CMRanges, &cm); err != nil {
+		t.Fatalf("decoding CMRanges %s: %v", row.CMRanges, err)
+	}
+	wantCM := []struct {
+		StartMs int64 `json:"startMs"`
+		EndMs   int64 `json:"endMs"`
+	}{{1000, 2000}, {5000, 6000}}
+	if !reflect.DeepEqual(cm, wantCM) {
+		t.Errorf("CMRanges = %+v, want %+v", cm, wantCM)
+	}
+
+	if !row.ChaptersOwned {
+		t.Errorf("Get(shapes) ChaptersOwned = false, want true")
+	}
+	var spans []struct {
+		StartMs int64   `json:"startMs"`
+		EndMs   int64   `json:"endMs"`
+		Label   *string `json:"label"`
+		Cut     bool    `json:"cut"`
+	}
+	if err := json.Unmarshal(row.ChapterSpans, &spans); err != nil {
+		t.Fatalf("decoding ChapterSpans %s: %v", row.ChapterSpans, err)
+	}
+	local := "本編"
+	wantSpans := []struct {
+		StartMs int64   `json:"startMs"`
+		EndMs   int64   `json:"endMs"`
+		Label   *string `json:"label"`
+		Cut     bool    `json:"cut"`
+	}{{1000, 4000, nil, true}, {5000, 9000, &local, false}}
+	if !reflect.DeepEqual(spans, wantSpans) {
+		t.Errorf("ChapterSpans = %+v, want %+v", spans, wantSpans)
+	}
+
+	// keep は保持区間の JSON 形。null は nil のスライス、[] は空の非 nil として DeepEqual で区別される。
+	type keep struct {
+		StartMs int64 `json:"startMs"`
+		EndMs   int64 `json:"endMs"`
+	}
+	var assets []struct {
+		Profile    string `json:"profile"`
+		SizeBytes  int64  `json:"sizeBytes"`
+		KeepRanges []keep `json:"keepRanges"`
+	}
+	if err := json.Unmarshal(row.AvailableEncodedAssets, &assets); err != nil {
+		t.Fatalf("decoding AvailableEncodedAssets %s: %v", row.AvailableEncodedAssets, err)
+	}
+	wantAssets := []struct {
+		Profile    string `json:"profile"`
+		SizeBytes  int64  `json:"sizeBytes"`
+		KeepRanges []keep `json:"keepRanges"`
+	}{{"h264", 1000, nil}, {"h265", 2000, []keep{{1000, 2000}, {5000, 6000}}}}
+	if !reflect.DeepEqual(assets, wantAssets) {
+		t.Errorf("AvailableEncodedAssets = %+v, want %+v", assets, wantAssets)
+	}
+
+	bare, err := f.Store.Get(ctx, empty)
+	if err != nil {
+		t.Fatalf("Get(empty) error = %v", err)
+	}
+	if bare.CMDetected || bare.ChaptersOwned {
+		t.Errorf("Get(empty) CMDetected/ChaptersOwned = %v/%v, want false/false", bare.CMDetected, bare.ChaptersOwned)
+	}
+	if string(bare.ChapterSpans) != "[]" || string(bare.CMRanges) != "[]" {
+		t.Errorf("Get(empty) ChapterSpans/CMRanges = %s/%s, want []/[]", bare.ChapterSpans, bare.CMRanges)
 	}
 }
 
@@ -174,7 +350,9 @@ func runRecordingQueryFilterAxes(t *testing.T, newStore NewRecordingQueryStore) 
 	add(func(o *RecordingQueryRecording) { o.Status = "finished" })
 	add(func(o *RecordingQueryRecording) { o.Source = "manual" })
 	add(func(o *RecordingQueryRecording) { o.RuleID = &f.OtherRuleID })
-	add(func(o *RecordingQueryRecording) { o.StartAt = base.Add(-time.Nanosecond) })
+	// 下限の 1 マイクロ秒前。時刻の精度は両方の DB が持つ単位（Postgres の timestamptz と MySQL の DATETIME(6)）に合わせる。
+	// 1 ナノ秒前は MySQL が丸めて下限と同じ値になるため、下限の判定を試せない。
+	add(func(o *RecordingQueryRecording) { o.StartAt = base.Add(-time.Microsecond) })
 	add(func(o *RecordingQueryRecording) { o.StartAt = end })
 	add(func(o *RecordingQueryRecording) { o.Title = "News 100x report" }) // % must be literal
 	add(func(o *RecordingQueryRecording) { o.Title, o.Description = "No title match", "100% in description" })
