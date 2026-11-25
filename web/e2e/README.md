@@ -170,7 +170,7 @@ cd web && E2E_URL=http://localhost:40773 node e2e/run.mjs channel-and-more-sheet
 
 CI の通常判定では、`run.mjs` が Node から Vite preview を起動して `web/dist` を配る。判定が使う API の応答は各スクリプトがブラウザ側で差し替えるため、本体サーバーの起動を共有の準備条件にしない。
 
-PR では `web/`・`.node-version`・`.github/` の変更で全判定を回す。それ以外は `scripts/citest` が依存先の変更に影響を受けた Go パッケージを選び、そのパッケージを宣言した判定だけを回す。main への push では毎回全判定を回す。
+PR では `web/`・`.node-version`・`.github/workflows/ci.yml`・`.github/actions/` の変更で全判定を回す。それ以外は `scripts/citest` が依存先の変更に影響を受けた Go パッケージを選び、そのパッケージを宣言した判定だけを回す。`go.mod`・`go.sum` の版の変更も `scripts/citest` が拾う（版が変わったモジュールを依存に持つパッケージ）。ただし判定は `-body-only` のグラフで行うので、テストの依存だけが使うモジュールの版上げでは選ばない。main への push では毎回全判定を回す。
 
 `package.json` に個々のファイルを指す `e2e:*` 別名は置かない。別名の並びは対象一覧を重複して持ち、追加漏れも起こしていたため、個別実行はこの runner に寄せる。`e2e:fixtures` は browser 判定とは別の契約検証をまとめるため残す。
 

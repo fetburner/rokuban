@@ -285,7 +285,7 @@ describe('e2e/run.mjs の CI 計画', () => {
 
       expect(commands).toEqual([
         { command: 'git', args: ['diff', '--name-only', '-z', '--no-renames', 'base-sha', 'HEAD'], input: undefined },
-        { command: 'go', args: ['run', './scripts/citest', '-body-only', './internal/worker', './internal/streamer'], input: 'internal/worker/file.go\0' },
+        { command: 'go', args: ['run', './scripts/citest', '-body-only', '-base', 'base-sha', './internal/worker', './internal/streamer'], input: 'internal/worker/file.go ' },
       ])
       expect(plan.scripts).toBe('worker')
       expect(plan.matrix).toEqual({ include: [{ shard: '1', count: '5', needs_go: true }] })
