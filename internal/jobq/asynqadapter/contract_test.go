@@ -18,7 +18,11 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq/contracttest"
 )
 
+// TestContract は process death ケースで孤児の回収を実時間で待つので、t.Parallel で他の回収待ちと重ねる。
+// 重ねて安全な根拠は TestCrashExhaustsOnlyAttempt の doc comment と同じ（キュー名の分離と、
+// asynq v0.26.0 の IsOrphaned の godoc「そのキューに対して server を走らせることで回収される」）。
 func TestContract(t *testing.T) {
+	t.Parallel()
 	options := redisOptions(t)
 	contracttest.Run(t, func(t *testing.T, registry *jobq.Registry, worker jobq.Worker[contracttest.Args], name string) contracttest.Fixture {
 		jobq.Register(registry, worker)
@@ -47,7 +51,17 @@ func TestEnqueuePreservesLongWorkTimeout(t *testing.T) {
 	}
 }
 
+// TestCrashExhaustsOnlyAttempt は MaxAttempts 1 の Work がプロセス死で最後の試行を使い切り、
+// 回収後に再配送されないことを確かめる。回収そのものを待つので t.Parallel で重ねる。
+// 根拠（asynq v0.26.0 の公開文書）: TaskInfo.IsOrphaned の godoc は「この task は、その task の
+// あるキューに対して server を走らせることで回収される」と書く。Config.Queues の godoc は、
+// server が処理するのは列挙したキューであり、nil なら "default" だけだと書く。テストは testQueue の
+// UUID 接頭辞で各テストのキューを分け、各 server は自分のキューだけを購読する。よって別テストの server が
+// このテストの孤児を回収する、と公開文書からは読めない。
+// 未確認: Redis のキー（unique 等）がキュー名で分かれること。公開文書には無く、asynq のソース
+// （internal/base の UniqueKey）で読んだだけの内部の事実であり、このテストの判定は依存しない。
 func TestCrashExhaustsOnlyAttempt(t *testing.T) {
+	t.Parallel()
 	options := redisOptions(t)
 	var calls atomic.Int32
 	started := make(chan struct{})

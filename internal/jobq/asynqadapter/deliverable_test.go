@@ -124,7 +124,11 @@ func TestCountDeliverableScheduledTaskOnlyAfterDue(t *testing.T) {
 	}
 }
 
+// TestCountDeliverableCountsOrphanedActiveTask は孤児の active を CountDeliverable が 1 件と数えることを確かめる。
+// 孤児になるまで待つので t.Parallel で他の回収待ちと重ねる。根拠は TestCrashExhaustsOnlyAttempt の doc comment と同じ。
+// 回収後の片付け（キュー削除は active があると失敗する）のため、回収の完了まで待つ。
 func TestCountDeliverableCountsOrphanedActiveTask(t *testing.T) {
+	t.Parallel()
 	started := make(chan struct{})
 	var calls atomic.Int32
 	registry := jobq.NewRegistry()

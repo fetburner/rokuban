@@ -269,7 +269,11 @@ func TestRunOncePromotesDueSnoozedTask(t *testing.T) {
 	}
 }
 
+// TestRunOnceRecoversOrphanedTask は RunOnce の server が孤児を回収して実行することを確かめる。
+// 回収を待つので t.Parallel で重ねる。根拠は TestCrashExhaustsOnlyAttempt の doc comment と同じ。
+// RunOnce の server は自分の物理キュー 1 本だけを購読するため、別テストのキューを回収しない。
 func TestRunOnceRecoversOrphanedTask(t *testing.T) {
+	t.Parallel()
 	options := redisOptions(t)
 	var calls atomic.Int32
 	started := make(chan struct{})
