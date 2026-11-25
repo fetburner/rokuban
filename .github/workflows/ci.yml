@@ -878,7 +878,7 @@ jobs:
             image.tags=rokuban:test
             full.tags=rokuban:test-full
         env:
-          GHA_CACHE_WRITE: ${{ github.event_name == 'pull_request' && 'false' || 'true' }}
+          GHA_CACHE_WRITE: ${{ github.event_name != 'pull_request' }}
       - name: JLSE binaries start with their runtime libraries
         run: |
           docker run --rm --entrypoint sh rokuban:test-full -eu -c '
