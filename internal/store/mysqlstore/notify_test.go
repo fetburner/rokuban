@@ -152,6 +152,10 @@ func TestReservationTriggersNotify(t *testing.T) {
 			"INSERT INTO program_overrides (site, program_id, overrides) VALUES (?, ?, JSON_OBJECT('priority', 1))",
 			"UPDATE program_overrides SET overrides = JSON_OBJECT('priority', 2) WHERE site = ? AND program_id = ?",
 			"DELETE FROM program_overrides WHERE site = ? AND program_id = ?"},
+		{"label_rules", "recordings",
+			"INSERT INTO label_rules (`key`, value, keyword, value_key) VALUES ('series', '作品X', '作品X', '作品X')",
+			"UPDATE label_rules SET priority = 2 WHERE keyword = '作品X'",
+			"DELETE FROM label_rules WHERE keyword = '作品X'"},
 		{"media_assets", "recordings",
 			"INSERT INTO media_assets (recording_id, kind, size_bytes) VALUES (?, 'original', 1)",
 			"UPDATE media_assets SET size_bytes = 2 WHERE recording_id = ? AND kind = 'original'",
@@ -163,6 +167,9 @@ func TestReservationTriggersNotify(t *testing.T) {
 			ctx := t.Context()
 			p := seedReservationProgram(t, db, "notification fixture", contracttest.ReservationProgramOptions{Snapshot: true})
 			args := []any{p.Site, p.ProgramID}
+			if c.table == "label_rules" {
+				args = nil
+			}
 			if c.table == "media_assets" {
 				rule := fixtureID(t, execFixture(t, db, "INSERT INTO rules (name) VALUES ('notification fixture')"))
 				args = []any{seedFinishedRecording(t, db, rule, p, p.Title)}

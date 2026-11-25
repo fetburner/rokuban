@@ -22,9 +22,32 @@ func TestLabelRulesContract(t *testing.T) {
 	contracttest.RunLabelRules(t, func(t *testing.T) contracttest.LabelRuleFixture {
 		pool := testutil.SetupDB(t)
 		labelRules := NewLabelRules(pool)
+		listenConn, err := pool.Acquire(context.Background())
+		if err != nil {
+			t.Fatalf("acquiring notification listener: %v", err)
+		}
+		t.Cleanup(listenConn.Release)
+		if _, err := listenConn.Exec(context.Background(), "LISTEN rokuban"); err != nil {
+			t.Fatalf("listening for notifications: %v", err)
+		}
 		return contracttest.LabelRuleFixture{
 			Store:        labelRules,
 			Reevaluation: labelRules,
+			TakeRecordingsNotifications: func(t *testing.T) int {
+				t.Helper()
+				count := 0
+				for {
+					ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+					notification, err := listenConn.Conn().WaitForNotification(ctx)
+					cancel()
+					if err != nil {
+						return count
+					}
+					if notification.Payload == labelRuleRecordingsTopic {
+						count++
+					}
+				}
+			},
 			NewRecording: func(t *testing.T, title string) int64 {
 				t.Helper()
 				id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
