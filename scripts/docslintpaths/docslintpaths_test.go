@@ -1,9 +1,9 @@
 // ci-extra-files: .github/workflows/ci.yml package.json
 
-// Package docslintpaths はテストだけを持つ。ci.yml の docs-lint の paths-filter に書いた
-// Markdown の一覧が、package.json の `docs:lint` の対象と一致することを検査する。
-// 一覧が 2 か所にあって片方だけ直すと、対象の Markdown を変えた PR で lint が回らなくなる。
-// この検査は test ジョブが回す `go list ./...` の対象なので、専用の job は要らない。
+// Package docslintpaths はテストだけを持つ。ci.yml の docs-lint の paths-filter の `md` に書いた
+// 一覧が、package.json の `docs:lint` の対象（シングルクォートで囲んだ glob の全部）と順序を除いて
+// 一致することを検査する。一覧が 2 か所にあって片方だけ直すと、対象の Markdown を変えた PR で
+// lint が回らなくなる。この検査は test ジョブが回す `go list ./...` の対象なので、専用の job は要らない。
 package docslintpaths
 
 import (
@@ -22,24 +22,24 @@ const (
 	ciPath  = "../../.github/workflows/ci.yml" // テストのカレントディレクトリからの相対パス
 	pkgPath = "../../package.json"
 	jobName = "docs-lint"
-	filter  = "docs" // ci.yml の filters のキー名。steps.changes.outputs.docs と対応する
+	filter  = "md" // ci.yml の filters のキー名。steps.changes.outputs.md と対応する
 )
 
 func TestDocsLintFilterMatchesDocsLintScript(t *testing.T) {
 	t.Parallel()
 	want := docsLintTargets(t)
-	got := docsLintFilterMarkdown(t)
+	got := docsLintFilterPatterns(t)
 	if reflect.DeepEqual(want, got) {
 		return
 	}
-	t.Errorf("ci.yml の docs-lint の paths-filter の Markdown 一覧が package.json の docs:lint の対象と一致しない\n"+
+	t.Errorf("ci.yml の docs-lint の paths-filter の md の一覧が package.json の docs:lint の対象と一致しない\n"+
 		"  docs:lint:    %q\n  paths-filter: %q\n"+
-		"`package.json` の `docs:lint` を変えたら `.github/workflows/ci.yml` の docs-lint の `filters` も同じ一覧にする",
+		"`package.json` の `docs:lint` を変えたら `.github/workflows/ci.yml` の docs-lint の `md` の filter も同じ一覧にする",
 		want, got)
 }
 
-// docsLintTargets は package.json の docs:lint の引数のうち、Markdown の glob を返す。
-// 引数は単一引用符で囲まれている前提（`docs:lint` の書き方）。
+// docsLintTargets は package.json の docs:lint の引数（シングルクォートで囲んだ glob の全部）を、
+// 順序を除いてソートして返す。
 func docsLintTargets(t *testing.T) []string {
 	t.Helper()
 	var pkg struct {
@@ -59,12 +59,13 @@ func docsLintTargets(t *testing.T) []string {
 	if len(globs) == 0 {
 		t.Fatalf("docs:lint に対象の glob が無い: %q", script)
 	}
-	return sortedMarkdown(globs)
+	sort.Strings(globs)
+	return globs
 }
 
-// docsLintFilterMarkdown は ci.yml の docs-lint job の paths-filter から、`.md` で終わる
-// パターンを返す。filter の文字列は YAML なので、もう一段 YAML として読む。
-func docsLintFilterMarkdown(t *testing.T) []string {
+// docsLintFilterPatterns は ci.yml の docs-lint job の paths-filter の md の一覧を、
+// 順序を除いてソートして返す。filter の文字列は YAML なので、もう一段 YAML として読む。
+func docsLintFilterPatterns(t *testing.T) []string {
 	t.Helper()
 	var wf struct {
 		Jobs map[string]struct {
@@ -103,18 +104,8 @@ func docsLintFilterMarkdown(t *testing.T) []string {
 	if !ok {
 		t.Fatalf("job %s の filters に %q のキーが無い", jobName, filter)
 	}
-	return sortedMarkdown(patterns)
-}
-
-func sortedMarkdown(in []string) []string {
-	var out []string
-	for _, s := range in {
-		if strings.HasSuffix(s, ".md") {
-			out = append(out, s)
-		}
-	}
-	sort.Strings(out)
-	return out
+	sort.Strings(patterns)
+	return patterns
 }
 
 func readFile(t *testing.T, path string) string {

@@ -2,7 +2,8 @@
   "name": "rokuban-docs",
   "private": true,
   "scripts": {
-    "docs:lint": "textlint --rulesdir scripts/textlint-rules 'README.md' 'CLAUDE.md' 'deploy/**/*.md' 'docs/**/*.md' 'web/e2e/**/*.md'",
+    "docs:lint": "npm run docs:lint:files -- 'README.md' 'CLAUDE.md' 'deploy/**/*.md' 'docs/**/*.md' 'web/e2e/**/*.md'",
+    "docs:lint:files": "textlint --rulesdir scripts/textlint-rules",
     "third-party-notices": "node scripts/third-party-notices.mjs",
     "docs:allow-total": "node scripts/check-allow-total.mjs",
     "docs:reading": "node scripts/docs-reading/run.mjs"

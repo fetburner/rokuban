@@ -734,6 +734,8 @@ jobs:
 
   # 保守対象の Markdown（対象の権威は package.json の docs:lint）を textlint で検査する。プロファイルは 1 本で、違反 0 件が gate。
   # 必須チェック名 docs-lint を担うので、ジョブは毎回走らせ、入力が変わらない PR では step だけ飛ばす。
+  # PR で Markdown だけが変わったときは、変わったファイルだけを検査する。ルールはファイルごとに完結し
+  # （scripts/textlint-allow.js の冒頭）、ファイルをまたぐ検査は check-allow-total.mjs が担う。main への push は全件を回す。
   # filter は docs:lint の一覧を写す形にし（job 内で組むより単純）、ずれは scripts/docslintpaths/ のテストが落とす。
   docs-lint:
     runs-on: ubuntu-slim
@@ -746,13 +748,15 @@ jobs:
         id: changes
         if: github.event_name == 'pull_request'
         with:
+          list-files: json
           filters: |
-            docs:
+            md:
               - 'README.md'
               - 'CLAUDE.md'
               - 'deploy/**/*.md'
               - 'docs/**/*.md'
               - 'web/e2e/**/*.md'
+            config:
               - '.textlintrc.json'
               - 'scripts/textlint-rules/**'
               - 'scripts/textlint-*.js'
@@ -763,17 +767,34 @@ jobs:
               - '.node-version'
               - '.github/**'
       - uses: actions/setup-node@v7
-        if: &docs_lint_needed ${{ github.event_name == 'push' || steps.changes.outputs.docs == 'true' }}
+        if: &docs_lint_needed ${{ github.event_name == 'push' || steps.changes.outputs.md == 'true' || steps.changes.outputs.config == 'true' }}
         with:
           node-version-file: .node-version
           cache: npm
       - run: npm ci
         if: *docs_lint_needed
       - run: npm run docs:lint
-        if: *docs_lint_needed
+        if: ${{ github.event_name == 'push' || steps.changes.outputs.config == 'true' }}
+      # 変わった Markdown だけを検査する。削除・改名で消えたファイルは検査対象から外す。
+      # ファイル名は env で渡す（run: に埋め込むと、ファイル名によるスクリプト注入になる）。
+      - name: Lint changed Markdown only
+        if: ${{ github.event_name == 'pull_request' && steps.changes.outputs.md == 'true' && steps.changes.outputs.config != 'true' }}
+        env:
+          MD_FILES: ${{ steps.changes.outputs.md_files }}
+        run: |
+          mapfile -t files < <(node -e 'for (const f of JSON.parse(process.env.MD_FILES || "[]")) console.log(f)')
+          existing=()
+          for f in "${files[@]}"; do
+            if [ -e "$f" ]; then existing+=("$f"); fi
+          done
+          if [ "${#existing[@]}" -eq 0 ]; then
+            echo "変更された Markdown はすべて削除されていたため、検査するファイルは無い"
+            exit 0
+          fi
+          npm run docs:lint:files -- "${existing[@]}"
       # 許容が base より増えていないこと（scripts/check-allow-total.mjs）。PR だけ見る。
       - name: Check allow counts
-        if: ${{ github.event_name == 'pull_request' && steps.changes.outputs.docs == 'true' }}
+        if: ${{ github.event_name == 'pull_request' && (steps.changes.outputs.md == 'true' || steps.changes.outputs.config == 'true') }}
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
