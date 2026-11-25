@@ -59,8 +59,8 @@ func seedCapacityDemand(t *testing.T, db *sql.DB, site string, programID int64, 
 	execFixture(t, db, `
 INSERT INTO program_snapshots (site, program_id, network_id, service_id, event_id, start_at, duration_ms,
                                service_name, channel_type, channel)
-VALUES (?, ?, 32678, 5168, ?, ?, ?, 'test service', ?, ?)`,
-		site, programID, programID%100_000, startAt, durationMs, channelType, channel)
+VALUES (?, ?, ?, ?, ?, ?, ?, 'test service', ?, ?)`,
+		site, programID, fixtureNetworkID, fixtureServiceID, programID%100_000, startAt, durationMs, channelType, channel)
 	execFixture(t, db, `INSERT INTO reservations (site, program_id, rule_id) VALUES (?, ?, ?)`, site, programID, ruleID)
 }
 
@@ -75,15 +75,14 @@ VALUES ('store capacity preview', ?, ?, CASE WHEN ? THEN 0.7 ELSE NULL END)`,
 func seedCapacityPreviewProgram(t *testing.T, db *sql.DB, ref store.CapacityProgramRef,
 	channelType, channel string, startAt time.Time, durationMs int64) {
 	t.Helper()
-	const networkID = 32736
-	serviceID := 20_000 + ref.ProgramID%20_000
 	eventID := ref.ProgramID % 100_000
 	execFixture(t, db, `
 INSERT INTO epg_services (site, network_id, service_id, type, logo_id, remote_control_key_id, name, channel_type, channel)
-VALUES (?, ?, ?, 1, 0, 1, 'store preview service', ?, ?)`,
-		ref.Site, networkID, serviceID, channelType, channel)
+VALUES (?, ?, ?, 1, 0, 1, 'store preview service', ?, ?)
+ON DUPLICATE KEY UPDATE observed_at = observed_at`,
+		ref.Site, fixtureNetworkID, fixtureServiceID, channelType, channel)
 	execFixture(t, db, `
 INSERT INTO epg_programs (site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at, name)
 VALUES (?, ?, ?, ?, ?, ?, ?, TIMESTAMPADD(MICROSECOND, ? * 1000, ?), 'store preview program')`,
-		ref.Site, ref.ProgramID, networkID, serviceID, eventID, startAt, durationMs, durationMs, startAt)
+		ref.Site, ref.ProgramID, fixtureNetworkID, fixtureServiceID, eventID, startAt, durationMs, durationMs, startAt)
 }

@@ -35,6 +35,40 @@ func RunTuners(t *testing.T, newStore NewTunerStore) {
 	t.Run("capacity reads preserve interval endpoints", func(t *testing.T) { runCapacityReads(t, newStore) })
 	t.Run("preview rule", func(t *testing.T) { runCapacityPreviewRule(t, newStore) })
 	t.Run("preview candidates", func(t *testing.T) { runCapacityPreviewCandidates(t, newStore) })
+	t.Run("preview candidates accept many refs", func(t *testing.T) { runCapacityPreviewLargeRefs(t, newStore) })
+}
+
+func runCapacityPreviewLargeRefs(t *testing.T, newStore NewTunerStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	ruleID := f.SeedRule(t, false, true)
+	start := time.Now().UTC().Add(3 * time.Hour).Truncate(time.Millisecond)
+	ref := store.CapacityProgramRef{Site: "site-a", ProgramID: 7004}
+	f.SeedPreviewProgram(t, ref, "GR", "27", start, 30*60*1000)
+
+	// 検索は件数に上限を置かないので、候補の読み取りは大量の refs でも失敗してはならない。
+	refs := make([]store.CapacityProgramRef, 0, 40_001)
+	refs = append(refs, ref)
+	for i := 0; i < 40_000; i++ {
+		refs = append(refs, store.CapacityProgramRef{Site: "site-a", ProgramID: 9_000_000 + int64(i)})
+	}
+	got, err := f.Capacity.PreviewCandidates(ctx, refs, &ruleID)
+	if err != nil {
+		t.Fatalf("PreviewCandidates(40001 refs): %v", err)
+	}
+	if len(got) != 1 || got[0].ProgramID != ref.ProgramID {
+		t.Fatalf("PreviewCandidates(40001 refs) = %+v, want only the seeded program", got)
+	}
+
+	// site の一致は大文字小文字を区別する（PostgreSQL の text 等値と同じ）。
+	upper := []store.CapacityProgramRef{{Site: "SITE-A", ProgramID: ref.ProgramID}}
+	got, err = f.Capacity.PreviewCandidates(ctx, upper, &ruleID)
+	if err != nil {
+		t.Fatalf("PreviewCandidates(upper-case site): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("PreviewCandidates(SITE-A) = %+v, want no match for site-a", got)
+	}
 }
 
 func runTunerSync(t *testing.T, newStore NewTunerStore) {

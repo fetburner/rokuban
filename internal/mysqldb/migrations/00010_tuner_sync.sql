@@ -1,7 +1,7 @@
 -- +goose Up
 -- チューナー射影。使い捨ての射影で、真実は mirakc 側にある。
 -- types は JSON 配列で、CHECK が 4 種別の部分集合であることを検査する。
--- SET にしないのは、区切り文字を含む値を分割してしまい、読み出しの順序も正規化されるためである。
+-- SET にしないのは、配列の順序と重複を正規化してしまい、PostgreSQL の text[] と読み出し結果が変わるためである。
 CREATE TABLE tuner_sync (
     site VARCHAR(255) NOT NULL,
     tuner_index INT NOT NULL,

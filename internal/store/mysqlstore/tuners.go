@@ -60,8 +60,8 @@ func (s *Tuners) Upsert(ctx context.Context, site string, tuners []store.TunerIn
 		}
 		args = append(args, site, tuner.Index, tuner.Name, string(types), tuner.IsAvailable, tuner.IsFault)
 	}
-	row := "(?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6))"
-	query := upsertTunerSync + strings.TrimSuffix(strings.Repeat(row+", ", len(tuners)), ", ") + updateTunerSync
+	const tuple = "(?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP(6))"
+	query := upsertTunerSync + strings.Repeat(tuple+", ", len(tuners)-1) + tuple + updateTunerSync
 	if err := runTx(ctx, s.db, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, query, args...)
 		return err
@@ -172,21 +172,32 @@ func (s *Tuners) PreviewCandidates(ctx context.Context, refs []store.CapacityPro
 	if len(refs) == 0 {
 		return nil, nil
 	}
-	pairs := make([]string, len(refs))
-	args := make([]any, 0, len(refs)*2+2)
-	for i, ref := range refs {
-		pairs[i] = "(?, ?)"
-		args = append(args, ref.Site, ref.ProgramID)
+	// refs は 1 つの JSON 引数で渡す。プレースホルダを refs の件数だけ作ると MySQL の上限（65535）に掛かる。
+	type ref struct {
+		Site      string `json:"site"`
+		ProgramID int64  `json:"program_id"`
 	}
-	args = append(args, ruleID, ruleID)
+	wire := make([]ref, len(refs))
+	for i, r := range refs {
+		wire[i] = ref{Site: r.Site, ProgramID: r.ProgramID}
+	}
+	refsJSON, err := json.Marshal(wire)
+	if err != nil {
+		return nil, fmt.Errorf("encoding capacity preview refs: %w", err)
+	}
+	args := []any{string(refsJSON), ruleID, ruleID}
+	// site の照合順序は table 列と同じ utf8mb4_0900_as_cs にする。既定の照合順序だと大文字小文字を区別しない比較になりうる。
 	query := `
 SELECT p.site, p.program_id, i.action, s.channel_type, s.channel, p.start_at,
        TIMESTAMPADD(MICROSECOND, p.duration_ms * 1000, p.start_at)
-FROM epg_programs p
+FROM JSON_TABLE(?, '$[*]' COLUMNS (
+         site VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs PATH '$.site',
+         program_id BIGINT PATH '$.program_id'
+     )) AS w
+JOIN epg_programs p ON p.site = w.site AND p.program_id = w.program_id
 JOIN epg_services s ON s.site = p.site AND s.network_id = p.network_id AND s.service_id = p.service_id
 LEFT JOIN program_intents i ON i.site = p.site AND i.program_id = p.program_id
-WHERE (p.site, p.program_id) IN (` + strings.Join(pairs, ", ") + `)
-  AND (i.action IS NULL OR i.action <> 'skip')
+WHERE (i.action IS NULL OR i.action <> 'skip')
   AND TIMESTAMPADD(MICROSECOND, p.duration_ms * 1000, p.start_at) > NOW(6)
   AND NOT EXISTS (
       SELECT 1 FROM reservations r
