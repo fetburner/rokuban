@@ -139,6 +139,8 @@ api が使うのは論理削除・復元・即時削除要求をまとめた `Re
 
 チューナー同期は、sweep の印の取得、全量 upsert、古い行の削除を別々の store メソッドで行う。印の取得と upsert の間に mirakc への問い合わせが入るためである。
 
+MySQL ではチューナーの種別を JSON 配列に置き、CHECK で 4 種別の部分集合であることを検査する。SET は配列の順序と重複を正規化してしまい、PostgreSQL の `text[]` と読み出し結果が変わるので使わない。
+
 EPG 同期の各段階は、独立した store メソッドにして、それぞれ自分で commit する。1 つの tx にまとめると、数千行の upsert が長い tx になる。途中の段階が失敗すると、すでに書いた段階まで巻き戻る。各段階が確定していれば、次の同期が残りを書き直すだけで済む。
 
 MySQL ではジャンルの大分類を番組行の JSON 配列に置く。大分類は番組と寿命が同じで、一覧・詳細の読み取りと `JSON_OVERLAPS` による検索を番組行だけで行えるためである。
@@ -158,6 +160,7 @@ MySQL ではジャンルの大分類を番組行の JSON 配列に置く。大�
 - チューナー同期と一覧: `internal/store.TunerSync` / `TunerReader`
 - 容量読み取り: `internal/store.Capacity`
 - PostgreSQL 実装: `internal/store/pgstore.Tuners`
+- MySQL 実装: `internal/store/mysqlstore.Tuners`
 - 需要の区間の終了端: `TestTunersContract` の `capacity reads preserve interval endpoints`
 - 容量需要と候補の抽出: `ListCapacityDemand` / `ListCapacityDemandAllSites` / `ListCapacityPreviewCandidates`
 - EPG 同期の契約: `internal/store.EPGSync`
