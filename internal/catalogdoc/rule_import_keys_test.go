@@ -1,11 +1,9 @@
-package pgstore
+package catalogdoc
 
 import (
 	"encoding/json"
 	"reflect"
 	"testing"
-
-	"github.com/fetburner/rokuban/internal/catalogdoc"
 )
 
 func TestNormalizeRuleImportKeys(t *testing.T) {
@@ -30,14 +28,14 @@ func TestNormalizeRuleImportKeys(t *testing.T) {
 		{"no key", `{"epgstation":{},"user":1}`, `{"epgstation":{},"user":1}`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			doc := &catalogdoc.Document{Rules: []catalogdoc.Rule{{ID: 7, Metadata: json.RawMessage(tc.metadata)}}}
-			got, err := normalizeRuleImportKeys(doc)
+			doc := &Document{Rules: []Rule{{ID: 7, Metadata: json.RawMessage(tc.metadata)}}}
+			got, err := NormalizeRuleImportKeys(doc)
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := []catalogdoc.RuleImportKey{}
+			want := []RuleImportKey{}
 			if tc.wantID != "" {
-				want = append(want, catalogdoc.RuleImportKey{RuleID: 7, Source: "epgstation", ExternalID: tc.wantID})
+				want = append(want, RuleImportKey{RuleID: 7, Source: "epgstation", ExternalID: tc.wantID})
 			}
 			if !reflect.DeepEqual(got.RuleImportKeys, want) {
 				t.Fatalf("keys = %+v, want %+v", got.RuleImportKeys, want)
@@ -46,8 +44,8 @@ func TestNormalizeRuleImportKeys(t *testing.T) {
 			if string(doc.Rules[0].Metadata) != tc.metadata || doc.RuleImportKeys != nil {
 				t.Fatal("input document was mutated")
 			}
-			doc.RuleImportKeys = []catalogdoc.RuleImportKey{}
-			current, err := normalizeRuleImportKeys(doc)
+			doc.RuleImportKeys = []RuleImportKey{}
+			current, err := NormalizeRuleImportKeys(doc)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -56,5 +54,19 @@ func TestNormalizeRuleImportKeys(t *testing.T) {
 			}
 			assertImportMetadata(t, current.Rules[0].Metadata, tc.metadata)
 		})
+	}
+}
+
+func assertImportMetadata(t *testing.T, got json.RawMessage, want string) {
+	t.Helper()
+	var gotValue, wantValue any
+	if err := json.Unmarshal(got, &gotValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(want), &wantValue); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotValue, wantValue) {
+		t.Fatalf("metadata = %s, want %s", got, want)
 	}
 }

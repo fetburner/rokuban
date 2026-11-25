@@ -1,4 +1,4 @@
-package pgstore
+package catalogdoc
 
 import (
 	"encoding/json"
@@ -6,18 +6,16 @@ import (
 	"math/big"
 	"slices"
 	"strconv"
-
-	"github.com/fetburner/rokuban/internal/catalogdoc"
 )
 
-// normalizeRuleImportKeys は配列が無い旧ダンプだけを移行し、呼び出し元の文書を変更しない（TestNormalizeRuleImportKeys）。
-func normalizeRuleImportKeys(doc *catalogdoc.Document) (*catalogdoc.Document, error) {
+// NormalizeRuleImportKeys は配列が無い旧ダンプだけを移行し、呼び出し元の文書を変更しない（TestNormalizeRuleImportKeys）。
+func NormalizeRuleImportKeys(doc *Document) (*Document, error) {
 	if doc.RuleImportKeys != nil {
 		return doc, nil
 	}
 	out := *doc
 	out.Rules = slices.Clone(doc.Rules)
-	out.RuleImportKeys = []catalogdoc.RuleImportKey{}
+	out.RuleImportKeys = []RuleImportKey{}
 	for i := range out.Rules {
 		rule := &out.Rules[i]
 		var meta map[string]json.RawMessage
@@ -47,7 +45,7 @@ func normalizeRuleImportKeys(doc *catalogdoc.Document) (*catalogdoc.Document, er
 		if !number.IsInt() || !number.Num().IsInt64() {
 			continue
 		}
-		out.RuleImportKeys = append(out.RuleImportKeys, catalogdoc.RuleImportKey{
+		out.RuleImportKeys = append(out.RuleImportKeys, RuleImportKey{
 			RuleID: rule.ID, Source: "epgstation", ExternalID: strconv.FormatInt(number.Num().Int64(), 10),
 		})
 		delete(epg, "ruleId")

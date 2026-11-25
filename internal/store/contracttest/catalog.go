@@ -69,6 +69,54 @@ func RunCatalog(t *testing.T, newStore NewCatalogStore) {
 	t.Run("restore rejects media assets missing required keys", func(t *testing.T) {
 		runCatalogRestoreRejectsMissingMediaAssetFields(t, newStore)
 	})
+	t.Run("restore migrates a legacy failure report from quality events", func(t *testing.T) {
+		runCatalogRestoreLegacyFailureReported(t, newStore)
+	})
+	t.Run("restore keeps the current generation of a logical row", func(t *testing.T) {
+		runCatalogRestoreKeepsCurrentGenerationOfLogicalRow(t, newStore)
+	})
+	t.Run("restore keeps a live copy against its tombstone", func(t *testing.T) {
+		runCatalogRestoreKeepsLiveOwnerAgainstTombstone(t, newStore)
+	})
+	t.Run("restore does not resurrect a copy deleted after it was statted", func(t *testing.T) {
+		runCatalogRestoreDoesNotResurrectCopyDeletedAfterStat(t, newStore)
+	})
+	t.Run("restore allows a path reused by another asset's tombstone", func(t *testing.T) {
+		runCatalogRestoreAllowsPathReuseByAnotherAsset(t, newStore)
+	})
+	t.Run("restore does not resurrect a tombstone moved off a reused path", func(t *testing.T) {
+		runCatalogRestoreDoesNotResurrectMovedTombstoneAtReusedPath(t, newStore)
+	})
+	t.Run("restore keeps a conflicting tombstone and continues the generation", func(t *testing.T) {
+		runCatalogRestoreKeepsConflictingTombstoneAndContinuesGeneration(t, newStore)
+	})
+	t.Run("restore restores two tombstones of one identity", func(t *testing.T) {
+		runCatalogRestoreRestoresTwoTombstonesOfOneIdentity(t, newStore)
+	})
+	t.Run("restore gives two tombstones of one identity distinct synthetic paths", func(t *testing.T) {
+		runCatalogRestoreTwoTombstonesOfOneIdentityGetDistinctSyntheticPaths(t, newStore)
+	})
+	t.Run("restore twice keeps one synthetic tombstone", func(t *testing.T) {
+		runCatalogRestoreRerunKeepsOneSyntheticTombstone(t, newStore)
+	})
+	t.Run("restore accepts a synthetic tombstone path as it is", func(t *testing.T) {
+		runCatalogRestoreAcceptsSyntheticTombstonePath(t, newStore)
+	})
+	t.Run("restore keeps the content scan of the current revision", func(t *testing.T) {
+		runCatalogRestoreKeepsContentScan(t, newStore)
+	})
+	t.Run("restore round trips rule import keys", func(t *testing.T) {
+		runCatalogRuleImportKeys(t, newStore)
+	})
+	t.Run("restore keeps opaque metadata out of rule import keys", func(t *testing.T) {
+		runCatalogEmptyRuleImportKeys(t, newStore)
+	})
+	t.Run("restore rejects a chapter span without its ownership", func(t *testing.T) {
+		runCatalogRestoreRejectsChapterSpanWithoutOwnership(t, newStore)
+	})
+	t.Run("restore drops chapter spans that overlap an earlier span", func(t *testing.T) {
+		runCatalogRestoreDropsOverlappingChapterSpans(t, newStore)
+	})
 }
 
 func runCatalogRestoreMissingAssets(t *testing.T, newStore NewCatalogStore) {

@@ -1,7 +1,6 @@
 package pgstore
 
 import (
-	"context"
 	"errors"
 	"testing"
 
@@ -144,42 +143,6 @@ func TestTSScanRejectsInFlightInPlaceReplacement(t *testing.T) {
 	}
 }
 
-func TestCatalogRestoresCurrentContentScan(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	media := testMedia(pool, dbtest.StoreName, "")
-	result, err := media.RegisterInPlace(ctx, scanOriginalInput("original/catalog.ts"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := media.GetActiveOriginalForTSScan(ctx, result.RecordingID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok, err := media.ReplaceScan(ctx, source, 188, nil, nil); err != nil || !ok {
-		t.Fatalf("scan = %v, %v", ok, err)
-	}
-	catalog := NewCatalog(pool, []string{store.DefaultSite}, dbtest.StoreName)
-	doc, err := catalog.Export(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := catalog.Restore(ctx, doc, store.RestoreOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	requireCurrentScan(t, pool, source.ID, true)
-	doc.MediaAssetTSScans[0].ScannedSizeBytes = 187
-	if _, err := catalog.Restore(ctx, doc, store.RestoreOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	requireCurrentScan(t, pool, source.ID, false)
-	doc.MediaAssetTSScans = nil
-	if _, err := catalog.Restore(ctx, doc, store.RestoreOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	requireCurrentScan(t, pool, source.ID, false)
-}
-
 func TestCatalogExportExcludesStaleContentScan(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := t.Context()
@@ -266,41 +229,4 @@ func TestTSScanRejectsInFlightCatalogRestore(t *testing.T) {
 	if ok, err := media.ReplaceScan(ctx, fresh, 188, nil, nil); err != nil || !ok {
 		t.Fatalf("fresh scan after catalog restore = %v, %v, want true, nil", ok, err)
 	}
-}
-
-func TestCatalogRestoreRemovesAbsentTSScan(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := t.Context()
-	media := testMedia(pool, dbtest.StoreName, "")
-	result, err := media.RegisterInPlace(ctx, scanOriginalInput("original/restore-without-scan.ts"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := media.GetActiveOriginalForTSScan(ctx, result.RecordingID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok, err := media.ReplaceScan(ctx, source, 188, nil, nil); err != nil || !ok {
-		t.Fatalf("initial scan = %v, %v, want true, nil", ok, err)
-	}
-	catalog := NewCatalog(pool, []string{store.DefaultSite}, dbtest.StoreName)
-	doc, err := catalog.Export(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(doc.MediaAssetTSScans) != 1 {
-		t.Fatalf("exported scan count = %d, want 1", len(doc.MediaAssetTSScans))
-	}
-	doc.MediaAssetTSScans = nil
-	if _, err := catalog.Restore(ctx, doc, store.RestoreOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	var markers int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_ts_scans WHERE media_asset_id = $1`, source.ID).Scan(&markers); err != nil {
-		t.Fatal(err)
-	}
-	if markers != 0 {
-		t.Fatalf("markers after catalog restore without scan = %d, want 0", markers)
-	}
-	requireCurrentScan(t, pool, source.ID, false)
 }
