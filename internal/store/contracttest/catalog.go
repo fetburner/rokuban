@@ -69,6 +69,15 @@ func RunCatalog(t *testing.T, newStore NewCatalogStore) {
 	t.Run("restore rejects media assets missing required keys", func(t *testing.T) {
 		runCatalogRestoreRejectsMissingMediaAssetFields(t, newStore)
 	})
+	t.Run("restore migrates a legacy failure report from quality events", func(t *testing.T) {
+		runCatalogRestoreLegacyFailureReported(t, newStore)
+	})
+	t.Run("restore keeps the current generation against an older catalog", func(t *testing.T) {
+		runCatalogRestoreKeepsCurrentGenerationAgainstOlderCatalog(t, newStore)
+	})
+	t.Run("restore keeps a live copy against its tombstone", func(t *testing.T) {
+		runCatalogRestoreKeepsLiveOwnerAgainstTombstone(t, newStore)
+	})
 }
 
 func runCatalogRestoreMissingAssets(t *testing.T, newStore NewCatalogStore) {

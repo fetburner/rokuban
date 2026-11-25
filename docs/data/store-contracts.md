@@ -554,6 +554,8 @@ rescue は、文書にある deleted でないコピーのファイルの有無�
 
 restore が分類ルールの再評価と同じロックを最初の書き込みより前に取るのは、途中で取ると、recordings の upsert のトリガーが当たりの表の行を持ったままロックを待つからである。ロックを持つ再評価ジョブがその行を待つと、デッドロックする。
 
+MySQL の export は、読み取り専用の REPEATABLE READ の 1 tx から全表を読む（READ COMMITTED は文ごとに時点が変わり、録画の無い原本が写りうる）。MySQL の restore は、一意キーが 2 つ以上ある表（録画・論理資産・物理コピー）を `ON DUPLICATE KEY UPDATE` で書かない。狙わない一意キーの衝突で別の行が黙って書き換わるためで、行の有無を先に読んで UPDATE か INSERT を選ぶ。
+
 ストレージ走査からの登録は、§メディア公開の in-place 登録を使う。
 
 <details><summary>根拠</summary>

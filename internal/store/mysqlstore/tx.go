@@ -71,3 +71,22 @@ func transactionTime(ctx context.Context, tx *sql.Tx) (time.Time, error) {
 	}
 	return now, nil
 }
+
+// runSnapshotTx は読み取り専用の REPEATABLE READ の tx で fn を実行する。
+// InnoDB は tx 内で最初に読んだ時点のスナップショットを使うので、fn の全ての読み取りは同じ時点を見る。
+// READ COMMITTED の tx は文ごとにスナップショットが変わるため、関係する表を横断して読む export では使えない。
+// 読み取りだけなのでロックは取らない。
+func runSnapshotTx(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("beginning MySQL snapshot transaction: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing MySQL snapshot transaction: %w", err)
+	}
+	return nil
+}

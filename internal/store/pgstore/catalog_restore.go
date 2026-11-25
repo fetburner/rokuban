@@ -35,7 +35,7 @@ func (s *Catalog) Restore(ctx context.Context, doc *catalogdoc.Document, options
 	if doc == nil {
 		return nil, fmt.Errorf("catalog document is nil")
 	}
-	normalized, err := normalizeRuleImportKeys(doc)
+	normalized, err := catalogdoc.NormalizeRuleImportKeys(doc)
 	if err != nil {
 		return nil, fmt.Errorf("normalizing rule import keys: %w", err)
 	}
