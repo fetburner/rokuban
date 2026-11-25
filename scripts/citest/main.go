@@ -225,9 +225,11 @@ func (s packageSelection) matchesExtra(dep extraDependency) (bool, error) {
 	return match, nil
 }
 
+// matches は、pkg のディレクトリで変わったファイルが pkg の選定に効くかを返す。
+// 直下のファイルと埋め込みは常に一致させるが、_test.go はテスト対象（target）のときだけ一致させる。依存先の _test.go は依存先自身のテストバイナリにしか入らないため。testdata/ とテストの埋め込みもテスト対象のときだけ一致させる。
 func (files changedFiles) matches(pkg listedPackage, target bool) bool {
 	for _, rel := range files[pkg.Dir] {
-		if !strings.Contains(rel, "/") || matchesEmbed(rel, pkg.EmbedPatterns) {
+		if !strings.Contains(rel, "/") && (target || !strings.HasSuffix(rel, "_test.go")) || matchesEmbed(rel, pkg.EmbedPatterns) {
 			return true
 		}
 		if target && (strings.HasPrefix(rel, "testdata/") ||

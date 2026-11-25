@@ -20,7 +20,9 @@ func writeSelectionFixture(t *testing.T) (string, map[string]string) {
 	files := map[string]string{
 		"go.mod":                         "module example.com/fixture\n\ngo 1.24\n",
 		"internal/mirakc/client.go":      "package mirakc\n",
+		"internal/mirakc/client_test.go": "package mirakc\n",
 		"internal/worker/worker.go":      "package worker\n",
+		"internal/worker/worker_test.go": "package worker\n",
 		"internal/db/migrations/001.sql": "SELECT 1;",
 		"internal/db/migrate.go": `package db
 
@@ -126,6 +128,32 @@ func TestSelectPackages(t *testing.T) {
 			name:    "test import",
 			changed: "internal/mirakc/client.go",
 			want:    []string{"example.com/fixture/conformance/lifecycle"},
+		},
+		{
+			name:    "dependency test file change does not select its importer",
+			changed: "internal/mirakc/client_test.go",
+			want:    nil,
+		},
+		{
+			name:    "dependency test file deletion does not select its importer",
+			changed: "internal/mirakc/client_test.go",
+			deleted: true,
+			want:    nil,
+		},
+		{
+			name:    "own internal test file selects the package",
+			changed: "conformance/fileread/read_test.go",
+			want:    []string{"example.com/fixture/conformance/fileread"},
+		},
+		{
+			name:    "own external test file selects the package",
+			changed: "conformance/lifecycle/lifecycle_test.go",
+			want:    []string{"example.com/fixture/conformance/lifecycle"},
+		},
+		{
+			name:    "dependency test file does not select a ci-extra-deps declarer",
+			changed: "internal/worker/worker_test.go",
+			want:    nil,
 		},
 		{
 			name:    "unrelated directory",
