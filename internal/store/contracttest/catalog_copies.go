@@ -244,6 +244,50 @@ func runCatalogRestoreAcceptsSyntheticTombstonePath(t *testing.T, newStore NewCa
 	}
 }
 
+// runCatalogRestoreAllowsPathReuseByAnotherAsset は、原パス P を生きた資産 B が使い、同じ P に資産 A の墓石を
+// 復元するとき、B は P で生きたままで、A の墓石は合成パスに 1 つだけ置かれることを確かめる。
+// 前提（A の墓石が合成パスにある）は、先に B を P に置いてから A を削除として復元して作る。
+func runCatalogRestoreAllowsPathReuseByAnotherAsset(t *testing.T, newStore NewCatalogStore) {
+	f := newStore(t)
+	seedCopyRecordings(t, f, 1, 2)
+	const path = "originals/reused-across-assets.ts"
+	deletedAt := catalogCopyTime.Add(-time.Minute)
+	restoreCopyAssets(t, f, copyOriginal(20, 2, path, "active", nil))
+	restoreCopyAssets(t, f, copyOriginal(10, 1, path, "deleted", &deletedAt))
+	restoreCopyDoc(t, f, &catalogdoc.Document{Version: catalogdoc.Version, MediaAssets: []catalogdoc.MediaAsset{
+		copyOriginal(20, 2, path, "active", nil),
+		copyOriginal(10, 1, path, "deleted", &deletedAt),
+	}})
+	owner := exportCopiesOf(t, f, 20)
+	if len(owner) != 1 || owner[0].State != "active" || owner[0].RelPath != path {
+		t.Fatalf("current path owner = %+v, want one active copy at %q", owner, path)
+	}
+	old := exportCopiesOf(t, f, 10)
+	assertCopyStates(t, old, 0, 1)
+	if onlyDeletedPath(t, old) == path {
+		t.Fatalf("the old asset's tombstone took the path %q of the live owner", path)
+	}
+}
+
+// runCatalogRestoreDoesNotResurrectMovedTombstoneAtReusedPath は、墓石が合成パスに移ったあと、同じ P を
+// 生きた別資産が使っているとき、古い生きた文書で墓石の資産を復活させないことを確かめる。
+// 前提（A の墓石が合成パスにあり、P を B が生きて持つ）は、Restore だけで作る。
+func runCatalogRestoreDoesNotResurrectMovedTombstoneAtReusedPath(t *testing.T, newStore NewCatalogStore) {
+	f := newStore(t)
+	seedCopyRecordings(t, f, 1, 2)
+	const path = "originals/reused-before-catalog-restore.ts"
+	deletedAt := catalogCopyTime.Add(-time.Minute)
+	restoreCopyAssets(t, f, copyOriginal(20, 2, path, "active", nil))
+	restoreCopyAssets(t, f, copyOriginal(10, 1, path, "deleted", &deletedAt))
+	// 古い文書の生きた行（A が P で生きていた時点）を復元しても、A は復活しない。
+	restoreCopyAssets(t, f, copyOriginal(10, 1, path, "active", nil))
+	assertCopyStates(t, exportCopiesOf(t, f, 10), 0, 1)
+	owner := exportCopiesOf(t, f, 20)
+	if len(owner) != 1 || owner[0].State != "active" || owner[0].RelPath != path {
+		t.Fatalf("current path owner = %+v, want one active copy at %q", owner, path)
+	}
+}
+
 // seedCopyRecordings は、資産の親になる録画を restore で入れる。
 func seedCopyRecordings(t *testing.T, f CatalogFixture, ids ...int64) {
 	t.Helper()

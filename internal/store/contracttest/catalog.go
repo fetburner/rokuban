@@ -81,6 +81,12 @@ func RunCatalog(t *testing.T, newStore NewCatalogStore) {
 	t.Run("restore does not resurrect a copy deleted after it was statted", func(t *testing.T) {
 		runCatalogRestoreDoesNotResurrectCopyDeletedAfterStat(t, newStore)
 	})
+	t.Run("restore allows a path reused by another asset's tombstone", func(t *testing.T) {
+		runCatalogRestoreAllowsPathReuseByAnotherAsset(t, newStore)
+	})
+	t.Run("restore does not resurrect a tombstone moved off a reused path", func(t *testing.T) {
+		runCatalogRestoreDoesNotResurrectMovedTombstoneAtReusedPath(t, newStore)
+	})
 	t.Run("restore keeps a conflicting tombstone and continues the generation", func(t *testing.T) {
 		runCatalogRestoreKeepsConflictingTombstoneAndContinuesGeneration(t, newStore)
 	})
