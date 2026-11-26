@@ -126,6 +126,20 @@ func TestCountDeliverableCountsAvailableJobs(t *testing.T) {
 	requireDeliverable(t, adapter, "never_enqueued", 0)
 }
 
+func TestCountDeliverablePagesThroughEveryJob(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	adapter := newCountEnqueuer(t, pool, time.Now())
+	adapter.deliverablePageSize = 2
+	for _, value := range []string{"a", "b", "c", "d", "e"} {
+		if _, err := adapter.Enqueue(t.Context(), countArgs{Value: value, Queue: deliverableTestQueue}); err != nil {
+			t.Fatalf("Enqueue() error = %v", err)
+		}
+	}
+
+	// 5 件を 2 件ずつ読むと、3 ページ目（1 件）まで cursor で進まなければ 5 にならない。
+	requireDeliverable(t, adapter, deliverableTestQueue, 5)
+}
+
 func TestCountDeliverableExcludesRunningJobs(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	worker := countWorker{started: make(chan struct{}, 1), release: make(chan struct{})}

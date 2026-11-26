@@ -9,8 +9,8 @@ import (
 	"github.com/riverqueue/river/rivertype"
 )
 
-// deliverableCountPageSize は JobList の 1 ページの件数。River の上限（10,000）より小さく取る。
-const deliverableCountPageSize = 1000
+// defaultDeliverablePageSize は JobList の 1 ページの既定の件数。River の上限（10,000）より小さく取る。
+const defaultDeliverablePageSize = 1000
 
 // deliverableStates は件数に入りうる状態。running は含めない（lease が有効な実行中は数えない）。
 // lease が切れた running は River の rescuer が retryable に戻すので、期限が来れば retryable として数えに入る。
@@ -38,10 +38,11 @@ func (adapter *Adapter) CountDeliverable(ctx context.Context, physicalQueue stri
 		return 0, errors.New("riveradapter: client is nil")
 	}
 	now := adapter.now()
+	pageSize := adapter.deliverablePageSize
 	params := river.NewJobListParams().
 		Queues(physicalQueue).
 		States(deliverableStates...).
-		First(deliverableCountPageSize)
+		First(pageSize)
 
 	var count int64
 	for {
@@ -54,7 +55,7 @@ func (adapter *Adapter) CountDeliverable(ctx context.Context, physicalQueue stri
 				count++
 			}
 		}
-		if len(result.Jobs) < deliverableCountPageSize {
+		if len(result.Jobs) < pageSize {
 			return count, nil
 		}
 		if result.LastCursor == nil {
