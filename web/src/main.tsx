@@ -50,3 +50,4 @@ createRoot(document.getElementById('root')!).render(
     </QueryClientProvider>
   </StrictMode>,
 )
+// 実験: 集約ジョブの置き換え後の選定を見る（マージしない）。

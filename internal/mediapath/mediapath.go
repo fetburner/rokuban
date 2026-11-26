@@ -344,3 +344,5 @@ func SubtitleSibling(path string) (string, error) {
 	}
 	return strings.TrimSuffix(path, ext) + ".vtt", nil
 }
+
+// 実験: 集約ジョブの置き換え後の選定を見る（マージしない）。
