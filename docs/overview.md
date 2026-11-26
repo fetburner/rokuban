@@ -455,3 +455,5 @@ desired / observed の分離とレベルトリガーの結果として、エン�
 - [frontend.md](frontend.md): フロントエンド
 - [configuration.md](configuration.md): 設定
 - [operations.md](operations.md): 運用・デプロイ
+
+<!-- e11-6 measure -->
