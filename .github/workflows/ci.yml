@@ -14,10 +14,8 @@ env:
   # RustFS を services にし、docker run の step にしない理由: service container はジョブ終了時に
   # runner が片付けるので停止 step が要らず、job.services.rustfs.id で失敗時のログ（docker logs）を取れる。
   RUSTFS_IMAGE: &rustfs_image rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
-  # s3-conformance と mysql-contract-test の対象パッケージの一覧。
-  # mysql-contract-test は、plan ジョブの test 計画（citest）と step の両方がこの値を読む。
-  # s3-conformance は、計画だけがこの値を読み、step は go test 行に直書きする（scripts/s3conformance が行を解析するため）。
-  # 計画の一覧と step の集合の一致は scripts/s3conformance の TestS3ConformancePackagesMatchSteps が検査する。
+  # s3-conformance と mysql-contract-test の対象パッケージの一覧。plan ジョブの test 計画（citest）と、
+  # 各ジョブの step が読む。s3-conformance の規約（タグ付きの Test の名前と所属）は scripts/s3conformance が検査する。
   S3_CONFORMANCE_PACKAGES: ./internal/objstore/conformance ./internal/objstore/s3store ./internal/storagemaint ./internal/encode ./internal/thumbnail
   MYSQL_CONTRACT_PACKAGES: ./internal/mysqldb ./internal/mysqltest ./internal/store/mysqlstore ./internal/notifier/mysqlsource
 
@@ -34,7 +32,8 @@ jobs:
   # setup-go を 1 回にする。step id と job の outputs は計画ごとに分ける。
   # 計画のどれか 1 つでも失敗すると、このジョブは失敗する。3 つの集約ジョブ（browser-e2e・test・mirakc-conformance）は
   # needs.plan.result が success でなければ赤になる。shard の skip は planned_skip で表し、集約ジョブが判定する。
-  # ubuntu-slim にしない。setup-go と gotestsum のビルドで 24 秒 → 110 秒に延びた。
+  # runs-on は ubuntu-latest のまま。ubuntu-slim では、setup-go と gotestsum のビルドを含めて 24 秒 → 110 秒に延びた（実測）。
+  # gotestsum を plan から外した後は測り直していない。
   plan:
     runs-on: ubuntu-latest
     permissions:
@@ -102,7 +101,7 @@ jobs:
           E2E_CI_FULL: ${{ steps.changes.outputs.web == 'true' || github.event_name == 'push' }}
           E2E_CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node web/e2e/run.mjs --ci-plan
-      # 振り分けは直前の main 実行の実測（go-test-timings- のキャッシュ）を見て gotestsum の ci-matrix が
+      # 振り分けは直前の main 実行の実測（go-test-timings- のキャッシュ）を見て scripts/shardcount が
       # 決める。手で名前を並べると、パッケージが増えるたびに直すことになるため。
       # 実測が無いパッケージは 0 秒と見積もられる（初回・キャッシュ切れ）。
       # PR は citest で変更の影響を受けるパッケージだけを選ぶ。main は go list の全件。
@@ -163,22 +162,15 @@ jobs:
             exit 0
           fi
 
+          # 本数を見積もりから決めるのは PR だけ。main は 3 本に固定する。
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            shards=$(go run ./scripts/shardcount --timing-files 'timings-test/*.json' --parallel 3 --setup-sec 50 < "$packages_file")
-            if [[ "$shards" -eq 1 ]]; then
-              # ci-matrix は 2 以上の分割しか受けないので、1 本だけは直接作る。
-              matrix=$(jq -Rsc '{include: [{id: 0, packages: (split("\n") | map(select(. != "")) | join(" ")), description: "0 - all"}]}' < "$packages_file")
-            else
-              matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings-test/*.json' --partitions "$shards" < "$packages_file")
-              # 少数パッケージを割り当てたときに残る空のシャードを除く。
-              matrix=$(jq -ce '.include |= map(select(.packages != "")) | select(.include | length > 0)' <<< "$matrix")
-            fi
+            matrix=$(go run ./scripts/shardcount --timing-files 'timings-test/*.json' --parallel 3 --setup-sec 50 < "$packages_file")
           else
-            matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings-test/*.json' --partitions 3 < "$packages_file")
+            matrix=$(go run ./scripts/shardcount --timing-files 'timings-test/*.json' --shards 3 < "$packages_file")
           fi
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
       # 冒頭の「PR と main の役割分担」に従う。PR は citest の選定結果、main は go list の全件を
-      # gotestsum ci-matrix に渡し、main の test2json 実測を使って最大 3 シャードへ振り分ける。
+      # scripts/shardcount に渡し、main の test2json 実測を使って最大 3 シャードへ振り分ける。
       # PR の本数は見積もり（mirakc-conformance-shard の実測。mirakc-conformance-timings- のキャッシュ）の合計から、
       # test の計画と同じ式（実効並列度 1、準備 40 秒）で決める。
       # 実効並列度は 1 なので、合計がそのまま待ち時間になる。線は 80 秒で 2 本、240 秒で 3 本。
@@ -205,17 +197,9 @@ jobs:
           # 実効並列度は 1。準備は run 45591817397 の実測で 33・33・40 秒（job 開始から「Run conformance shard」
           # 開始まで）なので 40 秒を渡す。
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            shards=$(go run ./scripts/shardcount --timing-files 'timings/*.json' --parallel 1 --setup-sec 40 < "$packages_file")
-            if [[ "$shards" -eq 1 ]]; then
-              # ci-matrix は 2 以上の分割しか受けないので、1 本だけは直接作る。
-              matrix=$(jq -Rsc '{include: [{id: 0, packages: (split("\n") | map(select(. != "")) | join(" ")), description: "0 - all"}]}' < "$packages_file")
-            else
-              matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions "$shards" < "$packages_file")
-              # 少数パッケージを割り当てたときに残る空のシャードを除く。
-              matrix=$(jq -ce '.include |= map(select(.packages != "")) | select(.include | length > 0)' <<< "$matrix")
-            fi
+            matrix=$(go run ./scripts/shardcount --timing-files 'timings/*.json' --parallel 1 --setup-sec 40 < "$packages_file")
           else
-            matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions 3 < "$packages_file")
+            matrix=$(go run ./scripts/shardcount --timing-files 'timings/*.json' --shards 3 < "$packages_file")
           fi
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
@@ -473,7 +457,7 @@ jobs:
       # 「The default branch cache is available to other branches.」による。
       # ponytail: キーは go.mod / go.sum が変わるまで同じなので、中身は最初に保存した時点のまま残る。main が進むと、
       # 自前パッケージのビルド結果は当たらなくなっていき、確実に効くのは std・race ランタイム・依存だけになる。
-      # ci-matrix の振り分けが変わると、shard 番号と中身もずれる。保存は 3 件で計 608 MiB（圧縮後）。
+      # 振り分け（scripts/shardcount）が変わると、shard 番号と中身もずれる。保存は 3 件で計 608 MiB（圧縮後）。
       # 振り分けが変わった直後の PR の実測で、テストのビルドは 38〜92 秒から 8〜24 秒に縮んだ。
       # 効きが落ちたら、run ごとのキーにして古い entry を消す形へ移る。
       - id: race-cache
@@ -506,7 +490,7 @@ jobs:
           TIMING_FILE: timing-${{ matrix.id }}.json
         run: |
           read -r -a pkgs <<< "$PACKAGES"
-          go run gotest.tools/gotestsum@v1.13.0 --jsonfile "$TIMING_FILE" -- -race -p 8 -count=1 -timeout 10m "${pkgs[@]}"
+          go tool gotestsum --jsonfile "$TIMING_FILE" -- -race -p 8 -count=1 -timeout 10m "${pkgs[@]}"
       # restore が完全一致しなかった main の実行だけ保存する。cache-hit は完全一致のときだけ 'true'
       # （actions/cache の README: 「A string value to indicate an exact match was found for the key.」）。
       # main は cancel-in-progress で止めないので、続けて push されると 2 つの run が両方 miss して
@@ -649,7 +633,7 @@ jobs:
           JSONFILE: mirakc-conformance-timing-${{ matrix.id }}.json
         run: |
           read -r -a pkgs <<< "$PACKAGES"
-          go run gotest.tools/gotestsum@v1.13.0 --jsonfile "$JSONFILE" -- -tags conformance -p 1 -count=1 -timeout 38m -v "${pkgs[@]}"
+          go tool gotestsum --jsonfile "$JSONFILE" -- -tags conformance -p 1 -count=1 -timeout 38m -v "${pkgs[@]}"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -737,18 +721,22 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Run S3 API conformance tests
-        run: go test -tags s3conformance ./internal/objstore/conformance -count=1 -timeout 5m -v
-      - name: Run shared object store contract and upload token tests against RustFS
-        run: go test -tags s3conformance ./internal/objstore/s3store -run '^(TestStoreContract|TestPutStoresUploadToken)$' -count=1 -timeout 5m -v
-      - name: Run encrypted S3 contract and rclone compatibility tests
-        run: go test -tags s3conformance ./internal/objstore/s3store -run '^(TestCryptStoreRustFSContract|TestCryptRcloneRoundTrip|TestCryptRcloneNames)$' -count=1 -timeout 5m -v
-      - name: Run S3 publication and recovery tests
-        run: go test -tags s3conformance ./internal/storagemaint -run '^TestS3DerivedObjectPublicationAndRecovery$' -count=1 -timeout 5m -v
-      - name: Run S3 encode retry and generation test
-        run: go test -tags s3conformance ./internal/encode -run '^TestS3EncodeRetryReservesNewGeneration$' -count=1 -timeout 5m -v
-      - name: Run S3 thumbnail reselection test
-        run: go test -tags s3conformance ./internal/thumbnail -run '^TestThumbnailReselectionReadsEncodedInputFromS3$' -count=1 -timeout 5m -v
+      # バケットは、どのパッケージのテストより前に 1 本だけ作る。作るのを conformance のテストに任せると、
+      # パッケージの実行順（go test の列挙順）に依存する。RustFS は既存のバケットへの PUT も 200 を返す
+      # （このダイジェストのイメージで確かめた）ので、2 回目の作成（conformance の CREATE_BUCKET）と重なっても失敗しない。
+      - name: Create the conformance bucket
+        run: |
+          curl --fail --silent --show-error --aws-sigv4 "aws:amz:${ROKUBAN_S3_CONFORMANCE_REGION}:s3" \
+            --user "${ROKUBAN_S3_CONFORMANCE_ACCESS_KEY_ID}:${ROKUBAN_S3_CONFORMANCE_SECRET_ACCESS_KEY}" \
+            -X PUT "${ROKUBAN_S3_CONFORMANCE_ENDPOINT}/${ROKUBAN_S3_CONFORMANCE_BUCKET}"
+      # 1 本の go test で、規約（scripts/s3conformance が検査）に合う Test を回す。-p 1 は、パッケージを直列に回す
+      # 今の順序を保つため（同じ bucket を使う。並行にすると相互干渉を確かめていない）。
+      # -timeout はテストバイナリごと。実測（main の run 45823453043）の最長は storagemaint の 18 秒、
+      # s3store は 5 テストで約 11 秒なので、5m のままにする。
+      - name: Run S3 conformance tests
+        run: |
+          read -r -a pkgs <<< "$S3_CONFORMANCE_PACKAGES"
+          go test -tags s3conformance -p 1 "${pkgs[@]}" -run '^TestS3' -count=1 -timeout 5m -v
       - name: RustFS logs on failure
         if: failure()
         env:
@@ -812,12 +800,10 @@ jobs:
       - run: pnpm check:colors
         working-directory: web
       # golangci-lint は本物の dist を読まず、go:embed の置き場は追跡済みの web/dist/.gitkeep が満たす。そのためフロントエンドのビルドは要らない。
-      # go.mod より古い Go でビルドされた golangci-lint は起動を拒む。v2.12.2 は
-      # go1.26 ビルドなので go.mod の go 1.27.1 では動かない。v2.13.2 は go1.27.0
-      # ビルド（比較は major.minor なので 1.27.1 を通す）。
+      # 版は .tool-versions の golangci-lint を読む。Go を上げるときに同じ PR で上げる理由は .tool-versions のコメントにある。
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13.2
+          version-file: .tool-versions
 
   # 保守対象の Markdown（対象の権威は package.json の docs:lint）を textlint で検査する。プロファイルは 1 本で、違反 0 件が gate。
   # 必須チェック名 docs-lint を担うので、ジョブは毎回走らせ、入力が変わらない PR では step だけ飛ばす。
@@ -893,101 +879,35 @@ jobs:
             npm run docs:allow-total -- "origin/$BASE_REF"
           fi
 
-  # deploy/k8s/ のマニフェスト検査（不変条件 8 はマニフェストにも適用する）。
+  # deploy/k8s/ の検査（不変条件 8 はマニフェストにも適用する）。中身は deploy/k8s/check.sh にあり、手元でも同じものが回る。
   #
-  # ここで見るのは「YAML として組めるか」（kustomize build）と「各オブジェクトが
-  # k8s のスキーマに合うか」（kubeconform）の 2 つだけ。**オブジェクト間の参照と
-  # ConfigMap の中身はどちらも見ない** --- 存在しない ConfigMap を envFrom に書いても
-  # 両方緑になる（実測。deploy/k8s/manifests_test.go の冒頭コメント）。
-  # そちらは go test ./deploy/k8s/（test ジョブ）が見る。
+  # ここで見るのは「YAML として組めるか」（kustomize build）と「各オブジェクトが k8s のスキーマに合うか」
+  # （kubeconform）、判定ハーネスの自己検査（selftest）と静的検査（shellcheck）。**オブジェクト間の参照と
+  # ConfigMap の中身は見ない** --- 存在しない ConfigMap を envFrom に書いても両方緑になる（実測。
+  # deploy/k8s/manifests_test.go の冒頭コメント）。そちらは go test ./deploy/k8s/（test ジョブ）が見る。
   #
-  # ツールは版を固定する。runner イメージの同梱物に依存すると、イメージ更新で
-  # 黙って挙動が変わる（kustomize は runner に入っているが版が動く）。
+  # ツールの版は .tool-versions が決める。runner の同梱物に依存すると、イメージ更新で黙って挙動が変わるため。
   manifests:
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
-      - name: Install kustomize, kubeconform and shellcheck
+      # kustomize と kubeconform は .tool-versions の版を入れる（書式と未知のツール名は action が読む）。
+      # 読めない行は組み込みの既定版（kubeconform は 0.7.0）に黙って落ちるので、check.sh が冒頭で版を表示する。
+      - uses: yokawasa/action-setup-kube-tools@v0.14.1
+        with:
+          setup-tools: |
+            kustomize
+            kubeconform
+          version-file: .tool-versions
+      # shellcheck の版も .tool-versions から読む（runner 同梱の版は SC2317 と SC2329 の報告が違うので固定する）。
+      - name: Install shellcheck
         run: |
-          curl -sSfL https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.8.1/kustomize_v5.8.1_linux_amd64.tar.gz \
-            | sudo tar xz -C /usr/local/bin kustomize
-          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz \
-            | sudo tar xz -C /usr/local/bin kubeconform
-          # **shellcheck も版を固定する**（runner にも入っているが版が動く）。
-          # 実際、runner 同梱の版は「間接的にしか呼ばれない関数」を SC2329 では
-          # なく **SC2317** で報告し、手元では緑のジョブが赤くなった。
-          curl -sSfL https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
-            | sudo tar xJ -C /usr/local/bin --strip-components=1 shellcheck-v0.11.0/shellcheck
-      # **build と検証をパイプで繋がない。** `run:` の既定シェルは `bash -e` で
-      # pipefail が付かないため、パイプの終了コードは kubeconform のものになる。
-      # kubeconform は標準入力が空でも exit 0 を返すので、kustomize build が
-      # エラーで何も出さなくてもジョブは緑になる（実測:
-      # `bash -e -c 'kustomize build /nonexistent | kubeconform -strict -summary -'`
-      # は「0 resource found parsing stdin」で exit 0）。
-      - name: Build manifests
-        run: |
-          kustomize build deploy/k8s/base > /tmp/base.yaml
-          # **サイト 1 組ぶんも単体で組む。** overlay 経由でしか組まないと、
-          # site/ だけが壊れているのか overlay の patch が壊れているのかを
-          # 出力から切り分けられない。
-          kustomize build deploy/k8s/site > /tmp/site.yaml
-          kustomize build deploy/k8s/overlays/kind > /tmp/overlay-kind.yaml
-          kustomize build deploy/k8s/overlays/e2e > /tmp/overlay-e2e.yaml
-          # asynq 構成（ジョブエンジンを Redis にする）の 2 overlay。River 側と同じく組んでスキーマに掛ける。
-          kustomize build deploy/k8s/overlays/asynq > /tmp/overlay-asynq.yaml
-          kustomize build deploy/k8s/overlays/e2e-asynq > /tmp/overlay-e2e-asynq.yaml
-          # 置き場ごとの層も単体で組み、2 つの置き場を持つ overlay も組む。
-          kustomize build deploy/k8s/store > /tmp/store.yaml
-          kustomize build deploy/k8s/overlays/e2e-two-stores > /tmp/overlay-e2e-two-stores.yaml
-      # **スキーマの版も固定する。** 既定は master なので、リポジトリ側の変更ゼロで
-      # 上流 k8s のリリースだけで検査内容が動く。値は docs/runbook/k8s.md で
-      # 実機確認した版のマイナー（実機は v1.36.1。スキーマはマイナー単位で公開
-      # されている）。上げるときは両方を同じ PR で動かす。
-      # **CRD（KEDA の ScaledJob）はリポジトリに置いたスキーマで検査する。**
-      # `-ignore-missing-schemas` は採らない --- 未知の kind を黙って飛ばすので
-      # `kind: ScaledJobb` のような typo も一緒に飛ばす。スキーマの出どころと、
-      # `-strict` を有効にするための加工（`additionalProperties: false`）は
-      # deploy/k8s/schemas/README.md。**ファイル名が小文字なのは
-      # `{{.ResourceKind}}` が小文字化した名前を埋めるため**で、大文字にすると
-      # macOS では通って Linux の CI だけが落ちる。
-      #
-      # スキーマがあるので、fixture の ScaledJob もここで検査対象に入る。
-      # **足場も fixture も glob で拾う。** 名前で列挙すると、ハーネスに
-      # マニフェストを 1 つ足した日にそれだけが検査から漏れる。
-      - name: Validate against the Kubernetes schema
-        run: |
-          kubeconform -strict -summary -kubernetes-version 1.36.0 \
-            -schema-location default \
-            -schema-location 'deploy/k8s/schemas/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-            /tmp/base.yaml /tmp/site.yaml /tmp/store.yaml /tmp/overlay-kind.yaml /tmp/overlay-e2e.yaml /tmp/overlay-e2e-two-stores.yaml /tmp/overlay-asynq.yaml /tmp/overlay-e2e-asynq.yaml \
-            deploy/k8s/e2e/cluster/*.yaml \
-            deploy/k8s/e2e/fixtures/*.yaml
-      # ハーネスの純粋な部分（対象の探索と watch ログの読み取り）はクラスタを
-      # 要らないのでここで回す。**1 巡目のレビュー修正がここにテストを持たず、
-      # 「複数一致は FAIL」の経路が大域変数の代入が子シェルに閉じるせいで
-      # 一度も動いていなかった**のを、実機 2 周でも変異注入でも捕まえられ
-      # なかった（変異がその状態を作らなかったため）。
-      - name: e2e harness lib self-test
-        run: ./deploy/k8s/e2e/lib/selftest.sh
-      # ハーネスは全部シェルなので、静的検査もここで掛ける（版は上で固定した）。
-      # SC2317 / SC2329（到達しない・使われないように見えるコード）を外して
-      # いるのは、判定の述語を retry_until と trap に間接的に渡す形が多いため。
-      # 番号が 2 つあるのは版によってどちらで報告されるかが違うから。
-      - name: Shellcheck the e2e harness
-        run: |
-          shellcheck --version
-          shellcheck -x -e SC1091,SC2034,SC2317,SC2329 \
-            deploy/k8s/e2e/run.sh deploy/k8s/e2e/oracles.sh \
-            deploy/k8s/e2e/faults/*.sh \
-            deploy/k8s/e2e/lib/*.sh deploy/k8s/e2e/checks/*.sh
-      # **受け入れ判定・故障注入ハーネス（deploy/k8s/e2e）そのものは CI で回さない。**
-      # 回すのは人間で、タイミングと理由は docs/runbook/k8s.md
-      # §受け入れ判定ハーネス に書いてある。ここで見るのは、ハーネスが持つ
-      # マニフェスト（overlays/e2e / 足場 / CRD を含まない fixture）が YAML と
-      # して組めてスキーマに合うことまで --- 回さないものが腐るのを、せめて
-      # ここで止める。ConfigMap の中身（overlay の config.yml）は kustomize にも
-      # kubeconform にも不透明なので、そちらは go test ./deploy/k8s/ が見る
-      # （TestOverlayConfigsLoad）。
+          shellcheck_version="$(awk '$1 == "shellcheck" { print $2 }' .tool-versions)"
+          test -n "$shellcheck_version"
+          curl -sSfL "https://github.com/koalaman/shellcheck/releases/download/v${shellcheck_version}/shellcheck-v${shellcheck_version}.linux.x86_64.tar.xz" \
+            | sudo tar xJ -C /usr/local/bin --strip-components=1 "shellcheck-v${shellcheck_version}/shellcheck"
+      - name: Check deploy/k8s
+        run: deploy/k8s/check.sh
 
   # イメージをローカルビルドして起動を検査する自己完結ジョブ。publish に依存しないので
   # fork PR（GITHUB_TOKEN に packages:write が無く GHCR へ push できない）でも回る。
@@ -1015,61 +935,7 @@ jobs:
             full.tags=rokuban:test-full
         env:
           GHA_CACHE_WRITE: ${{ github.event_name != 'pull_request' }}
-      - name: JLSE binaries start with their runtime libraries
-        run: |
-          docker run --rm --entrypoint sh rokuban:test-full -eu -c '
-            for tool in chapter_exe logoframe join_logo_scp; do
-              test -x "/usr/local/bin/$tool"
-              if ldd "/usr/local/bin/$tool" 2>&1 | grep -F "not found"; then exit 1; fi
-            done
-          '
-      # /mnt/media（storage.media_dir 既定値）と /var/tmp/rokuban
-      # （storage.scratch_dir 既定値）が実行ユーザーから書けること。
-      # 修正前のイメージでは media 側が Permission denied で落ちる。
-      # uid も一緒に主張するのは、Dockerfile.full 末尾の `USER nobody` が
-      # 将来落ちたときにこのステップが名前だけ嘘のまま pass しないため
-      # （root なら書けてしまう）。scratch_dir 側はベースイメージの /var/tmp が
-      # 1777 であることに依存しているだけなので、イメージを差し替えたときに
-      # 黙って壊れないようここで一緒に押さえる。
-      - name: Media and scratch dirs are writable as nobody
-        run: |
-          docker volume create rokuban-media-probe
-          docker run --rm --entrypoint sh -v rokuban-media-probe:/mnt/media rokuban:test-full \
-            -c 'test "$(id -u)" = 65534 && mkdir -p /mnt/media/probe/nested && touch /mnt/media/probe/nested/file && mkdir -p /var/tmp/rokuban'
-      - name: Remove probe volume
-        if: always()
-        run: docker volume rm -f rokuban-media-probe
-      - name: Start containers
-        run: docker compose -f docker-compose.test.yml up --wait --wait-timeout 60
-      - name: Check health
-        run: curl -sf http://localhost:40773/healthz
-      - name: Check SPA assets and fallback
-        run: node web/scripts/check-spa-served.mjs http://localhost:40773
-      # 上の probe は touch/mkdir であって Go の os.MkdirAll / os.Create を
-      # 通っていない。catalog_export は RunOnStart の定期ジョブなので、
-      # 起動直後に実バイナリが nobody として media volume へ世代ディレクトリを
-      # 書く。healthz はジョブが落ちても通るため、ジョブ状態を明示的に見る。
-      # 修正前のイメージではここが state=retryable + permission denied になる。
-      - name: catalog_export wrote to the media volume
-        run: |
-          for _ in $(seq 1 30); do
-            state=$(docker compose -f docker-compose.test.yml exec -T postgres \
-              psql -U rokuban -d rokuban -tAc \
-              "SELECT state FROM river_job WHERE kind='catalog_export' ORDER BY id DESC LIMIT 1")
-            case "$state" in
-              completed) break ;;
-            esac
-            sleep 2
-          done
-          docker compose -f docker-compose.test.yml exec -T postgres \
-            psql -U rokuban -d rokuban -c \
-            "SELECT id, kind, state, attempt, errors FROM river_job WHERE kind='catalog_export'"
-          test "$state" = completed
-          docker compose -f docker-compose.test.yml exec -T rokuban \
-            sh -c 'test -f "$(ls -d /mnt/media/catalog/catalog-*/ | tail -1)/manifest.json"'
-      - name: Dump logs on failure
-        if: failure()
-        run: docker compose -f docker-compose.test.yml logs
-      - name: Cleanup
-        if: always()
-        run: docker compose -f docker-compose.test.yml down -v
+      # イメージの起動検査（JLSE の ldd・nobody での書き込み・compose・healthz・SPA・catalog_export）。
+      # 中身は scripts/image-smoke.sh。手元でも bake の後に同じスクリプトを回せる。
+      - name: Check the built images
+        run: scripts/image-smoke.sh

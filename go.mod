@@ -32,6 +32,7 @@ require (
 	golang.org/x/sync v0.25.0
 	golang.org/x/sys v0.50.0
 	golang.org/x/text v0.44.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -53,6 +54,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.44.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.52.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/bitfield/gotestdox v0.2.2 // indirect
 	github.com/bmatcuk/doublestar/v4 v4.10.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
@@ -60,13 +62,16 @@ require (
 	github.com/cubicdaiya/gonp v1.0.4 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/dnephin/pflag v1.0.7 // indirect
 	github.com/dprotaso/go-yit v0.0.0-20220510233725-9ba8df137936 // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/fatih/structtag v1.2.0 // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/getkin/kin-openapi v0.149.0 // indirect
 	github.com/go-openapi/jsonpointer v0.23.1 // indirect
 	github.com/go-openapi/swag/jsonname v0.26.0 // indirect
 	github.com/google/cel-go v0.29.0 // indirect
+	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
@@ -122,6 +127,7 @@ require (
 	golang.org/x/exp v0.0.0-20261109185158-a52e3aef5920 // indirect
 	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/term v0.48.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	golang.org/x/tools v0.52.1-0.20261106145633-d407941a339a // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20261110000943-09e21b237f2c // indirect
@@ -129,11 +135,12 @@ require (
 	google.golang.org/grpc v1.85.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
+	gotest.tools/gotestsum v1.13.0 // indirect
 )
 
 tool (
 	github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen
 	github.com/rhysd/actionlint/cmd/actionlint
 	github.com/sqlc-dev/sqlc/cmd/sqlc
+	gotest.tools/gotestsum
 )

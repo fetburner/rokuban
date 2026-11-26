@@ -60,7 +60,7 @@ func cryptBucket(t *testing.T) (*s3.Client, objstore.DeclaredSHA256Store, string
 	return client, raw, cfg.Bucket
 }
 
-func TestCryptStoreRustFSContract(t *testing.T) {
+func TestS3CryptStoreRustFSContract(t *testing.T) {
 	_, raw, _ := cryptBucket(t)
 	contracttest.Run(t, func(t *testing.T) objstore.Store {
 		objects, err := cryptstore.New(raw, "conformance", testPassword, testSalt, false)
@@ -71,7 +71,7 @@ func TestCryptStoreRustFSContract(t *testing.T) {
 	})
 }
 
-func TestCryptRcloneRoundTrip(t *testing.T) {
+func TestS3CryptRcloneRoundTrip(t *testing.T) {
 	client, raw, bucket := cryptBucket(t)
 	ctx := t.Context()
 	objects, err := cryptstore.New(raw, "conformance", testPassword, testSalt, false)
@@ -197,7 +197,7 @@ func rcloneContentPath(t *testing.T, title string, start time.Time) string {
 	return key
 }
 
-func TestCryptRcloneNames(t *testing.T) {
+func TestS3CryptRcloneNames(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "raw"), 0o700); err != nil {
 		t.Fatal(err)

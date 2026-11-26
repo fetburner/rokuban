@@ -240,7 +240,7 @@ rclone copy recovered: ./recovered
 <details><summary>根拠</summary>
 
 - 番組名を含むキーの長さは `TestContentPathKeyLimit` で確かめる
-- rclone との両方向の互換性は本文を `TestCryptRcloneRoundTrip`、名前を `TestCryptRcloneNames` で確かめる
+- rclone との両方向の互換性は本文を `TestS3CryptRcloneRoundTrip`、名前を `TestS3CryptRcloneNames` で確かめる
 - 暗号化したコピーの Chrome での中継再生とシークは `web/e2e/s3-crypt-proxy.mjs` で確かめる
 
 </details>

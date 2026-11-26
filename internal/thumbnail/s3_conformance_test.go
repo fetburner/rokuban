@@ -23,8 +23,8 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// TestThumbnailReselectionReadsEncodedInputFromS3 は S3 にしかない入力で再選択し、FS に公開する。
-func TestThumbnailReselectionReadsEncodedInputFromS3(t *testing.T) {
+// TestS3ThumbnailReselectionReadsEncodedInputFromS3 は S3 にしかない入力で再選択し、FS に公開する。
+func TestS3ThumbnailReselectionReadsEncodedInputFromS3(t *testing.T) {
 	ctx := t.Context()
 	endpoint := os.Getenv("ROKUBAN_S3_CONFORMANCE_ENDPOINT")
 	bucket := os.Getenv("ROKUBAN_S3_CONFORMANCE_BUCKET")

@@ -22,7 +22,7 @@ npm run third-party-notices -- --check  # 生成済み notice が最新か検査
 
 Node 版・Go 版（`Dockerfile` との一致）と pnpm overrides の上限は `go test ./scripts/versioncheck/`（DB 不要）が検査する。ずれたときのメッセージに揃え方が書いてある。
 
-`golangci-lint` は自分をビルドした Go より新しい `go.mod` では起動を拒む。Go を上げるときは `.github/workflows/ci.yml` の `version:` も同じ PR で上げる（ずれれば `lint` ジョブが自分で落ちる）。
+`golangci-lint` は自分をビルドした Go より新しい `go.mod` では起動を拒む。Go を上げるときは `.tool-versions` の `golangci-lint` も同じ PR で上げる（ずれれば `lint` ジョブが自分で落ちる）。
 
 ```bash
 cd web
@@ -61,9 +61,9 @@ MySQL を使うテストは、`ROKUBAN_TEST_MYSQL_DSN` が無いと skip する�
 
 `//go:build s3conformance` と `//go:build conformance` のファイルは、タグを付けたときだけコンパイルされる。`go build ./...`・`go vet ./...`・`go test ./...` はこれらを見ない。lint を使わずに確かめるなら `go vet -tags s3conformance,conformance ./...` を回す。
 
-`golangci-lint run` はこれらも見る。`.golangci.yml` の `run.build-tags` で両方のタグを入れてあるので、タグ付きファイルの参照切れはここで落ち、タグ付きだけが使う関数を `unused` と誤報することもない。s3-conformance ジョブの step に載らない `Test` は、`go test ./scripts/s3conformance/`（DB 不要）が落とす。`conformance` タグのテストは mirakc-conformance ジョブがパッケージごと実行するので、この検査の対象外。
+`golangci-lint run` はこれらも見る。`.golangci.yml` の `run.build-tags` で両方のタグを入れてあるので、タグ付きファイルの参照切れはここで落ち、タグ付きだけが使う関数を `unused` と誤報することもない。s3-conformance の規約（テスト名の接頭辞と対象パッケージ）に反すると、`go test ./scripts/s3conformance/`（DB 不要）が落とす。`conformance` タグのテストは mirakc-conformance ジョブがパッケージごと実行するので、この検査の対象外。
 
-手元で s3-conformance を回すには、同じジョブの `services`（RustFS と Postgres）を同じイメージ・環境変数・ポートでローカルに起動し、ジョブの `env` を export する。そのうえで、そのジョブの `go test -tags s3conformance` の step を実行する。イメージ名や版は `.github/workflows/ci.yml` を読む。
+手元で s3-conformance を回すには、同じジョブの `services`（RustFS と Postgres）を同じイメージ・環境変数・ポートでローカルに起動し、ジョブの `env` を export する。そのうえで、そのジョブの `Create the conformance bucket` と `Run S3 conformance tests` の step を実行する。イメージ名や版は `.github/workflows/ci.yml` を読む。Colima では、テストの `TMPDIR`（既定は `/var/folders/...`）が VM に共有されず rclone の検査が `directory not found` で落ちるので、`TMPDIR` を `/Users` 配下にする。
 
 ## 設計ドキュメント
 

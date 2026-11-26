@@ -255,7 +255,7 @@ FS なら生成した派生物をその置き場に公開する。S3 なら work
 <details><summary>根拠</summary>
 
 - S3 にもコピーがあるときに worker の FS を優先する選び直し: `TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing`
-- S3 にある encoded を入力にし、FS に公開する選び直し: `TestThumbnailReselectionReadsEncodedInputFromS3`
+- S3 にある encoded を入力にし、FS に公開する選び直し: `TestS3ThumbnailReselectionReadsEncodedInputFromS3`
 
 </details>
 

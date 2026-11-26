@@ -25,6 +25,7 @@ overlays/asynq/  asynq 構成の本番形（base + site + store + asynq。単一
 overlays/e2e-asynq/
                  asynq 構成の判定形（overlays/e2e の上に asynq の差分を載せる）
 schemas/         kubeconform に渡す CRD スキーマ（KEDA の ScaledJob）
+check.sh         検査（kustomize build・kubeconform・判定ハーネスの selftest・shellcheck）。CI と手元で同じもの
 ```
 
 **base は複数サイトを知らない。** レジストリは常に 1 要素で、どの Pod も site に束縛しない（`server` は `--sites=` の明示的な空、`enqueue` は `--site` を渡さない）。サイトを増やす差分は「`mirakcs:` に 1 要素 + `site/` を 1 組生やす」だけになる（`overlays/e2e` が実例）。この形はテストで固定する。
@@ -151,9 +152,11 @@ kind での動作確認手順は [docs/runbook/k8s.md](../../docs/runbook/k8s.md
 
 | 何を見るか | どこで回るか |
 |---|---|
-| YAML として組めるか | `kustomize build`（CI の manifests ジョブ） |
-| 各オブジェクトが k8s のスキーマに合うか | `kubeconform`（同ジョブ） |
+| YAML として組めるか | `kustomize build`（`check.sh`。CI の manifests ジョブが呼ぶ） |
+| 各オブジェクトが k8s のスキーマに合うか | `kubeconform`（同じ `check.sh`） |
 | オブジェクト間の参照・名前の解決・config.yml の中身 | `go test ./deploy/k8s/` |
+
+手元では `deploy/k8s/check.sh` で、CI の manifests ジョブと同じ検査（組めるか・スキーマ・判定ハーネスの selftest・shellcheck）を一度に回す。kustomize・kubeconform・shellcheck の版は `.tool-versions` と揃える。`check.sh --list-overlays` は検査対象の overlay を並べて終わる。
 
 3 つ目を別に持つ理由は、前 2 つが緑のまま通ってしまう誤りがあるため。存在しない ConfigMap を `envFrom` に書く / ポート名の解決先を失う / config.yml のキーを typo する、のいずれも実測で両方緑だった（一覧は `manifests_test.go` の冒頭コメント）。動かないと分かるのはクラスタに載せた後になる。
 

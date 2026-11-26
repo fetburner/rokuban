@@ -37,7 +37,7 @@ func TestGoDirectiveMatchesDockerfile(t *testing.T) {
 	if got != want {
 		t.Errorf("go.mod の go ディレクティブ (%s) と Dockerfile の FROM golang: (%s) が一致しない。"+
 			"`go.mod` と `Dockerfile` を同じ版にする（揃えないとテストを通したコンパイラと出荷バイナリのコンパイラがずれる）。"+
-			"Go を上げるときは `.github/workflows/ci.yml` の golangci-lint `version:` も同じ PR で上げる",
+			"Go を上げるときは `.tool-versions` の golangci-lint も同じ PR で上げる",
 			want, got)
 	}
 }

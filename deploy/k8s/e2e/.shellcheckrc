@@ -1,0 +1,12 @@
+# 受け入れ判定ハーネス（この下の .sh）の shellcheck の設定。CI と deploy/k8s/check.sh が読む。
+# リポジトリ直下に置かない（actionlint が ci.yml の run: に掛ける shellcheck にも効いてしまうため）。
+#
+# source された lib を辿る。
+external-sources=true
+# 除外する番号と、その根拠の程度（shellcheck 0.11.0 を --norc -x で deploy/k8s/e2e から回した実測）:
+#   SC1091: 実測 31 件（例: faults/01-worker-kill.sh の `# shellcheck source=lib.sh`）。理由は記録されていない。
+#   SC2034: 実測 18 件（例: lib/env.sh の E2E_SITE_B。source する側が読む変数。lib/cluster.sh のループ変数 i）。
+#           除外が妥当かは確かめていない。
+#   SC2317 / SC2329: 実測は SC2329 が 26 件。0.11.0 では SC2317 は出なかった（版によって出る番号が違うため両方を書く）。
+#           旧 CI の記録は「判定の述語を retry_until と trap に間接的に渡す形が多いため」だったが、その因果は確かめていない。
+disable=SC1091,SC2034,SC2317,SC2329

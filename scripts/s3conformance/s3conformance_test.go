@@ -1,18 +1,22 @@
 // ci-source-deps: -tags=s3conformance ./...
-// 全パッケージの s3conformance タグの _test.go を読んで検査するので、ソースを読む宣言にする。
+// 全パッケージの _test.go（s3conformance タグ付きと、対象パッケージのタグ無し）を読んで検査するので、ソースを読む宣言にする。
 
-// Package s3conformance はテストだけを持つ。`//go:build s3conformance` の _test.go に書かれた
-// Test 関数が、CI の s3-conformance ジョブの `go test -tags s3conformance` の step のどれかで
-// 実行されることを検査する。タグ無しの `go test ./...` はこれらのファイルをコンパイルせず、
-// step に載らない Test は誰も実行しないまま緑になる。この検査は test ジョブが回す
-// `go list ./...` の対象なので、専用の job は要らない。
+// Package s3conformance はテストだけを持つ。s3-conformance ジョブの規約を検査する。
+//
+// ジョブは 1 本の `go test -tags s3conformance $S3_CONFORMANCE_PACKAGES -run '^TestS3'` で、
+// 対象は `//go:build s3conformance` のファイルにある Test と、同じパッケージの名前が TestS3 で始まる
+// タグ無しの Test である。そのため次の 2 つを規約にし、ここで両方向に検査する。
+//
+//   - タグ付きの Test は、名前が TestS3 で始まり、その所属パッケージは S3_CONFORMANCE_PACKAGES に入る。
+//     S3_CONFORMANCE_PACKAGES のパッケージは、タグ付きの Test を少なくとも 1 本持つ。
+//   - S3_CONFORMANCE_PACKAGES のパッケージのタグ無しの Test は、名前が TestS3 で始まらない。
+//     始まると、-run がタグ無しのテストまで拾ってしまう。
+//
+// 計画（ci.yml の env の S3_CONFORMANCE_PACKAGES。plan ジョブの test 計画が citest に渡す一覧）は
+// ci.yml の 1 行を読むだけで、ジョブの step は読まない。
 //
 // 対象は s3conformance だけ。conformance タグ（internal/mirakc/conformance）は
-// mirakc-conformance ジョブが `go list -tags conformance` でパッケージごと実行するので、
-// 関数単位の照合は要らない。
-//
-// 計画（ci.yml の env の S3_CONFORMANCE_PACKAGES。plan ジョブの test 計画が citest に渡す一覧）と step のパッケージ集合の一致も、
-// TestS3ConformancePackagesMatchSteps が検査する。
+// mirakc-conformance ジョブが `go list -tags conformance` でパッケージごと実行するので、対象外。
 package s3conformance
 
 import (
@@ -25,7 +29,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -35,26 +38,30 @@ import (
 )
 
 const (
-	tag    = "s3conformance"
+	tag = "s3conformance"
+	// prefix は、タグ付きの Test の名前の接頭辞であり、CI の -run に書く正規表現 ^TestS3 の中身。
+	prefix = "TestS3"
 	ciOpen = "../../.github/workflows/ci.yml" // テストのカレントディレクトリからの相対パス
 	ciName = ".github/workflows/ci.yml"       // メッセージに出すリポジトリ相対のパス
-	ciJob  = "s3-conformance"
 )
 
-// testFunc は s3conformance のテスト関数 1 本。file はリポジトリ相対のパス。
+// testFunc は Test 関数 1 本。file はリポジトリ相対のパス。
 type testFunc struct{ file, name string }
 
-// step は s3-conformance ジョブの `go test` 1 本。pkg は path.Clean 済みの "./internal/..."。
-// run が空なら、そのパッケージの全テストを実行する。
-type step struct{ pkg, run string }
+// pkgTests は 1 パッケージのテスト関数。キーは "./internal/..." の形のパッケージ。
+type pkgTests struct {
+	tagged   []testFunc // s3conformance のタグで付くファイルの Test
+	untagged []testFunc // それ以外の _test.go の Test
+}
 
-func TestEveryS3ConformanceTestHasStep(t *testing.T) {
+// TestS3ConventionHoldsInTheRepo は、リポジトリの現在の状態が規約を満たすことを検査する。
+func TestS3ConventionHoldsInTheRepo(t *testing.T) {
 	t.Parallel()
 	src, err := os.ReadFile(ciOpen)
 	if err != nil {
 		t.Fatalf("%s を読めない: %v", ciName, err)
 	}
-	steps, err := parseSteps(src)
+	planned, err := parsePlanPackages(src)
 	if err != nil {
 		t.Fatalf("%s: %v", ciName, err)
 	}
@@ -62,48 +69,64 @@ func TestEveryS3ConformanceTestHasStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("テスト関数を集められない: %v", err)
 	}
-	if len(tests) == 0 {
+	if n := countTagged(tests); n == 0 {
 		t.Fatalf("s3conformance のテスト関数が 1 つも見つからない（検査が空振りしている）")
 	}
-	for _, msg := range uncovered(tests, steps) {
+	for _, msg := range conventionViolations(tests, planned) {
 		t.Error(msg)
 	}
 }
 
-// TestS3ConformancePackagesMatchSteps は、計画（ci.yml の env の S3_CONFORMANCE_PACKAGES。plan ジョブの test 計画が
-// citest に渡す）と s3-conformance ジョブの step のパッケージ集合が一致することを検査する。
-// 計画に無いパッケージの step は、そのパッケージだけを変えた PR で実行されない。step に無いパッケージは
-// 計画が空振りさせる。どちらも片側だけ直したときに落とす。
-func TestS3ConformancePackagesMatchSteps(t *testing.T) {
+// TestConventionViolations は、規約違反の判定と説明を、リテラルの入力で確かめる。
+func TestConventionViolations(t *testing.T) {
 	t.Parallel()
-	src, err := os.ReadFile(ciOpen)
-	if err != nil {
-		t.Fatalf("%s を読めない: %v", ciName, err)
+	const file = "internal/x/x_conformance_test.go"
+	tests := map[string]*pkgTests{
+		// TestB は名前が規約に合わない（タグ付き）。TestS3Old はタグ無しなのに規約の接頭辞で始まる。
+		"./internal/x": {
+			tagged:   []testFunc{{file, "TestS3A"}, {file, "TestB"}},
+			untagged: []testFunc{{"internal/x/y_test.go", "TestS3Old"}, {"internal/x/y_test.go", "TestPlain"}},
+		},
+		// ./internal/z はタグ付きの Test を持つが、S3_CONFORMANCE_PACKAGES に無い。
+		"./internal/z": {tagged: []testFunc{{"internal/z/z_conformance_test.go", "TestS3Z"}}},
+		// ./internal/w は S3_CONFORMANCE_PACKAGES に入っているが、タグ付きの Test が 1 本も無い。
+		"./internal/w": {untagged: []testFunc{{"internal/w/w_test.go", "TestW"}}},
 	}
-	steps, err := parseSteps(src)
-	if err != nil {
-		t.Fatalf("%s: %v", ciName, err)
+	planned := []string{"./internal/x", "./internal/w"}
+	got := conventionViolations(tests, planned)
+	// 各説明は、後ろに手順の案内が続くので前方一致で見る。
+	want := []string{
+		"internal/x/x_conformance_test.go の TestB は s3conformance のタグ付きだが、名前が TestS3 で始まらない",
+		"internal/x/y_test.go の TestS3Old はタグ無しだが、名前が TestS3 で始まる",
+		"パッケージ ./internal/z はタグ付きの Test を持つが、S3_CONFORMANCE_PACKAGES に無い",
+		"S3_CONFORMANCE_PACKAGES のパッケージ ./internal/w にタグ付きの Test が無い",
 	}
-	planned, err := parsePlanPackages(src)
-	if err != nil {
-		t.Fatalf("%s: %v", ciName, err)
+	if len(got) != len(want) {
+		t.Fatalf("conventionViolations は %d 件 (%q)、want %d 件", len(got), got, len(want))
 	}
-	inSteps := map[string]bool{}
-	for _, st := range steps {
-		inSteps[st.pkg] = true
-	}
-	inPlan := map[string]bool{}
-	for _, p := range planned {
-		inPlan[p] = true
-	}
-	for _, p := range sortedKeys(inSteps) {
-		if !inPlan[p] {
-			t.Errorf("%s の s3-conformance の step のパッケージ %s が env の S3_CONFORMANCE_PACKAGES に無い。PR はこのパッケージの変更で s3-conformance を回さない", ciName, p)
+	for i := range want {
+		if !strings.HasPrefix(got[i], want[i]) {
+			t.Errorf("message %d = %q, want prefix %q", i, got[i], want[i])
 		}
 	}
-	for _, p := range sortedKeys(inPlan) {
-		if !inSteps[p] {
-			t.Errorf("%s の env の S3_CONFORMANCE_PACKAGES の %s に対応する step が s3-conformance に無い", ciName, p)
+}
+
+// TestFileTestsFollowsBuildTag は、ファイルのタグ判定と Test 関数の集め方を確かめる。
+func TestFileTestsFollowsBuildTag(t *testing.T) {
+	t.Parallel()
+	taggedSrc := "//go:build s3conformance\n\npackage x\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\nfunc helper() {}\nfunc testLower(t *testing.T) {}\nfunc (x) TestMethod(t *testing.T) {}\n"
+	untagged := "package x\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\n"
+	negated := "//go:build !s3conformance\n\npackage x\n\nfunc TestA(t *testing.T) {}\n"
+	otherTag := "//go:build conformance\n\npackage x\n\nfunc TestA(t *testing.T) {}\n"
+
+	names, isTagged, err := fileTests([]byte(taggedSrc))
+	if err != nil || !isTagged || strings.Join(names, " ") != "TestA" {
+		t.Errorf("tagged: got %v, %v, %v; want [TestA] tagged", names, isTagged, err)
+	}
+	for name, src := range map[string]string{"untagged": untagged, "negated": negated, "otherTag": otherTag} {
+		names, isTagged, err := fileTests([]byte(src))
+		if err != nil || isTagged || strings.Join(names, " ") != "TestA" {
+			t.Errorf("%s: got %v, %v, %v; want [TestA] not tagged", name, names, isTagged, err)
 		}
 	}
 }
@@ -127,234 +150,70 @@ func parsePlanPackages(src []byte) ([]string, error) {
 	return pkgs, nil
 }
 
-func sortedKeys(m map[string]bool) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+// conventionViolations は規約違反の説明を、順序を決めて返す。
+func conventionViolations(tests map[string]*pkgTests, planned []string) []string {
+	inPlan := map[string]bool{}
+	for _, p := range planned {
+		inPlan[p] = true
 	}
-	sort.Strings(keys)
-	return keys
-}
+	dirs := make([]string, 0, len(tests))
+	for d := range tests {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
 
-func TestStepForms(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		line string
-		want []step // nil は「s3conformance の go test ではない」
-	}{
-		{"go test -tags s3conformance ./internal/objstore/conformance -count=1 -timeout 5m -v",
-			[]step{{"./internal/objstore/conformance", ""}}},
-		{"go test -tags s3conformance ./internal/storagemaint -run '^TestS3X$' -count=1 -timeout 5m -v",
-			[]step{{"./internal/storagemaint", "^TestS3X$"}}},
-		{"go test -tags s3conformance ./internal/objstore/s3store -run '^(TestA|TestB)$' -count=1",
-			[]step{{"./internal/objstore/s3store", "^(TestA|TestB)$"}}},
-		{"go test -tags=s3conformance ./internal/encode -run=^TestC$",
-			[]step{{"./internal/encode", "^TestC$"}}},
-		{"go build -tags s3conformance -o out ./internal/streamer/conformance", nil},
-		{"go test ./internal/encode -run '^TestC$'", nil},
-	}
-	for _, tc := range tests {
-		got, ok := parseGoTest(tc.line)
-		if ok != (tc.want != nil) {
-			t.Errorf("%q: s3conformance の step か = %v, want %v", tc.line, ok, tc.want != nil)
-			continue
+	var msgs []string
+	for _, dir := range dirs {
+		pt := tests[dir]
+		for _, tf := range pt.tagged {
+			if !strings.HasPrefix(tf.name, prefix) {
+				msgs = append(msgs, fmt.Sprintf(
+					"%s の %s は s3conformance のタグ付きだが、名前が %s で始まらない。CI の s3-conformance ジョブは -run '^%s' で選ぶので、このテストは実行されない",
+					tf.file, tf.name, prefix, prefix))
+			}
 		}
-		if strings.Join(stepStrings(got), " ") != strings.Join(stepStrings(tc.want), " ") {
-			t.Errorf("%q: 読んだ step = %v, want %v", tc.line, got, tc.want)
+		if len(pt.tagged) > 0 && !inPlan[dir] {
+			msgs = append(msgs, fmt.Sprintf(
+				"パッケージ %s はタグ付きの Test を持つが、S3_CONFORMANCE_PACKAGES に無い。PR はこのパッケージの変更で s3-conformance を回さない（%s の env）",
+				dir, ciName))
 		}
-	}
-}
-
-func TestParseStepsReadsOnlyTheConformanceJob(t *testing.T) {
-	t.Parallel()
-	src := []byte(`jobs:
-  other:
-    steps:
-      - run: go test -tags s3conformance ./internal/wrong -run '^TestX$'
-  s3-conformance:
-    steps:
-      - name: multi
-        run: |
-          echo start
-          go test -tags s3conformance ./internal/a -count=1
-      - run: go test -tags s3conformance ./internal/b -run '^(TestB)$' -count=1 -timeout 5m -v
-`)
-	steps, err := parseSteps(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := `./internal/a run="" ./internal/b run="^(TestB)$"`
-	got := strings.Join(stepStrings(steps), " ")
-	if got != want {
-		t.Errorf("parseSteps = %q, want %q", got, want)
-	}
-}
-
-func TestParseStepsRejectsSubtestPattern(t *testing.T) {
-	t.Parallel()
-	src := []byte(`jobs:
-  s3-conformance:
-    steps:
-      - run: go test -tags s3conformance ./internal/a -run '^TestA/sub$' -count=1
-`)
-	if _, err := parseSteps(src); err == nil {
-		t.Error("parseSteps accepted a -run pattern containing /; want an error")
-	}
-}
-
-func TestTestFuncsFollowsBuildTag(t *testing.T) {
-	t.Parallel()
-	taggedSrc := "//go:build s3conformance\n\npackage x\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\nfunc helper() {}\nfunc testLower(t *testing.T) {}\nfunc (x) TestMethod(t *testing.T) {}\n"
-	untagged := "package x\n\nimport \"testing\"\n\nfunc TestA(t *testing.T) {}\n"
-	negated := "//go:build !s3conformance\n\npackage x\n\nfunc TestA(t *testing.T) {}\n"
-	otherTag := "//go:build conformance\n\npackage x\n\nfunc TestA(t *testing.T) {}\n"
-
-	got, err := testFuncs([]byte(taggedSrc))
-	if err != nil || strings.Join(got, " ") != "TestA" {
-		t.Errorf("tagged: got %v, %v; want [TestA]", got, err)
-	}
-	for name, src := range map[string]string{"untagged": untagged, "negated": negated, "otherTag": otherTag} {
-		if got, _ := testFuncs([]byte(src)); len(got) != 0 {
-			t.Errorf("%s: got %v; want none", name, got)
-		}
-	}
-}
-
-func TestUncoveredNamesTheMissingTests(t *testing.T) {
-	t.Parallel()
-	const file = "internal/x/x_conformance_test.go"
-	tests := map[string][]testFunc{
-		"./internal/x": {{file, "TestA"}, {file, "TestB"}, {file, "TestC"}},
-		"./internal/y": {{file, "TestD"}},
-	}
-	steps := []step{
-		{"./internal/x", "^(TestA|TestB)$"},
-		{"./internal/y", ""},
-	}
-	msgs := uncovered(tests, steps)
-	if len(msgs) != 1 || !strings.Contains(msgs[0], file) || !strings.Contains(msgs[0], "TestC") {
-		t.Fatalf("uncovered = %q; want exactly one message naming %s and TestC", msgs, file)
-	}
-	// 同じ名前でも別パッケージの step では覆えない。
-	if msgs := uncovered(tests, []step{{"./internal/y", ""}, {"./internal/x", "^TestA$"}}); len(msgs) != 2 {
-		t.Errorf("uncovered with wrong package = %d messages; want 2 (TestB, TestC)", len(msgs))
-	}
-}
-
-func stepStrings(steps []step) []string {
-	out := make([]string, 0, len(steps))
-	for _, s := range steps {
-		out = append(out, fmt.Sprintf("%s run=%q", s.pkg, s.run))
-	}
-	return out
-}
-
-// parseSteps は ci.yml 全文から s3-conformance ジョブの go test の step を集める。
-func parseSteps(src []byte) ([]step, error) {
-	var doc struct {
-		Jobs map[string]struct {
-			Steps []struct {
-				Run string `yaml:"run"`
-			} `yaml:"steps"`
-		} `yaml:"jobs"`
-	}
-	if err := yaml.Unmarshal(src, &doc); err != nil {
-		return nil, fmt.Errorf("ci.yml を解析できない: %w", err)
-	}
-	job, ok := doc.Jobs[ciJob]
-	if !ok {
-		return nil, fmt.Errorf("ci.yml に job %s が無い", ciJob)
-	}
-	var steps []step
-	for _, s := range job.Steps {
-		for _, line := range strings.Split(s.Run, "\n") {
-			found, _ := parseGoTest(line)
-			for _, st := range found {
-				if _, err := regexp.Compile(st.run); err != nil {
-					return nil, fmt.Errorf("-run の正規表現 %q が不正: %w", st.run, err)
-				}
-				// go test は -run を / で分けてサブテストに当てる。トップレベルの Test 名だけに当てる
-				// この照合では読めないので、/ を含む形は受け付けない（足すなら照合を直す）。
-				if strings.Contains(st.run, "/") {
-					return nil, fmt.Errorf("-run %q に / がある。サブテストの形は読めないので、トップレベルの Test 名で書く", st.run)
+		if inPlan[dir] {
+			for _, tf := range pt.untagged {
+				if strings.HasPrefix(tf.name, prefix) {
+					msgs = append(msgs, fmt.Sprintf(
+						"%s の %s はタグ無しだが、名前が %s で始まる。s3-conformance ジョブの -run が拾ってしまう。名前を変えるか、接頭辞を外す",
+						tf.file, tf.name, prefix))
 				}
 			}
-			steps = append(steps, found...)
 		}
 	}
-	return steps, nil
+	for _, p := range planned {
+		if pt, ok := tests[p]; !ok || len(pt.tagged) == 0 {
+			msgs = append(msgs, fmt.Sprintf(
+				"S3_CONFORMANCE_PACKAGES のパッケージ %s にタグ付きの Test が無い。一覧から外すか、タグ付きの Test を足す", p))
+		}
+	}
+	return msgs
 }
 
-// parseGoTest は 1 行のシェルコマンドが `go test -tags s3conformance` なら、その step を返す。
-// パッケージは "./" で始まる語で、-run は値を次の語（または =）で受ける。-timeout 5m のような
-// 他のフラグは読み飛ばす。
-func parseGoTest(line string) ([]step, bool) {
-	// run 行の引用符の中に空白は無いので、空白で分けて両端の引用符を外せば足りる。
-	args := strings.Fields(line)
-	for k, a := range args {
-		args[k] = strings.Trim(a, `'"`)
+func countTagged(tests map[string]*pkgTests) int {
+	n := 0
+	for _, pt := range tests {
+		n += len(pt.tagged)
 	}
-	i := 0
-	for i+1 < len(args) && (args[i] != "go" || args[i+1] != "test") {
-		i++
-	}
-	if i+1 >= len(args) {
-		return nil, false
-	}
-	var pkgs []string
-	var run string
-	tagged := false
-	for j := i + 2; j < len(args); j++ {
-		a := args[j]
-		next := func() string {
-			if j+1 < len(args) {
-				j++
-				return args[j]
-			}
-			return ""
-		}
-		switch {
-		case a == "-tags":
-			tagged = hasTag(next())
-		case strings.HasPrefix(a, "-tags="):
-			tagged = hasTag(strings.TrimPrefix(a, "-tags="))
-		case a == "-run":
-			run = next()
-		case strings.HasPrefix(a, "-run="):
-			run = strings.TrimPrefix(a, "-run=")
-		case strings.HasPrefix(a, "./"):
-			pkgs = append(pkgs, "./"+path.Clean(a))
-		}
-	}
-	if !tagged {
-		return nil, false
-	}
-	steps := make([]step, 0, len(pkgs))
-	for _, p := range pkgs {
-		steps = append(steps, step{pkg: p, run: run})
-	}
-	return steps, len(steps) > 0
+	return n
 }
 
-func hasTag(list string) bool {
-	for _, t := range strings.Split(list, ",") {
-		if t == tag {
-			return true
-		}
-	}
-	return false
-}
-
-// collectTests は root 以下の s3conformance の _test.go から Test 関数を集め、
-// パッケージ（"./internal/x" の形）ごとに返す。
-func collectTests(root string) (map[string][]testFunc, error) {
-	tests := map[string][]testFunc{}
+// collectTests は root 以下の _test.go から Test 関数を集め、パッケージごとに返す。
+func collectTests(root string) (map[string]*pkgTests, error) {
+	tests := map[string]*pkgTests{}
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
-			if p != root && (strings.HasPrefix(d.Name(), ".") || d.Name() == "node_modules") {
+			// testdata は go のツールが無視するので、意図的に壊した _test.go を置いても検査の対象にしない。
+			if p != root && (strings.HasPrefix(d.Name(), ".") || d.Name() == "node_modules" || d.Name() == "testdata") {
 				return filepath.SkipDir
 			}
 			return nil
@@ -366,7 +225,7 @@ func collectTests(root string) (map[string][]testFunc, error) {
 		if err != nil {
 			return err
 		}
-		names, err := testFuncs(src)
+		names, isTagged, err := fileTests(src)
 		if err != nil {
 			return fmt.Errorf("%s: %w", p, err)
 		}
@@ -378,33 +237,39 @@ func collectTests(root string) (map[string][]testFunc, error) {
 			return err
 		}
 		dir := "./" + filepath.ToSlash(filepath.Dir(rel))
+		pt := tests[dir]
+		if pt == nil {
+			pt = &pkgTests{}
+			tests[dir] = pt
+		}
 		for _, n := range names {
-			tests[dir] = append(tests[dir], testFunc{file: filepath.ToSlash(rel), name: n})
+			tf := testFunc{file: filepath.ToSlash(rel), name: n}
+			if isTagged {
+				pt.tagged = append(pt.tagged, tf)
+			} else {
+				pt.untagged = append(pt.untagged, tf)
+			}
 		}
 		return nil
 	})
 	return tests, err
 }
 
-// testFuncs は src が s3conformance のタグで付くファイルなら、その Test 関数名を返す。
+// fileTests は _test.go の全文 src の Test 関数名を返し、s3conformance のタグで付くかを返す。
 // 判定は `//go:build` の式を s3conformance だけ真として評価する。タグだけで決まる形
 // （`//go:build s3conformance`）のファイルがこのリポジトリの全てで、他の GOOS 条件と組む形は無い。
-func testFuncs(src []byte) ([]string, error) {
-	if !tagged(src) {
-		return nil, nil
-	}
+func fileTests(src []byte) (names []string, isTagged bool, err error) {
 	f, err := parser.ParseFile(token.NewFileSet(), "", src, parser.SkipObjectResolution)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	var names []string
 	for _, d := range f.Decls {
 		fn, ok := d.(*ast.FuncDecl)
 		if ok && fn.Recv == nil && isTestName(fn.Name.Name) {
 			names = append(names, fn.Name.Name)
 		}
 	}
-	return names, nil
+	return names, tagged(src), nil
 }
 
 // tagged は package 節より前の //go:build 行を s3conformance だけ真として評価する。
@@ -426,42 +291,4 @@ func tagged(src []byte) bool {
 func isTestName(n string) bool {
 	rest, ok := strings.CutPrefix(n, "Test")
 	return ok && (rest == "" || !unicode.IsLower(rune(rest[0])))
-}
-
-// uncovered は、どの step にも当たらない Test の説明を返す。順序は決定的にする。
-func uncovered(tests map[string][]testFunc, steps []step) []string {
-	dirs := make([]string, 0, len(tests))
-	for d := range tests {
-		dirs = append(dirs, d)
-	}
-	sort.Strings(dirs)
-	var msgs []string
-	for _, dir := range dirs {
-		for _, tf := range tests[dir] {
-			if covered(dir, tf.name, steps) {
-				continue
-			}
-			msgs = append(msgs, fmt.Sprintf(
-				"%s の %s は s3-conformance ジョブのどの step にも当たらず、CI で実行されない。"+
-					"%s の %s ジョブに「go test -tags %s %s -run '^%s$' -count=1 -timeout 5m -v」の step を足す",
-				tf.file, tf.name, ciName, ciJob, tag, dir, tf.name))
-		}
-	}
-	return msgs
-}
-
-func covered(dir, name string, steps []step) bool {
-	for _, st := range steps {
-		if st.pkg != dir {
-			continue
-		}
-		if st.run == "" {
-			return true
-		}
-		// parseSteps が正規表現の妥当性を検査済みなので、エラーは無視してよい。
-		if ok, _ := regexp.MatchString(st.run, name); ok {
-			return true
-		}
-	}
-	return false
 }

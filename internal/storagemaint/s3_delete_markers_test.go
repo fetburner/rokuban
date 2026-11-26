@@ -104,7 +104,7 @@ func (m *selectiveMarkers) MarkDeleteReconcile(ctx context.Context, name string)
 	}
 	return m.markerRecorder.MarkDeleteReconcile(ctx, name)
 }
-func TestS3DeleteMarkers(t *testing.T) {
+func TestDeleteMarkersOnS3(t *testing.T) {
 	for _, tc := range []struct {
 		name                                    string
 		fail, stopped, reject, absent, nonOwner bool

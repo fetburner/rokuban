@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-func TestCombineStatuses(t *testing.T) {
+func TestS3CombineStatuses(t *testing.T) {
 	tests := []struct {
 		name     string
 		statuses []string
@@ -30,7 +30,7 @@ func TestCombineStatuses(t *testing.T) {
 	}
 }
 
-func TestParseExpectations(t *testing.T) {
+func TestS3ParseExpectations(t *testing.T) {
 	got, err := parseExpectations("conditional-writes=unsupported, presigned-get-range=supported")
 	if err != nil || len(got) != 2 || got[featureConditionalWrites] != statusUnsupported || got[featurePresignedRange] != statusSupported {
 		t.Fatalf("parseExpectations() = %v, %v", got, err)
@@ -45,7 +45,7 @@ func TestParseExpectations(t *testing.T) {
 	}
 }
 
-func TestExpectationError(t *testing.T) {
+func TestS3ExpectationError(t *testing.T) {
 	expect := map[string]string{featureHeadChecksum: statusSupported}
 	if err := expectationError(featureResult{Feature: featureHeadChecksum, Status: statusSupported}, expect); err != nil {
 		t.Fatalf("match failed: %v", err)
@@ -67,7 +67,7 @@ func TestExpectationError(t *testing.T) {
 	}
 }
 
-func TestAbortedStatus(t *testing.T) {
+func TestS3AbortedStatus(t *testing.T) {
 	tests := []struct {
 		name    string
 		parts   *s3.ListPartsOutput

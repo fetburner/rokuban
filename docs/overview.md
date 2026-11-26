@@ -87,7 +87,7 @@ mirakc に録画を委譲すると（詳細は [recording.md](recording.md) 参�
 
 <details><summary>根拠</summary>
 
-- CI のマニフェスト検査と受け入れ判定ハーネスの実行範囲: `.github/workflows/ci.yml`（manifests ジョブ末尾のコメント）
+- CI のマニフェスト検査と受け入れ判定ハーネスの実行範囲: `deploy/k8s/check.sh`（ヘッダの「回さないもの」。CI の manifests ジョブが呼ぶ）
 - 受け入れ判定ハーネスの手動実行: `deploy/k8s/e2e/README.md` 冒頭
 
 </details>

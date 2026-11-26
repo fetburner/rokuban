@@ -240,7 +240,7 @@ flowchart TD
 
 mock では検出できない前提は、実物の mirakc コンテナに対する conformance テストが判定する。Docker が要る。
 
-コマンドは `go test -tags conformance -p 1 ./internal/mirakc/conformance/...`。放送病態はケースごとにパッケージを分け、CI の `gotestsum tool ci-matrix` が実測時間でシャードへ振り分ける。reconciler の `overrides.contentPath` の既存 schedule への反映も対象である。これは mirakc が `GET /api/recording/schedules` で `options.contentPath` を POST した値のまま返すことに依存する。 `/events` の再送・録画中の Range 挙動も同様で、テストの mock は権威にならず、こちらが権威になる。症状と観測手段は [troubleshooting.md](troubleshooting.md) の該当項目。
+コマンドは `go test -tags conformance -p 1 ./internal/mirakc/conformance/...`。放送病態はケースごとにパッケージを分け、CI の `scripts/shardcount` が実測時間でシャードへ振り分ける。reconciler の `overrides.contentPath` の既存 schedule への反映も対象である。これは mirakc が `GET /api/recording/schedules` で `options.contentPath` を POST した値のまま返すことに依存する。 `/events` の再送・録画中の Range 挙動も同様で、テストの mock は権威にならず、こちらが権威になる。症状と観測手段は [troubleshooting.md](troubleshooting.md) の該当項目。
 
 PR で何を回すかは、上の「PR の CI で回すテスト」節に従う。
 
