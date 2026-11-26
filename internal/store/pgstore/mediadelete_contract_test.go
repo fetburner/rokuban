@@ -48,8 +48,8 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 			StoreWithDerived: func(derivedStore string) store.MediaDelete {
 				return testMedia(pool, dbtest.StoreName, derivedStore)
 			},
-			StoreWithPlacement: func(rules []store.OriginalStoreRule, derivedStore string) store.MediaDelete {
-				return NewMediaInStore(pool, dbtest.StoreName, store.NewStoragePolicy(rules, nil, derivedStore).WithPlacementEnabled(true))
+			StoreWithPlacement: func(rules []store.OriginalStoreRule, derivedStore string, enabled bool) store.MediaDelete {
+				return NewMediaInStore(pool, dbtest.StoreName, store.NewStoragePolicy(rules, nil, derivedStore).WithPlacementEnabled(enabled))
 			},
 			Serving: storage,
 			Catalog: NewCatalog(pool, []string{store.DefaultSite}, dbtest.StoreName),

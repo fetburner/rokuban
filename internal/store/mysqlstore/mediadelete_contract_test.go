@@ -34,8 +34,8 @@ func newMediaDeleteContractFixture(t *testing.T) contracttest.MediaDeleteFixture
 		StoreWithDerived: func(derivedStore string) store.MediaDelete {
 			return NewMediaInStore(db, bound, store.NewStoragePolicy(nil, nil, derivedStore))
 		},
-		StoreWithPlacement: func(rules []store.OriginalStoreRule, derivedStore string) store.MediaDelete {
-			return NewMediaInStore(db, bound, store.NewStoragePolicy(rules, nil, derivedStore).WithPlacementEnabled(true))
+		StoreWithPlacement: func(rules []store.OriginalStoreRule, derivedStore string, enabled bool) store.MediaDelete {
+			return NewMediaInStore(db, bound, store.NewStoragePolicy(rules, nil, derivedStore).WithPlacementEnabled(enabled))
 		},
 		Serving: NewMediaInStore(db, bound, zero),
 		Catalog: NewCatalog(db, []string{store.DefaultSite}, bound),

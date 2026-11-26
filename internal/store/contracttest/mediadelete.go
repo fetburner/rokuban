@@ -18,8 +18,8 @@ type MediaDeleteFixture struct {
 	Store store.MediaDelete
 	// StoreWithDerived は BoundStore に束縛し、派生物の置き場を derivedStore にする（"" なら未設定）。
 	StoreWithDerived func(derivedStore string) store.MediaDelete
-	// StoreWithPlacement は BoundStore に束縛し、配置削除を有効にした方針（原本の規則と派生の置き場）で作る。
-	StoreWithPlacement func(originalRules []store.OriginalStoreRule, derivedStore string) store.MediaDelete
+	// StoreWithPlacement は BoundStore に束縛し、原本の規則と派生の置き場の方針で作り、配置削除の有無は enabled で決める。
+	StoreWithPlacement func(originalRules []store.OriginalStoreRule, derivedStore string, enabled bool) store.MediaDelete
 	// BoundStore は Store が束縛している置き場の名前である。
 	BoundStore string
 	Serving    store.MediaServing
@@ -95,6 +95,9 @@ func RunMediaDelete(t *testing.T, newStore NewMediaDeleteStore) {
 	})
 	t.Run("list methods ignore copies in other stores", func(t *testing.T) { runListsIgnoreOtherStoreCopies(t, newStore) })
 	t.Run("transitions ignore copies in other stores", func(t *testing.T) { runTransitionsIgnoreOtherStoreCopies(t, newStore) })
+	t.Run("until-encoded transition refuses a trashed recording", func(t *testing.T) {
+		runUntilEncodedTrashed(t, newStore)
+	})
 	t.Run("until-encoded transition waits for and rechecks recording writes", func(t *testing.T) {
 		runUntilEncodedSerialization(t, newStore)
 	})

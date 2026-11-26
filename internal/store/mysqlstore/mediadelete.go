@@ -273,21 +273,29 @@ func (s *Media) MarkDeleting(ctx context.Context, copyID int64, expectedState st
 		return nil
 	})
 	if err != nil {
-		return false, fmt.Errorf("beginning media asset copy delete transition: %w", err)
+		return false, err
 	}
 	return marked, nil
 }
 
 // MarkUntilEncodedDeleting は録画の行をロックして削除条件を再確認し、満たせば原本のコピーを deleting にする。
+// 消去済みの録画は何もせず、ごみ箱の録画は store.ErrTrashed を返す（pgstore の lockRecording と同じ）。
 // 判定は録画の行ロックの下で SELECT し、UPDATE は判定の後に copy の id で行う（UPDATE の副問い合わせは対象表を読めない）。
 func (s *Media) MarkUntilEncodedDeleting(ctx context.Context, recordingID, mediaAssetID, copyID int64) (bool, error) {
 	marked := false
 	err := runTx(ctx, s.db, func(tx *sql.Tx) error {
-		if err := lockRecordingState(ctx, tx, recordingID); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				return nil
-			}
+		trashed, purged, err := lockRecordingFlags(ctx, tx, recordingID)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
 			return fmt.Errorf("locking recording %d before until_encoded delete: %w", recordingID, err)
+		}
+		if purged {
+			return nil
+		}
+		if trashed {
+			return fmt.Errorf("recording %d: %w", recordingID, store.ErrTrashed)
 		}
 		locked, found, err := lockMediaDeleteCopy(ctx, tx, copyID, s.storeName)
 		if err != nil {
@@ -313,7 +321,7 @@ SELECT EXISTS (SELECT 1 FROM media_assets a WHERE a.id = ? AND `+untilEncodedDel
 		return nil
 	})
 	if err != nil {
-		return false, fmt.Errorf("beginning until_encoded delete for recording %d: %w", recordingID, err)
+		return false, err
 	}
 	return marked, nil
 }

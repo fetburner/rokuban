@@ -298,7 +298,7 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 
 配置削除は転送先が 2 つ以上あるときだけ有効にする。無効なら `PlacementPolicy` はゼロ値を返し、desired から外れたコピーも削除候補にならない。
 
-MySQL 版では、until_encoded と配置の述語を SQL 断片の定数として `mediadelete.go` に 1 組だけ置き、列挙・遷移・戻しが同じ断片を引く。引数を取らない旧世代の判定だけは view にする。遷移は対象行を `FOR UPDATE` で取って判定し、UPDATE は id で行う。UPDATE の副問い合わせは対象表を読めないためである。
+MySQL には引数を取る view が無いので、置き場や方針を引数に取る until_encoded と配置の述語は SQL 断片の定数に置く。引数を取らない旧世代の判定は view にする。MySQL の UPDATE は、副問い合わせで更新対象の表を読むとエラー 1093 になる。そのため遷移では、対象のコピー行を `FOR UPDATE` で取った後に削除条件を SELECT で判定し、UPDATE は id で行う。
 
 <details><summary>根拠</summary>
 
