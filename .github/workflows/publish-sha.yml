@@ -17,7 +17,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # binfmt のキャッシュも main だけで保存する（理由は bake-action の step と同じ）。false は保存も復元も止めるが、
+      # binfmt は cache-image によらず毎回 docker.io から pull し、復元したものは pull が落ちたときにしか使わない。
+      # 失うのはその代わりだけになる。この挙動は v4 が使う actions-toolkit 0.100.0 の Docker.pull のソースで読んだもので、文書の契約ではない。
       - uses: docker/setup-qemu-action@v4
+        with:
+          cache-image: ${{ github.ref_name == github.event.repository.default_branch }}
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
@@ -47,6 +52,8 @@ jobs:
             type=raw,value=latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository_owner }}/homelab-infra
+      # main 以外の push では gha への書き出しを止める（読み取りは変えない）。ブランチ scope のキャッシュは
+      # 同じブランチの後の push からしか読めず、main や PR からは読めない。それでも上限を超えると main のキャッシュを追い出す側に回る（ci.yml の docker ジョブと同じ理由）。
       - uses: docker/bake-action@v7
         with:
           source: .
@@ -57,6 +64,8 @@ jobs:
           targets: ${{ github.ref_name == github.event.repository.default_branch && 'image,full' || 'image' }}
           push: true
           vars: VERSION=${{ github.sha }}
+        env:
+          GHA_CACHE_WRITE: ${{ github.ref_name == github.event.repository.default_branch }}
 
   # publish が push した multi-arch イメージを、arch ごとの実 runner で pull して起動を確かめる。
   # arm64 runner は main への push のときだけ使う（ブランチごとに回すとコストが戻るため）。
