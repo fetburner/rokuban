@@ -28,9 +28,7 @@ func runUntilEncodedPresence(t *testing.T, newStore NewMediaDeleteStore) {
 			if err != nil {
 				t.Fatalf("getting %s before reporting it missing: %v", tc.kind, err)
 			}
-			if err := f.Storage.UpsertMissingMediaAsset(ctx, f.CopyID(t, asset.ID)); err != nil {
-				t.Fatalf("reporting missing %s: %v", tc.kind, err)
-			}
+			f.MarkMissing(t, f.CopyID(t, asset.ID))
 			rows, err := f.Store.ListUntilEncodedOriginalsToDelete(ctx, 10)
 			if err != nil || len(rows) != 1 || rows[0].ID != f.CopyID(t, present) {
 				t.Errorf("until-encoded candidates = %+v, %v; want original %d eligible and %d kept", rows, err, present, missing)
@@ -43,9 +41,7 @@ func runOldGenerationPresence(t *testing.T, newStore NewMediaDeleteStore) {
 	f := newStore(t)
 	present, _ := f.NewOldGeneration(t)
 	missing, missingCurrent := f.NewOldGeneration(t)
-	if err := f.Storage.UpsertMissingMediaAsset(t.Context(), missingCurrent); err != nil {
-		t.Fatalf("reporting missing current generation: %v", err)
-	}
+	f.MarkMissing(t, missingCurrent)
 	rows, err := f.Store.ListOldGenerationMediaAssetCopiesToDelete(t.Context(), time.Now().Add(time.Hour), 10)
 	if err != nil || len(rows) != 1 || rows[0].ID != present {
 		t.Errorf("old-generation candidates = %+v, %v; want copy %d eligible and %d kept", rows, err, present, missing)
@@ -80,16 +76,12 @@ func runRemovedEncodedPresence(t *testing.T, newStore NewMediaDeleteStore) {
 			}
 			switch tc.originalState {
 			case "missing":
-				if err := f.Storage.UpsertMissingMediaAsset(ctx, f.CopyID(t, original.ID)); err != nil {
-					t.Fatalf("reporting missing original: %v", err)
-				}
+				f.MarkMissing(t, f.CopyID(t, original.ID))
 			case "deleted":
 				f.SetAssetState(t, original.ID, "deleted")
 			}
 			if tc.removedMissing {
-				if err := f.Storage.UpsertMissingMediaAsset(ctx, copyID); err != nil {
-					t.Fatalf("reporting removed version missing: %v", err)
-				}
+				f.MarkMissing(t, copyID)
 			}
 			rows, err := f.Store.ListRemovedEncodedAssetsToDelete(ctx, 100)
 			if err != nil || containsMediaDeleteAsset(rows, copyID) != tc.wantListed {

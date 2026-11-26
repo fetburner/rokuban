@@ -12,7 +12,7 @@ import (
 // trashDeletableRecordingSQL は Postgres の関数 trash_deletable_recordings の MySQL 版の述語である。
 // r は recordings の別名で、? に猶予の cutoff を 1 つ渡す。
 // MySQL には表を返す関数が無く、UPDATE recordings の中で recordings を読むサブクエリは 1093 になるので、
-// 述語の形で持つ。将来メディア削除も同じ述語を引く。
+// 述語の形で持つ。メディア削除（mediadelete.go）も同じ述語を引く。
 const trashDeletableRecordingSQL = `r.deleted_at IS NOT NULL
   AND (
     EXISTS (SELECT 1 FROM recording_purge_requests p WHERE p.recording_id = r.id)
