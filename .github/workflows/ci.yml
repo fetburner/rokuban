@@ -29,12 +29,11 @@ on:
   pull_request:
 
 jobs:
-  # PR の変更と citest から browser-e2e の matrix を作る。main の全件実行は冒頭の役割分担に従う。
   # 計画ジョブ。browser-e2e・test・mirakc-conformance の 3 つの計画を 1 本にまとめ、checkout・base の fetch・
   # setup-go を 1 回にする。step id と job の outputs は計画ごとに分ける。
   # 計画のどれか 1 つでも失敗すると、このジョブは失敗する。3 つの集約ジョブ（browser-e2e・test・mirakc-conformance）は
   # needs.plan.result が success でなければ赤になる。shard の skip は planned_skip で表し、集約ジョブが判定する。
-  # ubuntu-latest のまま。ubuntu-slim では setup-go と gotestsum のビルドで 24 秒 → 110 秒に伸びた。
+  # ubuntu-slim にしない。setup-go と gotestsum のビルドで 24 秒 → 110 秒に延びた。
   plan:
     runs-on: ubuntu-latest
     permissions:
@@ -53,7 +52,6 @@ jobs:
       mirakc_conformance_planned_skip: ${{ steps.plan-mirakc-conformance.outputs.planned_skip }}
     steps:
       - uses: actions/checkout@v7
-      # PR の変更と citest から browser-e2e の matrix を作る。main の全件実行は冒頭の役割分担に従う。
       - uses: dorny/paths-filter@v4
         id: changes
         if: github.event_name == 'pull_request'
@@ -70,8 +68,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
-      # 全計画が Go を使い、部分選定では citest を実行する（実判定の shard は needs_go で個別に決まる）。
-      # そのため setup-go は常に実行する。
+      # test と mirakc-conformance の計画は常に go を実行するので、setup-go は常に実行する。
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
@@ -85,31 +82,21 @@ jobs:
           key: go-test-timings-${{ github.run_id }}
           restore-keys: go-test-timings-
       - name: Move test timings aside
-        shell: bash
-        run: |
-          shopt -s nullglob
-          mkdir -p timings-test
-          files=(timings/*)
-          if (( ${#files[@]} > 0 )); then mv "${files[@]}" timings-test/; fi
-          rm -rf timings
+        run: mkdir -p timings && mv timings timings-test
       - uses: actions/cache/restore@v6
         with:
           path: timings
           key: mirakc-conformance-timings-${{ github.run_id }}
           restore-keys: mirakc-conformance-timings-
+      # PR の変更と citest から browser-e2e の matrix を作る。main の全件実行は冒頭の役割分担に従う。
       - id: plan-browser-e2e
         env:
           E2E_CI_FULL: ${{ steps.changes.outputs.web == 'true' || github.event_name == 'push' }}
           E2E_CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node web/e2e/run.mjs --ci-plan
-      # go test を複数ランナーに分ける。4 コアのランナー 1 台に全パッケージ（race 付きの合計は
-      # 約 600 秒）を詰めると、CPU の取り合いで最長パッケージがそのままジョブ長になるため。
-      # 分ける軸は所要時間で、ffmpeg の要否ではない。ffmpeg を見るテストは ROKUBAN_REQUIRE_FFMPEG を
-      # 見ずに黙って skip するもの（internal/ffargs）があるので、全シャードに ffmpeg を入れる。
       # 振り分けは直前の main 実行の実測（go-test-timings- のキャッシュ）を見て gotestsum の ci-matrix が
       # 決める。手で名前を並べると、パッケージが増えるたびに直すことになるため。
       # 実測が無いパッケージは 0 秒と見積もられる（初回・キャッシュ切れ）。
-      # 必須チェック名 `test` は下の集約ジョブが担う。
       # PR は citest で変更の影響を受けるパッケージだけを選ぶ。main は go list の全件。
       # 対象が空になるのは PR で変更がテストに影響しないときだけで、その場合は planned_skip を出して
       # shard を作らず、集約ジョブ test がそれを成功とみなす（mirakc-conformance と同じ形）。
@@ -122,6 +109,9 @@ jobs:
       # 最長パッケージが実時間の下限になる点は式に入れていない。その分は本数が多い側（従来寄り）に外れる。
       # 実測の無いパッケージが 1 つでもあれば 3 本にする。重さが分からない見積もりの欠けは、ランナー時間が
       # 余る側に寄せる（今までの振り分けと同じ）。0 秒と見なして本数を減らすと、待ちが延びる側に外れる。
+      # run_browser_s3_302・run_s3_conformance・run_mysql_contract は、browser-s3-302・s3-conformance・mysql-contract-test の
+      # job レベルの if が読む。それらは skip されても skipped と表示されるだけでマージを止めない（必須でない）。
+      # そのため計画が失敗したときに赤を出すのは、計画の失敗を受ける必須の集約ジョブの役目になる。
       - id: plan-test
         shell: bash
         env:
@@ -182,20 +172,17 @@ jobs:
             matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings-test/*.json' --partitions 3 < "$packages_file")
           fi
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-      # rokuban が mirakc に期待する API 挙動を実物のコンテナに対して判定する。
       # 冒頭の「PR と main の役割分担」に従う。PR は citest の選定結果、main は go list の全件を
       # gotestsum ci-matrix に渡し、main の test2json 実測を使って最大 3 シャードへ振り分ける。
-      # 各病態ケースは独立したパッケージなので、長い EventIDReset / ingest resume / TestRecordLifecycle なども
-      # パッケージ単位で分散できる。Postgres は ingestresume がどのシャードへ入っても使えるよう全てに置く。
-      # 必須チェック名 `mirakc-conformance` は下の集約ジョブが担う。
-      # PR の本数は見積もり（この job の実測）の合計から、test の計画と同じ式（実効並列度 1、準備 40 秒）で決める。
+      # PR の本数は見積もり（mirakc-conformance-shard の実測。mirakc-conformance-timings- のキャッシュ）の合計から、
+      # test の計画と同じ式（実効並列度 1、準備 40 秒）で決める。
       # 実効並列度は 1 なので、合計がそのまま待ち時間になる。線は 80 秒で 2 本、240 秒で 3 本。
       - id: plan-mirakc-conformance
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          packages_file="$RUNNER_TEMP/packages.txt"
+          packages_file="$RUNNER_TEMP/conformance-packages.txt"
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
             git diff --name-only -z --no-renames "$BASE_SHA" HEAD |
               go run ./scripts/citest -base "$BASE_SHA" -tags conformance ./internal/mirakc/conformance/... > "$packages_file"
@@ -449,6 +436,11 @@ jobs:
           RUSTFS_CONTAINER_ID: ${{ job.services.rustfs.id }}
         run: docker logs "$RUSTFS_CONTAINER_ID" || true
 
+  # go test を複数ランナーに分ける。4 コアのランナー 1 台に全パッケージ（race 付きの合計は
+  # 約 600 秒）を詰めると、CPU の取り合いで最長パッケージがそのままジョブ長になるため。
+  # 分ける軸は所要時間で、ffmpeg の要否ではない。ffmpeg を見るテストは ROKUBAN_REQUIRE_FFMPEG を
+  # 見ずに黙って skip するもの（internal/ffargs）があるので、全シャードに ffmpeg を入れる。
+  # 必須チェック名 `test` は下の集約ジョブが担う。
   test-shard:
     name: test (${{ matrix.description }})
     needs: plan
@@ -641,6 +633,10 @@ jobs:
             test "$SHARD_RESULT" = success
           fi
 
+  # rokuban が mirakc に期待する API 挙動を実物のコンテナに対して判定する。
+  # 各病態ケースは独立したパッケージなので、長い EventIDReset / ingest resume / TestRecordLifecycle なども
+  # パッケージ単位で分散できる。Postgres は ingestresume がどのシャードへ入っても使えるよう全てに置く。
+  # 必須チェック名 `mirakc-conformance` は下の集約ジョブが担う。
   mirakc-conformance-shard:
     name: mirakc-conformance (${{ matrix.description }})
     needs: plan
