@@ -98,14 +98,14 @@ hls.js が non-fatal で報告する次の 4 つは、内容の欠けか停止�
 
 負例は、期待する名前の失敗で落ちたときだけ「期待どおり」とする。名前は `[timecode]`・`[content-jump]`・`[frame-freeze]`・`[seek-frame]`・`[seek-buffered]`・`[audio-gap]`・`[stall]`・`[hls-gap]` のように、各失敗の先頭に付く。待ちが尽きて例外になったものは `[progress]` であり、検出とは数えない。期待する名前は次のとおりである。
 
-負例は期待する名前が出た時点で待ちを打ち切るので、その後の `[progress]` は出ない。判定は変わらない。
-
 - `off-grid` は `[timecode]`・`[content-jump]`・`[frame-freeze]` のどれか
 - `no-offset` は `[seek-frame]`・`[content-jump]`・`[frame-freeze]` のどれか
 - `audio-gap` は `[audio-gap]`
 - `stall` は `[stall]`
 - `event/shrink` は `[playlist-shrink]`
 - `event/extinf-change` は `[playlist-mutated]`
+
+負例は期待する名前が出た時点で待ちを打ち切るので、その後の `[progress]` は出ない。判定は変わらない。
 
 `no-offset` は、Chrome の hls.js では境界を通して再生するだけでは検出できなかった。境界の ±0.5 秒は判定を通り、遠距離シークの後で着地が 48.6 秒になって `[seek-frame]` になり、`bufferAppendNoProgress` が出て再生が進まなかった（`[progress]`）。原因は調べていない。ほかの条件での挙動は未検証である。
 
