@@ -115,12 +115,7 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("encode progress reaches the listener", func(t *testing.T) { runEncodeProgressReport(t, newFixture) })
 	t.Run("original routing reads active copies across stores", func(t *testing.T) { runOriginalStoreRouting(t, newFixture) })
 	t.Run("original serving requires a visible copy in the requested store", func(t *testing.T) { runOriginalServingInStore(t, newFixture) })
-	t.Run("ingest chooses the first rule matching age zero", func(t *testing.T) { runDesiredOriginalStore(t, newFixture) })
-	t.Run("ingest writer state is scoped by site and record", func(t *testing.T) { runIngestWriterState(t, newFixture) })
 	t.Run("storage observations are scoped by store and root", func(t *testing.T) { runStorageSyncScope(t, newFixture) })
-	t.Run("transfer selects present sources for listing and preparation", func(t *testing.T) { runTransferSourcePresence(t, newFixture) })
-	t.Run("placement pruning requires a present desired copy", func(t *testing.T) { runPlacementPruningPresence(t, newFixture) })
-	t.Run("corrupt derived copy retirement requires a present original", func(t *testing.T) { runCorruptCopyRetirementPresence(t, newFixture) })
 	t.Run("orphan paths are scoped by store", func(t *testing.T) { runOrphanStoreScope(t, newFixture) })
 	t.Run("serving returns only active assets", func(t *testing.T) { runMediaServingActiveOnly(t, newFixture) })
 	t.Run("serving covers thumbnails and seek tiles", func(t *testing.T) { runMediaServingDerived(t, newFixture) })
@@ -132,6 +127,18 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("audit lists every media asset path including reserved namespaces", func(t *testing.T) { runMediaAuditPaths(t, newFixture) })
 	t.Run("orphan ageing compares against the database clock", func(t *testing.T) { runMediaOrphanAgeing(t, newFixture) })
 	t.Run("missing asset ageing compares against the database clock", func(t *testing.T) { runMediaMissingAgeing(t, newFixture) })
+	t.Run("storage observation rows are read and cleared per store", func(t *testing.T) { runStorageObservationRows(t, newFixture) })
+}
+
+// RunMediaIngestAndTransfer は取り込みの保存先の選択・書き手の状態・転送の元の選び方の契約を実行する。
+// これらは StorageTransfer・IngestWriterStateReader・IngestStoreChooser を使い、MySQL の fixture はまだそれを実装しないので RunMedia から分けている。
+func RunMediaIngestAndTransfer(t *testing.T, newFixture NewMediaFixture) {
+	t.Helper()
+	t.Run("ingest chooses the first rule matching age zero", func(t *testing.T) { runDesiredOriginalStore(t, newFixture) })
+	t.Run("ingest writer state is scoped by site and record", func(t *testing.T) { runIngestWriterState(t, newFixture) })
+	t.Run("transfer selects present sources for listing and preparation", func(t *testing.T) { runTransferSourcePresence(t, newFixture) })
+	t.Run("placement pruning requires a present desired copy", func(t *testing.T) { runPlacementPruningPresence(t, newFixture) })
+	t.Run("corrupt derived copy retirement requires a present original", func(t *testing.T) { runCorruptCopyRetirementPresence(t, newFixture) })
 }
 
 // RunMediaServingSelection は配信の読み手がコピーを選ぶ規則の契約を実行する。RunMedia 全体は MySQL の fixture がまだ満たさないので、この主張だけを直接回せるようにしている。
