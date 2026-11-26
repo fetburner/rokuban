@@ -123,10 +123,41 @@ jobs:
       E2E_SHARD: ${{ matrix.shard }}/${{ matrix.count }}
     steps:
       - uses: actions/checkout@v7
+      # Go を子プロセスで起動する判定（e2e-go-deps）のフィクスチャ生成用。setup-go の cache は使わず、
+      # test-shard と同じく actions/cache で持つ。setup-go の README は、既定のキャッシュキーに go.mod の
+      # ハッシュを使うと書いている。その 52 MiB は shard のログで `go: downloading` が続き、
+      # モジュールもビルド結果もほぼ入っていなかった。
       - uses: actions/setup-go@v7
         if: matrix.needs_go == true
         with:
           go-version-file: go.mod
+          cache: false
+      - id: go-e2e-dirs
+        if: matrix.needs_go == true
+        shell: bash
+        run: |
+          {
+            echo "gocache=$(go env GOCACHE)"
+            echo "gomodcache=$(go env GOMODCACHE)"
+          } >> "$GITHUB_OUTPUT"
+      # キーは shard ごとに、go.mod と go.sum のハッシュで分ける（test-shard の go-race-build と同じ考え方）。
+      # 別 prefix（go-e2e-build-）なので test-shard のキャッシュとは衝突しない。
+      # build キャッシュは古いキーの中身でも使ってよい。`go help cache` が「correctly accounts for
+      # changes to Go source files, compilers, compiler options, and so on」と書いており、中身が
+      # 合わなければ使われないだけで誤った結果にはならない。フィクスチャ自体はキャッシュしない。
+      # `go test -count=1` で毎回生成するため、製品のビルダーを変えれば出力も変わる。
+      # 保存は main への push で、完全一致が無かったときだけ。PR は読むだけ。
+      # ponytail: 自前パッケージのビルド結果は main が進むと当たらなくなる。効きが落ちたら run ごとのキーへ移る。
+      - id: go-e2e-cache
+        if: matrix.needs_go == true
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ steps.go-e2e-dirs.outputs.gocache }}
+            ${{ steps.go-e2e-dirs.outputs.gomodcache }}
+          key: go-e2e-build-${{ runner.os }}-${{ matrix.shard }}-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: |
+            go-e2e-build-${{ runner.os }}-${{ matrix.shard }}-
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: web/package.json
@@ -147,6 +178,17 @@ jobs:
         if: ${{ !cancelled() }}
         run: node e2e/run.mjs --scripts "$E2E_SCRIPTS" --shard "$E2E_SHARD" --preview
         working-directory: web
+      # restore が完全一致しなかった main の実行だけ保存する（test-shard の Save go build cache と同じ条件）。
+      # main が続けて push されると 2 本の run が同じキーを保存しうる。その save の失敗で判定を赤くしないよう continue-on-error にする。
+      - name: Save go e2e build cache
+        if: github.event_name == 'push' && matrix.needs_go == true && steps.go-e2e-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ steps.go-e2e-dirs.outputs.gocache }}
+            ${{ steps.go-e2e-dirs.outputs.gomodcache }}
+          key: go-e2e-build-${{ runner.os }}-${{ matrix.shard }}-${{ hashFiles('go.mod', 'go.sum') }}
 
   # 必須チェック名 `browser-e2e` を保つ集約ジョブ。skip / cancelled / failure を緑にしない。
   browser-e2e:
