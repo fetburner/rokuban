@@ -2,7 +2,6 @@ package pgstore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -13,7 +12,6 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -22,28 +20,6 @@ var encodePolicyContractEventID atomic.Int32
 
 func TestEncodePolicyContract(t *testing.T) {
 	contracttest.RunEncodePolicy(t, newEncodePolicyContractFixture)
-}
-
-func TestPresentCopies_RejectedCMDetectionDoesNotCreatePolicyRow(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	recordingID := dbtest.Recording(t, pool)
-	original := dbtest.MediaAsset(t, pool, recordingID)
-	observePresentCopyMissing(t, pool, original, dbtest.StoreName)
-
-	enabled := true
-	if err := testMedia(pool, dbtest.StoreName, "").SetPolicy(t.Context(), recordingID, store.EncodePolicyUpdate{CMDetect: &enabled}); !errors.Is(err, store.ErrOriginalUnavailable) {
-		t.Fatalf("enabling detection with missing original: %v, want ErrOriginalUnavailable", err)
-	}
-	// 契約の読み取りは、既定値の方針の行と行が無い状態を区別しない。
-	var exists bool
-	if err := pool.QueryRow(t.Context(), `SELECT EXISTS (
-    SELECT 1 FROM recording_processing_policy WHERE recording_id = $1
-)`, recordingID).Scan(&exists); err != nil {
-		t.Fatalf("checking missing recording's policy row: %v", err)
-	}
-	if exists {
-		t.Error("missing recording got a policy row, want none")
-	}
 }
 
 type encodePolicyContractDB struct {
@@ -69,8 +45,8 @@ func newEncodePolicyContractFixture(t *testing.T) contracttest.EncodePolicyFixtu
 			}
 		},
 		SetDesired: db.setDesired, SetRemovalRequest: db.setRemovalRequest,
-		HasRemovalRequest: db.hasRemovalRequest,
-		SetAttempt:        db.setAttempt, SetChapterSpans: db.setChapterSpans,
+		HasRemovalRequest: db.hasRemovalRequest, HasPolicyRow: db.hasPolicyRow,
+		SetAttempt: db.setAttempt, SetChapterSpans: db.setChapterSpans,
 		BeginChapterEdit:  db.beginChapterEdit,
 		BeginPolicyUpdate: db.beginPolicyUpdate, BeginRemoval: db.beginRemoval,
 		BeginRecordingLock: db.beginRecordingLock, TryPolicyLock: db.tryPolicyLock,
@@ -127,6 +103,15 @@ func (f *encodePolicyContractDB) hasRemovalRequest(t *testing.T, recordingID int
 	var exists bool
 	if err := f.pool.QueryRow(context.Background(), "SELECT EXISTS (SELECT 1 FROM encoded_asset_removal_requests WHERE recording_id = $1 AND profile = $2)", recordingID, profile).Scan(&exists); err != nil {
 		t.Fatalf("reading encoded asset removal request: %v", err)
+	}
+	return exists
+}
+
+func (f *encodePolicyContractDB) hasPolicyRow(t *testing.T, recordingID int64) bool {
+	t.Helper()
+	var exists bool
+	if err := f.pool.QueryRow(t.Context(), "SELECT EXISTS (SELECT 1 FROM recording_processing_policy WHERE recording_id = $1)", recordingID).Scan(&exists); err != nil {
+		t.Fatalf("checking recording policy row: %v", err)
 	}
 	return exists
 }

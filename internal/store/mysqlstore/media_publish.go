@@ -410,14 +410,11 @@ WHERE recording_id = ? AND profile = ? FOR UPDATE`, in.RecordingID, in.Profile).
 // encodedPublishStateTx は公開の計画に要る状態を、録画の行を取った後の tx の中で読む。
 func encodedPublishStateTx(ctx context.Context, tx *sql.Tx, in store.EncodedPublishInput) (store.EncodedPublishState, error) {
 	var state store.EncodedPublishState
-	var desired sql.NullBool
-	err := tx.QueryRowContext(ctx, `
-SELECT JSON_CONTAINS(encode_profiles, JSON_QUOTE(?)) FROM recording_processing_policy
-WHERE recording_id = ? FOR SHARE`, in.Profile, in.RecordingID).Scan(&desired)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return state, fmt.Errorf("loading desired encode profiles: %w", err)
+	var err error
+	state.Desired, err = encodeProfileDesiredForShare(ctx, tx, in.RecordingID, in.Profile)
+	if err != nil {
+		return state, err
 	}
-	state.Desired = desired.Valid && desired.Bool
 
 	if in.HasRebuildRequest {
 		var raw []byte
