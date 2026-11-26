@@ -34,6 +34,10 @@ type CMDetectionFixture struct {
 	NewRecordingWithoutActiveOriginal func(t *testing.T, absence CMOriginalAbsence) int64
 	// AdvancePolicyGeneration は現在の CM 検出世代を進める。
 	AdvancePolicyGeneration func(t *testing.T, recordingID int64)
+	// SetRecordingTimes は録画の実尺の開始と終了を書く。
+	SetRecordingTimes func(t *testing.T, recordingID int64, startedAt, endedAt time.Time)
+	// HasAttemptRow は録画の CM 検出試行の行が残っているかを返す。DeleteStaleAttempts の結果は他の読み取りに現れないため、行の有無だけを見る。
+	HasAttemptRow func(t *testing.T, recordingID int64) bool
 }
 
 // CMOriginalAbsence は生きた原本が無い録画の作り方を表す。
@@ -105,8 +109,120 @@ func RunCMDetection(t *testing.T, newStore NewCMDetectionStore) {
 		testCMDetectionLearnedLogoSaved(t, newStore, station)
 	})
 
+	t.Run("recording duration uses actual times and rejects a missing recording", func(t *testing.T) {
+		testCMDetectionRecordingDuration(t, newStore)
+	})
+	t.Run("missing detections list desired recordings in ID order with a limit", func(t *testing.T) {
+		testCMDetectionMissingDetections(t, newStore)
+	})
+	t.Run("stale attempts are deleted and current attempts are kept", func(t *testing.T) {
+		testCMDetectionStaleAttempts(t, newStore)
+	})
+
 	runDetectionWaitsForChapterWrite(t, newStore)
 	runLearnedLogoWaitsForAreaWrite(t, newStore, station)
+}
+
+// testCMDetectionRecordingDuration は、実尺が無い録画は番組尺を、実尺がある録画は実尺を返すことを確かめる。
+// 解析の締切（ingest と FailOrphanLogoCandidates）の入力で、番組尺と実尺を取り違えると締切がずれる。
+func testCMDetectionRecordingDuration(t *testing.T, newStore NewCMDetectionStore) {
+	t.Helper()
+	f := newStore(t)
+	ctx := context.Background()
+	if _, err := f.Store.GetRecordingDuration(ctx, -1); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRecordingDuration(missing) error = %v, want ErrNotFound", err)
+	}
+	id := f.NewRecording(t)
+	if got, err := f.Store.GetRecordingDuration(ctx, id); err != nil || got != 30*time.Minute.Milliseconds() {
+		t.Fatalf("GetRecordingDuration(no actual times) = %d, %v; want the 30-minute program duration", got, err)
+	}
+	start := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	f.SetRecordingTimes(t, id, start, start.Add(90*time.Second+250*time.Millisecond))
+	if got, err := f.Store.GetRecordingDuration(ctx, id); err != nil || got != 90250 {
+		t.Fatalf("GetRecordingDuration(actual times) = %d, %v; want 90250", got, err)
+	}
+}
+
+// testCMDetectionMissingDetections は、desired な録画だけを recording ID 順に limit 件返すことを確かめる。
+// 対象外は、ごみ箱・原本が無い録画・既に結果がある録画。ingest の入力と reconcile の上限が、この順に依存する。
+func testCMDetectionMissingDetections(t *testing.T, newStore NewCMDetectionStore) {
+	t.Helper()
+	f := newStore(t)
+	ctx := context.Background()
+	var want []int64
+	want = append(want, f.NewRecording(t), f.NewRecording(t))
+
+	trashed := f.NewRecording(t)
+	if err := f.TrashStore.SoftDelete(ctx, trashed); err != nil {
+		t.Fatalf("SoftDelete() error = %v", err)
+	}
+	f.NewRecordingWithoutActiveOriginal(t, CMOriginalNoRow)
+
+	detected := f.NewRecording(t)
+	attempt, shouldRun, err := f.Store.BeginAttempt(ctx, detected, 3)
+	if err != nil || !shouldRun {
+		t.Fatalf("BeginAttempt() = %+v, %v, %v; want running", attempt, shouldRun, err)
+	}
+	if saved, err := f.Store.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 0, EndMs: 1000}}, store.CMDetectionMaterial{}); err != nil || !saved {
+		t.Fatalf("SaveDetection() = %v, %v; want saved", saved, err)
+	}
+
+	want = append(want, f.NewRecording(t))
+	jobs, err := f.Store.ListMissingDetections(ctx, 100)
+	if err != nil {
+		t.Fatalf("ListMissingDetections(100) error = %v", err)
+	}
+	if got := cmDetectionJobIDs(jobs); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListMissingDetections(100) = %v, want %v", got, want)
+	}
+	for _, job := range jobs {
+		if job.RecordingDurationMs != 30*time.Minute.Milliseconds() {
+			t.Fatalf("ListMissingDetections() job %+v, want the 30-minute duration", job)
+		}
+	}
+	limited, err := f.Store.ListMissingDetections(ctx, 2)
+	if err != nil {
+		t.Fatalf("ListMissingDetections(2) error = %v", err)
+	}
+	if got := cmDetectionJobIDs(limited); !reflect.DeepEqual(got, want[:2]) {
+		t.Fatalf("ListMissingDetections(2) = %v, want the first two %v", got, want[:2])
+	}
+}
+
+func cmDetectionJobIDs(jobs []store.CMDetectionJob) []int64 {
+	ids := make([]int64, 0, len(jobs))
+	for _, job := range jobs {
+		ids = append(ids, job.RecordingID)
+	}
+	return ids
+}
+
+// testCMDetectionStaleAttempts は、世代が進んだ録画の試行だけを消し、現在の試行の行を残すことを確かめる。
+// 残った行は試行回数の続きで分かる（消えていれば 1 から始まる）。
+func testCMDetectionStaleAttempts(t *testing.T, newStore NewCMDetectionStore) {
+	t.Helper()
+	f := newStore(t)
+	ctx := context.Background()
+	stale, current := f.NewRecording(t), f.NewRecording(t)
+	for _, id := range []int64{stale, current} {
+		if attempt, shouldRun, err := f.Store.BeginAttempt(ctx, id, 3); err != nil || !shouldRun {
+			t.Fatalf("BeginAttempt(%d) = %+v, %v, %v; want running", id, attempt, shouldRun, err)
+		}
+	}
+	f.AdvancePolicyGeneration(t, stale)
+	if err := f.Store.DeleteStaleAttempts(ctx); err != nil {
+		t.Fatalf("DeleteStaleAttempts() error = %v", err)
+	}
+	if f.HasAttemptRow(t, stale) {
+		t.Fatalf("DeleteStaleAttempts() kept the stale attempt of recording %d", stale)
+	}
+	if !f.HasAttemptRow(t, current) {
+		t.Fatalf("DeleteStaleAttempts() deleted the current attempt of recording %d", current)
+	}
+	kept, shouldRun, err := f.Store.BeginAttempt(ctx, current, 3)
+	if err != nil || !shouldRun || kept.AttemptCount != 2 {
+		t.Fatalf("BeginAttempt() after DeleteStaleAttempts = %+v, %v, %v; want the kept attempt continued at 2", kept, shouldRun, err)
+	}
 }
 
 func testCMDetectionTrashClearsAttempt(t *testing.T, newStore NewCMDetectionStore) {

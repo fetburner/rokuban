@@ -10,8 +10,8 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// Analysis は CM 検出の局単位の状態（ロゴの枠・候補・学習済みロゴ）と、候補解析の入力を MySQL で読み書きする。
-// pgstore の Analysis と同じ役割で、CMDetection の残りのメソッドも後のタスクで同じ型に足す。
+// Analysis は CM 検出の局単位の状態（ロゴの枠・候補・学習済みロゴ）と、録画単位の試行・結果を MySQL で読み書きする。
+// pgstore の Analysis と同じ役割で、store.CMStation と store.CMDetection の両方を実装する（後者は cmdetect.go）。
 type Analysis struct {
 	db        *sql.DB
 	storeName string
@@ -122,9 +122,9 @@ type cmWorkItemRow struct {
 
 // cmWorkItem は録画の検出入力を読む。読む置き場の原本コピーは置き場名順の先頭の active コピー
 // （pgstore の preferred_active_media_asset_copy と同じ選び方）。録画が無ければ store.ErrNotFound。
-func (s *Analysis) cmWorkItem(ctx context.Context, recordingID int64) (cmWorkItemRow, error) {
+func (s *Analysis) cmWorkItem(ctx context.Context, q queryRower, recordingID int64) (cmWorkItemRow, error) {
 	var row cmWorkItemRow
-	err := s.db.QueryRowContext(ctx, `
+	err := q.QueryRowContext(ctx, `
 SELECT r.id, r.network_id, r.service_id, copy.rel_path,
        COALESCE(p.cm_detect, FALSE),
        r.deleted_at IS NOT NULL,
@@ -151,7 +151,7 @@ WHERE r.id = ?`, s.storeArg(), s.storeArg(), recordingID).
 
 // GetWorkItem は録画と有効な原本の検出入力を返す。録画が無ければ store.ErrNotFound。
 func (s *Analysis) GetWorkItem(ctx context.Context, recordingID int64) (store.CMDetectionWorkItem, error) {
-	row, err := s.cmWorkItem(ctx, recordingID)
+	row, err := s.cmWorkItem(ctx, s.db, recordingID)
 	if err != nil {
 		return store.CMDetectionWorkItem{}, err
 	}
@@ -168,7 +168,7 @@ func (s *Analysis) GetWorkItem(ctx context.Context, recordingID int64) (store.CM
 
 // GetCandidateRecording は候補解析に必要な録画と原本の状態を返す。録画が無ければ store.ErrNotFound。
 func (s *Analysis) GetCandidateRecording(ctx context.Context, recordingID int64) (store.CMLogoCandidateRecording, error) {
-	row, err := s.cmWorkItem(ctx, recordingID)
+	row, err := s.cmWorkItem(ctx, s.db, recordingID)
 	if err != nil {
 		return store.CMLogoCandidateRecording{}, err
 	}

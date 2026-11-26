@@ -55,6 +55,20 @@ func newCMDetectionContractFixture(t *testing.T) contracttest.CMDetectionFixture
 		AdvancePolicyGeneration: func(t *testing.T, recordingID int64) {
 			advanceCMDetectionPolicyGeneration(t, pool, recordingID)
 		},
+		SetRecordingTimes: func(t *testing.T, recordingID int64, startedAt, endedAt time.Time) {
+			if _, err := pool.Exec(context.Background(), `UPDATE recordings SET started_at = $2, ended_at = $3 WHERE id = $1`,
+				recordingID, startedAt, endedAt); err != nil {
+				t.Fatalf("setting recording %d times: %v", recordingID, err)
+			}
+		},
+		HasAttemptRow: func(t *testing.T, recordingID int64) bool {
+			var exists bool
+			if err := pool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM recording_cm_attempts WHERE recording_id = $1)`,
+				recordingID).Scan(&exists); err != nil {
+				t.Fatalf("checking CM detection attempt row for recording %d: %v", recordingID, err)
+			}
+			return exists
+		},
 	}
 }
 
