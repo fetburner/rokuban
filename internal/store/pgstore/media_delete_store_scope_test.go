@@ -1,8 +1,7 @@
-package pgstore
+// このファイルは Postgres でだけ残す削除の検査を置く。残す理由は 2 つ。view・関数を名前で直接読むこと、
+// 配信の読み手の構成（NewMediaForStreamer）が MySQL に無いこと。
 
-// このファイルは、削除の述語を Postgres の view・関数の名前で直接確かめるテストと、配信の読み手の選び方だけを置く。
-// 削除の列挙・遷移が他の置き場のコピーを見ないこと、until_encoded の派生の置き場、旧世代の判定は
-// contracttest.RunMediaDelete に移した（MySQL でも同じ主張を回す）。
+package pgstore
 
 import (
 	"context"
@@ -91,8 +90,9 @@ VALUES ($1, 'until_encoded', ARRAY['h264'], false)`, recordingID); err != nil {
 
 func stringPointer(value string) *string { return &value }
 
-// 派生物（encoded / thumbnail / seek_tiles）の現行の active コピーが、置き場の一致を満たさないときの view の判定を見る。
-// 旧世代のコピーを現行と数えない（view の判定）ことは、列挙の主張（contracttest）と別に、view の名前で確かめる。
+// TestDerivedReadersRequireCurrentGenerationAcrossStores は、encoded の旧世代のコピーと、別の置き場にだけある現行のコピーを
+// どう数えるかを確かめる。active_media_asset_copies（置き場あり・なし）・unencoded_desired_profiles・
+// unsatisfied_encode_rebuilds・ListEncodedMeaningEvidence の判定を、それぞれ view・関数の名前で直接読む。
 func TestDerivedReadersRequireCurrentGenerationAcrossStores(t *testing.T) {
 	ctx := context.Background()
 	env := newStoreScopeEnv(t)

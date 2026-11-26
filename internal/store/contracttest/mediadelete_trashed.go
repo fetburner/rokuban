@@ -9,7 +9,6 @@ import (
 )
 
 // runUntilEncodedTrashed は、ごみ箱の録画の原本を until_encoded の遷移で deleting にせず、store.ErrTrashed を返すことを確かめる。
-// 消去済みの録画は（false, nil）になる。ごみ箱の録画は、呼び出し元がエラーとして扱えるように区別する。
 func runUntilEncodedTrashed(t *testing.T, newStore NewMediaDeleteStore) {
 	f := newStore(t)
 	ctx := t.Context()
