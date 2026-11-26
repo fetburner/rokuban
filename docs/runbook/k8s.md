@@ -207,7 +207,8 @@ E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run
 
 | 構成 | 意図の PUT から mirakc の schedule まで | 判定 |
 |---|---|---|
-| 常駐 client（watcher Deployment に同居）。`run.sh --only 1 --no-build` を 2 回 | 0 / 1 / 0 秒、0 / 0 / 0 秒（最大 1 秒） | PASS |
+| 常駐 client（watcher Deployment に同居）。River の全量実行（最終コード） | 1 / 0 / 0 秒（最大 1 秒） | PASS |
+| asynq の常駐 ruler の経路（notifier の常駐 worker が ruler を即座に引く。asynq の全量実行、最終コード） | 1 / 1 / 1 秒（最大 1 秒） | PASS |
 | 常駐の `--queues` を `ruler` に替えた注入（手で 1 回） | 9 / 8 / 8 秒。常駐が無い理由で FAIL | FAIL |
 | 常駐の無い構成（ScaledJob だけ。変更前） | 7〜11 秒（前段の計測。同じ判定、閾値 3 秒で FAIL） | FAIL |
 

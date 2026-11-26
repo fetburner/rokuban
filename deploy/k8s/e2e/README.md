@@ -46,7 +46,9 @@ Ingress controller は kind に無いので、6.5 は Ingress の行き先の Se
 
 ## asynq 構成で回す
 
-ジョブエンジンを asynq（Redis）にした判定は、overlay を asynq 用に切り替えて立てる。名前空間は rokuban-e2e に固定し、それ以外の指定は run.sh が拒む。判定 6 は asynq の対象ではない。
+ジョブエンジンを asynq（Redis）にした判定は、overlay を切り替えて立てる。判定 1〜5 は River・asynq の両構成で全項目が PASS した（2026-11-26、kind、Colima 4 CPU / 8 GB）。
+
+名前空間は rokuban-e2e に固定し、それ以外の指定は run.sh が拒む。判定 6 は asynq の対象ではない。2 CPU / 4 GB では、1.4 と 3.1 が Insufficient memory で落ちた。
 
     E2E_OVERLAY=e2e-asynq ./deploy/k8s/e2e/run.sh
 
@@ -55,9 +57,9 @@ Ingress controller は kind に無いので、6.5 は Ingress の行き先の Se
 - 滞留の数え方は notifier の件数の口を、ツールボックスから読む（queue_backlog）。読めないときは 0 にせず失敗させる。
 - 滞留の作り方は asynqprobe が積む。投入は rokuban の契約（internal/jobq）と adapter を通す。Redis の内部キーには触れない。
 - asynqprobe は手元の Go で go run する。kube.sh が kubectl port-forward で Redis を手元に開いてから呼ぶので、Go と kubectl が要る。
-- 判定 3 の encode の producer は River の表に直接書いているため、asynq では扱えない。判定 3 は FAIL か TODO のまま残る。
+- 判定 3 の encode は、両構成とも製品の経路で desired プロファイルを足し（encode-profiles の API）、asynq は encode-reconcile で積む。River は積んだ行を river_job に直接 INSERT する（River の表は asynq に無いため）。
 
-**CI では回さない。** 判定 1〜5 は 40 分前後かかる。Dockerfile.full（ffmpeg）を含むイメージを焼く必要がある。KEDA を入れて単一ノードの kind に全ロールを載せるのも重い。
+**CI では回さない。** 理由は [docs/runbook/k8s.md](../../../docs/runbook/k8s.md) §受け入れ判定ハーネス の「CI では回さない」に書いてある。今回の 2 回の全量実行は、ログの初行から最終行まで、River が約 5 分、asynq が約 6 分だった（--fresh、イメージはキャッシュ済み）。
 
 CI は代わりに overlays/asynq と overlays/e2e-asynq を kustomize build して kubeconform に掛ける。場所は .github/workflows/ci.yml の manifests ジョブである。判定の結果は、実行した時点の値として runbook の実測の節に書く。
 
