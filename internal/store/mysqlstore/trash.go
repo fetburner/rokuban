@@ -76,9 +76,9 @@ ON DUPLICATE KEY UPDATE recording_id = recording_id`, recordingID); err != nil {
 	})
 }
 
-// MarkPurged は猶予の cutoff を過ぎ、削除対象アセットが残っていない録画を完全削除済みにし、今回確定した録画を返す。
-// 仕組み: 候補を録画の行ロック（FOR UPDATE OF r）で読み、各行を purged_at IS NULL の条件つきで更新する。
-// 更新で 1 行変わった録画だけを返す。並行呼び出しの振る舞いは未検証（契約テストは逐次の 2 回呼びだけを検査する）。
+// MarkPurged は、猶予を過ぎたか即時削除を要求されたごみ箱の録画のうち、削除済みでないコピーが残っていないものを完全削除済みにし、今回確定した録画を返す。
+// 候補を録画の行ロック（FOR UPDATE OF r）で読み、各行を purged_at IS NULL の条件つきで更新して、1 行変わった録画だけを返す。
+// 並行に呼んだときの振る舞いは未検証（契約テストは逐次の 2 回呼びだけを検査する）。
 func (s *Recordings) MarkPurged(ctx context.Context, graceCutoff time.Time) ([]store.PurgedRecording, error) {
 	var purged []store.PurgedRecording
 	err := runTx(ctx, s.db, func(tx *sql.Tx) error {
