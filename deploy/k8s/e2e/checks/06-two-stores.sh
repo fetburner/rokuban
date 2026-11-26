@@ -420,7 +420,7 @@ else
     # 転送ワーカーは転送元を「マウントした置き場」か「internal_url の置き場」からしか読めない。
     # 滞留はあるのに転送先のコピー（pending を含む）が 1 件も予約されないなら、転送元が候補に無い
     # （internal_url の未設定・到達不能）。その場合を名指しする。
-    xfer_backlog="$(river_backlog "transfer_${E2E_STORE_B}")"
+    xfer_backlog="$(queue_backlog "transfer_${E2E_STORE_B}")"
     xfer_state="$(copy_state "$asset_old" "$E2E_STORE_B")"
     xfer_err="$(psql_q "SELECT left(coalesce(errors::text, ''), 300) FROM river_job WHERE queue = 'transfer_${E2E_STORE_B}' ORDER BY id DESC LIMIT 1" | head -1)"
     # 転送の失敗理由は転送 Pod のログに出る（river のエラーには残らないことがある）。

@@ -494,6 +494,16 @@ observed_new_job_reached() {
   observed_new_jobs "$1" "$2" | grep -qx "$3"
 }
 
+# ---- 滞留の数え方と作り方（エンジンで分かれる）-----------------------------
+#
+# 判定が「待っている」と呼ぶ件数は 2 つの経路で数える。**集合の定義はどちらも
+# KEDA のトリガと同じでなければならない。** ずれると、ハーネスだけが待ち続ける。
+#
+#   - river:  river_job の state（下の riverBacklogStates）。
+#   - asynq:  件数の HTTP（notifier の deliverable-count）。トリガが読むものそのもの。
+#             ハーネスは同じ口を叩くので、集合の定義はサーバ側（asynqadapter の
+#             CountDeliverable）が 1 か所に持つ。
+
 # riverBacklogStates は「待っている」とみなす River の状態。
 #
 # **KEDA のトリガが数える集合とここは同じでなければならない。** ずれると、
@@ -505,8 +515,22 @@ observed_new_job_reached() {
 # **本物の ScaledJob への契約でもある**: そちらのトリガもこの集合を数えること。
 riverBacklogStates="'available','retryable'"
 
-# river_backlog <queue> --- 待ち行列にいるジョブ数（KEDA のトリガと同じ条件）。
-river_backlog() {
+# queue_backlog <queue> --- 待ち行列にいるジョブ数（KEDA のトリガと同じ条件）。
+#
+# 呼び出し元は判定（checks/）で、エンジンを知らなくてよい。asynq では件数の口を
+# ツールボックスから叩く（製品の Pod から叩くと、判定の観測が判定対象の生死に
+# 巻き込まれる --- tb_curl の注記）。
+queue_backlog() {
+  if [ "$E2E_ENGINE" = "asynq" ]; then
+    # 読めなかったときは 0 にせず非 0 を返す（River 側と同じ規律）。パイプの終了状態は
+    # 最後のコマンド（sed）のものになるので、取得は変数に受けて個別に確かめる。
+    local body value
+    body="$(tb_curl -sS --fail "http://rokuban-notifier:40773/internal/queues/$1/deliverable-count")" || return 1
+    value="$(printf '%s' "$body" | sed -n 's/.*"value":\([0-9][0-9]*\).*/\1/p')"
+    [ -n "$value" ] || return 1
+    printf '%s\n' "$value"
+    return 0
+  fi
   psql_q "SELECT count(*) FROM river_job WHERE queue = '$1' AND state IN (${riverBacklogStates})" \
     | tr -d '[:space:]'
 }
@@ -532,9 +556,34 @@ river_backlog() {
 # KEDA のポーリングとの前後関係次第で、**実物の worker 込みでは未測定**。
 insert_probe_job() {
   local queue="$1" count="${2:-1}"
+  if [ "$E2E_ENGINE" = "asynq" ]; then
+    asynq_insert_probe "$queue" "$count"
+    return
+  fi
   psql_q "INSERT INTO river_job (state, queue, kind, args, max_attempts, priority, scheduled_at)
           SELECT 'available', '$queue', 'e2e_probe', '{}'::jsonb, 1, 1, now()
           FROM generate_series(1, $count)" >/dev/null
+}
+
+# asynq_insert_probe <queue> [count] --- asynq の滞留を件数ぶん積む。
+#
+# asynq の内部キー（asynq:{...}）は書かない（不変条件 14）。投入は rokuban の契約
+# （internal/jobq）と adapter（internal/jobq/asynqadapter）を通す deploy/k8s/e2e/asynqprobe
+# が行う。Coalesce を false にした probe kind なので、件数ぶんの滞留になる。
+# Redis は kind の中なので、port-forward で手元に開いてから走らせる。
+asynq_insert_probe() {
+  local queue="$1" count="$2" pf rc=0 i
+  k port-forward svc/rokuban-redis "${E2E_REDIS_LOCAL_PORT}:6379" >/dev/null 2>&1 &
+  pf=$!
+  for i in $(seq 1 30); do
+    if (exec 3<>"/dev/tcp/127.0.0.1/${E2E_REDIS_LOCAL_PORT}") 2>/dev/null; then break; fi
+    sleep 0.5
+  done
+  (cd "$E2E_ROOT" && go run ./deploy/k8s/e2e/asynqprobe \
+    -redis "redis://127.0.0.1:${E2E_REDIS_LOCAL_PORT}/0" -queue "$queue" -count "$count") >/dev/null || rc=$?
+  kill "$pf" 2>/dev/null
+  wait "$pf" 2>/dev/null
+  return "$rc"
 }
 
 # ---- 判定 3 の producer（実物の encode を 1 件走らせる）--------------------
@@ -579,8 +628,10 @@ e2e_seed_media_file() {
 
 produce_real_encode_job() {
   # 前の周回の残骸を落とす。**media_assets を先に消す**（recordings への FK は
-  # ON DELETE CASCADE ではない）。
-  psql_q "DELETE FROM river_job WHERE queue = 'encode'" >/dev/null || return 1
+  # ON DELETE CASCADE ではない）。asynq の待ちは river_job に無いので、消すのは製品の表だけ。
+  if [ "$E2E_ENGINE" = "river" ]; then
+    psql_q "DELETE FROM river_job WHERE queue = 'encode'" >/dev/null || return 1
+  fi
   psql_q "DELETE FROM media_assets WHERE recording_id IN
             (SELECT id FROM recordings WHERE title = '${E2E_ENCODE_TITLE}')" >/dev/null || return 1
   psql_q "DELETE FROM recordings WHERE title = '${E2E_ENCODE_TITLE}'" >/dev/null || return 1
@@ -615,12 +666,28 @@ produce_real_encode_job() {
           INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
           SELECT id, 'main', '${E2E_ENCODE_REL_PATH}', 0, 'active' FROM asset" >/dev/null || return 1
 
+  # desired に encode プロファイルを足す（判定 6.2 と同じ製品の API。追加専用で 204）。
+  # desired が空だと、encode は desired_profile_excluded で飛ばされる（両エンジン共通）。
+  local code
+  code="$(tb_curl -X POST -H 'Host: rokuban.local' -H 'Content-Type: application/json' \
+    -d "{\"profiles\":[\"${E2E_ENCODE_PROFILE}\"]}" -o /dev/null -w '%{http_code}' \
+    "http://rokuban-api:40773/api/recordings/${rec_id}/encode-profiles")" || return 1
+  [ "$code" = "204" ] || { log_step "encode-profiles が 204 を返さない（${code:-なし}）"; return 1; }
+
+  if [ "$E2E_ENGINE" = "asynq" ]; then
+    # asynq では製品の経路で積む（River の行を直接 INSERT しない）。encode-reconcile が、
+    # desired と原本の揃った録画について encode を積む。
+    tb_rokuban enqueue encode-reconcile >/dev/null 2>&1 || { log_step "encode-reconcile を投入できない"; return 1; }
+    log_step "queued a real encode via the product path (recording_id=${rec_id}, profile=${E2E_ENCODE_PROFILE}, source ${size} bytes)"
+    return 0
+  fi
+
   # **`max_attempts` は 1。** 失敗したら `discarded` になって滞留が消える ---
   # 再試行で新しい Job が起き続けると、判定 3 が「どの Job を見ているのか」を
   # 見失う。
   psql_q "INSERT INTO river_job (state, queue, kind, args, max_attempts, priority, scheduled_at)
-          VALUES ('available', 'encode', 'encode',
-                  jsonb_build_object('recording_id', ${rec_id}::bigint, 'profile', '${E2E_ENCODE_PROFILE}'),
+          VALUES ('available', '${E2E_ENCODE_QUEUE}', 'encode',
+                  jsonb_build_object('recording_id', ${rec_id}::bigint, 'profile', '${E2E_ENCODE_PROFILE}', 'store', 'main'),
                   1, 1, now())" >/dev/null || return 1
   log_step "queued a real encode job (recording_id=${rec_id}, profile=${E2E_ENCODE_PROFILE}, source ${size} bytes)"
 }
@@ -630,6 +697,12 @@ produce_real_encode_job() {
 # running は触らない。触ると判定 3（実行中の Job が殺されないこと）で、
 # ハーネス自身が実行中のジョブを終わったことにしてしまう。
 drain_queue() {
+  if [ "$E2E_ENGINE" = "asynq" ]; then
+    # asynq の公開の契約には、待ちを捨てる経路が無い。ここでは何もしない。
+    # 判定 3 は encode を 1 件だけ積むので、掴まれた後の待ちは 0 のままになる。
+    # 掴まれた後の Job は止めず、待ちを消すこともしない。
+    return 0
+  fi
   psql_q "UPDATE river_job SET state = 'completed', finalized_at = now()
           WHERE queue = '$1' AND state IN ('available','retryable','scheduled')" >/dev/null
 }

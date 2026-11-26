@@ -65,14 +65,14 @@ fi
 drained() {
   local backlog active
   # 読めなかったことを「0 だった」に潰さない（`-z` は kubectl のエラーでも真）。
-  backlog="$(river_backlog "$queue")" || return 1
+  backlog="$(queue_backlog "$queue")" || return 1
   [ "$backlog" = "0" ] || return 1
   active="$(k get jobs -l "scaledjob.keda.sh/name=${scaledjob}" \
     -o jsonpath='{.items[?(@.status.active)].metadata.name}')" || return 1
   [ -z "$active" ]
 }
 if ! retry_until 180 "the queue and the worker jobs to drain" drained; then
-  fail "2.2" "開始時点で worker が 0 になっていない --- backlog=$(river_backlog "$queue") jobs=$(jobs_owned_by_scaledjob "$scaledjob")"
+  fail "2.2" "開始時点で worker が 0 になっていない --- backlog=$(queue_backlog "$queue") jobs=$(jobs_owned_by_scaledjob "$scaledjob")"
   # **宣言した id は必ず埋める。** 埋めないと集計側が「判定が黙って死んだ」と
   # 報告し、本物の突然死と区別が付かなくなる（lib/log.sh の plan）。
   todo "2.3" "開始状態が 0 でないので投入を観測していない"
@@ -80,6 +80,13 @@ if ! retry_until 180 "the queue and the worker jobs to drain" drained; then
   exit 0
 fi
 pass "2.2" "開始時点で worker Job は 0（待ち行列も空）"
+
+# latest_cronjob_job <cronjob> --- その CronJob が作った Job のうち最新の名前。
+# CronJob の Job は `<CronJob 名>-<時刻>` と名付けられる。ラベルは版によって付かないので使わない。
+latest_cronjob_job() {
+  k get jobs -o name --sort-by=.metadata.creationTimestamp 2>/dev/null \
+    | sed 's#^job.batch/##' | grep "^${1}-[0-9]" | tail -1
+}
 
 # ---- 2.3 / 2.4 CronJob の自然な発火から 0 → 1 → 0 まで --------------------
 
@@ -95,12 +102,6 @@ if ! before_schedule="$(k get cronjob "$cronjob" -o jsonpath='{.status.lastSched
   todo "2.4" "投入を観測していないので 0 → 1 → 0 も観測していない"
   exit 0
 fi
-if ! before_inserted="$(psql_q "SELECT count(*) FROM river_job WHERE queue = '$queue'" | tr -d '[:space:]')" ||
-   [ -z "$before_inserted" ]; then
-  fail "2.3" "${queue} の現在のジョブ件数を読めない --- 投入を観測できない"
-  todo "2.4" "同上"
-  exit 0
-fi
 
 log_step "waiting for ${cronjob} to fire on its own schedule (up to 180s)"
 cronjob_fired() {
@@ -114,18 +115,21 @@ if ! retry_until 180 "the CronJob to fire" cronjob_fired; then
   exit 0
 fi
 
-# **投入されたことを DB 側でも見る。** CronJob が発火しただけでは足りない
+# **投入されたことを製品の出力で見る。** CronJob が発火しただけでは足りない
 # （`rokuban enqueue` が失敗していても lastScheduleTime は進む）。
+# 見るのは発火で生まれた enqueue Job の出力（`inserted job ...`）であり、
+# エンジンに依らない。River の行数や asynq の件数を直接読まない。
+# 合流したとき（`job ... already pending, not inserted`）は、入らなかったとして数えない。
 inserted() {
-  local now
-  now="$(psql_q "SELECT count(*) FROM river_job WHERE queue = '$queue'" | tr -d '[:space:]')" || return 1
-  [ -n "$now" ] || return 1
-  [ "$now" -gt "$before_inserted" ]
+  local job
+  job="$(latest_cronjob_job "$cronjob")" || return 1
+  [ -n "$job" ] || return 1
+  k logs "job/${job}" 2>/dev/null | grep -q '^inserted job '
 }
 if retry_until 120 "a job to be inserted into ${queue}" inserted; then
-  pass "2.3" "worker が 0 のまま CronJob が ${queue} にジョブを投入した"
+  pass "2.3" "worker が 0 のまま CronJob が ${queue} にジョブを投入した（enqueue Job の出力で確認）"
 else
-  fail "2.3" "CronJob は発火したが ${queue} にジョブが入らない --- $(k logs "job/$(k get jobs -l "batch.kubernetes.io/cronjob-name=${cronjob}" -o jsonpath='{.items[-1:].metadata.name}')" 2>&1 | tail -3 | tr '\n' ' ')"
+  fail "2.3" "CronJob は発火したが ${queue} にジョブが入らない --- $(k logs "job/$(latest_cronjob_job "$cronjob")" 2>&1 | tail -3 | tr '\n' ' ')"
   todo "2.4" "投入が起きていないので 0 → 1 → 0 を観測していない"
   exit 0
 fi
@@ -154,6 +158,6 @@ spawned_and_drained() {
 if retry_until 240 "KEDA to spawn and drain a worker job" spawned_and_drained; then
   pass "2.4" "KEDA が起こした Job ${E2E_OBSERVED_JOB} が消化して落ちた（0 → 1 → 0 を watch で観測）"
 else
-  fail "2.4" "0 → 1 → 0 を観測できない --- 新しく起きた Job: [$(observed_new_jobs "$watch_file" | tr '\n' ' ')] backlog=$(river_backlog "$queue") watch: $(tr '\n' ';' <"$watch_file" | tail -c 300)"
+  fail "2.4" "0 → 1 → 0 を観測できない --- 新しく起きた Job: [$(observed_new_jobs "$watch_file" | tr '\n' ' ')] backlog=$(queue_backlog "$queue") watch: $(tr '\n' ';' <"$watch_file" | tail -c 300)"
 fi
 exit 0

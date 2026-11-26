@@ -20,6 +20,10 @@ overlays/kind/   kind での動作確認用（base + site 1 組 + store 1 組 + 
 overlays/e2e/    受け入れ判定ハーネス用（base + site 2 組 + store 1 組）
 overlays/e2e-two-stores/
                  判定 6 用（base + site 2 組 + store 2 組。tokyo / takamatsu）
+asynq/           asynq 構成の共有部品（component）: Redis（永続ボリュームなし）
+overlays/asynq/  asynq 構成の本番形（base + site + store + asynq。単一サイト `default`・置き場 `main`）
+overlays/e2e-asynq/
+                 asynq 構成の判定形（overlays/e2e の上に asynq の差分を載せる）
 schemas/         kubeconform に渡す CRD スキーマ（KEDA の ScaledJob）
 ```
 
@@ -50,6 +54,32 @@ FS 置き場が 2 つ以上になると、`server` ロールの worker と strea
 <details><summary>根拠</summary>
 
 - base が site 非依存: `workloads_test.go` の `TestBaseIsSiteIndependent`
+
+</details>
+
+## asynq 構成（ジョブエンジンを Redis にする）
+
+ジョブエンジンは設定の選択肢で決まり、既定は Postgres を使う River である。Redis を使う asynq への切り替えは、overlay の差分 3 つだけで行う。base は River の形のまま変えない。
+
+| 差分 | どこに書くか | 理由 |
+|---|---|---|
+| config.yml の worker 節（engine と redis_url） | overlay ごとの config.yml | エンジンは配備全体の決定である。base の冒頭が環境ごとの差は overlay で当てると決めている。環境変数で切り替えると、River の config まで環境変数に依存する |
+| Redis | asynq/ の component | どの overlay に重ねても同じ形で当たる |
+| ScaledJob 13 本（e2e は 17 本）のトリガ | overlay ごとの patches | URL に物理キュー名と notifier の FQDN を書く。site の数と名前空間が決まる overlay でしか書けない |
+| rokuban-secrets の REDIS_URL | 環境の Secret（overlay は出荷しない） | base が Secret を出荷しないのと同じ。パスワードを含みうる値は env で渡す |
+
+component に置くのは Redis だけである。Redis は site の名前も名前空間も知らない。notifier の常駐 worker は base のまま残す（PUT の ruler ヒントを即座に引くため。外すと判定 1.8 が閾値を超える）。トリガを component に入れないのは、URL が site の名前と、e2e の nameSuffix 付きの ScaledJob 名を必要とするからである。kustomize は target が一致しない patch を黙って無視するので、トリガは site の名前を知る overlay に置く。
+
+E10-7 でトリガが base に寄った後に残るのは、Redis・config の worker 節・REDIS_URL の 3 つである。site 修飾は site/ の argv と同じ位置の patch で当てる。overlays/e2e-asynq が既にその形の patch を持つ。
+
+名前空間は overlay が決める。overlays/asynq は default、overlays/e2e-asynq は rokuban-e2e である。トリガの URL と REDIS_URL の FQDN は、その名前空間を指す。別の名前空間に入れるなら、その overlay の URL と Secret を揃えて直す。
+
+<details><summary>根拠</summary>
+
+- 1 つの overlay の全トリガが同じホストを指す: `asynq_test.go` の `TestAsynqOverlaysShareOneNotifierHost`
+- 複製された ScaledJob の集合と patch の集合の一致: `TestAsynqOverlaysRetargetEveryScaledJobExactly`
+- config の worker 節以外が River と同一、rescue_stuck_jobs_after を持たない: `TestAsynqConfigDiffersFromRiverOnlyInTheWorkerSection`
+- notifier の常駐 worker を残す（component が notifier に触れない）: `TestAsynqNotifierKeepsItsResidentRulerWorker`
 
 </details>
 

@@ -20,6 +20,17 @@ kind・kubectl・kustomize と Docker を用意する。DB は使い捨てで立
 
 </details>
 
+### asynq 構成で立てる
+
+ジョブエンジンは既定の Postgres を使う River と、Redis を使う asynq から選べる。asynq で立てるときは次を足す。
+
+- overlay は overlays/asynq（本番形。名前空間は default）。判定ハーネスの形は overlays/e2e-asynq で、E2E_OVERLAY=e2e-asynq を渡す。
+- Secret `rokuban-secrets` に `REDIS_URL`（例: `redis://rokuban-redis.default.svc.cluster.local:6379/0`）を入れる。base は Secret を出荷しないので、供給は環境の仕事である。
+- Postgres は River 構成と同じく要る（asynq でも業務データは Postgres）。`migrate up` は River のスキーマを作らない。
+- 別の名前空間に入れるときは、overlay のトリガの URL（13 本、e2e は 17 本）と REDIS_URL の名前空間を直す。直し漏れると、そのキューだけが黙ってスケールしない。`deploy/k8s/asynq_test.go` は 1 overlay 内の URL が揃っていることは見るが、Secret の値は見ない。
+
+配置の理由と、River 構成との差分は [deploy/k8s/README.md](../../deploy/k8s/README.md) §asynq 構成 にある。
+
 ### 手順
 
 kind クラスタを作り、使い捨ての postgres を先に立ててから、イメージを載せて 1 式を適用する。postgres を先にするのは、migration Job が DB の居ない状態から始めると再試行を使い切って恒久失敗しうるからである。
@@ -196,7 +207,8 @@ E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run
 
 | 構成 | 意図の PUT から mirakc の schedule まで | 判定 |
 |---|---|---|
-| 常駐 client（watcher Deployment に同居）。`run.sh --only 1 --no-build` を 2 回 | 0 / 1 / 0 秒、0 / 0 / 0 秒（最大 1 秒） | PASS |
+| 常駐 client（watcher Deployment に同居）。River の全量実行（最終コード） | 1 / 0 / 0 秒（最大 1 秒） | PASS |
+| asynq の常駐 ruler の経路（notifier の常駐 worker が ruler を即座に引く。asynq の全量実行、最終コード） | 1 / 1 / 1 秒（最大 1 秒） | PASS |
 | 常駐の `--queues` を `ruler` に替えた注入（手で 1 回） | 9 / 8 / 8 秒。常駐が無い理由で FAIL | FAIL |
 | 常駐の無い構成（ScaledJob だけ。変更前） | 7〜11 秒（前段の計測。同じ判定、閾値 3 秒で FAIL） | FAIL |
 

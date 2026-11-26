@@ -1,0 +1,191 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# asynq 構成の本番形 overlay（単一サイト `default`・置き場 `main`）。
+#
+# River 構成との差分は overlay の 3 つだけ:
+#   1. config.yml（`worker.engine: asynq` と `redis_url`。同じ節の外は base と同じ。
+#      `deploy/k8s/asynq_test.go` が差分を worker 節に閉じ込めていることを固定する）
+#   2. `../../asynq` component（Redis）
+#   3. ScaledJob 13 本のトリガを metrics-api に差し替える（下の patches）
+#
+# **Secret は出荷しない。** 環境が `rokuban-secrets` に `REDIS_URL`
+# （例: `redis://rokuban-redis.<ns>.svc.cluster.local:6379/0`）を入れる。
+# 名前空間は `default` 前提（トリガの URL と REDIS_URL の両方が FQDN を持つ）。
+# 別の名前空間に入れるなら、トリガの URL 13 本と REDIS_URL を揃えて直す。
+# `deploy/k8s/asynq_test.go` が、全トリガの URL が同じホストを指すことを固定する。
+#
+# 数える物理キュー名は `<論理名>_<site>` / `<論理名>_<置き場>`。論理名で引くと、
+# 誰も入れないキューを数え続けて永久にスケールしない。
+
+resources:
+  - ../../base
+  - ../../site
+  - ../../store
+
+components:
+  - ../../asynq
+
+configMapGenerator:
+  - name: rokuban-config
+    behavior: replace
+    files:
+      - config.yml
+
+patches:
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-ruler
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/ruler/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-cleanup
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/cleanup/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-ingest
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/ingest_default/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-epg
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/epg_default/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-reconciler
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/reconciler_default/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-record-sweep
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/watcher_default/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-ts-scan
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/ts_scan_main/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-encode
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/encode_main/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-thumbnail
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/thumbnail_main/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-cm-detect
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/cm_detect_main/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-transfer
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/transfer_main/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-original
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/original_main/deliverable-count"
+              valueLocation: value
+              targetValue: "1"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-storage
+    patch: |-
+      - op: replace
+        path: /spec/triggers
+        value:
+          - type: metrics-api
+            metadata:
+              url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/storage_main/deliverable-count"
+              valueLocation: value
+              targetValue: "1"

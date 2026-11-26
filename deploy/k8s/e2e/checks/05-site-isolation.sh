@@ -86,15 +86,15 @@ scaledjob_pause "$sj_b" true
 insert_probe_job "$queue_b" 20
 
 stalled() {
-  [ "$(river_backlog "$queue_b")" -ge 10 ] && [ "$(river_backlog "$queue_a")" = "0" ]
+  [ "$(queue_backlog "$queue_b")" -ge 10 ] && [ "$(queue_backlog "$queue_a")" = "0" ]
 }
 if ! retry_until 60 "a backlog on site B" stalled; then
-  fail "5.1" "サイト B に滞留を作れない（B=$(river_backlog "$queue_b") A=$(river_backlog "$queue_a")）--- 以降の判定は成立しない"
+  fail "5.1" "サイト B に滞留を作れない（B=$(queue_backlog "$queue_b") A=$(queue_backlog "$queue_a")）--- 以降の判定は成立しない"
   todo "5.2" "滞留が無いので観測していない"
   todo "5.3" "positive control を実施していない"
   exit 0
 fi
-pass "5.1" "サイト B に滞留を作った（B=$(river_backlog "$queue_b") / A=0）"
+pass "5.1" "サイト B に滞留を作った（B=$(queue_backlog "$queue_b") / A=0）"
 
 # ---- 5.2 A が起きないこと（negative assertion）-----------------------------
 
@@ -120,7 +120,7 @@ deadline=$((SECONDS + window))
 a_backlog_max=0
 while [ "$SECONDS" -lt "$deadline" ]; do
   # 読めなかったサンプルは「0 だった」ではない。測定できていないので落とす。
-  if ! a_now="$(river_backlog "$queue_a")" || [ -z "$a_now" ]; then
+  if ! a_now="$(queue_backlog "$queue_a")" || [ -z "$a_now" ]; then
     watch_jobs_stop
     fail "5.2" "測定できない: サイト A の待ち行列を読めなかった"
     todo "5.3" "5.2 が測定できていないので positive control を実施していない"
@@ -159,7 +159,7 @@ spawned() { [ -n "$(observed_new_jobs "$watch_file" active)" ]; }
 if retry_until 240 "site A to spawn a job for its own backlog" spawned; then
   pass "5.3" "positive control: サイト A 自身の滞留では Job が起きる（$(observed_new_jobs "$watch_file" active | tr '\n' ' ')）"
 else
-  fail "5.3" "positive control: サイト A に滞留を作っても Job が起きない --- 5.2 の緑は信用できない（backlog=$(river_backlog "$queue_a")）"
+  fail "5.3" "positive control: サイト A に滞留を作っても Job が起きない --- 5.2 の緑は信用できない（backlog=$(queue_backlog "$queue_a")）"
 fi
 watch_jobs_stop
 rm -f "$watch_file" "$watch_file.pre" "$watch_file.err"

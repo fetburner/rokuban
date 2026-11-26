@@ -316,11 +316,14 @@ asynq 構成では、常駐 notifier の HTTP ハンドラが物理キューご�
 
 期限前の再試行待ちと予約済みタスクは数えない。Snooze 中に数えると、KEDA の巡回ごとに空振りの Job が起き続けるためである。
 
-常駐 Pod が停止すると KEDA に件数を返せず、worker が起きなくなる。KEDA が HTTP 5xx や接続失敗にどう振る舞うかは未検証である。
+件数を出す notifier が止まっている間は、滞留があっても Job は起きない（e2e で 60 秒観測）。復旧後は件数が読め、Job が起きて消化する。
 
-配布する `deploy/k8s/` のマニフェストは River 構成である。asynq 構成の notifier Pod は worker ロールとキュー購読の引数を外し、`ruler` の実行を ScaledJob に任せる。watcher の常駐 worker は、両エンジンでサイトごとの reconciler を引くために残す。定期投入は引き続き CronJob が担う。
+asynq 構成でも notifier の常駐 worker が ruler のヒントを即座に引く（River と同じ経路）。これを外すと反映は ruler の pollingInterval に縛られ、e2e で約 10 秒かかり、判定 1.8 が閾値 3 秒を超える。
+
+asynq 構成でも notifier の常駐 worker は残す（base の `--roles notifier,worker --queues ruler` のまま）。ScaledJob の ruler は、常駐が取り切れなかった分の余剰容量として働く。watcher の常駐 worker は、両エンジンでサイトごとの reconciler を引くために残す。定期投入は引き続き CronJob が担う。ScaledJob のトリガは overlay ごとに持つ（`overlays/asynq`・`overlays/e2e-asynq`）。配置の理由と River 構成との差分は [deploy/k8s/README.md](../../deploy/k8s/README.md) §asynq 構成にある。
 
 River 構成の KEDA は DB を SQL で数えるため、件数パスは asynq 構成でだけ公開する。クラスタ内の KEDA が直接読む件数パスは Host 検査の対象外とする。
+
 
 <details><summary>根拠</summary>
 

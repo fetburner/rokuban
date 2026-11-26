@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# asynq 構成の**共有部品**。今は Redis だけを置く。
+#
+# 置き場は component にした。**ここに置くのは overlay の種類によらず同じ形のもの**だけ:
+#
+#   - Redis（永続ボリュームを持たない。redis.yaml）
+#
+# notifier の常駐 worker は base のまま残す（`--roles notifier,worker --queues ruler`）。
+# asynq でも River と同じく、PUT の ruler ヒントを常駐が即座に引く。これを外すと、
+# ruler の反映が ScaledJob の pollingInterval と Job の起動に縛られる（判定 1.8 が
+# 閾値 3 秒を超える。docs/operations/k8s.md §5）。件数の口は常駐にある notifier が出す。
+#
+# ここに**置かないもの**と理由:
+#
+#   - config.yml（`worker.engine` / `redis_url`）: base/config.yml は River の形のまま。
+#     エンジンは環境の config で素の値として決める（base/config.yml の冒頭コメントの決定）。
+#     overlay ごとに config.yml を持つ（overlays/asynq・overlays/e2e-asynq）。
+#   - ScaledJob のトリガ: URL に**物理キュー名**（`<論理名>_<site>`）と notifier の FQDN
+#     （名前空間）を書くため、site の数と名前空間が決まる overlay でしか書けない。
+#     component に入れると、サイト名付きの overlay（e2e の `nameSuffix`）で patch の
+#     target が一致しなくなる。
+#   - Secret（REDIS_URL を含む）: 環境の仕事（base は Secret を出荷しない）。
+#
+# E10-7 で ScaledJob のトリガが base に寄ると、ここに残るのは Redis だけになる。
+# トリガの URL の site 修飾は、そのとき site/ の argv と同じ位置の patch で当てる。
+
+resources:
+  - redis.yaml
