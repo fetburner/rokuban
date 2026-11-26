@@ -138,7 +138,7 @@ Chrome 155.0.8059.85 / hls.js 1.7.3 / ffmpeg 9.0.2 では、fMP4 の連続版・
 
 内蔵の `event/growing` は、`ts/restarted` のセグメントから伸びる playlist を作る。
 
-- 最初は境界の手前へシークできる行数を載せ、`E2E_EVENT_GROW_INTERVAL_MS`（既定はセグメント長）ごとに 1 行足す
+- 最初は境界の手前へシークできる行数を載せ、`E2E_EVENT_GROW_INTERVAL_MS`（既定は 1 秒。録画のセグメント長 2 秒より短い。2 秒だと終端まで 46 秒かかり、判定の所要の大半を占めた）ごとに 1 行足す
 - `E2E_EVENT_SEGMENT_COUNT`（既定 30）行に達した応答で、最後の行の EXTINF を 1 秒にし、`#EXT-X-ENDLIST` を付ける。最後の TS も 1 秒に切り詰め、EXTINF と長さをそろえる
 - 行数の上限はフィクスチャの 30 本である。足りなければ起動時に必要な行数を出して止まる
 
@@ -152,7 +152,7 @@ Chrome 155.0.8059.85 / hls.js 1.7.3 / ffmpeg 9.0.2 では、fMP4 の連続版・
 
 負例は 2 つある。`event/shrink` は、240 行の playlist を commit の応答で 182 行に縮める。commit の後に載せ済みの行が縮んだ実録画の不具合を再現する。`event/extinf-change` は、commit の応答で先頭の行の EXTINF を変える。どちらも通常の判定と同じ手順で回し、期待する名前が 1 つでも出れば期待どおりとする。
 
-Chrome 156.0.8078.76 / hls.js 1.7.3 / ffmpeg 9.0.2 では、`event/growing` を既定の間隔で 10 回続けて回して 10 回とも通り、負例 2 つが期待した名前で落ちた。
+Chrome 158.0.8127.38 / macOS の手元で、`event/growing` を既定の 1 秒の間隔で 10 回続けて回し、10 回とも通った（1 回 42〜44 秒）。負例 `event/shrink`・`event/extinf-change` は、同じ 1 秒の間隔で別に 1 回ずつ回し、期待した名前で落ちた。
 
 ```sh
 E2E_BROWSER=chrome E2E_CASES=event/growing,event/shrink,event/extinf-change node e2e/run.mjs recording-segmented-vod
