@@ -17,7 +17,7 @@ env:
   # mysql-contract-test は、test-matrix の計画（citest）と step の両方がこの値を読む。
   # s3-conformance は、計画だけがこの値を読み、step は go test 行に直書きする（scripts/s3conformance が行を解析するため）。
   # 計画の一覧と step の集合の一致は scripts/s3conformance の TestS3ConformancePackagesMatchSteps が検査する。
-  S3_CONFORMANCE_PACKAGES: ./internal/objstore/conformance ./internal/objstore/s3store ./internal/storagemaint ./internal/encode ./internal/thumbnail
+  S3_CONFORMANCE_PACKAGES: ./internal/no/such ./internal/objstore/conformance ./internal/objstore/s3store ./internal/storagemaint ./internal/encode ./internal/thumbnail
   MYSQL_CONTRACT_PACKAGES: ./internal/mysqldb ./internal/mysqltest ./internal/store/mysqlstore ./internal/notifier/mysqlsource
 
 on:
