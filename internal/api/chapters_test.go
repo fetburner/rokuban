@@ -144,8 +144,9 @@ func TestGetRecordingChapterReview_ReturnsMaterialsAndLatestAutoLayerAfterAdopti
 	}
 
 	url := chaptersURL(srv.URL, id)
-	before := getChapters(t, url)
-	if response := putChapters(t, url, before.Spans); response.StatusCode != http.StatusNoContent {
+	// ユーザー区間は自動検出（autoSpans 1001–7007）と重ならない値にする。同じ値だと
+	// autoSpans がユーザー層を返す誤りを区別できない。
+	if response := putChapters(t, url, []ChapterSpan{{StartMs: 20020, EndMs: 25025, Cut: true}}); response.StatusCode != http.StatusNoContent {
 		t.Fatalf("PUT status = %d, want 204", response.StatusCode)
 	}
 	got := GetJSON[RecordingChapterReview](t, chapterReviewURL(srv.URL, id))
@@ -160,6 +161,21 @@ func TestGetRecordingChapterReview_ReturnsMaterialsAndLatestAutoLayerAfterAdopti
 	}
 	if len(got.Candidates) != 2 || got.Candidates[0].Kind != "overcut_logo" || got.Candidates[1].Kind != "overcut_grid" {
 		t.Fatalf("candidates = %#v", got.Candidates)
+	}
+
+	// 確認済みの後に再検出する。結果が残っている録画には保存できないので、再試行で
+	// 結果を消してから書く。autoSpans は最新の検出結果に変わり、GET はユーザー層のまま。
+	if _, err := det.RetryDetection(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	saveCMDetectionForTest(t, ctx, pool, id, chapters.Range{StartMs: 12000, EndMs: 19000})
+	again := GetJSON[RecordingChapterReview](t, chapterReviewURL(srv.URL, id))
+	if len(again.AutoSpans) != 1 || again.AutoSpans[0].StartMs != 12012 || again.AutoSpans[0].EndMs != 18986 {
+		t.Fatalf("autoSpans after re-detection = %#v, want the latest detector result 12012-18986", again.AutoSpans)
+	}
+	after := getChapters(t, url)
+	if after.Source != User || len(after.Spans) != 1 || after.Spans[0].StartMs != 20020 || after.Spans[0].EndMs != 25025 {
+		t.Fatalf("GET /chapters after re-detection = source %q spans %+v, want user 20020-25025", after.Source, after.Spans)
 	}
 }
 
