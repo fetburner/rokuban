@@ -11,9 +11,9 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// RunIngestCheckpoint は録画の writer lease・checkpoint・進捗の契約を実行する。
+// runIngestCheckpoint は録画の writer lease・checkpoint・進捗の契約を実行する。
 // 再開・世代の進行・破棄・旧 writer の締め出しを、2 つの方言で同じ主張として検査する。
-func RunIngestCheckpoint(t *testing.T, newFixture NewMediaFixture) {
+func runIngestCheckpoint(t *testing.T, newFixture NewMediaFixture) {
 	t.Helper()
 	t.Run("clean handoff resumes and fences a superseded writer", func(t *testing.T) { runIngestCleanHandoff(t, newFixture(t)) })
 	t.Run("discard never reuses a writer generation", func(t *testing.T) { runIngestDiscardGeneration(t, newFixture(t)) })

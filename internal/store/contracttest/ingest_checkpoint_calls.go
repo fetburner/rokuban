@@ -11,9 +11,9 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// RunIngestCheckpointCalls は、取り込みの呼び出し元が頼る残りの checkpoint の主張を検査する。
+// runIngestCheckpointCalls は、取り込みの呼び出し元が頼る残りの checkpoint の主張を検査する。
 // 同じ値の再保存が lease 喪失にならないこと（MySQL は値が変わらない更新の影響行数を 0 と数えるため）を含む。
-func RunIngestCheckpointCalls(t *testing.T, newFixture NewMediaFixture) {
+func runIngestCheckpointCalls(t *testing.T, newFixture NewMediaFixture) {
 	t.Helper()
 	t.Run("canonical rel_path is reserved once per checkpoint", func(t *testing.T) { runIngestReserveRelPath(t, newFixture(t)) })
 	t.Run("final handoff can be saved again with the same values", func(t *testing.T) { runIngestFinalHandoffRetry(t, newFixture(t)) })

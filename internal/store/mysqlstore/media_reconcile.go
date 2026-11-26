@@ -41,22 +41,18 @@ func nonNilProfiles(values []string) []string {
 // currentCutKeepTx は録画の確認済みチャプターから現在の keep 区間を導出する。
 // 録画が無ければ store.ErrNotFound、チャプターを所有していなければ owned は false。
 func currentCutKeepTx(ctx context.Context, tx *sql.Tx, recordingID int64) ([]chapters.Range, bool, error) {
-	var duration int64
-	if err := tx.QueryRowContext(ctx, `SELECT program_duration_ms FROM recordings WHERE id = ?`, recordingID).Scan(&duration); err != nil {
-		return nil, false, mediaQueryError(err, fmt.Sprintf("recording %d", recordingID))
+	st, err := readChapterState(ctx, tx, recordingID)
+	if err != nil {
+		return nil, false, err
 	}
-	var owned int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM recording_chapter_ownership WHERE recording_id = ?`, recordingID).Scan(&owned); err != nil {
-		return nil, false, fmt.Errorf("loading chapter ownership for recording %d: %w", recordingID, err)
-	}
-	if owned == 0 {
+	if !st.owned {
 		return nil, false, nil
 	}
 	spans, err := readUserSpans(ctx, tx, recordingID)
 	if err != nil {
 		return nil, false, fmt.Errorf("loading chapter spans for recording %d: %w", recordingID, err)
 	}
-	return chapters.KeepRanges(chapters.Derive(true, spans, nil, duration)), true, nil
+	return chapters.KeepRanges(chapters.Derive(true, spans, nil, st.programDurationMs)), true, nil
 }
 
 // GetCurrentCutKeep は確認済みチャプターから現在の keep 区間を導出する。
@@ -336,8 +332,6 @@ GROUP BY asset.id`, recordingID, kind).Scan(&generation)
 	return generation, true, nil
 }
 
-// ListMissingEncodeProfiles は不足と満たされていない作り直しを合わせた候補をページ単位で返す。
-// 候補の録画は、この条件を満たす profile を持つ録画を順に row_limit 件まで取る。
 // GetEncodedPublishState は版の公開の計画に要る状態を、1 つのスナップショットから読む。
 func (s *Media) GetEncodedPublishState(ctx context.Context, recordingID int64, profile string, cut, includeCurrentCut bool) (store.EncodedPublishState, error) {
 	var state store.EncodedPublishState

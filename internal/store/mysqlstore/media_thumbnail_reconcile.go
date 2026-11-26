@@ -11,7 +11,8 @@ import (
 )
 
 // ListThumbnailReselectCandidates は、サムネイルが active で CM 検出かユーザー所有のチャプターを持つ録画の
-// 候補窓を返す。窓（recording_id の範囲と件数）は SQL で絞り、録画ごとの詳細は同じ tx の中で読む。
+// 候補窓を返す。候補の ID の問い合わせと、各録画の詳細の読みは、1 つの snapshot tx の中で行う。
+// そのため、ID を読んだ後に録画が purge・削除されても、同じ時点の状態だけを返す（ページ全体は失敗しない）。
 // JSON の集約（JSON_ARRAYAGG）は並び順を指定できないため、詳細は Go 側で組み立てて並べる。
 // ごみ箱と purge 済みは外す。
 func (s *Media) ListThumbnailReselectCandidates(ctx context.Context, page store.MediaReconcilePage) ([]store.ThumbnailReselectCandidate, error) {
@@ -28,7 +29,7 @@ func (s *Media) ListThumbnailReselectCandidates(ctx context.Context, page store.
 	args := []any{page.AfterRecordingID, rec, rec}
 	args = append(args, readableArgs...)
 	args = append(args, page.RowLimit)
-	ids, err := s.queryIDs(ctx, `
+	query := `
 SELECT r.id
 FROM recordings r
 WHERE r.purged_at IS NULL
@@ -43,75 +44,75 @@ WHERE r.purged_at IS NULL
       JOIN media_asset_copies c ON c.media_asset_id = t.id
       WHERE t.recording_id = r.id AND t.kind = 'thumbnail'
         AND c.state = 'active' AND c.generation = t.derived_generation
-        AND `+readableIn+`
+        AND ` + readableIn + `
   )
 ORDER BY r.id
-LIMIT ?`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("listing thumbnail reselection candidates: %w", err)
-	}
+LIMIT ?`
 
-	out := make([]store.ThumbnailReselectCandidate, 0, len(ids))
-	for _, id := range ids {
-		c, err := s.thumbnailReselectCandidate(ctx, id, stagingStores, encodedStagingStores)
+	var out []store.ThumbnailReselectCandidate
+	err := runSnapshotTx(ctx, s.db, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, query, args...)
 		if err != nil {
-			return nil, fmt.Errorf("listing thumbnail reselection candidates: %w", err)
+			return fmt.Errorf("listing thumbnail reselection candidates: %w", err)
 		}
-		out = append(out, c)
+		ids, err := scanRecordingIDs(rows, "thumbnail reselection candidate ids")
+		if err != nil {
+			return fmt.Errorf("listing thumbnail reselection candidates: %w", err)
+		}
+		out = make([]store.ThumbnailReselectCandidate, 0, len(ids))
+		for _, id := range ids {
+			c, err := thumbnailReselectCandidateTx(ctx, tx, id, s.derivedStoreName(), s.originalStore, stagingStores, encodedStagingStores)
+			if err != nil {
+				return fmt.Errorf("listing thumbnail reselection candidates: %w", err)
+			}
+			out = append(out, c)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
 
-// queryIDs は 1 列の recording_id を読む。
-func (s *Media) queryIDs(ctx context.Context, query string, args ...any) ([]int64, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	return scanRecordingIDs(rows, "recording ids")
-}
-
-// thumbnailReselectCandidate は録画 1 件の詳細を、1 つのスナップショットから読んで組み立てる。
-func (s *Media) thumbnailReselectCandidate(ctx context.Context, recordingID int64, stagingStores, encodedStagingStores []string) (store.ThumbnailReselectCandidate, error) {
+// thumbnailReselectCandidateTx は録画 1 件の詳細を、呼び出し側の snapshot tx の中で読んで組み立てる。
+func thumbnailReselectCandidateTx(ctx context.Context, tx *sql.Tx, recordingID int64, derivedStore, originalStore string, stagingStores, encodedStagingStores []string) (store.ThumbnailReselectCandidate, error) {
 	var c store.ThumbnailReselectCandidate
 	c.RecordingID = recordingID
-	err := runSnapshotTx(ctx, s.db, func(tx *sql.Tx) error {
-		if err := tx.QueryRowContext(ctx, `SELECT program_duration_ms FROM recordings WHERE id = ?`, recordingID).Scan(&c.ProgramDurationMs); err != nil {
-			return mediaQueryError(err, fmt.Sprintf("loading program duration for recording %d", recordingID))
-		}
+	if err := tx.QueryRowContext(ctx, `SELECT program_duration_ms FROM recordings WHERE id = ?`, recordingID).Scan(&c.ProgramDurationMs); err != nil {
+		return c, mediaQueryError(err, fmt.Sprintf("loading program duration for recording %d", recordingID))
+	}
 
-		var detectedRanges []byte
-		err := tx.QueryRowContext(ctx, `SELECT cm_ranges FROM recording_cm_detections WHERE recording_id = ?`, recordingID).Scan(&detectedRanges)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-			c.CMRanges = []chapters.Range{}
-		case err != nil:
-			return fmt.Errorf("loading CM ranges for recording %d: %w", recordingID, err)
-		default:
-			if c.CMRanges, err = decodeKeepRanges(detectedRanges); err != nil {
-				return fmt.Errorf("decoding CM ranges for recording %d: %w", recordingID, err)
-			}
+	var detectedRanges []byte
+	err := tx.QueryRowContext(ctx, `SELECT cm_ranges FROM recording_cm_detections WHERE recording_id = ?`, recordingID).Scan(&detectedRanges)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		c.CMRanges = []chapters.Range{}
+	case err != nil:
+		return c, fmt.Errorf("loading CM ranges for recording %d: %w", recordingID, err)
+	default:
+		if c.CMRanges, err = decodeKeepRanges(detectedRanges); err != nil {
+			return c, fmt.Errorf("decoding CM ranges for recording %d: %w", recordingID, err)
 		}
+	}
 
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) > 0 FROM recording_chapter_ownership WHERE recording_id = ?`, recordingID).Scan(&c.Owned); err != nil {
-			return fmt.Errorf("loading chapter ownership for recording %d: %w", recordingID, err)
-		}
-		c.UserSpans, err = readUserSpans(ctx, tx, recordingID)
-		if err != nil {
-			return fmt.Errorf("loading chapter spans for recording %d: %w", recordingID, err)
-		}
-
-		if err := loadOriginalForReselect(ctx, tx, recordingID, s.originalStore, &c); err != nil {
-			return err
-		}
-		c.EncodedAssets, err = loadEncodedForReselect(ctx, tx, recordingID, s.derivedStoreName(), encodedStagingStores)
-		if err != nil {
-			return err
-		}
-		return loadThumbnailForReselect(ctx, tx, recordingID, s.derivedStoreName(), stagingStores, &c)
-	})
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) > 0 FROM recording_chapter_ownership WHERE recording_id = ?`, recordingID).Scan(&c.Owned); err != nil {
+		return c, fmt.Errorf("loading chapter ownership for recording %d: %w", recordingID, err)
+	}
+	c.UserSpans, err = readUserSpans(ctx, tx, recordingID)
 	if err != nil {
-		return store.ThumbnailReselectCandidate{}, err
+		return c, fmt.Errorf("loading chapter spans for recording %d: %w", recordingID, err)
+	}
+
+	if err := loadOriginalForReselect(ctx, tx, recordingID, originalStore, &c); err != nil {
+		return c, err
+	}
+	c.EncodedAssets, err = loadEncodedForReselect(ctx, tx, recordingID, derivedStore, encodedStagingStores)
+	if err != nil {
+		return c, err
+	}
+	if err := loadThumbnailForReselect(ctx, tx, recordingID, derivedStore, stagingStores, &c); err != nil {
+		return c, err
 	}
 	return c, nil
 }

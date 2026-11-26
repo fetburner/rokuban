@@ -71,6 +71,8 @@ type MediaFixture struct {
 	// SetRecordingRemovalTimes は録画の deleted_at・purged_at・superseded_at を指定した値に書く。
 	// nil は NULL にする。
 	SetRecordingRemovalTimes func(t *testing.T, recordingID int64, deletedAt, purgedAt, supersededAt *time.Time)
+	// AddTombstoneCopy は論理資産に、回収済み（deleted）の物理コピーを指定の世代で作る。
+	AddTombstoneCopy func(t *testing.T, assetID int64, storeName, relPath string, generation int64) int64
 	// SetCopyMissing は物理コピーを実体無しとして記録する（missing=true）、または記録を消す（false）。
 	SetCopyMissing func(t *testing.T, copyID int64, missing bool)
 	// ExpireIngestLease は録画の writer lease を DB の時計で過去にする。
@@ -135,9 +137,9 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 func RunMediaPublish(t *testing.T, newFixture NewMediaFixture) {
 	t.Helper()
 	t.Run("clearing ingest progress is idempotent", func(t *testing.T) { runClearIngestProgress(t, newFixture) })
-	RunIngestCheckpoint(t, newFixture)
-	RunIngestCheckpointCalls(t, newFixture)
-	RunMediaReconcileCalls(t, newFixture)
+	runIngestCheckpoint(t, newFixture)
+	runIngestCheckpointCalls(t, newFixture)
+	runMediaReconcileCalls(t, newFixture)
 	t.Run("original publication freezes policy and clears progress atomically", func(t *testing.T) { runOriginalPublication(t, newFixture) })
 	t.Run("original callback failure rolls back rows", func(t *testing.T) { runOriginalPublicationRollback(t, newFixture) })
 	t.Run("encoded publication rechecks attempt and desired profiles", func(t *testing.T) { runEncodedPublicationRechecks(t, newFixture) })

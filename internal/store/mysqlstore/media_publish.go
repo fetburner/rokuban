@@ -13,6 +13,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/mysqldb"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -767,6 +768,8 @@ func generationFromRelPath(relPath string) int64 {
 }
 
 // PreparePendingMediaAssetCopy は派生物を Put する前に、論理行と pending のコピー行を commit する。
+// 同じ論理資産への予約と公開は、論理行を FOR UPDATE で取って直列化する。無い行の初回作成が並んだときは、
+// 一意違反の後に先に作られた行を読み直す。
 // pending は現行のコピーではない。置き換えは新しい世代の行を足すだけで、現行の active と世代を書き換えない。
 func (s *Media) PreparePendingMediaAssetCopy(ctx context.Context, in store.PendingMediaAssetCopy) error {
 	if in.Kind != store.AssetKindEncoded && in.Kind != store.AssetKindThumbnail && in.Kind != store.AssetKindSeekTiles {
@@ -799,12 +802,21 @@ SELECT id FROM media_assets WHERE recording_id = ? AND kind = ? AND profile_key 
 			res, err := tx.ExecContext(ctx, `
 INSERT INTO media_assets (recording_id, kind, profile, size_bytes, derived_generation, updated_at)
 VALUES (?, ?, ?, ?, ?, ?)`, in.RecordingID, in.Kind, optionalValue(in.Profile), in.SizeBytes, in.DerivedGeneration, now)
-			if err != nil {
-				return fmt.Errorf("reserving logical media asset for pending copy: %w", translateError(err))
-			}
-			assetID, err = res.LastInsertId()
-			if err != nil {
-				return fmt.Errorf("reading logical media asset ID: %w", err)
+			if err != nil && mysqldb.IsUniqueViolation(err) {
+				// READ COMMITTED では、無い行への FOR UPDATE はギャップロックを取らないので、同じ論理資産の初回予約が
+				// 並ぶと後の INSERT が一意違反になる。先に作られた行を読み直して続ける（pgstore の ON CONFLICT DO NOTHING の後の読み直し）。
+				// MySQL は文が失敗しても tx が続く。
+				if err := tx.QueryRowContext(ctx, `SELECT id FROM media_assets WHERE recording_id = ? AND kind = ? AND profile_key = ? FOR UPDATE`, in.RecordingID, in.Kind, profileKey).Scan(&assetID); err != nil {
+					return fmt.Errorf("reading logical media asset reserved concurrently: %w", err)
+				}
+			} else {
+				if err != nil {
+					return fmt.Errorf("reserving logical media asset for pending copy: %w", translateError(err))
+				}
+				assetID, err = res.LastInsertId()
+				if err != nil {
+					return fmt.Errorf("reading logical media asset ID: %w", err)
+				}
 			}
 		} else if err != nil {
 			return fmt.Errorf("reserving logical media asset for pending copy: %w", err)

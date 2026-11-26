@@ -150,6 +150,12 @@ SELECT id, ?, ?, derived_generation, 'active' FROM media_assets WHERE id = ?`, s
 		t.Helper()
 		execFixture(t, db, `UPDATE media_asset_copies SET created_at = ? WHERE id = ?`, createdAt, copyID)
 	}
+	f.AddTombstoneCopy = func(t *testing.T, assetID int64, storeName, relPath string, generation int64) int64 {
+		t.Helper()
+		return fixtureID(t, execFixture(t, db, `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, deleted_at)
+VALUES (?, ?, ?, ?, 'deleted', CURRENT_TIMESTAMP(6))`, assetID, storeName, relPath, generation))
+	}
 	f.SetCopyMissing = func(t *testing.T, copyID int64, missing bool) {
 		t.Helper()
 		if missing {
@@ -290,7 +296,7 @@ INSERT INTO recording_chapter_spans (recording_id, start_ms, end_ms, label, cut)
 	}
 }
 
-// killOpenTransactions は、このテストの接続以外で開いている tx の接続を落とす（Postgres の TerminateOpenTransactions に当たる）。
+// killOpenTransactions は、このテストの DB の接続のうち、このテストの接続以外で tx を開いているものを落とす（pgstore の TerminateOpenTransactions と同じく DB で絞る）。
 // 公開の tx の接続を落とすと、公開の後の commit が失敗する。
 func killOpenTransactions(t *testing.T, db *sql.DB) {
 	t.Helper()
@@ -304,7 +310,7 @@ func killOpenTransactions(t *testing.T, db *sql.DB) {
 	if err := conn.QueryRowContext(ctx, `SELECT CONNECTION_ID()`).Scan(&self); err != nil {
 		t.Fatalf("reading connection ID: %v", err)
 	}
-	rows, err := conn.QueryContext(ctx, `SELECT trx_mysql_thread_id FROM information_schema.innodb_trx`)
+	rows, err := conn.QueryContext(ctx, `SELECT t.trx_mysql_thread_id FROM information_schema.innodb_trx t JOIN information_schema.processlist p ON p.ID = t.trx_mysql_thread_id WHERE p.DB = DATABASE()`)
 	if err != nil {
 		t.Fatalf("listing open transactions: %v", err)
 	}

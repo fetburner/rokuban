@@ -340,6 +340,16 @@ func configureMediaPublishFixture(t *testing.T, pool *pgxpool.Pool, fixture *con
 			t.Fatalf("seeding ingest progress for recording %d: %v", recordingID, err)
 		}
 	}
+	fixture.AddTombstoneCopy = func(t *testing.T, assetID int64, storeName, relPath string, generation int64) int64 {
+		t.Helper()
+		var id int64
+		if err := pool.QueryRow(context.Background(), `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, deleted_at)
+VALUES ($1, $2, $3, $4, 'deleted', now()) RETURNING id`, assetID, storeName, relPath, generation).Scan(&id); err != nil {
+			t.Fatalf("adding tombstone copy for asset %d: %v", assetID, err)
+		}
+		return id
+	}
 	fixture.SetCopyMissing = func(t *testing.T, copyID int64, missing bool) {
 		t.Helper()
 		scoped := testMedia(pool, "tokyo", "")
