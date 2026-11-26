@@ -114,7 +114,7 @@ func (s *Store) openPath(key string) (string, bool) {
 }
 
 // splitVersion の拡張子の位置と日時の検査は crypt の形式文書に無く、
-// TestCryptRcloneNames の拡張子付きファイルで実 rclone の backend encode / decode と照合する。
+// TestS3CryptRcloneNames の拡張子付きファイルで実 rclone の backend encode / decode と照合する。
 func splitVersion(name string) (unversioned, version string) {
 	ext := fileExtension(name)
 	stem := strings.TrimSuffix(name, ext)

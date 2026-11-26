@@ -1,0 +1,11 @@
+# 受け入れ判定ハーネス（この下の .sh）の shellcheck の設定。CI と deploy/k8s/check.sh が読む。
+# リポジトリ直下に置かない（actionlint が ci.yml の run: に掛ける shellcheck にも効いてしまうため）。
+#
+# source された lib を辿る（外部ファイルの変数と関数を見て SC2034 等を正しく判定する）。
+external-sources=true
+# 判定の述語を retry_until と trap に間接的に渡す形が多いので、次の 4 つは誤検出になる:
+#   SC1091: 実行時に決まる相対パスの source を辿れない
+#   SC2034: 間接的に参照される変数（判定の結果を呼び出し側が読む）
+#   SC2317 / SC2329: 到達しない・使われない関数に見える（間接的に呼ばれる）
+# 番号が 2 つあるのは、shellcheck の版によってどちらで報告されるかが違うから（CI は版を固定している）。
+disable=SC1091,SC2034,SC2317,SC2329

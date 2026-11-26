@@ -60,7 +60,7 @@ Ingress controller は kind に無いので、6.5 は Ingress の行き先の Se
 
 **CI では回さない。** 理由は [docs/runbook/k8s.md](../../../docs/runbook/k8s.md) §受け入れ判定ハーネス の「CI では回さない」に書いてある。今回の 2 回の全量実行は、ログの初行から最終行まで、River が約 5 分、asynq が約 6 分だった（--fresh、イメージはキャッシュ済み）。
 
-CI は代わりに overlays/asynq と overlays/e2e-asynq を kustomize build して kubeconform に掛ける。場所は .github/workflows/ci.yml の manifests ジョブである。判定の結果は、実行した時点の値として runbook の実測の節に書く。
+CI は代わりに overlays の全件を kustomize build して kubeconform に掛ける。場所は `deploy/k8s/check.sh` で、CI の manifests ジョブがこれを呼ぶ。判定の結果は、実行した時点の値として runbook の実測の節に書く。
 
 ## 出力は 3 値である
 
@@ -318,13 +318,10 @@ mirakcmock/            mirakc モック（Go。`go test ./deploy/k8s/e2e/...` �
 変更したら次の 2 つを回す:
 
 ```sh
-# どちらもリポジトリのルートから
-./deploy/k8s/e2e/lib/selftest.sh   # クラスタ不要。CI でも回る
-shellcheck -x -e SC1091,SC2034,SC2317,SC2329 \
-  deploy/k8s/e2e/run.sh deploy/k8s/e2e/oracles.sh \
-  deploy/k8s/e2e/lib/*.sh deploy/k8s/e2e/checks/*.sh
+# リポジトリのルートから。CI の manifests ジョブと同じ検査（組めるか・スキーマ・selftest・shellcheck）を回す
+deploy/k8s/check.sh
 ```
 
-SC2317 / SC2329（到達しない・使われないように見えるコード）を外しているのは、判定の述語を `retry_until` と `trap` に**間接的に**渡す形が多いため。番号が 2 つあるのは、shellcheck のバージョンによってどちらで報告されるかが違うから（CI はバージョンを固定している）。
+shellcheck の除外（SC1091・SC2034・SC2317・SC2329）と理由は `deploy/k8s/e2e/.shellcheckrc` に書いてある。判定の述語を `retry_until` と `trap` に**間接的に**渡す形が多いため、SC2317 / SC2329 は誤検出になる。番号が 2 つあるのは、shellcheck の版によってどちらで報告されるかが違うから（`.tool-versions` で版を固定している）。
 
 **`lib/` の純粋な部分にはテストがある**（対象の探索・watch ログの読み取り・終了コード）。そこが無かったせいで、レビュー修正で入れた「複数一致は FAIL」の経路が**大域変数の代入が `$( )` の子シェルに閉じるせいで一度も動いていなかった**。実機 2 周でも変異注入でも捕まえられなかった（変異がその状態を作らなかったため）。判定の外側（クラスタが要る部分）は変異注入で、内側はここで見る。

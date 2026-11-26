@@ -113,12 +113,12 @@ func TestS3Conformance(t *testing.T) {
 	}
 }
 
-// TestConditionalWritesUnsupportedIsRecorded は、条件付き書き込みに対応しない
+// TestS3ConditionalWritesUnsupportedIsRecorded は、条件付き書き込みに対応しない
 // サーバーが、実 API の判定経路でも失敗にならず unsupported と記録されることを確かめる。
 // SigV4 は If-None-Match も署名対象なので、署名の前に SDK の middleware でヘッダを外す
 // （条件を無視するサーバー）。NotImplemented を返すサーバーは、実 endpoint の前に置く
 // 小さな proxy で作る。
-func TestConditionalWritesUnsupportedIsRecorded(t *testing.T) {
+func TestS3ConditionalWritesUnsupportedIsRecorded(t *testing.T) {
 	cfg := readTestConfig(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()

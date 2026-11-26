@@ -282,7 +282,7 @@ S3 のパスが完走したときだけ、`loop_success_markers` の、loop が 
 
 <details><summary>根拠</summary>
 
-- `TestS3DeleteMarkers`: S3 の成功・失敗・ブレーカー停止と FS の独立した完走記録
+- `TestDeleteMarkersOnS3`: S3 の成功・失敗・ブレーカー停止と FS の独立した完走記録
 - `TestStoreScopedS3DeletePassHasSingleOwner`: FS 置き場が 2 つある場合も、S3 の独立パスは名前順で先頭の 1 つにだけ載る
 - `TestJobArgsSpecAndPhysicalQueue`: delete_reconcile のジョブは合流する
 - `TestMakeInsertOptsQueueAndUnique`: 合流するジョブの一意判定は実行中（running）を含む

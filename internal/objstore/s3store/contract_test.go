@@ -16,7 +16,7 @@ import (
 	"github.com/fetburner/rokuban/internal/objstore/contracttest"
 )
 
-func TestStoreContract(t *testing.T) {
+func TestS3StoreContract(t *testing.T) {
 	cfg := conformanceConfig(t)
 	contracttest.Run(t, func(t *testing.T) objstore.Store {
 		objects, err := New(t.Context(), cfg)
@@ -27,9 +27,9 @@ func TestStoreContract(t *testing.T) {
 	})
 }
 
-// TestPutStoresUploadToken は、実 S3 API が Put の upload token を metadata として返すことを確かめる。
+// TestS3PutStoresUploadToken は、実 S3 API が Put の upload token を metadata として返すことを確かめる。
 // 所有判定は HEAD の token に頼るので、非空の object と 0 バイトの object の両方を見る。
-func TestPutStoresUploadToken(t *testing.T) {
+func TestS3PutStoresUploadToken(t *testing.T) {
 	store, err := New(t.Context(), conformanceConfig(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
