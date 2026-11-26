@@ -1,5 +1,7 @@
 # オラクル自己検査用の身代わり（判定 3）。製品のマニフェストではない。
 #
+# 積み先と数える先は、判定 3 の `E2E_ENCODE_QUEUE`（lib/env.sh）と同じ物理名 `encode_main` でなければならない（論理名では滞留を数えない）。
+#
 # 判定 3 が見ているのは「**実行中の** Job がスケールインで消えないか」なので、
 # 身代わりは「長く走る」ことだけできればよい。psql で 1 件掴んでから寝る。
 #
@@ -51,7 +53,7 @@ spec:
                 psql "$POSTGRES_CONNECTION_STRING" -v ON_ERROR_STOP=1 -c \
                   "UPDATE river_job SET state='running', attempted_at=now()
                    WHERE id = (SELECT id FROM river_job
-                               WHERE queue='encode' AND state IN ('available','retryable')
+                               WHERE queue='encode_main' AND state IN ('available','retryable')
                                ORDER BY id LIMIT 1)"
                 sleep 600
             resources:
@@ -61,6 +63,6 @@ spec:
   triggers:
     - type: metrics-api
       metadata:
-        url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/encode/deliverable-count"
+        url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/encode_main/deliverable-count"
         valueLocation: value
         targetValue: "1"
