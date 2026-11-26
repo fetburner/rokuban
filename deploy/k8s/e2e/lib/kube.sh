@@ -608,20 +608,21 @@ e2e_seed_media_file() {
   printf '%s' "$size"
 }
 
-# clear_encode_probe_residue は前の周回が残した判定 3 の録画と、その積み先のジョブを消す。
-#
-# 消す順は子から親。recordings への FK は ON DELETE CASCADE ではなく（media_asset_copies の
-# 子だけが CASCADE）、media_assets への FK も同様なので、衛星表を先に消す。消すのは、この
-# 経路が行を書く表だけである。
-#   - producer（produce_real_encode_job）: recordings・media_assets（original）・media_asset_copies
-#   - encode-profiles API（AppendRecordingEncodeProfiles）: recording_processing_policy
-#   - encode worker: recording_encode_attempts、派生の media_assets・media_asset_copies
-#   - ts_scan worker（同じ original を読む）: media_asset_ts_scans・drop_stats・drop_positions
-#   - thumbnail worker: media_asset_thumbnail_seeks
-# recording_cm_* は cm_detect の policy を立てたときだけ書くので、この経路では含めない。
-# この経路が書く表を増やしたら、ここにも足す。asynq の待ちは river_job に無いので、
-# River のときだけ積み先の行を消す。
-clear_encode_probe_residue() {
+produce_real_encode_job() {
+  # 前の周回が残した判定 3 の録画と、その積み先のジョブを消す（この関数の冒頭で行う）。
+  #
+  # 消す順は子から親。recordings への FK は ON DELETE CASCADE ではなく（media_asset_copies の
+  # 子だけが CASCADE）、media_assets への FK も同様なので、衛星表を先に消す。消すのは、この
+  # 経路が行を書く表だけである。
+  #   - producer（produce_real_encode_job）: recordings・media_assets（original）・media_asset_copies
+  #   - encode-profiles API（AppendRecordingEncodeProfiles）: recording_processing_policy
+  #   - encode worker: recording_encode_attempts、派生の media_assets・media_asset_copies
+  #   - ts_scan worker（同じ original を読む）: media_asset_ts_scans・drop_stats・drop_positions
+  #   - thumbnail worker: media_asset_thumbnail_seeks
+  # recording_cm_* は cm_detect の policy を立てたときだけ書くので、この経路では含めない。
+  # この経路が書く表を増やしたら、ここにも足す。asynq の待ちは river_job に無いので、
+  # River のときだけ積み先の行を消す。
+
   local rec="SELECT id FROM recordings WHERE title = '${E2E_ENCODE_TITLE}'"
   local asset="SELECT id FROM media_assets WHERE recording_id IN (${rec})"
   if [ "$E2E_ENGINE" = "river" ]; then
@@ -636,11 +637,6 @@ clear_encode_probe_residue() {
   psql_q "DELETE FROM recording_encode_attempts WHERE recording_id IN (${rec})" >/dev/null || return 1
   psql_q "DELETE FROM recording_processing_policy WHERE recording_id IN (${rec})" >/dev/null || return 1
   psql_q "DELETE FROM recordings WHERE title = '${E2E_ENCODE_TITLE}'" >/dev/null || return 1
-}
-
-produce_real_encode_job() {
-  # 前の周回の残骸を落とす（順序と理由は clear_encode_probe_residue）。
-  clear_encode_probe_residue || return 1
 
   local size
   size="$(e2e_seed_media_file)" || return 1
