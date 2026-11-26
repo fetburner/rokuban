@@ -76,7 +76,7 @@ type StorageObservation interface {
 	ListAllOrphanFiles(ctx context.Context) ([]OrphanFile, error)
 	// ListAgedOrphanFiles は指定期間より前から記録されている孤児候補を返す。
 	// 経過時間は候補を書いた DB の時計で比べる。
-	// 検査: contracttest.RunMedia の「orphan ageing compares against the database clock」。
+	// 検査: contracttest.RunMedia の「orphan ageing compares against the database clock」と、mysqlstore の TestMediaAgeingUsesDatabaseClock（DB の時計を固定して取り違えを検出）。
 	ListAgedOrphanFiles(ctx context.Context, age time.Duration) ([]string, error)
 	// ListActiveMediaAssets は実体無しの差集合に使う、この置き場の全 active コピーを返す。
 	ListActiveMediaAssets(ctx context.Context) ([]ActiveMediaAsset, error)
@@ -88,7 +88,7 @@ type StorageObservation interface {
 	ListAllMissingMediaAssetIDs(ctx context.Context) ([]int64, error)
 	// ListAgedMissingMediaAssets は指定期間より前から見つからない active コピーを返す。
 	// 経過時間は候補を書いた DB の時計で比べる。
-	// 検査: contracttest.RunMedia の「missing asset ageing compares against the database clock」。
+	// 検査: contracttest.RunMedia の「missing asset ageing compares against the database clock」と、mysqlstore の TestMediaAgeingUsesDatabaseClock（DB の時計を固定して取り違えを検出）。
 	ListAgedMissingMediaAssets(ctx context.Context, age time.Duration) ([]AgedMissingMediaAsset, error)
 }
 

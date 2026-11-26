@@ -901,6 +901,7 @@ func runMediaAuditPaths(t *testing.T, newFixture NewMediaFixture) {
 }
 
 // 経過時間は DB の時計で比べる。ただし、ホストと DB が同じ時計を指す 1 台の環境では、ホストの時計で比べる実装を見分けられない。
+// その取り違えは mysqlstore の TestMediaAgeingUsesDatabaseClock が DB の時計を固定して検出する。
 func runMediaOrphanAgeing(t *testing.T, newFixture NewMediaFixture) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -928,6 +929,7 @@ func runMediaOrphanAgeing(t *testing.T, newFixture NewMediaFixture) {
 }
 
 // 経過時間は DB の時計で比べる。ただし、ホストと DB が同じ時計を指す 1 台の環境では、ホストの時計で比べる実装を見分けられない。
+// その取り違えは mysqlstore の TestMediaAgeingUsesDatabaseClock が DB の時計を固定して検出する。
 func runMediaMissingAgeing(t *testing.T, newFixture NewMediaFixture) {
 	f := newFixture(t)
 	ctx := context.Background()
