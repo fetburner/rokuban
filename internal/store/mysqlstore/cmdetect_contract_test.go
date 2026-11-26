@@ -13,33 +13,17 @@ import (
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 )
 
+// cmDetectionContractStation は CM 検出契約の録画が属する局。
+var cmDetectionContractStation = store.CMStationRef{NetworkID: 32678, ServiceID: 5168}
+
 func TestCMDetectionContract(t *testing.T) {
 	contracttest.RunCMDetection(t, func(t *testing.T) contracttest.CMDetectionFixture {
 		db := mysqltest.SetupDB(t)
 		analysis := NewAnalysis(db, cmStationContractStoreName)
 		var eventSequence atomic.Int32
-		// newCMDetectionRecording は CM 検出を有効にした録画を作り、生きた原本のコピーを state の形で付ける。
-		newCMDetectionRecording := func(t *testing.T, originalCopyState string) int64 {
+		newRecording := func(t *testing.T, originalCopyState string) int64 {
 			t.Helper()
-			genres, genreLv1, err := recordingQueryGenres(nil)
-			if err != nil {
-				t.Fatalf("encoding fixture genres: %v", err)
-			}
-			id := insertFixtureRow(t, db, `
-INSERT INTO recordings (site, network_id, service_id, event_id, service_name, channel_type, channel,
-    title, genres, is_free, program_start_at, program_duration_ms, status, source, genre_lv1)
-VALUES ('contract-site', ?, ?, ?, 'CM 検出契約 fixture', 'GR', 'contract channel',
-    'CM detection contract fixture', ?, TRUE, ?, 1800000, 'finished', 'manual', ?)`,
-				cmDetectionContractStation.NetworkID, cmDetectionContractStation.ServiceID, eventSequence.Add(1), genres,
-				time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), genreLv1)
-			execFixture(t, db, `INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
-VALUES (?, 'always', JSON_ARRAY(), TRUE)`, id)
-			if originalCopyState != "" {
-				original := insertFixtureRow(t, db, `INSERT INTO media_assets (recording_id, kind, size_bytes) VALUES (?, 'original', 1000)`, id)
-				execFixture(t, db, `INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, generation) VALUES (?, ?, ?, ?, 0)`,
-					original, cmStationContractStoreName, fmt.Sprintf("test/%d.ts", id), originalCopyState)
-			}
-			return id
+			return insertCMDetectionRecording(t, db, eventSequence.Add(1), originalCopyState)
 		}
 		return contracttest.CMDetectionFixture{
 			Store:          analysis,
@@ -47,7 +31,7 @@ VALUES (?, 'always', JSON_ARRAY(), TRUE)`, id)
 			CMStationStore: analysis,
 			TrashStore:     NewRecordings(db),
 			NewRecording: func(t *testing.T) int64 {
-				return newCMDetectionRecording(t, "active")
+				return newRecording(t, "active")
 			},
 			SeedLogo: func(t *testing.T, station store.CMStationRef, recordingID int64) {
 				t.Helper()
@@ -128,9 +112,9 @@ WHERE asset.recording_id = ? AND asset.kind = 'original' AND copy.store = ?`, re
 			NewRecordingWithoutActiveOriginal: func(t *testing.T, absence contracttest.CMOriginalAbsence) int64 {
 				t.Helper()
 				if absence == contracttest.CMOriginalNoRow {
-					return newCMDetectionRecording(t, "")
+					return newRecording(t, "")
 				}
-				return newCMDetectionRecording(t, "deleted")
+				return newRecording(t, "deleted")
 			},
 			AdvancePolicyGeneration: func(t *testing.T, recordingID int64) {
 				t.Helper()
@@ -153,8 +137,75 @@ WHERE asset.recording_id = ? AND asset.kind = 'original' AND copy.store = ?`, re
 	})
 }
 
-// cmDetectionContractStation は CM 検出契約の録画が属する局。
-var cmDetectionContractStation = store.CMStationRef{NetworkID: 32678, ServiceID: 5168}
+// TestCMDetectionBeginAttemptFirstRowRace は、行の無い録画への並行する初回の開始が、先に入った行の commit を待ってから
+// 既存の行として扱われ、エラーにならないことを確かめる。先の開始の挿入は、開始と同じ文を保持した tx で再現する。
+func TestCMDetectionBeginAttemptFirstRowRace(t *testing.T) {
+	db := mysqltest.SetupDB(t)
+	ctx := context.Background()
+	id := insertCMDetectionRecording(t, db, 1, "active")
+	held, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("beginning held first attempt: %v", err)
+	}
+	t.Cleanup(func() { _ = held.Rollback() })
+	if _, err := held.ExecContext(ctx, `
+INSERT INTO recording_cm_attempts (recording_id, state, stage, error, attempted_at, attempt_count, policy_generation)
+VALUES (?, 'running', NULL, NULL, NOW(6), 1, 0)`, id); err != nil {
+		t.Fatalf("inserting held first attempt: %v", err)
+	}
+
+	type begun struct {
+		attempt   store.CMDetectionAttempt
+		shouldRun bool
+		err       error
+	}
+	result := make(chan begun, 1)
+	go func() {
+		attempt, shouldRun, err := NewAnalysis(db, cmStationContractStoreName).BeginAttempt(ctx, id, 3)
+		result <- begun{attempt, shouldRun, err}
+	}()
+	waitLockWaiters(t, db, "recording_cm_attempts", 1)
+	if err := held.Commit(); err != nil {
+		t.Fatalf("committing held first attempt: %v", err)
+	}
+	got := <-result
+	if got.err != nil {
+		t.Fatalf("BeginAttempt() waiting for the first row = %+v, %v; want no error", got.attempt, got.err)
+	}
+	// 先の行は試行 1 の running なので、後の開始は既存の行として 2 回目になる。
+	if !got.shouldRun || got.attempt.AttemptCount != 2 {
+		t.Fatalf("BeginAttempt() after the first row = %+v, %v; want running attempt 2", got.attempt, got.shouldRun)
+	}
+	var rows int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recording_cm_attempts WHERE recording_id = ?`, id).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("attempt rows for recording %d = %d, %v; want 1", id, rows, err)
+	}
+}
+
+// insertCMDetectionRecording は CM 検出を有効にした録画を 1 件作る。originalCopyState が空なら原本を作らず、
+// 空でなければ原本とその物理コピーを、その state で作る。
+func insertCMDetectionRecording(t *testing.T, db *sql.DB, eventID int32, originalCopyState string) int64 {
+	t.Helper()
+	genres, genreLv1, err := recordingQueryGenres(nil)
+	if err != nil {
+		t.Fatalf("encoding fixture genres: %v", err)
+	}
+	id := insertFixtureRow(t, db, `
+INSERT INTO recordings (site, network_id, service_id, event_id, service_name, channel_type, channel,
+    title, genres, is_free, program_start_at, program_duration_ms, status, source, genre_lv1)
+VALUES ('contract-site', ?, ?, ?, 'CM 検出契約 fixture', 'GR', 'contract channel',
+    'CM detection contract fixture', ?, TRUE, ?, 1800000, 'finished', 'manual', ?)`,
+		cmDetectionContractStation.NetworkID, cmDetectionContractStation.ServiceID, eventID, genres,
+		time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), genreLv1)
+	execFixture(t, db, `INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect)
+VALUES (?, 'always', JSON_ARRAY(), TRUE)`, id)
+	if originalCopyState != "" {
+		original := insertFixtureRow(t, db, `INSERT INTO media_assets (recording_id, kind, size_bytes) VALUES (?, 'original', 1000)`, id)
+		execFixture(t, db, `INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, generation) VALUES (?, ?, ?, ?, 0)`,
+			original, cmStationContractStoreName, fmt.Sprintf("test/%d.ts", id), originalCopyState)
+	}
+	return id
+}
 
 // insertFixtureRow は fixture の行を 1 つ挿入し、その ID を返す。
 func insertFixtureRow(t *testing.T, db *sql.DB, query string, args ...any) int64 {

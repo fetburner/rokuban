@@ -118,6 +118,9 @@ func RunCMDetection(t *testing.T, newStore NewCMDetectionStore) {
 	t.Run("stale attempts are deleted and current attempts are kept", func(t *testing.T) {
 		testCMDetectionStaleAttempts(t, newStore)
 	})
+	t.Run("attempt budget stops at the limit and a failed attempt restarts at one", func(t *testing.T) {
+		testCMDetectionAttemptBudget(t, newStore)
+	})
 
 	runDetectionWaitsForChapterWrite(t, newStore)
 	runLearnedLogoWaitsForAreaWrite(t, newStore, station)
@@ -223,6 +226,44 @@ func testCMDetectionStaleAttempts(t *testing.T, newStore NewCMDetectionStore) {
 	if err != nil || !shouldRun || kept.AttemptCount != 2 {
 		t.Fatalf("BeginAttempt() after DeleteStaleAttempts = %+v, %v, %v; want the kept attempt continued at 2", kept, shouldRun, err)
 	}
+}
+
+// testCMDetectionAttemptBudget は試行の予算の境界を確かめる。上限に達した running は failed になり、
+// failed になった試行は次の開始で予算を 1 から数え直す。
+func testCMDetectionAttemptBudget(t *testing.T, newStore NewCMDetectionStore) {
+	t.Helper()
+	ctx := context.Background()
+	t.Run("running attempt at the limit becomes failed", func(t *testing.T) {
+		f := newStore(t)
+		id := f.NewRecording(t)
+		first, shouldRun, err := f.Store.BeginAttempt(ctx, id, 1)
+		if err != nil || !shouldRun || first.AttemptCount != 1 {
+			t.Fatalf("BeginAttempt() = %+v, %v, %v; want running attempt 1", first, shouldRun, err)
+		}
+		// 前の試行を終えないまま次の開始が来る（プロセスが途中で止まった場合）。
+		over, shouldRun, err := f.Store.BeginAttempt(ctx, id, 1)
+		if err != nil || shouldRun || over.AttemptCount != 1 {
+			t.Fatalf("BeginAttempt() over the limit = %+v, %v, %v; want no run at attempt 1", over, shouldRun, err)
+		}
+		if desired, err := f.Store.IsDetectionDesired(ctx, id); err != nil || desired {
+			t.Fatalf("IsDetectionDesired() after the limit = %v, %v; want false for a failed attempt without a logo", desired, err)
+		}
+	})
+	t.Run("failed attempt restarts the budget at one", func(t *testing.T) {
+		f := newStore(t)
+		id := f.NewRecording(t)
+		first, shouldRun, err := f.Store.BeginAttempt(ctx, id, 3)
+		if err != nil || !shouldRun || first.AttemptCount != 1 {
+			t.Fatalf("BeginAttempt() = %+v, %v, %v; want running attempt 1", first, shouldRun, err)
+		}
+		if marked, err := f.Store.FailAttempt(ctx, first, "failed", nil, "permanent failure"); err != nil || !marked {
+			t.Fatalf("FailAttempt(failed) = %v, %v; want one updated row", marked, err)
+		}
+		again, shouldRun, err := f.Store.BeginAttempt(ctx, id, 3)
+		if err != nil || !shouldRun || again.AttemptCount != 1 {
+			t.Fatalf("BeginAttempt() after a failed attempt = %+v, %v, %v; want running attempt 1", again, shouldRun, err)
+		}
+	})
 }
 
 func testCMDetectionTrashClearsAttempt(t *testing.T, newStore NewCMDetectionStore) {
@@ -403,8 +444,8 @@ func testCMDetectionGenerationFence(t *testing.T, newStore NewCMDetectionStore) 
 	}
 	f.AdvancePolicyGeneration(t, id)
 	current, shouldRun, err := f.Store.BeginAttempt(ctx, id, 3)
-	if err != nil || !shouldRun || current.PolicyGeneration != 1 {
-		t.Fatalf("current BeginAttempt() PolicyGeneration = %d, shouldRun = %t, err = %v; want generation 1 and run", current.PolicyGeneration, shouldRun, err)
+	if err != nil || !shouldRun || current.PolicyGeneration != 1 || current.AttemptCount != 1 {
+		t.Fatalf("current BeginAttempt() = %+v, shouldRun = %t, err = %v; want generation 1, attempt 1, and run", current, shouldRun, err)
 	}
 	if saved, err := f.Store.SaveDetection(ctx, old, []chapters.Range{{StartMs: 1000, EndMs: 2000}}, store.CMDetectionMaterial{}); err != nil || saved {
 		t.Fatalf("SaveDetection(old generation) = %v, %v; want a discarded result", saved, err)

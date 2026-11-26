@@ -89,13 +89,18 @@ func (s *Analysis) IsDetectionDesired(ctx context.Context, recordingID int64) (b
 }
 
 // BeginAttempt は現在の方針世代で試行を開始し、実行するかを返す。
-// 録画の行を排他で取ってから試行の行を読み書きする（順序は録画 → 試行。SaveDetection と同じ）。
+// 直列化の順序は録画（共有）→ 試行。録画の行は FOR SHARE で取る。SaveDetection は録画を排他で取るので、
+// 結果の保存とは録画の行で待ち合う。共有で取るのは、同じ録画の並行する開始どうしを待たせないためで、
+// SaveLearnedLogo（局 → 試行 → 録画の外部キー検査の共有）と循環しないのもこの順序による。
+// 試行の行は INSERT ... ON DUPLICATE KEY UPDATE の no-op で確保する。並行する初回の開始は、先に入った行の
+// commit を待ってから重複として扱われ、ErrConflict にならない。影響行数が 1 なら新しく作った行、
+// 0 なら既存の行なので、FOR UPDATE で読み直し、nextCMAttemptRow で決めて更新する。
 // 原本の生きたコピーが無い録画は試行を作らず、shouldRun は false・err は nil を返す。
 func (s *Analysis) BeginAttempt(ctx context.Context, recordingID int64, maxAttempts int32) (store.CMDetectionAttempt, bool, error) {
 	var attempt store.CMDetectionAttempt
 	var shouldRun bool
 	err := runTx(ctx, s.db, func(tx *sql.Tx) error {
-		if err := lockRecordingState(ctx, tx, recordingID); err != nil {
+		if err := lockRecordingShared(ctx, tx, recordingID); err != nil {
 			return err
 		}
 		item, err := s.cmWorkItem(ctx, tx, recordingID)
@@ -115,30 +120,33 @@ SELECT COALESCE((SELECT p.cm_detect_generation FROM recording_processing_policy 
 			recordingID).Scan(&generation); err != nil {
 			return fmt.Errorf("reading CM detection policy generation for recording %d: %w", recordingID, err)
 		}
-		var prev cmAttemptRow
-		var prevPtr *cmAttemptRow
-		err = tx.QueryRowContext(ctx, `
-SELECT attempt_count, state, attempted_at, policy_generation FROM recording_cm_attempts
-WHERE recording_id = ? FOR UPDATE`, recordingID).Scan(&prev.Count, &prev.State, &prev.AttemptedAt, &prev.Generation)
-		switch {
-		case err == nil:
-			prevPtr = &prev
-		case errors.Is(err, sql.ErrNoRows):
-		default:
-			return fmt.Errorf("reading CM detection attempt for recording %d: %w", recordingID, err)
-		}
-		next := nextCMAttemptRow(prevPtr, generation, maxAttempts, now)
-		if prevPtr != nil {
-			_, err = tx.ExecContext(ctx, `
-UPDATE recording_cm_attempts SET state = ?, attempt_count = ?, stage = ?, error = ?, attempted_at = ?, policy_generation = ?
-WHERE recording_id = ?`, next.State, next.Count, next.Stage, next.Error, next.AttemptedAt, next.Generation, recordingID)
-		} else {
-			_, err = tx.ExecContext(ctx, `
+		res, err := tx.ExecContext(ctx, `
 INSERT INTO recording_cm_attempts (recording_id, state, stage, error, attempted_at, attempt_count, policy_generation)
-VALUES (?, ?, ?, ?, ?, ?, ?)`, recordingID, next.State, next.Stage, next.Error, next.AttemptedAt, next.Count, next.Generation)
-		}
+VALUES (?, 'running', NULL, NULL, ?, 1, ?)
+ON DUPLICATE KEY UPDATE recording_id = recording_cm_attempts.recording_id`, recordingID, now, generation)
 		if err != nil {
-			return fmt.Errorf("starting CM detection attempt for recording %d: %w", recordingID, err)
+			return fmt.Errorf("creating CM detection attempt row for recording %d: %w", recordingID, err)
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("counting CM detection attempt row for recording %d: %w", recordingID, err)
+		}
+		var next cmAttemptRow
+		if affected == 1 {
+			next = nextCMAttemptRow(nil, generation, maxAttempts, now)
+		} else {
+			var prev cmAttemptRow
+			if err := tx.QueryRowContext(ctx, `
+SELECT attempt_count, state, attempted_at, policy_generation FROM recording_cm_attempts
+WHERE recording_id = ? FOR UPDATE`, recordingID).Scan(&prev.Count, &prev.State, &prev.AttemptedAt, &prev.Generation); err != nil {
+				return fmt.Errorf("reading CM detection attempt for recording %d: %w", recordingID, err)
+			}
+			next = nextCMAttemptRow(&prev, generation, maxAttempts, now)
+			if _, err := tx.ExecContext(ctx, `
+UPDATE recording_cm_attempts SET state = ?, attempt_count = ?, stage = ?, error = ?, attempted_at = ?, policy_generation = ?
+WHERE recording_id = ?`, next.State, next.Count, next.Stage, next.Error, next.AttemptedAt, next.Generation, recordingID); err != nil {
+				return fmt.Errorf("starting CM detection attempt for recording %d: %w", recordingID, err)
+			}
 		}
 		attempt = store.CMDetectionAttempt{
 			RecordingID:      recordingID,
@@ -153,6 +161,19 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, recordingID, next.State, next.Stage, next.Error, 
 		return store.CMDetectionAttempt{}, false, err
 	}
 	return attempt, shouldRun, nil
+}
+
+// lockRecordingShared は録画の行を共有で取る。録画が無ければ store.ErrNotFound を返す。
+func lockRecordingShared(ctx context.Context, tx *sql.Tx, recordingID int64) error {
+	var locked int64
+	err := tx.QueryRowContext(ctx, `SELECT id FROM recordings WHERE id = ? FOR SHARE`, recordingID).Scan(&locked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("locking recording %d: %w", recordingID, err)
+	}
+	return nil
 }
 
 // FailAttempt は一致する running 試行を失敗状態にし、更新したかを返す。
@@ -395,7 +416,7 @@ func (s *Analysis) RetryDetection(ctx context.Context, recordingID int64) (store
 
 // DeleteStaleAttempts は現在の方針世代でない CM 検出試行を削除する。
 // current_cm_attempts は recording_cm_attempts を読む view なので、削除の副問い合わせには使わず
-// LEFT JOIN で結ぶ（同じ表を副問い合わせで参照すると MySQL は 1093 で拒む）。
+// LEFT JOIN で結ぶ。NOT EXISTS で view を参照すると、MySQL 9.7 は 1443（The definition of table ... prevents operation DELETE）で拒む。
 func (s *Analysis) DeleteStaleAttempts(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `
 DELETE ca FROM recording_cm_attempts ca
