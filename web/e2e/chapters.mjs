@@ -370,16 +370,34 @@ if (Math.abs(duration - 120) > 5) {
 // 再生位置は localStorage に残る。前回の実行の続きから始まると判定が揺れるので消す。
 await page.evaluate(() => localStorage.clear())
 
-/** seek は再生位置を動かし、seek の完了を待つ。 */
+/**
+ * seek は再生位置を動かし、seeked の後の描画までを待つ。
+ * 実装は onSeeked で直前位置（previousSecondsRef）を更新するので、seeked の後に 2 フレーム待てば
+ * 後段が読む状態は揃う。以前は 300 ms の固定待ちだった。seeked が 5 秒で来なければ、
+ * 後段の判定とは別に「seek が完了しない」を NG にする。
+ */
 async function seek(seconds) {
-  await video.evaluate((v, s) => {
+  const completed = await video.evaluate((v, s) => new Promise((resolve) => {
+    // 同じ位置への seek は seeked を出さないので、その場で完了とみなす。
+    if (!v.seeking && Math.abs(v.currentTime - s) < 0.01) {
+      resolve(true)
+      return
+    }
+    const finish = () => {
+      if (v.seeking) return
+      clearTimeout(timer)
+      v.removeEventListener('seeked', finish)
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))
+    }
+    const timer = setTimeout(() => {
+      v.removeEventListener('seeked', finish)
+      resolve(false)
+    }, 5000)
+    // リスナーは代入の前に登録する。代入の後だと seeked を取りこぼす。
+    v.addEventListener('seeked', finish)
     v.currentTime = s
-  }, seconds)
-  await page
-    .waitForFunction(() => !document.querySelector('video')?.seeking, undefined, { timeout: 5000 })
-    .catch(() => {})
-  // seeked の後に実装が直前位置を更新するのを待つ（timeupdate を 1 回跨がせる）。
-  await page.waitForTimeout(300)
+  }), seconds)
+  if (!completed) ng.push(`seek が完了しない（${seconds}s へ 5000ms 以内に seeked が来ない）`)
 }
 
 /** waitForPosition は位置（必要なら停止も）を最大 30 秒待ち、未到達を NG にする。 */
