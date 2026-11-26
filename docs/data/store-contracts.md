@@ -429,7 +429,7 @@ cut の選択規則は設定の `recording_hls.enabled` に依存し、store は
 
 CM 検出の結果とチャプター編集は、カット版の作り直し要求と公開を含めて録画単位で直列化する。CM 検出の結果は前提を保存の時点で確かめ直してから書き、ジョブの投入はすべて commit 後のヒントにする。
 
-直列化により、検出結果の書き込みとチャプター編集の自動チャプター引き取りは、互いの commit を見落とさない。
+直列化により、検出結果の書き込みとチャプター編集の自動チャプター引き取りは、互いの commit を見落とさない。MySQL には区間の排他制約が無いので、区間の重なりは録画の行ロックの下で書いた後の SELECT で確かめる（表現不可能にする守りから、コードで守る守りへ弱まる）。
 
 再試行 API は結果と試行を消し、commit してからジョブを投入する。ingest と reconcile の投入も含め、どれも commit 後のヒントである。投入に失敗しても、定期 reconcile が desired な集合を取り直して投入する。
 
@@ -440,6 +440,7 @@ CM 検出の結果とチャプター編集は、カット版の作り直し要�
 - ドメイン契約: `internal/store.CMDetection`
 - ドメイン契約（チャプター編集）: `internal/store.ChapterEdits`
 - PostgreSQL 実装: `internal/store/pgstore.Analysis`
+- MySQL 実装（チャプター編集）: `internal/store/mysqlstore.ChapterEdits`。重なりの検査は `checkSpansDisjoint`
 - 契約テスト: `internal/store/contracttest.RunCMDetection`
 - チャプター編集との録画単位の直列化: `lockRecording` / `lockRecordingState` / `internal/store/pgstore.Analysis.SaveDetection`
 - 作り直し要求とカット版の公開の直列化: `ReencodeRecordingProfile` / `prepareEncodePublish`

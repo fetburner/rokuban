@@ -2,6 +2,7 @@ package pgstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -30,6 +31,9 @@ func TestChapterEditsContract(t *testing.T) {
 			id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 				fixtureParams.EventID = eventID
 				fixtureParams.Title = "store contract fixture"
+				if options.ProgramDurationMs != 0 {
+					fixtureParams.ProgramDurationMs = options.ProgramDurationMs
+				}
 			})
 
 			if options.CMDetectionEnabled {
@@ -54,15 +58,32 @@ VALUES ($1, 'always', '{}', true)`, id); err != nil {
 		return contracttest.Fixture{
 			Store:        NewAnalysis(pool, dbtest.StoreName),
 			NewRecording: newRecording,
-			SaveCMDetection: func(t *testing.T, id int64, ranges []chapters.Range) {
+			SaveCMDetection: func(t *testing.T, id int64, ranges []chapters.Range, material *store.CMDetectionMaterial) {
 				t.Helper()
-				if err := sqlcgen.New(pool).SaveCMDetection(context.Background(), sqlcgen.SaveCMDetectionParams{
+				ctx := context.Background()
+				logo, elements := "{}", []byte("[]")
+				if material != nil {
+					logo = multirange(material.LogoRanges)
+					// nil のスライスは JSON の null になるので、空配列に揃える。
+					encoded, err := json.Marshal(append([]chapters.CMElement{}, material.Elements...))
+					if err != nil {
+						t.Fatalf("encoding structure elements: %v", err)
+					}
+					elements = encoded
+				}
+				if err := sqlcgen.New(pool).SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
 					RecordingID:       id,
 					CmRanges:          multirange(ranges),
-					LogoRanges:        "{}",
-					StructureElements: []byte("[]"),
+					LogoRanges:        logo,
+					StructureElements: elements,
 				}); err != nil {
 					t.Fatalf("saving CM detection: %v", err)
+				}
+				if material == nil {
+					// 材料を持たない検出は、両方を NULL にして書く（SaveCMDetection のクエリは logo を NULL にできない）。
+					if _, err := pool.Exec(ctx, `UPDATE recording_cm_detections SET logo_ranges = NULL, structure_elements = NULL WHERE recording_id = $1`, id); err != nil {
+						t.Fatalf("clearing review materials: %v", err)
+					}
 				}
 			},
 			BeginCMDetection: func(t *testing.T, id int64, ranges []chapters.Range) func() {
