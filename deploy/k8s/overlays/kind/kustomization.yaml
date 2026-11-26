@@ -41,15 +41,12 @@ images:
 # generator なので名前にハッシュが付く。値を変えれば apply でそのまま rollout が
 # 起きる（外で `kubectl create secret` する形だと名前が変わらないので起きない）。
 #
-# **`POSTGRES_CONNECTION_STRING` は KEDA の operator が読む**（Job の Pod では
-# ない）ので、ホスト名はクラスタ内 FQDN で書く。名前空間は overlay で決まる
-# ので、素の apply（`kubectl` の現在の context の名前空間）に合わせてある ---
-# 別の名前空間に入れるならここも直す。
+# `POSTGRES_PASSWORD` は config.yml が展開する。KEDA は件数を notifier の HTTP で読むので、
+# 接続文字列は持たない。
 secretGenerator:
   - name: rokuban-secrets
     literals:
       - POSTGRES_PASSWORD=kindtest
-      - POSTGRES_CONNECTION_STRING=postgresql://rokuban:kindtest@postgres.default.svc.cluster.local:5432/rokuban?sslmode=disable
 
 patches:
   # `/api/sites/<site>/networks` は site 名を具体化しないと標準 Ingress で backend を

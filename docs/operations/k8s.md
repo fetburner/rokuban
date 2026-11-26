@@ -31,7 +31,7 @@ ffmpeg と ffprobe は、実際に encode/thumbnail のキューを購読する�
 
 原本か置き場のファイルを読み書きするキューは、プロセスがマウントした置き場の名前で修飾される。どの論理キューがこれに当たるかの権威は `internal/jobs/queue.go` の `storeBoundQueueNames` であり、判定は `jobs.IsStoreBound` の 1 か所に集めてある。
 
-実キュー名は `<論理名>_<site>`（例: `ingest_tokyo`）か `<論理名>_<store>`（例: `encode_takamatsu`）になる。DB だけを触る reconcile（`cleanup`）と `ruler` などは修飾されない。KEDA のスケーラ定義や Prometheus の `river_job` メトリクスなど、実際にキューを引く側だけが物理名を見る。
+実キュー名は `<論理名>_<site>`（例: `ingest_tokyo`）か `<論理名>_<store>`（例: `encode_takamatsu`）になる。DB だけを触る reconcile（`cleanup`）と `ruler` などは修飾されない。KEDA のスケーラ定義（件数の URL）や Prometheus の `river_job` メトリクスなど、実際にキューを引く側だけが物理名を見る。
 
 置き場で修飾するキューのジョブは、ジョブを積む側が置き場を選んで積む。`transfer` 以外は原本のコピーのある置き場を選ぶ。`transfer` は宛先が FS なら宛先の置き場を選び、宛先が S3 の派生物の置き場なら転送元の FS 置き場（`SourceStore`）のキューを選ぶ（`StorageTransferArgs` の `QueueStore`）。S3 へ送るのは転送元の置き場の worker だからである。
 
@@ -234,11 +234,19 @@ Work を抜けてから producer が止まるまでの間に次のジョブが f
 
 </details>
 
-#### スケーラのクエリと回収
+#### スケーラの件数と回収
 
-River 構成ではスケーラが待機中と再試行待ちのジョブを数える。回収は leader になった常駐 River client が担う。常駐 client は notifier Deployment と watcher Deployment に置く。
+スケーラは件数を notifier の HTTP から読む。両構成で同じ口である。数えるのは available 全件と、期限が来た retryable / scheduled で、lease が有効な実行中は数えない（[データ層](../data/jobs.md)）。River 構成では、回収は notifier と watcher の常駐 River client が担う。
 
-常駐 client の JobScheduler が `retryable` を昇格させるため、この集合は rescue の正しさを担わない。定期パスは `retryable` にならないが、ingest / encode など定期パス以外の kind は backoff 中も数えられるので、claim できない job のために Pod が起きうる。空振り Pod は `--once-idle-timeout` で終了する。
+River 構成では、常駐 client の JobScheduler が `retryable` を昇格させるため、この集合は rescue の正しさを担わない。期限前の `retryable` と `scheduled` を数えないのは、長い Snooze の間に巡回ごとの空振りの Job を起こさないためである。
+
+件数の口は両構成で notifier が公開する。KEDA は件数を読むだけで DB に繋がない。notifier が止まっている間は、滞留があっても Job は起きない（e2e で 60 秒観測）。クラスタ内の KEDA が直接読むこの口は Host 検査の対象外とする。
+
+<details><summary>根拠</summary>
+
+- HTTP 配線と Host 検査: `TestBuildHTTPServer_QueueCountHostExemption`
+
+</details>
 
 常駐 River client の 1 つは notifier Deployment に置く。notifier は常時起動し、api でなく、site にも束縛されない。全 kind の worker を登録し、Start に必要な実キューとして site 非依存で DB 完結の `ruler` だけを購読する。
 
@@ -310,26 +318,12 @@ River 構成では、実行中のまま死んだジョブが回収されるま�
 
 #### asynq の配送可能件数と回収
 
-asynq 構成では、常駐 notifier の HTTP ハンドラが物理キューごとの配送可能件数を返し、KEDA の metrics-api トリガが読む。KEDA が起こした Job の Server は、購読するキューで期限が来たタスクの昇格と孤児の回収を担う。回収可能になるまでの猶予中に起きた Job は、空振りで終わりうる。
+asynq 構成では、KEDA が起こした Job の Server が、購読するキューで期限が来たタスクの待機列への昇格と、孤児になった実行中タスクの回収を担う。回収可能になるまでの猶予中に起きた Job は、空振りで終わりうる。
 
-待機中、期限が来た再試行待ちと予約済み、孤児の実行中を数える。lease が有効な実行中タスクは数えない。KEDA の accurate 戦略は実行中を件数に含めない前提である。
+数えるのは、待機中、期限が来た再試行待ちと予約済み、孤児になった実行中である。lease が有効な実行中タスクは数えない。期限前の再試行待ちと予約済みは数えない（Snooze 中に空振りの Job を起こさないため）。
 
-期限前の再試行待ちと予約済みタスクは数えない。Snooze 中に数えると、KEDA の巡回ごとに空振りの Job が起き続けるためである。
+notifier の常駐 worker は ruler のヒントを即座に引くために残す。外すと反映が ruler の pollingInterval に縛られ、判定 1.8 が閾値を超える。watcher の常駐 worker は両エンジンでサイトごとの reconciler を引くために残す。
 
-件数を出す notifier が止まっている間は、滞留があっても Job は起きない（e2e で 60 秒観測）。復旧後は件数が読め、Job が起きて消化する。
-
-asynq 構成でも notifier の常駐 worker が ruler のヒントを即座に引く（River と同じ経路）。これを外すと反映は ruler の pollingInterval に縛られ、e2e で約 10 秒かかり、判定 1.8 が閾値 3 秒を超える。
-
-asynq 構成でも notifier の常駐 worker は残す（base の `--roles notifier,worker --queues ruler` のまま）。ScaledJob の ruler は、常駐が取り切れなかった分の余剰容量として働く。watcher の常駐 worker は、両エンジンでサイトごとの reconciler を引くために残す。定期投入は引き続き CronJob が担う。ScaledJob のトリガは overlay ごとに持つ（`overlays/asynq`・`overlays/e2e-asynq`）。配置の理由と River 構成との差分は [deploy/k8s/README.md](../../deploy/k8s/README.md) §asynq 構成にある。
-
-River 構成の KEDA は DB を SQL で数えるため、件数パスは asynq 構成でだけ公開する。クラスタ内の KEDA が直接読む件数パスは Host 検査の対象外とする。
-
-
-<details><summary>根拠</summary>
-
-- HTTP 配線と Host 検査: `TestBuildHTTPServer_QueueCountHostExemption`
-
-</details>
 
 #### キューは argv で絞る
 
@@ -367,13 +361,13 @@ ScaledJob 本体への annotation だけでは消えない。KEDA が rollout �
 
 </details>
 
-#### postgresql トリガの接続先
+#### トリガの接続先（notifier の FQDN）
 
-postgresql トリガの接続先は、クラスタ内の完全修飾名で書く。短い Service 名ではスケールしない。
+metrics-api トリガの URL のホストは、クラスタ内の完全修飾名で書く。短い Service 名ではスケールしない。
 
-接続を張るのは Job の Pod でなく keda 名前空間の operator なので、同じ名前空間のつもりで短い Service 名を書くと解決されない。このとき ScaledJob は `Ready=False / ScaledJobCheckFailed` のまま Job を一度も起こさない。症状は「KEDA が壊れた」でなく「いつまでもスケールしない」になる（kind で実測）。
+件数を引くのは Job の Pod でなく keda 名前空間の operator なので、同じ名前空間のつもりで短い Service 名を書くと解決されない。このとき ScaledJob は `Ready=False / ScaledJobCheckFailed` のまま Job を一度も起こさない。症状は「KEDA が壊れた」でなく「いつまでもスケールしない」になる（kind で実測）。
 
-site 修飾と `rollout.strategy` は [deploy/k8s/e2e](../../deploy/k8s/e2e/README.md) のハーネスが機械判定する（判定 5 / 3）。**接続先の FQDN には判定が無い**。症状はスケールしないことなので判定 2 / 3 / 5 の赤として現れるが、原因を名指しはしない。
+site 修飾と `rollout.strategy` は [deploy/k8s/e2e](../../deploy/k8s/e2e/README.md) のハーネスが機械判定する（判定 5 / 3）。**URL のホストには判定が無い**。症状はスケールしないことなので判定 2 / 3 / 5 の赤として現れるが、原因を名指しはしない。
 
 #### 将来オプション: チャンク並列エンコード（未実装）
 
@@ -505,7 +499,7 @@ flowchart LR
 
 watcher はシングルトンロールで、DB のアドバイザリロックでリーダーを選出する。レプリカ数 1 は既定であって要件ではない。2 レプリカにしても問題ない。
 
-ruler / reconciler / record_sweep はジョブなので対象外である。watcher の singleton 性はもはや「正しさ」の要件ではない。watcher Deployment の worker ロールは、リーダー選出の対象外として両レプリカで動く（§スケーラのクエリと回収）。「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。リーダーは監督ループで選出する（[データ層](../data.md) §2）。イベント処理は冪等化済みである（[データ層](../data.md) §2、[録画エンジン](../recording.md) §3.3）。
+ruler / reconciler / record_sweep はジョブなので対象外である。watcher の singleton 性はもはや「正しさ」の要件ではない。watcher Deployment の worker ロールは、リーダー選出の対象外として両レプリカで動く（§スケーラの件数と回収）。「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。リーダーは監督ループで選出する（[データ層](../data.md) §2）。イベント処理は冪等化済みである（[データ層](../data.md) §2、[録画エンジン](../recording.md) §3.3）。
 
 2 レプリカでも、負けた側は待機したまま mirakc に繋がない（既定は `deploy/k8s/site/watcher.yaml` の `replicas: 1`）。これは推測でなく kind での実測である。受け入れ判定ハーネスの判定 4 が、2 レプリカのあいだ mirakc モックの `/events` の同時接続数を数えている（`deploy/k8s/e2e/checks/04-watcher-singleton.sh`）。最大値は 1 だった。
 

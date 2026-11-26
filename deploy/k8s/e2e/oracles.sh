@@ -130,9 +130,9 @@ oracle_check2() {
   # 変異 1: **トリガが滞留を見なくなる**（クエリが常に 0 を返す）。
   # 実際に踏みうる形は「キュー名の typo」「state の綴り違い」で、症状は
   # 同じ「いつまでも Job が起きない」。
-  log_step "mutant: trigger query always returns 0"
+  log_step "mutant: trigger reads an unused queue (always 0)"
   k patch scaledjob "e2e-fx-worker-epg-${E2E_SITE_A}" --type=json \
-    -p '[{"op":"replace","path":"/spec/triggers/0/metadata/query","value":"SELECT 0"}]' >/dev/null
+    -p '[{"op":"replace","path":"/spec/triggers/0/metadata/url","value":"http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/no_such_queue/deliverable-count"}]' >/dev/null
   reset_fixture_state
   r="$(oracle_tmp)"
   run_check_into 2 "$r"
@@ -237,10 +237,10 @@ oracle_check5() {
   expect_status "O5.control" "$r" "5.3" PASS "positive control（A 自身の滞留では起きる）"
 
   # 変異: **キュー名の site 修飾を外す**（`qualifyQueueName` を外したのと
-  # 同じ形をトリガ側で再現する）。A のスケーラが B の滞留を見るようになる。
-  log_step "mutant: site A's trigger matches every epg_* queue"
+  # 同じ形をトリガ側で再現する）。A のスケーラが B の件数を読むようになる。
+  log_step "mutant: site A's trigger reads site B's queue"
   k patch scaledjob "e2e-fx-worker-epg-${E2E_SITE_A}" --type=json \
-    -p '[{"op":"replace","path":"/spec/triggers/0/metadata/query","value":"SELECT count(*) FROM river_job WHERE queue LIKE '"'"'epg%'"'"' AND state IN ('"'"'available'"'"','"'"'retryable'"'"')"}]' >/dev/null
+    -p '[{"op":"replace","path":"/spec/triggers/0/metadata/url","value":"http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/epg_'"${E2E_SITE_B}"'/deliverable-count"}]' >/dev/null
   reset_fixture_state
   r="$(oracle_tmp)"
   run_check_into 5 "$r"

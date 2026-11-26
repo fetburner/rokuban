@@ -66,7 +66,7 @@ for spec in sys.argv[1:]:
     name, queue = spec.split("=", 1)
     items.append({
         "metadata": {"name": name, "annotations": {"note": "ignored blob"}},
-        "spec": {"triggers": [{"metadata": {"query": f"... queue = \x27{queue}\x27 ..."}}]},
+        "spec": {"triggers": [{"metadata": {"url": f"http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/{queue}/deliverable-count"}}]},
     })
 print(json.dumps({"items": items}))
 ' "$@"
@@ -85,7 +85,7 @@ K_FIXTURE="$(python3 -c '
 import json
 print(json.dumps({"items": [{
     "metadata": {"name": "w-epg-siteaa"},
-    "spec": {"triggers": [{"metadata": {"query": "queue = \x27epg_siteaa\x27"}}]},
+    "spec": {"triggers": [{"metadata": {"url": "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/epg_siteaa/deliverable-count"}}]},
     "jobTargetRef": {"template": {"spec": {"containers": [{"image": "ghcr.io/x/encoder:1"}]}}},
 }]}))')"
 check "接頭辞が重なるキュー名を拾わない" "" "$(scaledjob_for_queue epg_sitea)"
@@ -97,7 +97,7 @@ K_FIXTURE="$(python3 -c '
 import json
 print(json.dumps({"items": [{
     "metadata": {"name": "rokuban-worker-epg-sitea"},
-    "spec": {"triggers": [{"metadata": {"query": "SELECT 0"}}]},
+    "spec": {"triggers": [{"metadata": {"url": "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/no_such_queue/deliverable-count"}}]},
 }]}))')"
 check "ハイフン命名の名前だけでも拾える" "rokuban-worker-epg-sitea" "$(scaledjob_for_queue epg_sitea)"
 check "一般語が image 名に紛れていても拾わない" "" "$(scaledjob_for_queue encode)"

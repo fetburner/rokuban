@@ -515,7 +515,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		defer closeJobAdapter(closeAdapter)
 		insertOnly = enqueuer
 	}
-	// 件数取得を実装する adapter だけを公開する。River 構成の KEDA は DB を SQL で数える。
+	// 件数取得を実装する adapter だけを公開する。River と asynq のどちらも件数を HTTP で出す。
 	counter, _ := insertOnly.(jobq.DeliverableCounter)
 	watcherEnqueuer := insertOnly
 	if workerAdapter != nil {

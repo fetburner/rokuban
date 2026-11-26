@@ -58,14 +58,12 @@ spec:
                 cpu: 20m
                 memory: 32Mi
   triggers:
-    - type: postgresql
+    - type: metrics-api
       metadata:
         # **キュー名を site で修飾している**（判定 5 が見ているのはここ）。
-        query: >-
-          SELECT count(*) FROM river_job
-          WHERE queue = 'epg___SITE_A__' AND state IN ('available','retryable')
-        targetQueryValue: "1"
-        connectionFromEnv: POSTGRES_CONNECTION_STRING
+        url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/epg___SITE_A__/deliverable-count"
+        valueLocation: value
+        targetValue: "1"
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
@@ -114,10 +112,8 @@ spec:
                 cpu: 20m
                 memory: 32Mi
   triggers:
-    - type: postgresql
+    - type: metrics-api
       metadata:
-        query: >-
-          SELECT count(*) FROM river_job
-          WHERE queue = 'epg___SITE_B__' AND state IN ('available','retryable')
-        targetQueryValue: "1"
-        connectionFromEnv: POSTGRES_CONNECTION_STRING
+        url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/epg___SITE_B__/deliverable-count"
+        valueLocation: value
+        targetValue: "1"

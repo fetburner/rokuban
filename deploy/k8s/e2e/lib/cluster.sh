@@ -178,33 +178,18 @@ deploy_scaffold() {
   # ScaledJobCheckFailed として現れて判定 2 / 3 / 5 が原因を名指ししない赤に
   # なる --- preflight を置いた理由（環境の破損を判定結果にしない）の対象。
   kall create namespace "$E2E_NAMESPACE" --dry-run=client -o yaml | kall apply -f - >/dev/null || return 1
-  # **`rokuban-secrets` はキーを 2 つ持つ。** POSTGRES_PASSWORD は config.yml が
-  # 展開するもの、POSTGRES_CONNECTION_STRING は**製品の ScaledJob** のトリガが
-  # `connectionFromEnv` で読むもの（deploy/k8s/base/secret.example.yaml）。
-  # 出どころは E2E_PGPASSWORD の 1 つのまま。片方だけ回すと、症状は
-  # 「api は動くがスケールしない」になる。
+  # POSTGRES_PASSWORD は config.yml が展開する。ScaledJob の件数は notifier の HTTP で
+  # 読むので、製品の Secret に接続文字列は要らない（deploy/k8s/base/secret.example.yaml）。
   # AWS_* は派生物の S3 置き場（overlays/e2e-two-stores の `storage.stores.s3`）の資格情報。
   # 製品の Pod は AWS_* を読み、RustFS の Deployment は同じ Secret を RUSTFS_* に渡す。
   k create secret generic rokuban-secrets \
     --from-literal=POSTGRES_PASSWORD="$E2E_PGPASSWORD" \
-    --from-literal=POSTGRES_CONNECTION_STRING="$(e2e_postgres_connection_string)" \
     --from-literal=REDIS_URL="redis://rokuban-redis.${E2E_NAMESPACE}.svc.cluster.local:6379/0" \
     --from-literal=AWS_ACCESS_KEY_ID="$E2E_S3_ACCESS_KEY" \
     --from-literal=AWS_SECRET_ACCESS_KEY="$E2E_S3_SECRET_KEY" \
     --dry-run=client -o yaml | k apply -f - >/dev/null || return 1
-  # KEDA の postgresql スケーラが読む接続文字列。
-  #
-  # **パスワードを含む 1 本の文字列**を別キーにしてあるのは、KEDA のトリガが
-  # `connectionFromEnv` で env 1 つを読む形しか（TriggerAuthentication を
-  # 使わない限り）取れないため。出どころは E2E_PGPASSWORD で 1 つのまま。
-  #
-  # **ホスト名は FQDN にする。** トリガの接続を張るのは Job の Pod ではなく
-  # **keda 名前空間の operator** なので、短い `postgres` は operator 側の
-  # search domain で解決されず `lookup postgres on 10.96.0.10:53: no such host`
-  # になる（実測。KEDA v2.20.2）。このとき ScaledJob は
-  # `Ready=False / ScaledJobCheckFailed` のまま Job を一度も起こさないので、
-  # 症状は「KEDA が動かない」ではなく「いつまでも 0 のまま」になる。
-  # 本物の ScaledJob でも同じ。
+  # 身代わりの fixture（fixtures/*.yaml）が psql で river_job を触るための接続文字列。
+  # 製品の ScaledJob は読まない（件数は notifier の HTTP）。出どころは E2E_PGPASSWORD。
   k create secret generic e2e-keda-postgres \
     --from-literal=POSTGRES_CONNECTION_STRING="$(e2e_postgres_connection_string)" \
     --dry-run=client -o yaml | k apply -f - >/dev/null || return 1

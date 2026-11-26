@@ -19,7 +19,6 @@
 package k8s
 
 import (
-	"context"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -33,13 +32,9 @@ import (
 	"time"
 
 	"github.com/goccy/go-yaml"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
-	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 const (
@@ -456,104 +451,48 @@ func parseGoFiles(t *testing.T, glob string) []*ast.File {
 	return out
 }
 
-// triggerQuery は ScaledJob の 1 本目のトリガのクエリを、空白を 1 つに畳んで返す。
-func triggerQuery(t *testing.T, w workload) string {
+// triggerURL は ScaledJob の唯一のトリガ（metrics-api）の URL を返す。
+// 件数の読み先はこの URL だけなので、検査はここに集める。
+func triggerURL(t *testing.T, w workload) string {
 	t.Helper()
 	triggers := sliceAt(w.doc, "spec", "triggers")
 	if len(triggers) != 1 {
 		t.Fatalf("%s has %d triggers, want exactly 1 (the checks below assume triggers[0])", w.id(), len(triggers))
 	}
 	tr, _ := triggers[0].(map[string]any)
-	if got := strAt(tr, "type"); got != "postgresql" {
-		t.Fatalf("%s trigger type = %q, want postgresql", w.id(), got)
+	if got := strAt(tr, "type"); got != "metrics-api" {
+		t.Fatalf("%s trigger type = %q, want metrics-api", w.id(), got)
 	}
-	return strings.Join(strings.Fields(strAt(tr, "metadata", "query")), " ")
+	if got := strAt(tr, "metadata", "valueLocation"); got != "value" {
+		t.Errorf("%s valueLocation = %q, want \"value\"", w.id(), got)
+	}
+	// accurate 戦略で 1 Job = 1 アイテムになるのは targetValue が 1 のときだけ。
+	if got := strAt(tr, "metadata", "targetValue"); got != "1" {
+		t.Errorf("%s targetValue = %q, want \"1\" (accurate scaling starts one Job per item only at 1)", w.id(), got)
+	}
+	return strAt(tr, "metadata", "url")
 }
 
-// トリガのクエリが、その ScaledJob が実際に購読する**物理**キュー名を数えていること。
+// トリガの URL が、その ScaledJob が実際に購読する**物理**キュー名の件数を読むこと。
 //
 // **論理名と物理名は違う。** site 束縛キューは `<論理名>_<site>` に修飾される
-// （internal/jobs の PhysicalQueueName）ので、クエリに論理名を書くと
+// （internal/jobs の PhysicalQueueName）ので、URL に論理名を書くと
 // **誰も入れないキューを数え続けて永久にスケールしない**。逆にサイトを跨いだ
 // 名前を書くと、サイト A のスケーラがサイト B の滞留で Job を起こし、起きた Job は
 // jobs.VerifySite で死んでまた起きる（受け入れ判定ハーネスの判定 5）。
 //
-// 数える状態が `available` と `retryable` の 2 つであることも一緒に見る。
-// `retryable` を落とすと、失敗したジョブを `available` へ戻す `JobScheduler` を
-// 動かす常駐クライアントがロール分割構成には居ないので、**失敗したジョブが
-// 永久に止まる**。
-//
-// **状態名は rivertype の定数から組む。** 「実装の定数と比較するテストは
-// 何も主張していない」の例外にあたる --- 照合される YAML 側はチェックイン済みの
-// リテラルであり、定数は River という外部依存が持つものなので、River が状態名を
-// 改名すれば YAML 側は追随せず `want` だけが動いて赤くなる。
+// ホストは既定の名前空間 `default` の notifier（FQDN）。件数の集合（available 全件と
+// 期限到来の retryable / scheduled）は notifier 側の DeliverableCounter が持つので、
+// ここでは読み先の綴りだけを固定する。
 func TestScaledJobTriggersMatchTheirQueue(t *testing.T) {
 	for _, w := range scaledJobs(t) {
 		physical, ok := physicalQueue(t, w)
 		if !ok {
 			continue // TestScaledJobsCoverEveryQueue が報告済み
 		}
-		want := fmt.Sprintf(
-			"SELECT count(*) FROM river_job WHERE queue = '%s' AND state IN ('%s','%s')", //nolint:gocritic // KEDA の scaler が river_job を読む。ここはその文字列を照合するだけ
-			physical, rivertype.JobStateAvailable, rivertype.JobStateRetryable)
-		if got := triggerQuery(t, w); got != want {
-			t.Errorf("%s trigger query\n got: %s\nwant: %s", w.id(), got, want)
-		}
-	}
-}
-
-// scaledJobTriggerProbeArgs は ScaledJob のトリガ検査だけで使う River ジョブ。
-// 実際のジョブ引数を再利用すると、クエリの検査が特定のワーカー実装や引数の
-// バリデーションに引きずられるため、キューへ投入できる最小の JobArgs にする。
-type scaledJobTriggerProbeArgs struct{}
-
-// Kind は River のジョブ種別名を返す。
-func (scaledJobTriggerProbeArgs) Kind() string { return "scaledjob_trigger_probe" }
-
-// TestScaledJobTriggerQueriesRunAgainstRiverSchema は KEDA の各 PostgreSQL
-// トリガクエリを migrate 済み DB で実行し、River が実際に投入した行を数えられる
-// ことを確認する。
-//
-// TestScaledJobTriggersMatchTheirQueue はクエリの文字列と期待値を比較するだけ
-// なので、River の**テーブル名・列名**が変わっても CI が緑のままになる。この
-// テストはRiver が投入した `available` 状態のジョブを使い、クエリが
-// 単一の数値として Scan でき、かつ 1 を返すところまで検査する
-// （`retryable` は対象外 --- カバーは TestScaledJobTriggersMatchTheirQueue が
-// rivertype の定数照合で担う）。
-func TestScaledJobTriggerQueriesRunAgainstRiverSchema(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	client := riveradaptertest.NewRiverClient(t, pool)
-
-	ctx := context.Background()
-	for _, w := range scaledJobs(t) {
-		physical, ok := physicalQueue(t, w)
-		if !ok {
-			continue // TestScaledJobsCoverEveryQueue が報告済み
-		}
-		query := triggerQuery(t, w)
-
-		var before int64
-		if err := pool.QueryRow(ctx, query).Scan(&before); err != nil {
-			t.Fatalf("%s trigger query cannot Scan one numeric column: %v\nquery: %s", w.id(), err, query)
-		}
-		if before != 0 {
-			// 2 本の ScaledJob が同じ物理キューを持つと起きる。それは
-			// TestScaledJobsCoverEveryQueue がもっと良いメッセージで報告済み
-			// なので、ここで残り 8 本の検査を止めない。
-			t.Errorf("%s trigger query returned %d before its probe job, want 0", w.id(), before)
-			continue
-		}
-
-		if _, err := client.Insert(ctx, scaledJobTriggerProbeArgs{}, &river.InsertOpts{Queue: physical}); err != nil {
-			t.Fatalf("inserting probe job into queue %q for %s: %v", physical, w.id(), err)
-		}
-
-		var got int64
-		if err := pool.QueryRow(ctx, query).Scan(&got); err != nil {
-			t.Fatalf("%s trigger query after insert cannot Scan one numeric column: %v\nquery: %s", w.id(), err, query)
-		}
-		if got != 1 {
-			t.Errorf("%s trigger query returned %d after one %q job, want 1", w.id(), got, physical)
+		want := "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/" + physical + "/deliverable-count"
+		if got := triggerURL(t, w); got != want {
+			t.Errorf("%s trigger url\n got: %s\nwant: %s", w.id(), got, want)
 		}
 	}
 }

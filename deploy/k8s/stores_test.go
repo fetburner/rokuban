@@ -324,14 +324,14 @@ func TestStorePatchesTargetTheStoreName(t *testing.T) {
 								t.Errorf("%s: patch mounts %s at %q, want the root %q of store %s in the overlay config.yml",
 									dir, o.id(), fmt.Sprint(op.Value), root, name)
 							}
-						case strings.HasSuffix(op.Path, "/metadata/query"):
-							want := strings.ReplaceAll(fmt.Sprint(cur), "_"+baseStoreName+"'", "_"+name+"'")
-							got := strings.Join(strings.Fields(fmt.Sprint(op.Value)), " ")
-							if got != strings.Join(strings.Fields(want), " ") {
-								t.Errorf("%s: patched trigger query for %s\n got: %s\nwant: %s", dir, o.id(), got, want)
+						case strings.HasSuffix(op.Path, "/metadata/url"):
+							want := strings.ReplaceAll(fmt.Sprint(cur), "_"+baseStoreName+"/", "_"+name+"/")
+							want = strings.Replace(want, "rokuban-notifier.default.", "rokuban-notifier."+readKustomizationFields(t, "overlays/e2e-two-stores").Namespace+".", 1)
+							if fmt.Sprint(op.Value) != want {
+								t.Errorf("%s: patched trigger url for %s\n got: %s\nwant: %s", dir, o.id(), op.Value, want)
 							}
 						default:
-							t.Errorf("%s: patch path %s on %s is none of args / mountPath / query; "+
+							t.Errorf("%s: patch path %s on %s is none of args / mountPath / url; "+
 								"extend this check before adding a new kind of patch", dir, op.Path, o.id())
 						}
 					}
@@ -462,10 +462,10 @@ func TestTwoStoreOverlayHasAScaledJobPerStoreAndQueue(t *testing.T) {
 			if gotStores != name {
 				t.Errorf("%s (store %s) passes --stores=%q, want %q", o.id(), name, gotStores, name)
 			}
-			query := triggerQuery(t, w)
-			wantQuery := fmt.Sprintf("SELECT count(*) FROM river_job WHERE queue = '%s_%s' AND state IN ('available','retryable')", q, name) //nolint:gocritic // KEDA の scaler が読む文字列の照合
-			if query != wantQuery {
-				t.Errorf("%s trigger query\n got: %s\nwant: %s", o.id(), query, wantQuery)
+			url := triggerURL(t, w)
+			wantURL := fmt.Sprintf("http://rokuban-notifier.%s.svc.cluster.local:40773/internal/queues/%s_%s/deliverable-count", readKustomizationFields(t, "overlays/e2e-two-stores").Namespace, q, name)
+			if url != wantURL {
+				t.Errorf("%s trigger url\n got: %s\nwant: %s", o.id(), url, wantURL)
 			}
 			gotPhysical = append(gotPhysical, q+"_"+name)
 			if prev, dup := physicalSeen[q+"_"+name]; dup {

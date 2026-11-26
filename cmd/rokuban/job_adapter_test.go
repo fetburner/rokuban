@@ -31,7 +31,7 @@ func TestNewJobAdapterSelectsEngine(t *testing.T) {
 		counts bool
 		grace  time.Duration
 	}{
-		{engine: "river", grace: 5 * time.Minute},
+		{engine: "river", counts: true, grace: 5 * time.Minute},
 		{engine: "asynq", counts: true, grace: 2*time.Minute + 10*time.Second},
 	} {
 		t.Run(string(tc.engine), func(t *testing.T) {
@@ -146,7 +146,7 @@ func TestBuildHTTPServer_QueueCountHostExemption(t *testing.T) {
 		countStatus int
 	}{
 		{"asynq notifier", "notifier", testDeliverableCounter{t}, http.StatusOK},
-		{"river notifier", "notifier", nil, http.StatusBadRequest},
+		{"notifier without counter", "notifier", nil, http.StatusBadRequest},
 		{"other role", "worker", testDeliverableCounter{t}, http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -17,14 +17,12 @@ kind: Component
 #   - config.yml（`worker.engine` / `redis_url`）: base/config.yml は River の形のまま。
 #     エンジンは環境の config で素の値として決める（base/config.yml の冒頭コメントの決定）。
 #     overlay ごとに config.yml を持つ（overlays/asynq・overlays/e2e-asynq）。
-#   - ScaledJob のトリガ: URL に**物理キュー名**（`<論理名>_<site>`）と notifier の FQDN
-#     （名前空間）を書くため、site の数と名前空間が決まる overlay でしか書けない。
-#     component に入れると、サイト名付きの overlay（e2e の `nameSuffix`）で patch の
-#     target が一致しなくなる。
+#   - ScaledJob のトリガ: 件数の口は River 構成と共通で、base / site / store が持つ。
+#     物理キュー名と notifier の名前空間は overlay が決める（overlays/e2e・
+#     overlays/e2e-two-stores の patch）。asynq だけの component には置かない。
 #   - Secret（REDIS_URL を含む）: 環境の仕事（base は Secret を出荷しない）。
 #
-# E10-7 で ScaledJob のトリガが base に寄ると、ここに残るのは Redis だけになる。
-# トリガの URL の site 修飾は、そのとき site/ の argv と同じ位置の patch で当てる。
+# ScaledJob のトリガは両構成で共通なので、ここに残るのは Redis だけである。
 
 resources:
   - redis.yaml

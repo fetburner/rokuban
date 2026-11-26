@@ -117,14 +117,13 @@ func isSiteOverlay(t *testing.T, target string) bool {
 	return false
 }
 
-var asynqOverlayDirs = []string{asynqOverlayDir, asynqE2EDir}
-
-// asynqTriggerPatches は overlay の patches のうち ScaledJob に当たるものを、
-// target 名 → 置き換えたトリガ列で返す。同じ名前を 2 回当てると落とす。
-func asynqTriggerPatches(t *testing.T, dir string) map[string][]map[string]any {
+// urlPatches は overlay の patches のうち ScaledJob のトリガ URL（`/spec/triggers/0/metadata/url`）
+// を置き換えるものを、target 名 → URL で返す。同じ名前を 2 回当てると落とす。
+// 他の ScaledJob patch（argv や pollingInterval）は対象外。
+func urlPatches(t *testing.T, dir string) map[string]string {
 	t.Helper()
 	k := loadOverlayPatches(t, dir)
-	out := map[string][]map[string]any{}
+	out := map[string]string{}
 	for _, p := range k.Patches {
 		if p.Target.Kind != "ScaledJob" {
 			continue
@@ -137,21 +136,18 @@ func asynqTriggerPatches(t *testing.T, dir string) map[string][]map[string]any {
 		if err := yaml.Unmarshal([]byte(p.Patch), &ops); err != nil {
 			t.Fatalf("%s: decoding the patch for %s: %v", dir, p.Target.Name, err)
 		}
-		if len(ops) != 1 || ops[0].Op != "replace" || ops[0].Path != "/spec/triggers" {
-			t.Fatalf("%s: patch for %s: want exactly one `replace /spec/triggers`, got %+v", dir, p.Target.Name, ops)
+		for _, op := range ops {
+			if op.Path != "/spec/triggers/0/metadata/url" {
+				continue
+			}
+			if op.Op != "replace" {
+				t.Fatalf("%s: patch for %s: url op is %q, want replace", dir, p.Target.Name, op.Op)
+			}
+			if _, dup := out[p.Target.Name]; dup {
+				t.Errorf("%s: ScaledJob %s is patched twice", dir, p.Target.Name)
+			}
+			out[p.Target.Name], _ = op.Value.(string)
 		}
-		raw, err := yaml.Marshal(ops[0].Value)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var triggers []map[string]any
-		if err := yaml.Unmarshal(raw, &triggers); err != nil {
-			t.Fatalf("%s: patch for %s: triggers are not a list of maps: %v", dir, p.Target.Name, err)
-		}
-		if _, dup := out[p.Target.Name]; dup {
-			t.Errorf("%s: ScaledJob %s is patched twice", dir, p.Target.Name)
-		}
-		out[p.Target.Name] = triggers
 	}
 	return out
 }
@@ -185,77 +181,49 @@ func expectedAsynqTargets(t *testing.T, o asynqOverlay) map[string]string {
 	return want
 }
 
-// TestAsynqOverlaysRetargetEveryScaledJobExactly は、asynq overlay ごとに
-// 「複製された ScaledJob の集合」と「トリガを差し替える patch の集合」が一致し、
-// 各 URL が自分の物理キューの件数を、その overlay の notifier（FQDN）から読むことを固定する。
+// TestE2EOverlayRetargetsEveryScaledJobExactly は、e2e overlay が触る ScaledJob の集合と
+// URL を差し替える patch の集合が一致し、各 URL が自分の物理キューの件数を、その overlay の
+// notifier（FQDN）から読むことを固定する。
 //
-// 落ちる典型: ScaledJob を 1 本足して patch を書き忘れる（残った postgresql トリガは
-// asynq 構成では river_job を見ない = 永久に 0）。論理名で引く。短い Service 名で書く。
+// 両構成（River も asynq も）の件数の口は同じなので、e2e-asynq は差し替えを持たず
+// この overlay を継承する（TestAsynqOverlaysInheritTheTriggersOfE2E）。
+//
+// 落ちる典型: ScaledJob を 1 本足して patch を書き忘れる（残った既定ホストの URL は
+// 別の namespace の notifier を見て 0 のまま）。論理名で引く。短い Service 名で書く。
 // e2e の nameSuffix と patch の名前がずれる（黙って無視される）。
-func TestAsynqOverlaysRetargetEveryScaledJobExactly(t *testing.T) {
-	for _, dir := range asynqOverlayDirs {
-		o := asynqOverlayOf(t, dir)
-		t.Run(o.dir, func(t *testing.T) {
-			patched := asynqTriggerPatches(t, o.dir)
-			want := expectedAsynqTargets(t, o)
-			for name := range want {
-				if _, ok := patched[name]; !ok {
-					t.Errorf("%s: ScaledJob %s has no trigger patch; it keeps the postgresql trigger, which counts river_job and never sees asynq tasks", o.dir, name)
-				}
-			}
-			for name := range patched {
-				if _, ok := want[name]; !ok {
-					t.Errorf("%s: patch targets ScaledJob %s, which the overlay does not produce (kustomize ignores it silently)", o.dir, name)
-				}
-			}
-			host := "rokuban-notifier." + o.namespace + ".svc.cluster.local:40773"
-			for name, queue := range want {
-				triggers, ok := patched[name]
-				if !ok {
-					continue
-				}
-				if len(triggers) != 1 {
-					t.Errorf("%s: ScaledJob %s: %d triggers, want exactly 1 metrics-api trigger", o.dir, name, len(triggers))
-					continue
-				}
-				tr := triggers[0]
-				if tr["type"] != "metrics-api" {
-					t.Errorf("%s: ScaledJob %s: trigger type = %v, want metrics-api", o.dir, name, tr["type"])
-				}
-				md, _ := tr["metadata"].(map[string]any)
-				url, _ := md["url"].(string)
-				if want := "http://" + host + "/internal/queues/" + queue + "/deliverable-count"; url != want {
-					t.Errorf("%s: ScaledJob %s: url = %q, want %q", o.dir, name, url, want)
-				}
-				if md["valueLocation"] != "value" {
-					t.Errorf("%s: ScaledJob %s: valueLocation = %v, want \"value\"", o.dir, name, md["valueLocation"])
-				}
-				if md["targetValue"] != "1" && md["targetValue"] != 1 {
-					t.Errorf("%s: ScaledJob %s: targetValue = %v, want 1", o.dir, name, md["targetValue"])
-				}
-			}
-		})
+func TestE2EOverlayRetargetsEveryScaledJobExactly(t *testing.T) {
+	o := asynqOverlayOf(t, e2eOverlayDir)
+	patched := urlPatches(t, o.dir)
+	want := expectedAsynqTargets(t, o)
+	for name := range want {
+		if _, ok := patched[name]; !ok {
+			t.Errorf("%s: ScaledJob %s has no trigger url patch; it keeps the default notifier host", o.dir, name)
+		}
+	}
+	for name := range patched {
+		if _, ok := want[name]; !ok {
+			t.Errorf("%s: patch targets ScaledJob %s, which the overlay does not produce (kustomize ignores it silently)", o.dir, name)
+		}
+	}
+	for name, queue := range want {
+		url, ok := patched[name]
+		if !ok {
+			continue
+		}
+		if wantURL := "http://rokuban-notifier." + o.namespace + ".svc.cluster.local:40773/internal/queues/" + queue + "/deliverable-count"; url != wantURL {
+			t.Errorf("%s: ScaledJob %s: url = %q, want %q", o.dir, name, url, wantURL)
+		}
 	}
 }
 
-// TestAsynqOverlaysShareOneNotifierHost は、1 つの overlay の全トリガが同じホスト
-// （FQDN）を指すことを固定する。直書きが 1 か所でも残ると、その 1 キューだけが
-// 黙ってスケールしなくなる。
-func TestAsynqOverlaysShareOneNotifierHost(t *testing.T) {
-	for _, dir := range asynqOverlayDirs {
-		o := asynqOverlayOf(t, dir)
-		hosts := map[string]bool{}
-		for _, triggers := range asynqTriggerPatches(t, o.dir) {
-			for _, tr := range triggers {
-				md, _ := tr["metadata"].(map[string]any)
-				url, _ := md["url"].(string)
-				rest := strings.TrimPrefix(url, "http://")
-				host, _, _ := strings.Cut(rest, "/")
-				hosts[host] = true
-			}
-		}
-		if len(hosts) != 1 {
-			t.Errorf("%s: triggers name %d different notifier hosts %v; want exactly one", o.dir, len(hosts), hosts)
+// TestAsynqOverlaysInheritTheTriggersOfE2E は、asynq の 2 overlay が ScaledJob の
+// トリガを差し替えないことを固定する。overlays/asynq は既定の名前空間の notifier を
+// base のまま使い、overlays/e2e-asynq は overlays/e2e の差し替えを継承する。
+// asynq 用に URL を書き直す patch が復活すると、件数の口が 2 種類になる。
+func TestAsynqOverlaysInheritTheTriggersOfE2E(t *testing.T) {
+	for _, dir := range []string{asynqOverlayDir, asynqE2EDir} {
+		if got := urlPatches(t, dir); len(got) != 0 {
+			t.Errorf("%s: patches the trigger url of %d ScaledJobs; the trigger is shared across engines and must not be patched per engine", dir, len(got))
 		}
 	}
 }

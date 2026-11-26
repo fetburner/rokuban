@@ -48,6 +48,10 @@ type Adapter struct {
 	// started records that client has been Started. River's Stopped() channel is nil
 	// until Start, so only a client that was started needs rebuilding after Stop.
 	started bool
+	// now is the clock CountDeliverable compares scheduled_at against. Tests replace it.
+	now func() time.Time
+	// deliverablePageSize is the JobList page size CountDeliverable reads with. Tests shrink it to cross pages.
+	deliverablePageSize int
 }
 
 // NewInsertOnlyEnqueuer creates an Adapter with an empty worker registry and does not start
@@ -64,7 +68,7 @@ func NewInsertOnlyEnqueuer(pool *pgxpool.Pool, queueFor QueueFunc) (*Adapter, er
 	if err != nil {
 		return nil, fmt.Errorf("creating insert-only River client: %w", err)
 	}
-	return &Adapter{pool: pool, registry: jobq.NewRegistry(), queueFor: queueFor, client: client}, nil
+	return &Adapter{pool: pool, registry: jobq.NewRegistry(), queueFor: queueFor, client: client, now: time.Now, deliverablePageSize: defaultDeliverablePageSize}, nil
 }
 
 // NewAdapter builds River workers from registry and creates a PostgreSQL-backed adapter.
@@ -81,7 +85,7 @@ func NewAdapter(pool *pgxpool.Pool, registry *jobq.Registry, queueFor QueueFunc,
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{pool: pool, registry: registry, queueFor: queueFor, config: cfg, client: client, once: gate}, nil
+	return &Adapter{pool: pool, registry: registry, queueFor: queueFor, config: cfg, client: client, once: gate, now: time.Now, deliverablePageSize: defaultDeliverablePageSize}, nil
 }
 
 // workerTarget は Register が預けた builder に渡す、River の登録先と投入先の解決関数。
