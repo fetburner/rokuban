@@ -1,0 +1,16 @@
+name: Set up pnpm and install web dependencies
+description: pnpm と Node（.node-version）を入れ、web/ の依存を lockfile どおりに入れる。呼び出し側は先に actions/checkout を済ませておく。
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v6
+      with:
+        package_json_file: web/package.json
+    - uses: actions/setup-node@v7
+      with:
+        node-version-file: .node-version
+        cache: pnpm
+        cache-dependency-path: web/pnpm-lock.yaml
+    - shell: bash
+      working-directory: web
+      run: pnpm install --frozen-lockfile
