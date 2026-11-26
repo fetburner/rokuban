@@ -19,6 +19,8 @@ type RecordingOptions struct {
 	Purged             bool
 	EventID            int32
 	ProgramStartAt     time.Time
+	// ProgramDurationMs は 0 なら実装ごとの既定値を使う。
+	ProgramDurationMs int64
 }
 
 // NewRecording は契約のケース用に永続化済みの録画を作る。
@@ -29,8 +31,9 @@ type NewRecording func(t *testing.T, options RecordingOptions) int64
 type Fixture struct {
 	Store        store.ChapterEdits
 	NewRecording NewRecording
-	// SaveCMDetection は CM 検出結果を commit する。
-	SaveCMDetection func(t *testing.T, recordingID int64, ranges []chapters.Range)
+	// SaveCMDetection は CM 検出結果を commit する。material が nil なら、審査用の材料を
+	// 持たない検出（材料を導入する前の検出）を書く。
+	SaveCMDetection func(t *testing.T, recordingID int64, ranges []chapters.Range, material *store.CMDetectionMaterial)
 	// BeginCMDetection は CM 検出 worker と同じく録画の行をロックして結果を書く
 	// tx を開き、commit する関数を返す。commit までロックを保持する。
 	BeginCMDetection func(t *testing.T, recordingID int64, ranges []chapters.Range) (commit func())
@@ -49,6 +52,7 @@ func Run(t *testing.T, newStore NewStore) {
 	t.Run("detection commit changes the version", func(t *testing.T) { runDetectionChangesVersion(t, newStore) })
 	t.Run("replace serializes with detection commit", func(t *testing.T) { runDetectionSerialization(t, newStore) })
 	t.Run("trashed recordings reject writes", func(t *testing.T) { runTrashed(t, newStore) })
+	t.Run("review exposes latest automatic layer and materials", func(t *testing.T) { runReview(t, newStore) })
 	t.Run("database range conflict rolls back replacement", func(t *testing.T) { runConflictRollback(t, newStore) })
 	t.Run("concurrent replacements serialize", func(t *testing.T) { runConcurrentReplacements(t, newStore) })
 }
@@ -61,7 +65,7 @@ func runDetectionChangesVersion(t *testing.T, newStore NewStore) {
 	if err != nil {
 		t.Fatalf("reading before detection: %v", err)
 	}
-	f.SaveCMDetection(t, id, []chapters.Range{{StartMs: 1000, EndMs: 2000}})
+	f.SaveCMDetection(t, id, []chapters.Range{{StartMs: 1000, EndMs: 2000}}, nil)
 	spans := []chapters.Span{{StartMs: 0, EndMs: 1001, Cut: true}}
 	if err := f.Store.Replace(ctx, id, before.Version, spans, false); !errors.Is(err, store.ErrStaleVersion) {
 		t.Fatalf("Replace(version before detection) error = %v, want ErrStaleVersion", err)
@@ -120,9 +124,15 @@ func runReadAndMissing(t *testing.T, newStore NewStore) {
 	if err := s.Reset(ctx, -1); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Reset(missing) error = %v, want ErrNotFound", err)
 	}
+	if _, err := s.ReadReview(ctx, -1); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ReadReview(missing) error = %v, want ErrNotFound", err)
+	}
 	purgedID := newRecording(t, RecordingOptions{Purged: true})
 	if _, err := s.Read(ctx, purgedID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Read(purged) error = %v, want ErrNotFound", err)
+	}
+	if _, err := s.ReadReview(ctx, purgedID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ReadReview(purged) error = %v, want ErrNotFound", err)
 	}
 	if err := s.Replace(ctx, purgedID, "", nil, false); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Replace(purged) error = %v, want ErrNotFound", err)
@@ -160,6 +170,13 @@ func runReplaceAndReset(t *testing.T, newStore NewStore) {
 	}
 	if !owned.Owned || !reflect.DeepEqual(owned.UserSpans, first) || owned.Version == initial.Version {
 		t.Fatalf("adopted snapshot = %+v, want owned spans and a changed version", owned)
+	}
+	again, err := s.Read(ctx, id)
+	if err != nil {
+		t.Fatalf("reading unchanged layer again: %v", err)
+	}
+	if again.Version != owned.Version {
+		t.Fatalf("version of an unchanged layer = %q then %q, want the same value", owned.Version, again.Version)
 	}
 
 	second := []chapters.Span{{StartMs: 3003, EndMs: 4004, Label: "OP", Cut: false}}
@@ -209,6 +226,72 @@ func runReplaceAndReset(t *testing.T, newStore NewStore) {
 	}
 	if err := s.Reset(ctx, id); err != nil {
 		t.Fatalf("resetting an already automatic layer: %v", err)
+	}
+}
+
+// runReview は編集画面の ReadReview（handler の GetRecordingChapterReview が使う）の主張を検査する。
+// 自動層は所有の有無によらず最新の検出を返し、材料は両方あるときだけ MaterialsAvailable になる。
+// 区間の並びは実装が保証しないので、入力は逆順で渡す。
+func runReview(t *testing.T, newStore NewStore) {
+	f := newStore(t)
+	s := f.Store
+	ctx := context.Background()
+	const duration = 1_500_000
+	id := f.NewRecording(t, RecordingOptions{ProgramDurationMs: duration})
+	material := &store.CMDetectionMaterial{
+		LogoRanges: []chapters.Range{{StartMs: 9000, EndMs: 9500}, {StartMs: 3000, EndMs: 3500}},
+		Elements:   []chapters.CMElement{{StartMs: 1000, EndMs: 2000, ErrorFrames: 3, Label: ":CM"}},
+	}
+	f.SaveCMDetection(t, id, []chapters.Range{{StartMs: 5000, EndMs: 6000}, {StartMs: 1000, EndMs: 2000}}, material)
+	wantAuto := []chapters.Range{{StartMs: 1000, EndMs: 2000}, {StartMs: 5000, EndMs: 6000}}
+
+	// Read の自動層も、GetRecordingChapters の AutoSpans 経由で並びが応答に出る。
+	initial, err := s.Read(ctx, id)
+	if err != nil {
+		t.Fatalf("reading before adoption: %v", err)
+	}
+	if initial.Owned || !reflect.DeepEqual(initial.CMRanges, wantAuto) {
+		t.Fatalf("Read(automatic).CMRanges = %+v, want the unowned layer with sorted ranges %+v", initial.CMRanges, wantAuto)
+	}
+
+	review, err := s.ReadReview(ctx, id)
+	if err != nil {
+		t.Fatalf("ReadReview(automatic) error = %v", err)
+	}
+	if review.Chapter.Owned || review.Chapter.ProgramDurationMs != duration || !reflect.DeepEqual(review.Chapter.CMRanges, wantAuto) {
+		t.Fatalf("ReadReview(automatic).Chapter = %+v, want unowned layer with sorted ranges %+v and duration %d", review.Chapter, wantAuto, duration)
+	}
+	if !review.MaterialsAvailable || !reflect.DeepEqual(review.LogoRanges, []chapters.Range{{StartMs: 3000, EndMs: 3500}, {StartMs: 9000, EndMs: 9500}}) || !reflect.DeepEqual(review.Elements, material.Elements) {
+		t.Fatalf("ReadReview(automatic) materials = available %t, logo %+v, elements %+v; want the saved materials with logo ranges sorted", review.MaterialsAvailable, review.LogoRanges, review.Elements)
+	}
+
+	if err := s.Replace(ctx, id, initial.Version, []chapters.Span{{StartMs: 0, EndMs: 100, Label: "CM", Cut: true}}, false); err != nil {
+		t.Fatalf("adopting chapter layer: %v", err)
+	}
+	owned, err := s.ReadReview(ctx, id)
+	if err != nil {
+		t.Fatalf("ReadReview(owned) error = %v", err)
+	}
+	if !owned.Chapter.Owned || !reflect.DeepEqual(owned.Chapter.CMRanges, wantAuto) || !owned.MaterialsAvailable {
+		t.Fatalf("ReadReview(owned) = %+v, want the latest automatic layer while owned", owned)
+	}
+
+	f.SaveCMDetection(t, id, []chapters.Range{{StartMs: 7000, EndMs: 8000}}, nil)
+	legacy, err := s.ReadReview(ctx, id)
+	if err != nil {
+		t.Fatalf("ReadReview(legacy detection) error = %v", err)
+	}
+	if legacy.MaterialsAvailable || len(legacy.LogoRanges) != 0 || len(legacy.Elements) != 0 || !reflect.DeepEqual(legacy.Chapter.CMRanges, []chapters.Range{{StartMs: 7000, EndMs: 8000}}) {
+		t.Fatalf("ReadReview(legacy detection) = %+v, want no materials and the new automatic ranges", legacy)
+	}
+
+	f.SaveCMDetection(t, id, nil, &store.CMDetectionMaterial{})
+	empty, err := s.ReadReview(ctx, id)
+	if err != nil {
+		t.Fatalf("ReadReview(empty materials) error = %v", err)
+	}
+	if !empty.MaterialsAvailable || len(empty.Chapter.CMRanges) != 0 {
+		t.Fatalf("ReadReview(empty materials) = %+v, want available materials with no automatic ranges", empty)
 	}
 }
 

@@ -538,7 +538,8 @@ func applyRecordingChapterOwnerships(ctx context.Context, tx *sql.Tx, rows []cat
 // applyRecordingChapterSpans は recording_chapter_spans を復元し、件数を res.RecordingChapterSpans に書く。
 // 足すだけで消さない。Postgres 版の排他制約（同じ録画の区間は重ならない）に当たる区間は、
 // ON CONFLICT DO NOTHING と同じく黙って飛ばす。先に入った区間が残る。同一区間も重なりに含むので、再実行で二重にならない。
-// 表の制約としては写さない（重なりの検査は MySQL の区間のタスクの範囲）。この判定だけを揃える。
+// MySQL の表は重なりを拒まないので、この経路はここで重なりを確かめる。
+// Replace は checkSpansDisjoint で確かめる。
 func applyRecordingChapterSpans(ctx context.Context, tx *sql.Tx, rows []catalogdoc.RecordingChapterSpan, res *store.RestoreResult) error {
 	for _, s := range rows {
 		var overlapping int

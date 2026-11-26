@@ -431,6 +431,8 @@ CM 検出の結果とチャプター編集は、カット版の作り直し要�
 
 直列化により、検出結果の書き込みとチャプター編集の自動チャプター引き取りは、互いの commit を見落とさない。
 
+MySQL には区間の排他制約が無く、表は重なった区間を拒まない。重なりの禁止は、表現不可能にする形から、コードの検査に弱まる。そのため `recording_chapter_spans` の書き手は、それぞれ自分で重なりを確かめる。確かめない書き手を足すと、重なった区間がそのまま残る。
+
 再試行 API は結果と試行を消し、commit してからジョブを投入する。ingest と reconcile の投入も含め、どれも commit 後のヒントである。投入に失敗しても、定期 reconcile が desired な集合を取り直して投入する。
 
 カット版の作り直し要求の記録と公開をチャプター編集と直列化するのは、作り直し要求に記録する keep と、公開時に照合する keep が、途中のチャプター編集で変わらないようにするためである。
@@ -440,6 +442,7 @@ CM 検出の結果とチャプター編集は、カット版の作り直し要�
 - ドメイン契約: `internal/store.CMDetection`
 - ドメイン契約（チャプター編集）: `internal/store.ChapterEdits`
 - PostgreSQL 実装: `internal/store/pgstore.Analysis`
+- MySQL 実装（チャプター編集）: `internal/store/mysqlstore.ChapterEdits`。重なりの検査は `checkSpansDisjoint`
 - 契約テスト: `internal/store/contracttest.RunCMDetection`
 - チャプター編集との録画単位の直列化: `lockRecording` / `lockRecordingState` / `internal/store/pgstore.Analysis.SaveDetection`
 - 作り直し要求とカット版の公開の直列化: `ReencodeRecordingProfile` / `prepareEncodePublish`
