@@ -340,6 +340,12 @@ func configureMediaPublishFixture(t *testing.T, pool *pgxpool.Pool, fixture *con
 			t.Fatalf("seeding ingest progress for recording %d: %v", recordingID, err)
 		}
 	}
+	fixture.ExpireIngestLease = func(t *testing.T, recordingID int64) {
+		t.Helper()
+		if _, err := pool.Exec(context.Background(), `UPDATE recording_ingest_checkpoints SET lease_expires_at = now() - interval '1 second' WHERE recording_id = $1`, recordingID); err != nil {
+			t.Fatalf("expiring ingest lease for recording %d: %v", recordingID, err)
+		}
+	}
 	fixture.NewInPlaceInput = func(t *testing.T, relPath string) store.InPlaceInput {
 		t.Helper()
 		return store.InPlaceInput{

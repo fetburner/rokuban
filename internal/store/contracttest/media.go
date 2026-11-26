@@ -71,6 +71,8 @@ type MediaFixture struct {
 	// SetRecordingRemovalTimes は録画の deleted_at・purged_at・superseded_at を指定した値に書く。
 	// nil は NULL にする。
 	SetRecordingRemovalTimes func(t *testing.T, recordingID int64, deletedAt, purgedAt, supersededAt *time.Time)
+	// ExpireIngestLease は録画の writer lease を DB の時計で過去にする。
+	ExpireIngestLease func(t *testing.T, recordingID int64)
 	// SetRecordingTrashed は録画をごみ箱に入れる（deleted_at を埋める）。
 	SetRecordingTrashed func(t *testing.T, recordingID int64)
 	// NewRecordSync は録画に対応する mirakc record の同期行を作る。
@@ -131,6 +133,7 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 func RunMediaPublish(t *testing.T, newFixture NewMediaFixture) {
 	t.Helper()
 	t.Run("clearing ingest progress is idempotent", func(t *testing.T) { runClearIngestProgress(t, newFixture) })
+	RunIngestCheckpoint(t, newFixture)
 	t.Run("original publication freezes policy and clears progress atomically", func(t *testing.T) { runOriginalPublication(t, newFixture) })
 	t.Run("original callback failure rolls back rows", func(t *testing.T) { runOriginalPublicationRollback(t, newFixture) })
 	t.Run("encoded publication rechecks attempt and desired profiles", func(t *testing.T) { runEncodedPublicationRechecks(t, newFixture) })
