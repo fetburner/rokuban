@@ -340,6 +340,7 @@ TS の計測結果は、対象の状態を再確認した上で一括して保�
 
 - 契約: `internal/store.TSScan`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
+- MySQL 実装: `internal/store/mysqlstore.Media`
 
 </details>
 
