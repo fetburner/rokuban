@@ -209,7 +209,7 @@ type CMStation interface {
 	// MarkLogoCandidateReady は枠版と試行時刻が一致する running 候補だけを ready にする。
 	// 現在の枠版が areaUpdatedAt と違えば書かない。検査: RunCMStation の「candidate results reject an old area version」。
 	MarkLogoCandidateReady(ctx context.Context, station CMStationRef, areaUpdatedAt, attemptedAt time.Time, lgd, previewPNG []byte) (bool, error)
-	// MarkLogoCandidateFailed は候補行の枠版と試行時刻が一致する running 候補だけを failed にする（契約テストでは未検証）。
+	// MarkLogoCandidateFailed は候補行の枠版と試行時刻が一致する running 候補だけを failed にする。検査: RunCMStation の「candidate failure marks only the matching running attempt」。
 	MarkLogoCandidateFailed(ctx context.Context, station CMStationRef, areaUpdatedAt, attemptedAt time.Time, stage *string, message string) (bool, error)
 	// DiscardLogoCandidate は候補行の枠版と試行時刻が一致する running 候補を消す。
 	// 検査: RunCMStation の「discarding an old attempt leaves a recreated candidate」。

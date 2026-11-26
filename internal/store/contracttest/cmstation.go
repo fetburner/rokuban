@@ -9,14 +9,29 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
+// CMStationDetection は局単位の契約が検出側から読むメソッドだけを表す。
+// 残りの CMDetection は局単位の契約の検査に要らないので、ここには含めない。
+type CMStationDetection interface {
+	// ListMissingLogoCandidates は desired な候補解析を返す。
+	ListMissingLogoCandidates(ctx context.Context, limit int32) ([]store.CMLogoCandidateJob, error)
+	// GetWorkItem は録画と原本の検出入力を返す。
+	GetWorkItem(ctx context.Context, recordingID int64) (store.CMDetectionWorkItem, error)
+}
+
 // CMStationFixture は局単位の CM ロゴ契約と、テスト用状態作成フックをまとめる。
 type CMStationFixture struct {
 	Store               store.CMStation
-	Detection           store.CMDetection
+	Detection           CMStationDetection
 	NewStationRecording func(t *testing.T, station store.CMStationRef) int64
 	MarkOriginalMissing func(t *testing.T, recordingID int64)
 	SeedDetection       func(t *testing.T, recordingID int64)
-	NewRecording        func(t *testing.T) int64
+	// SetRecordingNames は録画の表示名と site を書き換える（最新の録画から名前を取ることを確かめる）。
+	SetRecordingNames func(t *testing.T, recordingID int64, serviceName, site string)
+	// EnableCMDetection は録画の CM 検出を有効にする（方針の行を作る）。
+	EnableCMDetection func(t *testing.T, recordingID int64)
+	// SeedFailedAttempt は現在の方針世代の failed 試行を作る。
+	SeedFailedAttempt func(t *testing.T, recordingID int64, stage string, attemptedAt time.Time)
+	NewRecording      func(t *testing.T) int64
 	// BeginStationWrite は同じ局の書き込みロックを保持した tx を作り、commit 関数を返す。
 	BeginStationWrite func(t *testing.T, station store.CMStationRef) (commit func())
 	// WaitForStationWriteWait は name のメソッドがその局ロックで待っていることを確認する。
@@ -71,6 +86,12 @@ func RunCMStation(t *testing.T, newStore NewCMStationStore) {
 			t.Fatalf("stale candidate state = %q, want running", candidate.State)
 		}
 	})
+
+	t.Run("candidate failure marks only the matching running attempt", func(t *testing.T) {
+		runCMStationCandidateFailure(t, newStore, station)
+	})
+
+	runCMStationStateList(t, newStore, station)
 
 	t.Run("discarding an old attempt leaves a recreated candidate", func(t *testing.T) {
 		runCMStationDiscardOldAttempt(t, newStore, station)
@@ -152,6 +173,43 @@ func RunCMStation(t *testing.T, newStore NewCMStationStore) {
 			t.Fatalf("SaveLogoArea(missing recording) error = %v, want ErrNotFound", err)
 		}
 	})
+}
+
+// runCMStationCandidateFailure は、試行時刻が一致する running 候補だけが failed になることを確かめる。
+// 一致しない試行時刻では書かず、stage save を受け付けることも確かめる。
+func runCMStationCandidateFailure(t *testing.T, newStore NewCMStationStore, station store.CMStationRef) {
+	t.Helper()
+	f := newStore(t)
+	ctx := context.Background()
+	recordingID := f.NewRecording(t)
+	area, err := f.Store.SaveLogoArea(ctx, station, testAreaInput(recordingID, 10))
+	if err != nil {
+		t.Fatalf("saving area: %v", err)
+	}
+	attemptedAt, started, err := f.Store.BeginLogoCandidate(ctx, station, recordingID, area.AreaUpdatedAt)
+	if err != nil || !started {
+		t.Fatalf("BeginLogoCandidate() = %s, %v, %v; want started", attemptedAt, started, err)
+	}
+	stage, message := "save", "saving failed"
+	ok, err := f.Store.MarkLogoCandidateFailed(ctx, station, area.AreaUpdatedAt, attemptedAt.Add(time.Second), &stage, message)
+	if err != nil || ok {
+		t.Fatalf("MarkLogoCandidateFailed(other attempt time) = %v, %v; want no write", ok, err)
+	}
+	if c, err := f.Store.GetLogoCandidate(ctx, station); err != nil || c.State != "running" {
+		t.Fatalf("candidate after other attempt time = %+v, %v; want running", c, err)
+	}
+	ok, err = f.Store.MarkLogoCandidateFailed(ctx, station, area.AreaUpdatedAt, attemptedAt, &stage, message)
+	if err != nil || !ok {
+		t.Fatalf("MarkLogoCandidateFailed(running attempt) = %v, %v; want the running row marked", ok, err)
+	}
+	candidate, err := f.Store.GetLogoCandidate(ctx, station)
+	if err != nil {
+		t.Fatalf("reading failed candidate: %v", err)
+	}
+	if candidate.State != "failed" || candidate.Stage == nil || *candidate.Stage != stage ||
+		candidate.Error == nil || *candidate.Error != message {
+		t.Fatalf("failed candidate = %+v, want failed with stage %q and error %q", candidate, stage, message)
+	}
 }
 
 // runCMStationSerialization は、局の書き込みロックを保持中は局の書き込みが待つことを確かめる。

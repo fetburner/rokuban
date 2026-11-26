@@ -163,23 +163,6 @@ func TestCMLogoCandidateWorkerFailuresBecomeFailedRows(t *testing.T) {
 
 // 保存の失敗（stage = save）も failed の行として書ける。CHECK に save が無いと
 // MarkLogoCandidateFailed 自体が 23514 で落ち、running のまま固まる。
-func TestMarkCMLogoCandidateFailureAcceptsSaveStage(t *testing.T) {
-	t.Parallel()
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(944)))
-	areaAt := seedTaughtArea(t, pool, 1180)
-	attemptedAt := insertRunningCandidate(t, pool, 1024, id, areaAt)
-	stage, message := "save", "saving failed"
-	ok, err := pgstoretest.Analysis(pool).MarkLogoCandidateFailed(ctx, store.CMStationRef{NetworkID: 32736, ServiceID: 1024}, areaAt, attemptedAt, &stage, message)
-	if err != nil || !ok {
-		t.Fatalf("MarkLogoCandidateFailed(save) = %v, %v; want the running row marked", ok, err)
-	}
-	if state, got, _ := candidateRow(t, pool); state != "failed" || got != "save" {
-		t.Errorf("candidate = %q/%q, want failed/save", state, got)
-	}
-}
-
 // 解析中に枠が変わったら ready は書かれず、この版の running 行は消える。
 func TestCMLogoCandidateWorkerDoesNotWriteReadyAfterAreaChanged(t *testing.T) {
 	pool := testutil.SetupDB(t)
