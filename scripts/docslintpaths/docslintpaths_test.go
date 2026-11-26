@@ -1,9 +1,9 @@
 // ci-extra-files: .github/workflows/ci.yml package.json
 
-// Package docslintpaths はテストだけを持つ。ci.yml の docs-lint の paths-filter の `md` に書いた
-// 一覧が、package.json の `docs:lint` の対象（シングルクォートで囲んだ glob の全部）と順序を除いて
-// 一致することを検査する。一覧が 2 か所にあって片方だけ直すと、対象の Markdown を変えた PR で
-// lint が回らなくなる。この検査は test ジョブが回す `go list ./...` の対象なので、専用の job は要らない。
+// Package docslintpaths はテストだけを持つ。ci.yml の docs-lint の paths-filter の `md` と `md_lint`
+// （変更された Markdown の検査に使う、added|modified だけの一覧）が、package.json の `docs:lint` の対象
+// （シングルクォートで囲んだ glob の全部）と順序を除いて一致することを検査する。一覧が複数あって片方だけ直すと、
+// 対象の Markdown を変えた PR で lint が回らなくなる。この検査は test ジョブが回す `go list ./...` の対象なので、専用の job は要らない。
 package docslintpaths
 
 import (
@@ -22,20 +22,41 @@ const (
 	ciPath  = "../../.github/workflows/ci.yml" // テストのカレントディレクトリからの相対パス
 	pkgPath = "../../package.json"
 	jobName = "docs-lint"
-	filter  = "md" // ci.yml の filters のキー名。steps.changes.outputs.md と対応する
 )
+
+// docsLintFilters は docs-lint の paths-filter の filters（YAML の文字列）を読んだ形。
+// md_lint は変更種別付きの要素を 1 つだけ持つ前提で、要素が合わなければ解析の段階で落ちる。
+type docsLintFilters struct {
+	MD     []string              `yaml:"md"`
+	MDLint []map[string][]string `yaml:"md_lint"`
+}
 
 func TestDocsLintFilterMatchesDocsLintScript(t *testing.T) {
 	t.Parallel()
 	want := docsLintTargets(t)
-	got := docsLintFilterPatterns(t)
-	if reflect.DeepEqual(want, got) {
-		return
+	f := readDocsLintFilters(t)
+
+	md := append([]string(nil), f.MD...)
+	sort.Strings(md)
+	if !reflect.DeepEqual(want, md) {
+		t.Errorf("ci.yml の docs-lint の paths-filter の md の一覧が package.json の docs:lint の対象と一致しない\n"+
+			"  docs:lint:    %q\n  paths-filter: %q\n"+
+			"`package.json` の `docs:lint` を変えたら `.github/workflows/ci.yml` の docs-lint の `md` の filter も同じ一覧にする",
+			want, md)
 	}
-	t.Errorf("ci.yml の docs-lint の paths-filter の md の一覧が package.json の docs:lint の対象と一致しない\n"+
-		"  docs:lint:    %q\n  paths-filter: %q\n"+
-		"`package.json` の `docs:lint` を変えたら `.github/workflows/ci.yml` の docs-lint の `md` の filter も同じ一覧にする",
-		want, got)
+
+	// md_lint は added|modified だけの要素を 1 つ持つ。added だけに変えると modified の Markdown が lint から漏れる。
+	if len(f.MDLint) != 1 || len(f.MDLint[0]) != 1 || f.MDLint[0]["added|modified"] == nil {
+		t.Fatalf("ci.yml の docs-lint の paths-filter の md_lint は、変更種別 added|modified だけの要素を 1 つ持つ一覧であるべき: %v", f.MDLint)
+	}
+	changed := append([]string(nil), f.MDLint[0]["added|modified"]...)
+	sort.Strings(changed)
+	if !reflect.DeepEqual(want, changed) {
+		t.Errorf("ci.yml の docs-lint の paths-filter の md_lint（added|modified）が package.json の docs:lint の対象と一致しない\n"+
+			"  docs:lint:    %q\n  paths-filter: %q\n"+
+			"md_lint は md の一覧を YAML アンカーで共有する形にする",
+			want, changed)
+	}
 }
 
 // docsLintTargets は package.json の docs:lint の引数（シングルクォートで囲んだ glob の全部）を、
@@ -63,9 +84,9 @@ func docsLintTargets(t *testing.T) []string {
 	return globs
 }
 
-// docsLintFilterPatterns は ci.yml の docs-lint job の paths-filter の md の一覧を、
-// 順序を除いてソートして返す。filter の文字列は YAML なので、もう一段 YAML として読む。
-func docsLintFilterPatterns(t *testing.T) []string {
+// readDocsLintFilters は ci.yml の docs-lint job の paths-filter の filters を読む。
+// filters の文字列は YAML なので、もう一段 YAML として読む。
+func readDocsLintFilters(t *testing.T) docsLintFilters {
 	t.Helper()
 	var wf struct {
 		Jobs map[string]struct {
@@ -96,16 +117,11 @@ func docsLintFilterPatterns(t *testing.T) []string {
 	if filters == "" {
 		t.Fatalf("job %s に dorny/paths-filter の step が無い", jobName)
 	}
-	var parsed map[string][]string
-	if err := yaml.Unmarshal([]byte(filters), &parsed); err != nil {
+	var f docsLintFilters
+	if err := yaml.Unmarshal([]byte(filters), &f); err != nil {
 		t.Fatalf("job %s の filters を解析できない: %v", jobName, err)
 	}
-	patterns, ok := parsed[filter]
-	if !ok {
-		t.Fatalf("job %s の filters に %q のキーが無い", jobName, filter)
-	}
-	sort.Strings(patterns)
-	return patterns
+	return f
 }
 
 func readFile(t *testing.T, path string) string {

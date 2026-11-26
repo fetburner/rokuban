@@ -1,5 +1,5 @@
 name: Install ffmpeg (and a Playwright browser) with apt cache
-description: ffmpeg を apt で入れ、任意で Playwright のブラウザとその依存を入れる。.deb は actions/cache に置く。呼び出し側は先に actions/checkout と pnpm install を済ませておく。
+description: ffmpeg を apt で入れ、任意で Playwright のブラウザとその依存を入れる。.deb は actions/cache に置く。呼び出し側は先に actions/checkout を済ませておく。playwright-browser を指定するときは、加えて ./.github/actions/setup-web（pnpm と web の依存）を済ませておく。
 inputs:
   playwright-browser:
     description: 入れる Playwright のブラウザ（chromium / chrome）。空なら ffmpeg だけ。

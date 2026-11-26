@@ -4,6 +4,7 @@
 # main のコミットごとの結果を残すため、後続の push があっても cancel-in-progress で止めない。
 # PR が緑で main が落ちたら、原因の PR の作者（エージェントを含む）が修正 PR を出す。revert はしない。
 # 集約ジョブは、計画段階で対象が空と判定した場合だけ shard の skip を成功とする。
+# allowed-skips は skip を許すだけで要求はしない（planned_skip のとき shard は job の if で必ず skip する）。
 name: CI
 
 env:
@@ -63,6 +64,13 @@ jobs:
               # 全件にする範囲は scripts/citest の requiresAllPackages と一致させる（TestBrowserE2EPathFiltersMatchAllPackagesRule が検査）。
               - '.github/workflows/ci.yml'
               - '.github/actions/**'
+            # browser-s3-302 だけが使う（web/src/ は使わず、web/dist の build も無い）。
+            # 同じアンカーを読む web-test にも載るが、そちらは使わない。push では使わない。
+            browser_s3_302_web:
+              - 'web/e2e/**'
+              - 'web/package.json'
+              - 'web/pnpm-lock.yaml'
+              - '.node-version'
       - name: Fetch PR base
         if: github.event_name == 'pull_request'
         env:
@@ -116,24 +124,21 @@ jobs:
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # 上の paths-filter の browser_s3_302_web。push では使わない。
+          BROWSER_S3_302_WEB: ${{ steps.changes.outputs.browser_s3_302_web }}
         run: |
           changed="$RUNNER_TEMP/changed.z"
-          changed_lines="$RUNNER_TEMP/changed.txt"
           packages_file="$RUNNER_TEMP/packages.txt"
           # 代入で受けるのは、citest などの失敗を set -e で step の失敗にするため。if の中の $(...) では失敗が握り潰される。
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
             git diff --name-only -z --no-renames "$BASE_SHA" HEAD > "$changed"
-            tr '\0' '\n' < "$changed" > "$changed_lines"
             read -r -a s3_pkgs <<< "$S3_CONFORMANCE_PACKAGES"
             read -r -a mysql_pkgs <<< "$MYSQL_CONTRACT_PACKAGES"
             streamer=$(go run ./scripts/citest -base "$BASE_SHA" -tags s3conformance ./internal/streamer/conformance < "$changed")
             s3=$(go run ./scripts/citest -base "$BASE_SHA" -tags s3conformance "${s3_pkgs[@]}" < "$changed")
             mysql=$(go run ./scripts/citest -base "$BASE_SHA" "${mysql_pkgs[@]}" < "$changed")
-            # web 側の変更は browser-s3-302 だけが使う（web/src/ は使わない。web/dist の build も無い）。
-            web=false
-            if grep -Eq '^(web/e2e/|web/package\.json$|web/pnpm-lock\.yaml$|\.node-version$)' "$changed_lines"; then web=true; fi
             browser=false
-            if [[ -n "$streamer" || "$web" == true ]]; then browser=true; fi
+            if [[ -n "$streamer" || "$BROWSER_S3_302_WEB" == true ]]; then browser=true; fi
             s3_run=false
             if [[ -n "$s3" ]]; then s3_run=true; fi
             mysql_run=false
@@ -228,19 +233,8 @@ jobs:
         id: changes
         if: github.event_name == 'pull_request'
         with: *browser_e2e_path_filters
-      - uses: pnpm/action-setup@v6
+      - uses: ./.github/actions/setup-web
         if: &web_test_needed ${{ github.event_name == 'push' || steps.changes.outputs.web == 'true' }}
-        with:
-          package_json_file: web/package.json
-      - uses: actions/setup-node@v7
-        if: *web_test_needed
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-        if: *web_test_needed
-        working-directory: web
       # コンポーネント／lib のロジック回帰は Vitest で止める。Go toolchain と PostgreSQL は要らない。
       - run: pnpm test
         if: *web_test_needed
@@ -307,16 +301,7 @@ jobs:
           restore-keys: |
             go-e2e-build-${{ runner.os }}-${{ matrix.shard }}-
             go-e2e-build-${{ runner.os }}-
-      - uses: pnpm/action-setup@v6
-        with:
-          package_json_file: web/package.json
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-        working-directory: web
+      - uses: ./.github/actions/setup-web
       # Playwright のブラウザとその依存も入れる（キャッシュのキーは install-apt-cached/action.yml）。
       - uses: ./.github/actions/install-apt-cached
         with:
@@ -339,16 +324,16 @@ jobs:
             ${{ steps.go-e2e-dirs.outputs.gomodcache }}
           key: go-e2e-build-${{ runner.os }}-${{ matrix.shard }}-${{ hashFiles('go.mod', 'go.sum') }}
 
-  # 必須チェック名 `browser-e2e` を保つ集約ジョブ。skip / cancelled / failure を緑にしない。
+  # 必須チェック名 `browser-e2e` を保つ集約ジョブ。判定は alls-green（冒頭の役割分担に従う）。
   browser-e2e:
     needs: [plan, browser-e2e-shard]
     if: always()
     runs-on: ubuntu-slim
     steps:
-      # 単一の失敗 step に集約し、空や未知の planned_skip も success shard を要求する。
-      - name: Validate plan and shard results
-        if: ${{ always() && (needs.plan.result != 'success' || (needs.plan.outputs.browser_e2e_planned_skip == 'true' && needs.browser-e2e-shard.result != 'skipped') || (needs.plan.outputs.browser_e2e_planned_skip != 'true' && needs.browser-e2e-shard.result != 'success')) }}
-        run: exit 1
+      - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
+        with:
+          jobs: ${{ toJSON(needs) }}
+          allowed-skips: ${{ needs.plan.outputs.browser_e2e_planned_skip == 'true' && 'browser-e2e-shard' || '' }}
 
   # S3 の 302 と中継を実 Chrome で測る。`browser-e2e` と別ジョブにしている
   # のは、RustFS の固定イメージと実 Chrome（`playwright install chrome`）を用意するため。
@@ -380,6 +365,12 @@ jobs:
           RUSTFS_VOLUMES: /data
         ports:
           - 9000:9000
+        # 起動の待ちは health check が持つ（healthy まで job の step より前に待つ）。上限は 2 秒 × 30 回の約 60 秒。
+        options: >-
+          --health-cmd "curl -sf http://127.0.0.1:9000/health"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
         command: /data
     env:
       ROKUBAN_TEST_DATABASE_URL: postgres://conformance:conformance@localhost:5432/conformance_test?sslmode=disable
@@ -394,34 +385,10 @@ jobs:
           go-version-file: go.mod
       - name: Build application streamer conformance fixture
         run: go build -tags s3conformance -o "$RUNNER_TEMP/rokuban-s3streamer-conformance" ./internal/streamer/conformance
-      - uses: pnpm/action-setup@v6
-        with:
-          package_json_file: web/package.json
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-        working-directory: web
+      - uses: ./.github/actions/setup-web
       - uses: ./.github/actions/install-apt-cached
         with:
           playwright-browser: chrome
-      - name: Wait for RustFS
-        env:
-          RUSTFS_CONTAINER_ID: ${{ job.services.rustfs.id }}
-        run: |
-          for _ in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:9000/health >/dev/null; then
-              echo "RustFS is ready at http://127.0.0.1:9000"
-              exit 0
-            fi
-            if [ "$(docker inspect --format '{{.State.Running}}' "$RUSTFS_CONTAINER_ID" 2>/dev/null || true)" != true ]; then
-              break
-            fi
-            sleep 1
-          done
-          exit 1
       - name: Run S3 browser conformance (302, proxy, and encrypted proxy)
         run: node e2e/run.mjs --needs s3
         working-directory: web
@@ -613,25 +580,16 @@ jobs:
           path: timings
           key: go-test-timings-${{ github.run_id }}
 
-  # 必須チェック名 test を保つ集約ジョブ。冒頭の「PR と main の役割分担」に従う。
-  # PR は citest の選定結果が空のときだけ shard の skip を成功とし、それ以外の skip / cancelled / failure を緑にしない。
+  # 必須チェック名 test を保つ集約ジョブ。判定は alls-green（冒頭の役割分担に従う）。
   test:
     needs: [plan, test-shard]
     if: always()
     runs-on: ubuntu-slim
     steps:
-      - shell: bash
-        env:
-          PLAN_RESULT: ${{ needs.plan.result }}
-          PLANNED_SKIP: ${{ needs.plan.outputs.test_planned_skip }}
-          SHARD_RESULT: ${{ needs.test-shard.result }}
-        run: |
-          test "$PLAN_RESULT" = success
-          if [ "$PLANNED_SKIP" = true ]; then
-            test "$SHARD_RESULT" = skipped
-          else
-            test "$SHARD_RESULT" = success
-          fi
+      - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
+        with:
+          jobs: ${{ toJSON(needs) }}
+          allowed-skips: ${{ needs.plan.outputs.test_planned_skip == 'true' && 'test-shard' || '' }}
 
   # rokuban が mirakc に期待する API 挙動を実物のコンテナに対して判定する。
   # 各病態ケースは独立したパッケージなので、長い EventIDReset / ingest resume / TestRecordLifecycle なども
@@ -706,24 +664,16 @@ jobs:
           path: timings
           key: mirakc-conformance-timings-${{ github.run_id }}
 
-  # 必須チェック名 mirakc-conformance を保つ。skip の扱いは冒頭の「PR と main の役割分担」に従う。
+  # 必須チェック名 mirakc-conformance を保つ。判定は alls-green（冒頭の役割分担に従う）。
   mirakc-conformance:
     needs: [plan, mirakc-conformance-shard]
     if: always()
     runs-on: ubuntu-slim
     steps:
-      - shell: bash
-        env:
-          PLAN_RESULT: ${{ needs.plan.result }}
-          PLANNED_SKIP: ${{ needs.plan.outputs.mirakc_conformance_planned_skip }}
-          SHARD_RESULT: ${{ needs.mirakc-conformance-shard.result }}
-        run: |
-          test "$PLAN_RESULT" = success
-          if [ "$PLANNED_SKIP" = true ]; then
-            test "$SHARD_RESULT" = skipped
-          else
-            test "$SHARD_RESULT" = success
-          fi
+      - uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
+        with:
+          jobs: ${{ toJSON(needs) }}
+          allowed-skips: ${{ needs.plan.outputs.mirakc_conformance_planned_skip == 'true' && 'mirakc-conformance-shard' || '' }}
 
   # S3 API の互換性をダイジェスト固定した RustFS イメージで検査する。
   s3-conformance:
@@ -753,6 +703,12 @@ jobs:
           RUSTFS_VOLUMES: /data
         ports:
           - 9000:9000
+        # 起動の待ちは health check が持つ（healthy まで job の step より前に待つ）。上限は 2 秒 × 30 回の約 60 秒。
+        options: >-
+          --health-cmd "curl -sf http://127.0.0.1:9000/health"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
         command: /data
     env:
       ROKUBAN_S3_CONFORMANCE_ENDPOINT: http://127.0.0.1:9000
@@ -772,21 +728,6 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Wait for RustFS
-        env:
-          RUSTFS_CONTAINER_ID: ${{ job.services.rustfs.id }}
-        run: |
-          for _ in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:9000/health >/dev/null; then
-              echo "RustFS is ready at http://127.0.0.1:9000"
-              exit 0
-            fi
-            if [ "$(docker inspect --format '{{.State.Running}}' "$RUSTFS_CONTAINER_ID" 2>/dev/null || true)" != true ]; then
-              break
-            fi
-            sleep 1
-          done
-          exit 1
       - name: Run S3 API conformance tests
         run: go test -tags s3conformance ./internal/objstore/conformance -count=1 -timeout 5m -v
       - name: Run shared object store contract and upload token tests against RustFS
@@ -820,16 +761,7 @@ jobs:
           cache-dependency-path: |
             go.sum
             sqlc.yaml
-      - uses: pnpm/action-setup@v6
-        with:
-          package_json_file: web/package.json
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-        working-directory: web
+      - uses: ./.github/actions/setup-web
       # 公式 Go バイナリと web/dist に入る本番依存の LICENSE / NOTICE / PATENTS を
       # lockfile と実ビルド依存から再生成し、コミット済み notice との差分を検出する。
       # Go の依存は go list -deps で、Web の依存は pnpm install 後の node_modules から辿るので、pnpm build は要らない。
@@ -864,16 +796,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: pnpm/action-setup@v6
-        with:
-          package_json_file: web/package.json
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-        working-directory: web
+      - uses: ./.github/actions/setup-web
       - run: pnpm lint
         working-directory: web
       # トークン外の生の色値の検出（docs/frontend/design.md）。実ブラウザを要しないのでここで回す。
@@ -904,13 +827,17 @@ jobs:
         if: github.event_name == 'pull_request'
         with:
           list-files: json
+          # md_lint は md と同じ一覧を added|modified に限ったもの（削除されたファイルを除く）。
+          # md は削除を含むので、Check allow counts の gate に使う。ずれは scripts/docslintpaths のテストが落とす。
           filters: |
-            md:
+            md: &md_patterns
               - 'README.md'
               - 'CLAUDE.md'
               - 'deploy/**/*.md'
               - 'docs/**/*.md'
               - 'web/e2e/**/*.md'
+            md_lint:
+              - added|modified: *md_patterns
             config:
               - '.textlintrc.json'
               - 'scripts/textlint-rules/**'
@@ -930,29 +857,17 @@ jobs:
         if: *docs_lint_needed
       - run: npm run docs:lint
         if: ${{ github.event_name == 'push' || steps.changes.outputs.config == 'true' }}
-      # 変わった Markdown だけを検査する。削除・改名で消えたファイルは検査対象から外す。
-      # ファイル名は env で渡す（run: に埋め込むと、ファイル名によるスクリプト注入になる）。
+      # 変わった Markdown だけを検査する。一覧は added|modified のフィルタが作るので、削除・改名で消えたファイルは入らない。
+      # 一覧が空のとき（削除だけの PR）は step ごと飛ばす。ファイル名は env で渡す（run: に埋め込むと、ファイル名によるスクリプト注入になる）。
       - name: Lint changed Markdown only
-        if: ${{ github.event_name == 'pull_request' && steps.changes.outputs.md == 'true' && steps.changes.outputs.config != 'true' }}
+        if: ${{ github.event_name == 'pull_request' && steps.changes.outputs.md_lint == 'true' && steps.changes.outputs.config != 'true' }}
         env:
-          MD_FILES: ${{ steps.changes.outputs.md_files }}
+          MD_FILES: ${{ steps.changes.outputs.md_lint_files }}
         run: |
-          # プロセス置換の中の失敗は -e で止まらないので、一度ファイルに書いて失敗を step に伝える。
-          node -e 'for (const f of JSON.parse(process.env.MD_FILES)) console.log(f)' > "$RUNNER_TEMP/md_files"
-          mapfile -t files < "$RUNNER_TEMP/md_files"
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "::error::md の変更があるのに一覧が空。dorny の出力を確かめる"
-            exit 1
-          fi
-          existing=()
-          for f in "${files[@]}"; do
-            if [ -e "$f" ]; then existing+=("$f"); fi
-          done
-          if [ "${#existing[@]}" -eq 0 ]; then
-            echo "変更された Markdown はすべて削除されていたため、検査するファイルは無い"
-            exit 0
-          fi
-          npm run docs:lint:files -- "${existing[@]}"
+          # プロセス置換の中の jq の失敗は -e で止まらない。textlint はファイルを渡さないと help を出して exit 0 になる（手元で実測）ので、代入で受けて step に伝える。
+          list=$(jq -r '.[]' <<< "$MD_FILES")
+          mapfile -t files <<< "$list"
+          npm run docs:lint:files -- "${files[@]}"
       # 許容が base より増えていないこと（scripts/check-allow-total.mjs）。PR だけ見る。
       - name: Check allow counts
         if: ${{ github.event_name == 'pull_request' && (steps.changes.outputs.md == 'true' || steps.changes.outputs.config == 'true') }}
