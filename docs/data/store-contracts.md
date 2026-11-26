@@ -125,6 +125,8 @@ api が使うのは論理削除・復元・即時削除要求をまとめた `Re
 
 削除通知の発火対象は `RecordingPurge.MarkPurged` の返り値で決め、削除 reconcile は別の判定で作り直さない。
 
+MySQL では `trash_deletable_recordings` を表を返す関数にせず、述語を SQL 断片の定数として持つ。`MarkPurged` は候補を録画の行ロックで読み、各行を `purged_at IS NULL` の条件つきで更新して、1 行変わった録画だけを返す。
+
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.RecordingTrash` / `internal/store.RecordingPurge`
