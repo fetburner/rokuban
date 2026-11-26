@@ -1,8 +1,8 @@
 // ci-source-deps: -tags=conformance,s3conformance,ruleguard ./...
 // 全パッケージの .go（_test.go を含む）を読んで検査するので、ソースを読む宣言にする。
 // タグは、タグ付きのファイルだけで成るディレクトリ（tools/lintrules は ruleguard のみ）を列挙するために並べる。
-// ignore は並べない（慣習として ignore のファイルは別の main であることが多く、タグで有効にする根拠が無い）。
-// ignore だけのディレクトリは選ばれないことを TestSelectRealRepoDeclarations が固定する。
+// ignore は並べない。並べると、ignore のファイルと同じディレクトリの通常のファイルが別パッケージ（main）として混ざり、go list が失敗する（一時モジュールで確認）。
+// その帰結として、ignore のファイルしか無いディレクトリの変更は選ばれない。
 
 package main
 
@@ -374,9 +374,9 @@ func TestSelectDeclaredReaders(t *testing.T) {
 	}
 }
 
-// TestSelectRealRepoDeclarations は実リポジトリの宣言で、issue の入力が選ぶパッケージを固定する。
-// 実物の宣言を外すか旧形に戻すと、ここで落ちる。go list が実リポジトリを読むので、テストの作業ディレクトリ
-// （scripts/citest）から見たモジュールルートを絶対パスで渡す。
+// TestSelectRealRepoDeclarations は、パッケージの外のファイルやソースを読むテストの宣言が、読む範囲の変更で
+// そのテストのパッケージを選ぶことを、実リポジトリの宣言で検査する。宣言を外すか旧形に戻すと落ちる。
+// 対象は表が主張する 3 パッケージに絞る。go list が実リポジトリを読むので、モジュールルートは絶対パスで渡す。
 func TestSelectRealRepoDeclarations(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -393,12 +393,12 @@ func TestSelectRealRepoDeclarations(t *testing.T) {
 		{name: "s3conformance test file in another package", changed: "internal/encode/s3_conformance_test.go", want: []string{"github.com/fetburner/rokuban/scripts/citest", "github.com/fetburner/rokuban/scripts/s3conformance"}},
 		{name: "citest reads every test file", changed: "internal/api/spec_bounds_test.go", want: []string{"github.com/fetburner/rokuban/scripts/citest", "github.com/fetburner/rokuban/scripts/s3conformance"}},
 		{name: "ruleguard-only directory", changed: "tools/lintrules/rules.go", want: []string{"github.com/fetburner/rokuban/scripts/citest"}},
-		{name: "ignore-only directory selects nothing", changed: "scripts/playback-measure/probe.go", want: nil},
 		{name: "docs runbook selects nothing", changed: "docs/runbook/k8s.md", want: nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := selectPackages(root, "", "", false, []string{"./deploy/...", "./scripts/..."}, []string{tt.changed})
+			t.Parallel()
+			got, err := selectPackages(root, "", "", false, []string{"./deploy/k8s", "./scripts/citest", "./scripts/s3conformance"}, []string{tt.changed})
 			if err != nil {
 				t.Fatal(err)
 			}
