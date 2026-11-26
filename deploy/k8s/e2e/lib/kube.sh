@@ -666,15 +666,17 @@ produce_real_encode_job() {
           INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
           SELECT id, 'main', '${E2E_ENCODE_REL_PATH}', 0, 'active' FROM asset" >/dev/null || return 1
 
+  # desired に encode プロファイルを足す（判定 6.2 と同じ製品の API。追加専用で 204）。
+  # desired が空だと、encode は desired_profile_excluded で飛ばされる（両エンジン共通）。
+  local code
+  code="$(tb_curl -X POST -H 'Host: rokuban.local' -H 'Content-Type: application/json' \
+    -d "{\"profiles\":[\"${E2E_ENCODE_PROFILE}\"]}" -o /dev/null -w '%{http_code}' \
+    "http://rokuban-api:40773/api/recordings/${rec_id}/encode-profiles")" || return 1
+  [ "$code" = "204" ] || { log_step "encode-profiles が 204 を返さない（${code:-なし}）"; return 1; }
+
   if [ "$E2E_ENGINE" = "asynq" ]; then
-    # asynq では製品の経路で積む（River の行を直接 INSERT しない）。
-    #   1. desired に encode プロファイルを足す（判定 6.2 と同じ API。追加専用で 204）
-    #   2. encode-reconcile が、desired と原本の揃った録画について encode を積む
-    local code
-    code="$(tb_curl -X POST -H 'Host: rokuban.local' -H 'Content-Type: application/json' \
-      -d "{\"profiles\":[\"${E2E_ENCODE_PROFILE}\"]}" -o /dev/null -w '%{http_code}' \
-      "http://rokuban-api:40773/api/recordings/${rec_id}/encode-profiles")" || return 1
-    [ "$code" = "204" ] || { log_step "encode-profiles が 204 を返さない（${code:-なし}）"; return 1; }
+    # asynq では製品の経路で積む（River の行を直接 INSERT しない）。encode-reconcile が、
+    # desired と原本の揃った録画について encode を積む。
     tb_rokuban enqueue encode-reconcile >/dev/null 2>&1 || { log_step "encode-reconcile を投入できない"; return 1; }
     log_step "queued a real encode via the product path (recording_id=${rec_id}, profile=${E2E_ENCODE_PROFILE}, source ${size} bytes)"
     return 0
