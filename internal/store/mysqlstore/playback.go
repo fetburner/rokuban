@@ -9,10 +9,6 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// minPlaybackPositionMs は再生位置の下限である。recording_playback_positions の CHECK と同じ値。
-// Postgres 実装は下限未満の保存を影響行 0 として ErrNotFound に写すので、ここでも同じ扱いにする。
-const minPlaybackPositionMs = 2000
-
 // Playback は視聴状態の永続化を MySQL で実装する。
 type Playback struct {
 	db *sql.DB
@@ -25,9 +21,9 @@ func NewPlayback(db *sql.DB) *Playback {
 	return &Playback{db: db}
 }
 
-// lockPlayableRecording は録画の行を排他で取り、完全削除済みなら store.ErrNotFound を返す。
-// 存在の判定に影響行数を使わない。値が変わらない upsert は、既定の接続設定では影響行 0 と報告されるため、
-// 同じ再生位置の再保存が ErrNotFound に化ける。
+// lockPlayableRecording は録画の行を排他で取り、存在しない・完全削除済みなら store.ErrNotFound を返す。
+// INSERT … VALUES の upsert は録画の状態を条件にできないので、存在と完全削除は先に録画の行を読んで判定する。
+// FOR UPDATE で取り、判定から書き込みまでの間に完全削除が挟まらないようにする。
 func lockPlayableRecording(ctx context.Context, tx *sql.Tx, recordingID int64) error {
 	var purgedAt sql.NullTime
 	err := tx.QueryRowContext(ctx, `SELECT purged_at FROM recordings WHERE id = ? FOR UPDATE`, recordingID).Scan(&purgedAt)
@@ -42,9 +38,6 @@ func lockPlayableRecording(ctx context.Context, tx *sql.Tx, recordingID int64) e
 
 // SavePosition は録画の再生位置を保存する。
 func (s *Playback) SavePosition(ctx context.Context, recordingID, positionMs int64) error {
-	if positionMs < minPlaybackPositionMs {
-		return fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
-	}
 	return runTx(ctx, s.db, func(tx *sql.Tx) error {
 		if err := lockPlayableRecording(ctx, tx, recordingID); err != nil {
 			return err

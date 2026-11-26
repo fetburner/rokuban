@@ -15,6 +15,12 @@ func TestPlaybackStateContract(t *testing.T) {
 		var eventSequence atomic.Int32
 		newRecording := func(t *testing.T, o contracttest.RecordingOptions) int64 {
 			t.Helper()
+			if o.Trashed {
+				t.Fatalf("playback contract fixture does not support Trashed")
+			}
+			if o.CMDetectionEnabled {
+				t.Fatalf("playback contract fixture does not support CMDetectionEnabled")
+			}
 			eventID := o.EventID
 			if eventID == 0 {
 				eventID = eventSequence.Add(1)
