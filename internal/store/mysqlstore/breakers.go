@@ -126,3 +126,5 @@ func (s *Breakers) Resume(ctx context.Context, scope, name string) error {
 
 var _ store.Breakers = (*Breakers)(nil)
 var _ store.BreakerAdmin = (*Breakers)(nil)
+
+// e11-6 measure
