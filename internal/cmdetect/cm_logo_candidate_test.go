@@ -161,8 +161,6 @@ func TestCMLogoCandidateWorkerFailuresBecomeFailedRows(t *testing.T) {
 	}
 }
 
-// 保存の失敗（stage = save）も failed の行として書ける。CHECK に save が無いと
-// MarkLogoCandidateFailed 自体が 23514 で落ち、running のまま固まる。
 // 解析中に枠が変わったら ready は書かれず、この版の running 行は消える。
 func TestCMLogoCandidateWorkerDoesNotWriteReadyAfterAreaChanged(t *testing.T) {
 	pool := testutil.SetupDB(t)

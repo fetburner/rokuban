@@ -15,25 +15,32 @@ func runCMStationStateList(t *testing.T, newStore NewCMStationStore, station sto
 	t.Run("logo state list takes names from the newest recording and counts each state", func(t *testing.T) {
 		f := newStore(t)
 		ctx := context.Background()
-		oldest := f.NewStationRecording(t, station)
-		middle := f.NewStationRecording(t, station)
-		newest := f.NewStationRecording(t, station)
-		f.SetRecordingNames(t, oldest, "旧名", "old-site")
-		f.SetRecordingNames(t, middle, "中名", "mid-site")
-		f.SetRecordingNames(t, newest, "新名", "new-site")
-		for _, id := range []int64{oldest, middle, newest} {
+		base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+		// 失敗の試行を古い順に area・probe・logo・adopt で置く。
+		// stage の辞書順の最大は probe、最小は area なので、MAX・MIN で取る誤りは logo と一致しない。
+		// adopt は除外されるので、failed_count は 3 になる。
+		failed := []struct {
+			stage string
+			after time.Duration
+		}{{"area", 0}, {"probe", time.Second}, {"logo", 2 * time.Second}, {"adopt", 3 * time.Second}}
+		for _, tc := range failed {
+			id := f.NewStationRecording(t, station)
 			f.EnableCMDetection(t, id)
+			f.SeedFailedAttempt(t, id, tc.stage, base.Add(tc.after))
 		}
-		// 失敗した試行の録画は再試行の対象にならないので pending に数えない。
-		f.SeedFailedAttempt(t, oldest, "match", time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+		// 失敗していない録画は再検出の対象なので pending に数える。
+		f.EnableCMDetection(t, f.NewStationRecording(t, station))
+		newest := f.NewStationRecording(t, station)
+		f.EnableCMDetection(t, newest)
+		f.SetRecordingNames(t, newest, "新名", "new-site")
 		f.SeedDetection(t, newest)
 
 		got := cmStationRow(t, ctx, f, station)
 		if got.ServiceName != "新名" || got.Site != "new-site" {
 			t.Errorf("names = %q/%q, want the newest recording's 新名/new-site", got.ServiceName, got.Site)
 		}
-		if got.RecordingCount != 3 || got.FailedCount != 1 || got.PendingCount != 1 || got.LastFailureStage != "match" {
-			t.Errorf("counts recording/failed/pending/stage = %d/%d/%d/%q, want 3/1/1/\"match\"",
+		if got.RecordingCount != 6 || got.FailedCount != 3 || got.PendingCount != 1 || got.LastFailureStage != "logo" {
+			t.Errorf("counts recording/failed/pending/stage = %d/%d/%d/%q, want 6/3/1/\"logo\"",
 				got.RecordingCount, got.FailedCount, got.PendingCount, got.LastFailureStage)
 		}
 		if got.DetectedCount != 1 || got.RedetectableCount != 1 {

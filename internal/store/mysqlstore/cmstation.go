@@ -34,7 +34,7 @@ func (s *Analysis) storeArg() any {
 }
 
 // recordingDurationSQL は録画 r の尺（ミリ秒）。実尺があれば実尺、無ければ番組尺で、負にはしない。
-// pgstore の GetCMRecordingDuration と同じ式で、実尺は秒の小数を四捨五入する。
+// pgstore の GetCMRecordingDuration と同じ式で、実尺はミリ秒未満を四捨五入する（Postgres の ::bigint と同じ）。
 const recordingDurationSQL = `GREATEST(CAST(CASE WHEN r.started_at IS NOT NULL AND r.ended_at IS NOT NULL
     THEN TIMESTAMPDIFF(MICROSECOND, r.started_at, r.ended_at) / 1000
     ELSE r.program_duration_ms END AS SIGNED), 0)`
@@ -45,8 +45,9 @@ func cmStationLockName(station store.CMStationRef) string {
 }
 
 // lockCMStation は局のロック用の行を排他で取る（pgstore の pg_advisory_xact_lock に当たる）。
-// 行が無ければ先に作る。並行する 2 本の INSERT は、片方が commit するまで待ってから重複として更新に回る。
-// 局の書き込みは必ず最初の文としてこれを呼ぶ。
+// 行が無ければ先に作る。行が無い局への並行する 2 本の INSERT は、片方が commit するまで待ち、
+// 待った側は重複として行を更新に回る（TestCMStationLockRowCreatedConcurrently が検査する）。
+// 局の状態（枠・ロゴ・候補）を読む前にこれを呼ぶ。録画の行だけを先に読むのは構わない（SaveLogoArea がそうしている）。
 func lockCMStation(ctx context.Context, tx *sql.Tx, station store.CMStationRef) error {
 	name := cmStationLockName(station)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO named_locks (name) VALUES (?) AS incoming ON DUPLICATE KEY UPDATE name = incoming.name`, name); err != nil {
@@ -93,7 +94,7 @@ func recordingDuration(ctx context.Context, q queryRower, recordingID int64) (in
 
 // hasPresentOriginal は録画が、読み出す置き場に実体のある原本を持つかを返す。
 // 録画の削除・消去の判定は呼び出し側が行う。
-func hasPresentOriginal(ctx context.Context, q queryRower, s *Analysis, recordingID int64) (bool, error) {
+func (s *Analysis) hasPresentOriginal(ctx context.Context, q queryRower, recordingID int64) (bool, error) {
 	var ok bool
 	err := q.QueryRowContext(ctx, `
 SELECT EXISTS (
@@ -385,7 +386,7 @@ func (s *Analysis) SaveLogoArea(ctx context.Context, station store.CMStationRef,
 		if networkID != station.NetworkID || serviceID != station.ServiceID {
 			return fmt.Errorf("recording %d: %w", input.RecordingID, store.ErrCMLogoRecordingWrongStation)
 		}
-		active, err := hasPresentOriginal(ctx, tx, s, input.RecordingID)
+		active, err := s.hasPresentOriginal(ctx, tx, input.RecordingID)
 		if err != nil {
 			return fmt.Errorf("checking analysis recording %d: %w", input.RecordingID, err)
 		}
