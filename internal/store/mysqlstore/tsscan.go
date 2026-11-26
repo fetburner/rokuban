@@ -77,7 +77,8 @@ func (s *Media) ReplaceScan(ctx context.Context, source store.TSScanSource, scan
 	assetID := source.ID
 	applied := false
 	err := runTx(ctx, s.db, func(tx *sql.Tx) error {
-		// FOR UPDATE は行の最新の版を読むので、待った後の状態で判定される。
+		// 判定は FOR UPDATE の行ロックの下で行う。ロックを待った後の状態で判定することは
+		// TestTSScanStoreContract/rechecks_active_state_after_waiting_for_the_asset_lock が見る。
 		var currentSize int64
 		err := tx.QueryRowContext(ctx, `
 SELECT a.size_bytes
@@ -118,7 +119,8 @@ FOR UPDATE OF a, c`, s.storeName, assetID, source.ContentRevision).Scan(&current
 		if err := insertTSScanRows(ctx, tx, "drop_positions", "media_asset_id, byte_offset, pid, elapsed_ms", positionRows); err != nil {
 			return err
 		}
-		// 印の内容のリビジョンは、上で判定した（ロック中の）値を使う。INSERT ... SELECT では ON DUPLICATE KEY UPDATE の行の別名が書けないため。
+		// 印のリビジョンは source.ContentRevision を書く。上の判定で a.content_revision = source.ContentRevision を
+		// 確かめており、その行は tx の終わりまでロックしているので、書く値は a.content_revision と同じである。
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes, content_revision) VALUES (?, ?, ?) AS new
 ON DUPLICATE KEY UPDATE scanned_size_bytes = new.scanned_size_bytes, content_revision = new.content_revision`,

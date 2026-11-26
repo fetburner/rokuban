@@ -100,7 +100,14 @@ INSERT INTO drop_positions (media_asset_id, byte_offset, pid, elapsed_ms) VALUES
 			t.Helper()
 			execFixture(t, db, `UPDATE media_assets SET sha256 = ? WHERE id = ?`, bytes.Repeat([]byte{0xab}, 32), assetID)
 		},
-		NewInPlaceOriginalInput: func(t *testing.T, relPath string) store.InPlaceInput {
+		SetScanMarker: func(t *testing.T, assetID, scannedSizeBytes, contentRevision int64) {
+			t.Helper()
+			execFixture(t, db, `
+INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes, content_revision) VALUES (?, ?, ?) AS incoming
+ON DUPLICATE KEY UPDATE scanned_size_bytes = incoming.scanned_size_bytes, content_revision = incoming.content_revision`,
+				assetID, scannedSizeBytes, contentRevision)
+		},
+		NewInPlaceOriginalInput: func(t *testing.T, relPath string, sizeBytes int64) store.InPlaceInput {
 			t.Helper()
 			return store.InPlaceInput{
 				Recording: store.InPlaceRecording{
@@ -109,7 +116,7 @@ INSERT INTO drop_positions (media_asset_id, byte_offset, pid, elapsed_ms) VALUES
 					ChannelType: "GR", Channel: "27", Title: "TS scan in-place fixture",
 					ProgramStartAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), ProgramDurationMs: 60_000, Status: "finished",
 				},
-				Assets: []store.InPlaceAsset{{Kind: store.AssetKindOriginal, RelPath: relPath, SizeBytes: 188}},
+				Assets: []store.InPlaceAsset{{Kind: store.AssetKindOriginal, RelPath: relPath, SizeBytes: sizeBytes}},
 			}
 		},
 		BeginAssetStateChange: func(t *testing.T, assetID int64, state string) func() {
@@ -137,8 +144,8 @@ VALUES (?, 32678, 5168, ?, 'TS scan contract service', 'GR', 'TS scan contract c
 		store.DefaultSite, mediaContractEventSeq.Add(1), title, genres, start, genreLv1))
 }
 
-// beginTSScanAssetStateChange は資産の行を排他で取った tx で状態を変え、commit 前の状態を保持する。
-// 資産の行を先に取ってから copy を更新するので、待つ側は資産の行か copy の行で止まる。
+// beginTSScanAssetStateChange は copy の行を tx の中で更新し、commit 前の状態を保持する。
+// PostgreSQL のフック（dbtest.SetMediaAssetState）と同じく、更新するのは copy の行だけである。
 func beginTSScanAssetStateChange(t *testing.T, db *sql.DB, assetID int64, state string) func() {
 	t.Helper()
 	ctx := context.Background()
@@ -147,9 +154,6 @@ func beginTSScanAssetStateChange(t *testing.T, db *sql.DB, assetID int64, state 
 		t.Fatalf("beginning media asset state change: %v", err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback() })
-	if _, err := tx.ExecContext(ctx, `SELECT id FROM media_assets WHERE id = ? FOR UPDATE`, assetID); err != nil {
-		t.Fatalf("locking media asset %d: %v", assetID, err)
-	}
 	if _, err := tx.ExecContext(ctx, `
 UPDATE media_asset_copies
 SET state = ?, deleted_at = CASE WHEN ? = 'deleted' THEN COALESCE(deleted_at, CURRENT_TIMESTAMP(6)) ELSE NULL END

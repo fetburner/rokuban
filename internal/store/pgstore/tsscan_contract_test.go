@@ -18,6 +18,14 @@ func TestTSScanStoreContract(t *testing.T) {
 	contracttest.RunTSScan(t, newTSScanContractFixture)
 }
 
+// tsScanOriginalInput は、contracttest の in-place 登録に使う原本の入力を返す。
+func tsScanOriginalInput(relPath string, sizeBytes int64) store.InPlaceInput {
+	input := inPlaceEncodedInput(relPath, sizeBytes)
+	input.Assets[0].Kind = store.AssetKindOriginal
+	input.Assets[0].Profile = nil
+	return input
+}
+
 func newTSScanContractFixture(t *testing.T) contracttest.TSScanFixture {
 	t.Helper()
 	pool := testutil.SetupDB(t)
@@ -113,8 +121,17 @@ INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes) VALUES ($1
 		},
 		InPlace:           media,
 		OtherStoreInPlace: testMedia(pool, "other-store", ""),
-		NewInPlaceOriginalInput: func(t *testing.T, relPath string) store.InPlaceInput {
-			return scanOriginalInput(relPath)
+		NewInPlaceOriginalInput: func(t *testing.T, relPath string, sizeBytes int64) store.InPlaceInput {
+			return tsScanOriginalInput(relPath, sizeBytes)
+		},
+		SetScanMarker: func(t *testing.T, assetID, scannedSizeBytes, contentRevision int64) {
+			t.Helper()
+			if _, err := pool.Exec(context.Background(), `
+INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes, content_revision) VALUES ($1, $2, $3)
+ON CONFLICT (media_asset_id) DO UPDATE SET scanned_size_bytes = EXCLUDED.scanned_size_bytes, content_revision = EXCLUDED.content_revision`,
+				assetID, scannedSizeBytes, contentRevision); err != nil {
+				t.Fatalf("setting TS scan marker: %v", err)
+			}
 		},
 		SetAssetSHA256: func(t *testing.T, assetID int64) {
 			t.Helper()

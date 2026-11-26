@@ -17,7 +17,7 @@ type InPlaceRegistrar interface {
 func runTSScanInPlaceInvalidation(t *testing.T, newStore NewTSScanStore) {
 	f := newStore(t)
 	ctx := context.Background()
-	input := f.NewInPlaceOriginalInput(t, "original/first.ts")
+	input := f.NewInPlaceOriginalInput(t, "original/first.ts", 188)
 	result, err := f.InPlace.RegisterInPlace(ctx, input)
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ func runTSScanInPlaceReplacementInFlight(t *testing.T, newStore NewTSScanStore) 
 		t.Run(name, func(t *testing.T) {
 			f := newStore(t)
 			ctx := context.Background()
-			input := f.NewInPlaceOriginalInput(t, "original/first.ts")
+			input := f.NewInPlaceOriginalInput(t, "original/first.ts", 188)
 			result, err := f.InPlace.RegisterInPlace(ctx, input)
 			if err != nil {
 				t.Fatal(err)
@@ -137,5 +137,51 @@ func runTSScanCatalogRestoreInFlight(t *testing.T, newStore NewTSScanStore) {
 	}
 	if applied, err := f.Store.ReplaceScan(ctx, fresh, 6, nil, nil); err != nil || !applied {
 		t.Fatalf("fresh ReplaceScan after catalog restore = %v, %v, want applied", applied, err)
+	}
+}
+
+// runTSScanStaleRevisionMarkers は、内容のリビジョンが現在と違う印を計測済みとみなさないことを検査する。
+// 同じ古いサイズの印は Export に出さず、現在のリビジョンの印は古いサイズでも出す。
+func runTSScanStaleRevisionMarkers(t *testing.T, newStore NewTSScanStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	input := f.NewInPlaceOriginalInput(t, "original/first.ts", 188)
+	result, err := f.InPlace.RegisterInPlace(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := result.AssetIDs[0]
+	oldSource, err := f.Store.GetActiveOriginalForTSScan(ctx, result.RecordingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 内容を差し替えてリビジョンを進める。差し替えは印を消すので、古いリビジョンの印は後から書く。
+	f.SetAssetState(t, id, "deleted")
+	input.Assets[0].RelPath = "original/replacement.ts"
+	if _, err := f.InPlace.RegisterInPlace(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	current, err := f.Store.GetActiveOriginalForTSScan(ctx, result.RecordingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.ContentRevision == oldSource.ContentRevision {
+		t.Fatal("in-place replacement did not advance the content revision")
+	}
+
+	f.SetScanMarker(t, id, 188, oldSource.ContentRevision)
+	if got := readTSScanSnapshot(t, f, result.RecordingID).ScannedSizeBytes; got != -1 {
+		t.Fatalf("Catalog.Export.MediaAssetTSScans with a marker of an old revision and matching size = %d, want none", got)
+	}
+	if asset, err := f.Store.GetActiveOriginalForTSScan(ctx, result.RecordingID); err != nil || asset.ID != id {
+		t.Fatalf("GetActiveOriginalForTSScan with a marker of an old revision = %+v, %v, want asset %d", asset, err, id)
+	}
+
+	f.SetScanMarker(t, id, 187, current.ContentRevision)
+	if got := readTSScanSnapshot(t, f, result.RecordingID).ScannedSizeBytes; got != 187 {
+		t.Fatalf("Catalog.Export.MediaAssetTSScans with a current-revision marker of a stale size = %d, want 187", got)
+	}
+	if asset, err := f.Store.GetActiveOriginalForTSScan(ctx, result.RecordingID); err != nil || asset.ID != id {
+		t.Fatalf("GetActiveOriginalForTSScan with a current-revision marker of a stale size = %+v, %v, want asset %d", asset, err, id)
 	}
 }
