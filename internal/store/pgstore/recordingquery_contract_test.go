@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -136,84 +137,21 @@ VALUES ($1, $2, $3)`, id, *o.PlaybackPositionMs, updatedAt); err != nil {
 				}
 			}
 			seedRecordingQueryReadbackFields(t, ctx, pool, id, o)
+			seedRecordingQueryShapes(t, ctx, pool, id, o)
 			return id
 		}
+		arrangeUntilEncoded := func(t *testing.T, recordingID int64) {
+			arrangeRecordingQueryUntilEncoded(t, pool, recordingID)
+		}
 		return contracttest.RecordingQueryFixture{
-			Store:        NewRecordings(pool, dbtest.StoreName),
-			NewRecording: newRecording,
-			RuleID:       ruleID,
-			OtherRuleID:  otherRuleID,
+			Store:               NewRecordings(pool, dbtest.StoreName),
+			NewRecording:        newRecording,
+			RuleID:              ruleID,
+			OtherRuleID:         otherRuleID,
+			StoreWithoutName:    NewRecordings(pool, ""),
+			ArrangeUntilEncoded: arrangeUntilEncoded,
 		}
 	})
-}
-
-func TestRecordingQueryWithoutStoreNameUsesActiveCopies(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
-		p.Title = "API only copy visibility fixture"
-	})
-	originalID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
-		p.RelPath = "api-only/original.ts"
-		p.SizeBytes = 1234
-	})
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = $2`, originalID, dbtest.StoreName); err != nil {
-		t.Fatalf("deactivating original copy after until_encoded: %v", err)
-	}
-	profile := "api-only"
-	encodedID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
-		p.Kind = "encoded"
-		p.Profile = &profile
-		p.RelPath = "api-only/encoded.mp4"
-		p.SizeBytes = 5678
-	})
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 's3-derived' WHERE media_asset_id = $1 AND store = $2`, encodedID, dbtest.StoreName); err != nil {
-		t.Fatalf("moving encoded copy to S3 derived store: %v", err)
-	}
-
-	// API processes do not know which configured store contains an active copy.
-	// The original has been removed, so all three browser-facing reads must see
-	// the encoded object from the S3 store.
-	query := NewRecordings(pool, "")
-	row, err := query.Get(ctx, recordingID)
-	if err != nil {
-		t.Fatalf("Get(%d) without a configured store: %v", recordingID, err)
-	}
-	if row.OriginalSizeBytes != nil {
-		t.Fatalf("original size = %v, want nil after until_encoded removed the original copy", row.OriginalSizeBytes)
-	}
-	var available []struct {
-		Profile   string `json:"profile"`
-		SizeBytes int64  `json:"sizeBytes"`
-	}
-	if err := json.Unmarshal(row.AvailableEncodedAssets, &available); err != nil {
-		t.Fatalf("decoding available encoded assets %s: %v", row.AvailableEncodedAssets, err)
-	}
-	if len(available) != 1 || available[0].Profile != profile || available[0].SizeBytes != 5678 {
-		t.Fatalf("available encoded assets = %+v, want %s at 5678 bytes", available, profile)
-	}
-
-	rows, err := query.List(ctx, store.RecordingFilter{Limit: 10})
-	if err != nil {
-		t.Fatalf("List() without a configured store: %v", err)
-	}
-	if len(rows) != 1 || rows[0].ID != recordingID || rows[0].OriginalSizeBytes != nil {
-		t.Fatalf("List() = %+v, want recording %d with no original size", rows, recordingID)
-	}
-	if err := json.Unmarshal(rows[0].AvailableEncodedAssets, &available); err != nil {
-		t.Fatalf("decoding listed encoded assets %s: %v", rows[0].AvailableEncodedAssets, err)
-	}
-	if len(available) != 1 || available[0].Profile != profile || available[0].SizeBytes != 5678 {
-		t.Fatalf("List() available encoded assets = %+v, want %s at 5678 bytes", available, profile)
-	}
-
-	shelves, err := query.Shelves(ctx, store.RecordingFilter{})
-	if err != nil {
-		t.Fatalf("Shelves() without a configured store: %v", err)
-	}
-	if len(shelves) != 1 || shelves[0].PlayableCount != 1 {
-		t.Fatalf("Shelves() = %+v, want one playable recording in its shelf", shelves)
-	}
 }
 
 func seedRecordingQueryReadbackFields(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64, options contracttest.RecordingQueryRecording) {
@@ -247,5 +185,77 @@ VALUES ($1, $2, $3, 1)`, id, attempt.Profile, attempt.State); err != nil {
 VALUES ($1, $2, $3, 'sites/default/.rokuban-ingest-query-contract', 1, 'test-store')`, id, *options.IngestWrittenBytes, options.IngestExpectedBytes); err != nil {
 			t.Fatalf("creating fixture ingest progress: %v", err)
 		}
+	}
+}
+
+// seedRecordingQueryShapes は CM 区間・チャプター・encoded 版（保持区間つき）を仕込む。
+// int8multirange の literal は整数だけから作るので、埋め込んでも注入の余地は無い。
+func seedRecordingQueryShapes(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64, options contracttest.RecordingQueryRecording) {
+	t.Helper()
+	if len(options.CMRanges) > 0 {
+		if _, err := pool.Exec(ctx, `INSERT INTO recording_cm_detections (recording_id, cm_ranges) VALUES ($1, '`+multirangeLiteral(options.CMRanges)+`'::int8multirange)`, id); err != nil {
+			t.Fatalf("creating fixture CM detection: %v", err)
+		}
+	}
+	if len(options.ChapterSpans) > 0 {
+		if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
+			t.Fatalf("creating fixture chapter ownership: %v", err)
+		}
+		for _, span := range options.ChapterSpans {
+			var label *string
+			if span.Label != "" {
+				label = &span.Label
+			}
+			if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range($2, $3), $4, $5)`,
+				id, span.StartMs, span.EndMs, label, span.Cut); err != nil {
+				t.Fatalf("creating fixture chapter span: %v", err)
+			}
+		}
+	}
+	for _, asset := range options.EncodedAssets {
+		profile := asset.Profile
+		assetID := dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) {
+			p.Kind = "encoded"
+			p.Profile = &profile
+			p.RelPath = fmt.Sprintf("contract/%d/%s.mp4", id, profile)
+			p.SizeBytes = asset.SizeBytes
+		})
+		if asset.KeepRanges != nil {
+			if _, err := pool.Exec(ctx, `INSERT INTO media_asset_cuts (media_asset_id, keep_ranges) VALUES ($1, '`+multirangeLiteral(asset.KeepRanges)+`'::int8multirange)`, assetID); err != nil {
+				t.Fatalf("creating fixture keep ranges for %q: %v", profile, err)
+			}
+		}
+	}
+}
+
+// multirangeLiteral は [start, end) の区間の並びを int8multirange の文字列にする。
+func multirangeLiteral(ranges [][2]int64) string {
+	parts := make([]string, len(ranges))
+	for i, r := range ranges {
+		parts[i] = fmt.Sprintf("[%d,%d)", r[0], r[1])
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+// arrangeRecordingQueryUntilEncoded は原本のコピーを外し、別の置き場に encoded 版だけを残す（契約の ArrangeUntilEncoded）。
+func arrangeRecordingQueryUntilEncoded(t *testing.T, pool *pgxpool.Pool, recordingID int64) {
+	t.Helper()
+	ctx := context.Background()
+	var originalID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'original'`, recordingID).Scan(&originalID); err != nil {
+		t.Fatalf("finding fixture original: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = $2`, originalID, dbtest.StoreName); err != nil {
+		t.Fatalf("deactivating original copy after until_encoded: %v", err)
+	}
+	profile := "api-only"
+	encodedID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = &profile
+		p.RelPath = "api-only/encoded.mp4"
+		p.SizeBytes = 5678
+	})
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 's3-derived' WHERE media_asset_id = $1 AND store = $2`, encodedID, dbtest.StoreName); err != nil {
+		t.Fatalf("moving encoded copy to S3 derived store: %v", err)
 	}
 }

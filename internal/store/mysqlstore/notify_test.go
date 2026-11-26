@@ -160,6 +160,10 @@ func TestReservationTriggersNotify(t *testing.T) {
 			"INSERT INTO media_assets (recording_id, kind, size_bytes) VALUES (?, 'original', 1)",
 			"UPDATE media_assets SET size_bytes = 2 WHERE recording_id = ? AND kind = 'original'",
 			"DELETE FROM media_assets WHERE recording_id = ? AND kind = 'original'"},
+		{"recording_ingest_progress", "recordings",
+			"INSERT INTO recording_ingest_progress (recording_id, written_bytes, temp_rel_path, temp_generation, temp_store) VALUES (?, 10, 'sites/x/.rokuban-ingest', 1, 'test-store')",
+			"UPDATE recording_ingest_progress SET temp_generation = 2 WHERE recording_id = ?",
+			"DELETE FROM recording_ingest_progress WHERE recording_id = ?"},
 	}
 	for _, c := range cases {
 		t.Run(c.table, func(t *testing.T) {
@@ -170,7 +174,7 @@ func TestReservationTriggersNotify(t *testing.T) {
 			if c.table == "label_rules" {
 				args = nil
 			}
-			if c.table == "media_assets" {
+			if c.table == "media_assets" || c.table == "recording_ingest_progress" {
 				rule := fixtureID(t, execFixture(t, db, "INSERT INTO rules (name) VALUES ('notification fixture')"))
 				args = []any{seedFinishedRecording(t, db, rule, p, p.Title)}
 				execFixture(t, db, "DELETE FROM notifications")
@@ -208,6 +212,23 @@ func TestReservationTriggersNotify(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRecordingIngestProgressUpdateWithoutGenerationDoesNotNotify は、temp_generation を変えない UPDATE
+// （written_bytes だけの進捗）が通知を残さないことを検査する。表の行には書けない条件なので別に置く。
+func TestRecordingIngestProgressUpdateWithoutGenerationDoesNotNotify(t *testing.T) {
+	db := mysqltest.SetupDB(t)
+	p := seedReservationProgram(t, db, "progress fixture", contracttest.ReservationProgramOptions{Snapshot: true})
+	rule := fixtureID(t, execFixture(t, db, "INSERT INTO rules (name) VALUES ('progress fixture')"))
+	recordingID := seedFinishedRecording(t, db, rule, p, p.Title)
+	execFixture(t, db, `
+INSERT INTO recording_ingest_progress (recording_id, written_bytes, temp_rel_path, temp_generation, temp_store)
+VALUES (?, 10, 'sites/x/.rokuban-ingest', 1, 'test-store')`, recordingID)
+	execFixture(t, db, "DELETE FROM notifications")
+	execFixture(t, db, `UPDATE recording_ingest_progress SET written_bytes = 20 WHERE recording_id = ?`, recordingID)
+	if n := countNotifications(t, db); n != 0 {
+		t.Fatalf("notifications after a written_bytes-only UPDATE = %d, want 0", n)
 	}
 }
 

@@ -203,6 +203,8 @@ API のレスポンス状態は `recordingFromListFields` で毎回導出する�
 
 一覧と棚は、汎用プランへの切り替えを避ける実行方式で毎回計画させる。これは pgstore の実装上の制約で、契約には現れない。理由と測定値は [REST の判断](../api/rest.md) の「プリペアド文キャッシュと再計画」にある。
 
+MySQL の実装では、置き場名を引数に取る Postgres の関数を、置き場の列を持つ view（`active_media_asset_copies` など）にし、置き場の絞りは読み手の述語で書く。`JSON_ARRAYAGG` は ORDER BY を受けないため、配列の並びは読み出し後に Go で決める。
+
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.RecordingQuery` / `RecordingFilter`
