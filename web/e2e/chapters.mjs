@@ -1101,11 +1101,21 @@ await page.waitForSelector('[data-testid="chapter-edit-layout"]', { state: 'deta
 log('\n=== ⑥ 再生中のバー: マウスで押した後は隠れ、キーボードの Tab で届く ===')
 const controls = page.locator('[data-testid="player-controls"]')
 const controlsOpacity = () => controls.evaluate((el) => getComputedStyle(el).opacity)
+// バーの opacity が want になるまで待つ（自動非表示の 3 秒と 150 ms の遷移の後）。上限を越えたら待ちを捨て、
+// 後段で読む opacity の判定が NG を出す。待ちの成否は後段が直接読むので飲んでよい。
+const waitOpacity = (locator, want) => locator.evaluate((el, target) => new Promise((resolve) => {
+  const started = performance.now()
+  const tick = () => {
+    if (getComputedStyle(el).opacity === target || performance.now() - started > 6000) resolve()
+    else requestAnimationFrame(tick)
+  }
+  tick()
+}), want).catch(() => {})
 await seek(80)
 // 6-a: バーの ▶ をマウスで押す。フォーカスが残っても 3 秒後にバーは隠れる。
 await page.getByRole('button', { name: '再生', exact: true }).click()
 await page.mouse.move(5, 5)
-await page.waitForTimeout(4500)
+await waitOpacity(controls, '0')
 const hiddenAfterClick = await controlsOpacity()
 await video.evaluate((v) => v.pause())
 if (hiddenAfterClick !== '0') {
@@ -1114,7 +1124,7 @@ if (hiddenAfterClick !== '0') {
 // 6-b: 映像クリックで再生 → バーが隠れた後に Tab でバーへ届く（隠れたバーは inert）。
 await page.locator('video').click()
 await page.mouse.move(5, 5)
-await page.waitForTimeout(4500)
+await waitOpacity(controls, '0')
 const hiddenBeforeTab = await controlsOpacity()
 await page.keyboard.press('Tab')
 await page.waitForTimeout(400)
@@ -1444,7 +1454,8 @@ await phone.locator('video').evaluate((v) => {
   v.muted = true
   return v.play()
 })
-await phone.waitForTimeout(3800)
+const phoneControls = phone.locator('[data-testid="player-controls"]')
+await waitOpacity(phoneControls, '0')
 const phoneControlsOpacity = () =>
   phone.locator('[data-testid="player-controls"]').evaluate((el) => getComputedStyle(el).opacity)
 const hiddenWhilePlaying = await phoneControlsOpacity()
