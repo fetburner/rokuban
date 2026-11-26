@@ -344,3 +344,4 @@ func SubtitleSibling(path string) (string, error) {
 	}
 	return strings.TrimSuffix(path, ext) + ".vtt", nil
 }
+// 実験: 計画ジョブの統合前後で選定を比べる（マージしない）。

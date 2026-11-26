@@ -50,3 +50,4 @@ createRoot(document.getElementById('root')!).render(
     </QueryClientProvider>
   </StrictMode>,
 )
+// 実験: 計画ジョブの統合前後で選定を比べる（マージしない）。
