@@ -272,8 +272,8 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
     - media ボリュームの上の原本（`cluster/media-seed-job.yaml`）。**ツールボックスからは書けない。** 製品の PVC はツールボックスより後に立つので、挿すと足場が Pending で止まる
     - その原本を指す `recordings` / `media_assets` の行
     - `encode` キューへの直 INSERT（**`rokuban enqueue` に `encode` は無い**。あるのは DB を読んで投入する `encode-reconcile`）
-- **前の周回が残した `retryable` 1 件で判定 2 が二重に落ちうる。** `retryable` は期限が来ると滞留に数えられるので、2.2 の「待ち行列が空」が 180 秒粘って FAIL する。同時に `pendingJobStates`（`internal/jobs/queue.go`）にも入るので、`enqueue` が投入をスキップして 2.3 も落ちる。notifier の常駐 River client が `JobScheduler` を動かすため、`retryable` は backoff 後に昇格する。期限前の `retryable` は件数に数えないので、backoff 中に one-shot Pod が起きることはない。
-- **件数の集合は notifier の DeliverableCounter が持つ。** available 全件と、期限が来た retryable / scheduled を数え、running は数えない。ハーネスは同じ口を読むので、集合を別に持たない。ずれると、失敗して指数バックオフ中（期限前）のジョブ 1 件で判定 2 が誤 FAIL し、判定 5 が「滞留を作れない」で落ちる
+- **前の周回が残した `retryable` 1 件で判定 2 が二重に落ちうる。** `retryable` は期限が来ると滞留に数えられるので、2.2 の「待ち行列が空」が 180 秒粘って FAIL する。同時に `pendingJobStates`（`internal/jobs/queue.go`）にも入るので、`enqueue` が投入をスキップして 2.3 も落ちる。notifier の常駐 River client が `JobScheduler` を動かすため、`retryable` は backoff 後に昇格する。期限前の `retryable` は件数に数えないので、backoff 中の `retryable` のために one-shot Pod が起きることはない。
+- **件数の集合は notifier の DeliverableCounter が持つ。** available 全件と、期限が来た retryable / scheduled を数え、lease が有効な実行中は数えない。ハーネスは同じ口を読むので、集合を別に持たない。ずれると、失敗して指数バックオフ中（期限前）のジョブ 1 件で判定 2 が誤 FAIL し、判定 5 が「滞留を作れない」で落ちる
 - **env の解決に失敗した ScaledJob は、原因を直しても spec が変わらなければ再 reconcile されない**（接続文字列を直した後も 3 分間 `ScaledJobCheckFailed` のままだった。実測）。作り直すのが早い
 - **判定 3 が置いていく残骸が 2 つある。** 3.4 が Job を消すので、取られていた `river_job` の行は一時的に **`running` のまま残る**。encode は保存した締切（最低 1 時間）までは `running` のままなので、ハーネスは rescue を待たず、`produce_real_encode_job` が次の周回の頭で行を消してから測り直す。それと media ボリュームの原本も周回の頭で消してから測り直す。 **`$producer` は関数名でもコマンド文字列でも受ける**（引用せずに展開する）ので、別の作り方を試すときは env で差し替えればよい
 - **未解決: 判定 3 は encode を KEDA ScaledJob で回す形を前提にしている。** 別の形（Deployment + HPA 等）を採るなら、この判定は永久に TODO のままになる。つまり受け入れ 3 が一度も検査されないまま終わる。形を変えるなら判定も同じ PR で書き換えること

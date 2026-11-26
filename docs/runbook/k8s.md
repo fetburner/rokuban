@@ -159,12 +159,12 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 
 1. 件数のハンドラを持つ rokuban を先に出す。
 
-   手元から `kubectl port-forward svc/rokuban-notifier 40773:40773` を開き、次の応答を確かめてから次へ進む。
+   手元で `kubectl port-forward svc/rokuban-notifier 40773:40773` を開く。
 
-   `curl -fsS http://127.0.0.1:40773/internal/queues/ruler/deliverable-count` が `{"value": n}` を返すこと。旧い版では 200 が返らないので、この確認が手順 1 の完了判定になる。
+   `curl -fsS http://127.0.0.1:40773/internal/queues/ruler/deliverable-count` が `{"value": n}` を返すことを確かめてから、手順 2 へ進む。旧い版は 200 を返さないので、この応答が手順 1 の完了の判定になる。
 2. その後で ScaledJob のマニフェスト（トリガを `metrics-api` にしたもの）を出す。逆にすると、トリガの読み先が無く、件数が読めないので worker が起きない。
 
-   名前空間が `default` でなければ、出す前に全 ScaledJob のトリガの URL のホストを overlay で差し替える。実例は `overlays/e2e` にある。直し漏れると、KEDA は別の名前空間の notifier を読むか解決できず、黙ってスケールしない。
+   名前空間が `default` でなければ、出す前に全 ScaledJob のトリガの URL のホストを overlay で差し替える。実例は `overlays/e2e` にある。直し漏れると、KEDA は別の名前空間の notifier を読むか、ホストを解決できずに、スケールしなくなる。
 3. 切り替えた後は KEDA が notifier に依存する。notifier が止まると、滞留があっても worker は起きない。監視には notifier の Ready と件数の応答を入れる。
 4. 切り戻すときは逆順にする（トリガを旧い形に戻してから rokuban を戻す）。`POSTGRES_CONNECTION_STRING` は切り戻しの可能性が無くなってから、`rokuban-secrets` から消す。
 

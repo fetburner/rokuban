@@ -236,11 +236,11 @@ Work を抜けてから producer が止まるまでの間に次のジョブが f
 
 #### スケーラの件数と回収
 
-スケーラは件数を notifier の HTTP から読む。両構成で同じ口である。数えるのは available 全件と、期限が来た retryable / scheduled で、running は数えない（[データ層](../data/jobs.md)）。回収は notifier と watcher の常駐 River client が担う。
+スケーラは件数を notifier の HTTP から読む。両構成で同じ口である。数えるのは available 全件と、期限が来た retryable / scheduled で、lease が有効な実行中は数えない（[データ層](../data/jobs.md)）。River 構成では、回収は notifier と watcher の常駐 River client が担う。
 
-常駐 client の JobScheduler が `retryable` を昇格させるため、この集合は rescue の正しさを担わない。期限前の `retryable` と `scheduled` を数えないのは、長い Snooze の間に巡回ごとの空振りの Job を起こさないためである。
+River 構成では、常駐 client の JobScheduler が `retryable` を昇格させるため、この集合は rescue の正しさを担わない。期限前の `retryable` と `scheduled` を数えないのは、長い Snooze の間に巡回ごとの空振りの Job を起こさないためである。
 
-件数の口は両構成で notifier が公開する。件数を実装する adapter だけが notifier に載る。KEDA は件数を読むだけで DB に繋がない。notifier が止まっている間は、滞留があっても Job は起きない（e2e で 60 秒観測）。クラスタ内の KEDA が直接読むこの口は Host 検査の対象外とする。
+件数の口は両構成で notifier が公開する。KEDA は件数を読むだけで DB に繋がない。notifier が止まっている間は、滞留があっても Job は起きない（e2e で 60 秒観測）。クラスタ内の KEDA が直接読むこの口は Host 検査の対象外とする。
 
 <details><summary>根拠</summary>
 
@@ -318,9 +318,9 @@ River 構成では、実行中のまま死んだジョブが回収されるま�
 
 #### asynq の配送可能件数と回収
 
-asynq 構成では、KEDA が起こした Job の Server が、購読するキューで期限が来たタスクの待機列への昇格と、孤児の実行中の回収を担う。回収可能になるまでの猶予中に起きた Job は、空振りで終わりうる。
+asynq 構成では、KEDA が起こした Job の Server が、購読するキューで期限が来たタスクの待機列への昇格と、孤児になった実行中タスクの回収を担う。回収可能になるまでの猶予中に起きた Job は、空振りで終わりうる。
 
-件数は待機中、期限が来た再試行待ちと予約済み、孤児の実行中を数える。lease が有効な実行中タスクは数えない。期限前の再試行待ちと予約済みは数えない（Snooze 中に空振りの Job を起こさないため）。
+数えるのは、待機中、期限が来た再試行待ちと予約済み、孤児になった実行中である。lease が有効な実行中タスクは数えない。期限前の再試行待ちと予約済みは数えない（Snooze 中に空振りの Job を起こさないため）。
 
 notifier の常駐 worker は ruler のヒントを即座に引くために残す。外すと反映が ruler の pollingInterval に縛られ、判定 1.8 が閾値を超える。watcher の常駐 worker は両エンジンでサイトごとの reconciler を引くために残す。
 

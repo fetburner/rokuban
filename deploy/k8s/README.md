@@ -65,10 +65,10 @@ FS 置き場が 2 つ以上になると、`server` ロールの worker と strea
 |---|---|---|
 | config.yml の worker 節（engine と redis_url） | overlay ごとの config.yml | エンジンは配備全体の決定である。base の冒頭が環境ごとの差は overlay で当てると決めている。環境変数で切り替えると、River の config まで環境変数に依存する |
 | Redis | asynq/ の component | どの overlay に重ねても同じ形で当たる |
-| ScaledJob 13 本（e2e は 17 本）のトリガ | base / site / store が既定の名前空間の URL を持つ。名前空間が違う overlay だけが URL のホストと物理キュー名を patch で差し替える | 件数の口は両構成で同じ。物理キュー名は site と置き場の数で決まる |
+| ScaledJob 13 本（e2e は 17 本）のトリガ | base / site / store が既定の名前空間の URL を持つ。名前空間や site・置き場の名前が違う overlay が、URL のホストと物理キュー名を patch で差し替える | 件数の口は両構成で同じ。物理キュー名は site と置き場の数で決まる |
 | rokuban-secrets の REDIS_URL | 環境の Secret（overlay は出荷しない） | base が Secret を出荷しないのと同じ。パスワードを含みうる値は env で渡す |
 
-component に置くのは Redis だけである。Redis は site の名前も名前空間も知らない。notifier の常駐 worker は base のまま残す（PUT の ruler ヒントを即座に引くため。外すと判定 1.8 が閾値を超える）。トリガは両構成で同じ件数の口を読むので、base / site / store に置く。kustomize は target が一致しない patch を黙って無視するので、差し替えの patch は `asynq_test.go` と `stores_test.go` が数を固定する。
+component に置くのは Redis だけである。Redis は site の名前も名前空間も知らない。notifier の常駐 worker は base のまま残す（PUT の ruler ヒントを即座に引くため。外すと判定 1.8 が閾値を超える）。トリガは両構成で同じ件数の口を読むので、base / site / store に置く。kustomize は target が一致しない patch をエラーを出さずに無視するので、差し替えの patch は `asynq_test.go` と `stores_test.go` が対象の集合と URL を固定する。
 
 ScaledJob のトリガは両構成で共通なので、asynq の overlay に残るのは Redis・config の worker 節・REDIS_URL の 3 つである。overlays/e2e-asynq はトリガの差し替えを overlays/e2e から継承する。
 
