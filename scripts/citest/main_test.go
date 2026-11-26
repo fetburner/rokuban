@@ -1,6 +1,8 @@
-// ci-source-deps: -tags=conformance,s3conformance ./...
+// ci-source-deps: -tags=conformance,s3conformance,ruleguard ./...
 // 全パッケージの .go（_test.go を含む）を読んで検査するので、ソースを読む宣言にする。
-// タグは読む範囲の .go を列挙するために、リポジトリで使うタグを全部並べる。
+// タグは、タグ付きのファイルだけで成るディレクトリ（tools/lintrules は ruleguard のみ）を列挙するために並べる。
+// ignore は並べない（慣習として ignore のファイルは別の main であることが多く、タグで有効にする根拠が無い）。
+// ignore だけのディレクトリは選ばれないことを TestSelectRealRepoDeclarations が固定する。
 
 package main
 
@@ -324,21 +326,18 @@ func TestBodyOnlySelection(t *testing.T) {
 	}
 }
 
-// TestSelectDeclaredReaders は、実行時にパッケージの外のファイルや全パッケージのソースを読むテストの宣言が、
-// その読む範囲の変更で選ぶことを確かめる。入力は issue の 3 つ（deploy/k8s の読むファイル、
-// 他パッケージの _test.go を読む検査、citest が全 .go を読む検査）に相当する形にし、関係しない変更は選ばない。
+// TestSelectDeclaredReaders は ci-source-deps の判定を一時モジュールで確かめる。入力は、他パッケージの
+// _test.go と、タグが付いたファイルだけのディレクトリ（タグを並べないと go list に出ない）にする。
 func TestSelectDeclaredReaders(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("GOWORK", "off")
 	files := map[string]string{
 		"go.mod":                        "module example.com/readers\n\ngo 1.24\n",
-		"cmd/enqueue.go":                "package cmd\n",
-		"deploy/k8s/manifests_test.go":  "// ci-extra-files: cmd/enqueue.go deploy/k8s\n\npackage k8s\n",
 		"scripts/reader/reader.go":      "package reader\n",
 		"scripts/reader/reader_test.go": "// ci-source-deps: -tags=s3conformance ./...\n\npackage reader\n",
 		"internal/other/other.go":       "package other\n",
 		"internal/other/other_test.go":  "package other\n",
-		"internal/other/tagged_test.go": "//go:build s3conformance\n\npackage other\n",
+		"internal/tagged/tagged.go":     "//go:build s3conformance\n\npackage tagged\n",
 	}
 	for name, body := range files {
 		path := filepath.Join(root, name)
@@ -350,8 +349,6 @@ func TestSelectDeclaredReaders(t *testing.T) {
 		}
 	}
 	const (
-		k8s    = "example.com/readers/deploy/k8s"
-		cmd    = "example.com/readers/cmd"
 		reader = "example.com/readers/scripts/reader"
 		other  = "example.com/readers/internal/other"
 	)
@@ -360,15 +357,48 @@ func TestSelectDeclaredReaders(t *testing.T) {
 		changed string
 		want    []string
 	}{
-		{name: "ci-extra-files: a file under the declared directory selects the reader", changed: "deploy/k8s/base/api.yaml", want: []string{k8s}},
-		{name: "ci-extra-files: a declared file selects the reader", changed: "cmd/enqueue.go", want: []string{cmd, k8s, reader}},
-		{name: "ci-source-deps: a test file of another package selects the reader", changed: "internal/other/other_test.go", want: []string{other, reader}},
-		{name: "ci-source-deps: a tagged test file of another package selects the reader", changed: "internal/other/tagged_test.go", want: []string{other, reader}},
+		{name: "another package's test file selects the reader", changed: "internal/other/other_test.go", want: []string{other, reader}},
+		{name: "a directory that builds only with the declared tag selects the reader", changed: "internal/tagged/tagged.go", want: []string{reader}},
 		{name: "unrelated markdown selects nothing", changed: "docs/runbook/testing.md", want: nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := selectPackages(root, "", "", false, []string{"./..."}, []string{tt.changed})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("packages for %q = %v, want %v", tt.changed, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSelectRealRepoDeclarations は実リポジトリの宣言で、issue の入力が選ぶパッケージを固定する。
+// 実物の宣言を外すか旧形に戻すと、ここで落ちる。go list が実リポジトリを読むので、テストの作業ディレクトリ
+// （scripts/citest）から見たモジュールルートを絶対パスで渡す。
+func TestSelectRealRepoDeclarations(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		changed string
+		want    []string
+	}{
+		{name: "k8s base manifest", changed: "deploy/k8s/base/api.yaml", want: []string{"github.com/fetburner/rokuban/deploy/k8s"}},
+		{name: "k8s e2e overlay config", changed: "deploy/k8s/overlays/e2e/config.yml", want: []string{"github.com/fetburner/rokuban/deploy/k8s"}},
+		{name: "k8s e2e lib script", changed: "deploy/k8s/e2e/lib/env.sh", want: []string{"github.com/fetburner/rokuban/deploy/k8s"}},
+		{name: "s3conformance test file in another package", changed: "internal/encode/s3_conformance_test.go", want: []string{"github.com/fetburner/rokuban/scripts/citest", "github.com/fetburner/rokuban/scripts/s3conformance"}},
+		{name: "citest reads every test file", changed: "internal/api/spec_bounds_test.go", want: []string{"github.com/fetburner/rokuban/scripts/citest", "github.com/fetburner/rokuban/scripts/s3conformance"}},
+		{name: "ruleguard-only directory", changed: "tools/lintrules/rules.go", want: []string{"github.com/fetburner/rokuban/scripts/citest"}},
+		{name: "ignore-only directory selects nothing", changed: "scripts/playback-measure/probe.go", want: nil},
+		{name: "docs runbook selects nothing", changed: "docs/runbook/k8s.md", want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := selectPackages(root, "", "", false, []string{"./deploy/...", "./scripts/..."}, []string{tt.changed})
 			if err != nil {
 				t.Fatal(err)
 			}
