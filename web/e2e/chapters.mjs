@@ -867,10 +867,33 @@ if (!beforeFollow || !afterFollow || !crossedOldRangeEnd ||
   if (boundaryCount === 0) {
     ng.push('⑰ 追従後の境界選択対象が無い')
   } else {
-    await filmstripBoundary.first().click().catch(() => {})
-    const afterBoundary = await rangeSnapshot()
-    if (!afterBoundary || afterBoundary.start !== afterPause.start || afterBoundary.end !== afterPause.end) {
-      ng.push(`⑰ 境界選択後に追従範囲が戻る（停止後=${JSON.stringify(afterPause)} 境界選択後=${JSON.stringify(afterBoundary)}）`)
+    // 表示範囲の外の境界は track の overflow で切れていて押せない。範囲内の境界を選んで押す。
+    const visibleBoundaryMs = await page.evaluate(() => {
+      const track = document.querySelector('[data-testid="chapter-filmstrip-track"]')
+      const start = Number(track?.dataset.visibleStartSeconds)
+      const end = Number(track?.dataset.visibleEndSeconds)
+      const inRange = [...document.querySelectorAll('[data-testid="chapter-filmstrip-boundary"]')]
+        .map((el) => Number(el.dataset.timeMs))
+        .filter((ms) => ms / 1000 > start && ms / 1000 < end)
+      return inRange[0] ?? null
+    })
+    if (visibleBoundaryMs === null) {
+      ng.push('⑰ 追従後の表示範囲内に境界が無い')
+    } else {
+      const visibleBoundary = page.locator(`[data-testid="chapter-filmstrip-boundary"][data-time-ms="${visibleBoundaryMs}"]`)
+      let clicked = true
+      try {
+        await visibleBoundary.click({ timeout: 5000 })
+      } catch (error) {
+        clicked = false
+        ng.push(`⑰ 表示範囲内の境界を選べない（${visibleBoundaryMs}ms: ${String(error).split('\n')[0]}）`)
+      }
+      if (clicked) {
+        const afterBoundary = await rangeSnapshot()
+        if (!afterBoundary || afterBoundary.start !== afterPause.start || afterBoundary.end !== afterPause.end) {
+          ng.push(`⑰ 境界選択後に追従範囲が戻る（停止後=${JSON.stringify(afterPause)} 境界選択後=${JSON.stringify(afterBoundary)}）`)
+        }
+      }
     }
   }
   const zoomOutButton = page.getByRole('button', { name: 'フィルムストリップを縮小' })
