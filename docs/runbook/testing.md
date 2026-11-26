@@ -72,6 +72,8 @@ PR の CI は、変更が Go の依存先に入るパッケージと、ソース
 
 PR の docs-lint は入力（一覧は `.github/workflows/ci.yml` の `docs-lint` の filter）が変わったときだけ回し、Markdown だけが変わったときは変わったファイルだけを検査する。
 
+`browser-s3-302`・`s3-conformance`・`mysql-contract-test` の 3 ジョブも、PR では各ジョブの対象パッケージを citest が選んだときだけ回す。`browser-s3-302` は、判定スクリプトと、Playwright・Node の版を決めるファイル（`web/e2e/`・`web/package.json`・`web/pnpm-lock.yaml`・`.node-version`）の変更でも回す。
+
 ### k8s の故障注入
 
 強制終了した worker の仕事の再実行と、接続断の間に失った mirakc の schedule の再照合を、使い捨ての kind + KEDA suite で検査する。実デプロイのキュー・Pod・media volume を通すためである。

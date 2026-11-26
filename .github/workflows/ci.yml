@@ -13,6 +13,12 @@ env:
   # RustFS を services にし、docker run の step にしない理由: service container はジョブ終了時に
   # runner が片付けるので停止 step が要らず、job.services.rustfs.id で失敗時のログ（docker logs）を取れる。
   RUSTFS_IMAGE: &rustfs_image rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
+  # s3-conformance と mysql-contract-test の対象パッケージの一覧。
+  # mysql-contract-test は、test-matrix の計画（citest）と step の両方がこの値を読む。
+  # s3-conformance は、計画だけがこの値を読み、step は go test 行に直書きする（scripts/s3conformance が行を解析するため）。
+  # 計画の一覧と step の集合の一致は scripts/s3conformance の TestS3ConformancePackagesMatchSteps が検査する。
+  S3_CONFORMANCE_PACKAGES: ./internal/objstore/conformance ./internal/objstore/s3store ./internal/storagemaint ./internal/encode ./internal/thumbnail
+  MYSQL_CONTRACT_PACKAGES: ./internal/mysqldb ./internal/mysqltest ./internal/store/mysqlstore ./internal/notifier/mysqlsource
 
 on:
   # PR と main への push だけを検証する。その他のブランチ push は
@@ -157,6 +163,8 @@ jobs:
   # のは、RustFS の固定イメージと実 Chrome（`playwright install chrome`）を用意するため。
   # 実 Safari の測定は macOS のローカルで行い、CI には載せない。
   browser-s3-302:
+    needs: test-matrix
+    if: needs.test-matrix.outputs.run_browser_s3_302 == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
@@ -259,10 +267,17 @@ jobs:
   # 余る側に寄せる（今までの振り分けと同じ）。0 秒と見なして本数を減らすと、待ちが延びる側に外れる。
   test-matrix:
     # 全シャードの開始を待たせる。ubuntu-slim では setup-go と gotestsum のビルドで 24s → 110s に伸びた。
+    # 下の run_* は browser-s3-302・s3-conformance・mysql-contract-test の要否。既存の計画ジョブに出力を足すのは、
+    # checkout・base fetch・setup-go が既にあり、新しいジョブを足すと準備が 1 本増えるため。
+    # 3 ジョブは job レベルの if で決まり、skip されても skipped と表示されるだけでマージは止めない（必須でない）。
+    # そのため計画が失敗したときに赤を出すのは、この job の失敗を受ける必須の集約ジョブ test の役目になる。
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       planned_skip: ${{ steps.plan.outputs.planned_skip }}
+      run_browser_s3_302: ${{ steps.plan.outputs.run_browser_s3_302 }}
+      run_s3_conformance: ${{ steps.plan.outputs.run_s3_conformance }}
+      run_mysql_contract: ${{ steps.plan.outputs.run_mysql_contract }}
     steps:
       - uses: actions/checkout@v7
       - name: Fetch PR base
@@ -284,13 +299,40 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          changed="$RUNNER_TEMP/changed.z"
+          changed_lines="$RUNNER_TEMP/changed.txt"
           packages_file="$RUNNER_TEMP/packages.txt"
+          # 代入で受けるのは、citest などの失敗を set -e で step の失敗にするため。if の中の $(...) では失敗が握り潰される。
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            git diff --name-only -z --no-renames "$BASE_SHA" HEAD |
-              go run ./scripts/citest -base "$BASE_SHA" ./... > "$packages_file"
+            git diff --name-only -z --no-renames "$BASE_SHA" HEAD > "$changed"
+            tr '\0' '\n' < "$changed" > "$changed_lines"
+            read -r -a s3_pkgs <<< "$S3_CONFORMANCE_PACKAGES"
+            read -r -a mysql_pkgs <<< "$MYSQL_CONTRACT_PACKAGES"
+            streamer=$(go run ./scripts/citest -base "$BASE_SHA" -tags s3conformance ./internal/streamer/conformance < "$changed")
+            s3=$(go run ./scripts/citest -base "$BASE_SHA" -tags s3conformance "${s3_pkgs[@]}" < "$changed")
+            mysql=$(go run ./scripts/citest -base "$BASE_SHA" "${mysql_pkgs[@]}" < "$changed")
+            # web 側の変更は browser-s3-302 だけが使う（web/src/ は使わない。web/dist の build も無い）。
+            web=false
+            if grep -Eq '^(web/e2e/|web/package\.json$|web/pnpm-lock\.yaml$|\.node-version$)' "$changed_lines"; then web=true; fi
+            browser=false
+            if [[ -n "$streamer" || "$web" == true ]]; then browser=true; fi
+            s3_run=false
+            if [[ -n "$s3" ]]; then s3_run=true; fi
+            mysql_run=false
+            if [[ -n "$mysql" ]]; then mysql_run=true; fi
+            go run ./scripts/citest -base "$BASE_SHA" ./... < "$changed" > "$packages_file"
           else
+            browser=true
+            s3_run=true
+            mysql_run=true
             go list ./... > "$packages_file"
           fi
+          {
+            echo "run_browser_s3_302=$browser"
+            echo "run_s3_conformance=$s3_run"
+            echo "run_mysql_contract=$mysql_run"
+          } >> "$GITHUB_OUTPUT"
+
           if [[ ! -s "$packages_file" ]]; then
             test "$GITHUB_EVENT_NAME" = pull_request
             echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
@@ -435,6 +477,8 @@ jobs:
 
   mysql-contract-test:
     name: mysql contract test (${{ matrix.mysql }})
+    needs: test-matrix
+    if: needs.test-matrix.outputs.run_mysql_contract == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -463,7 +507,9 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Run MySQL store contract tests
-        run: go test -race -count=1 ./internal/mysqldb ./internal/mysqltest ./internal/store/mysqlstore ./internal/notifier/mysqlsource
+        run: |
+          read -r -a pkgs <<< "$MYSQL_CONTRACT_PACKAGES"
+          go test -race -count=1 "${pkgs[@]}"
 
   # main の実行だけが見積もりを更新する。PR はこの保存を行わず、main のキャッシュを読むだけ。
   test-timings:
@@ -657,6 +703,8 @@ jobs:
 
   # S3 API の互換性をダイジェスト固定した RustFS イメージで検査する。
   s3-conformance:
+    needs: test-matrix
+    if: needs.test-matrix.outputs.run_s3_conformance == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
