@@ -29,7 +29,9 @@ log_section "判定 3: 実行中の encode Job がスケールインで殺され
 
 plan "3.1" "3.2" "3.3" "3.4"
 
+# queue は論理名（ScaledJob の --queues で引く）。待ちの数え方と積み先は物理キュー（置き場 main 付き）。
 queue="encode"
+physical_queue="$E2E_ENCODE_QUEUE"
 scaledjob="$(scaledjob_for_queue "$queue")"
 if discovery_is_unusable "$scaledjob"; then
   reason="キュー ${queue} を判定対象にできない（$(discovery_detail "$scaledjob")）--- 複数一致か、読み取り失敗"
@@ -73,7 +75,7 @@ trap cleanup EXIT
 
 # ---- 3.1 実行中の Job を 1 つ作る ----------------------------------------
 
-default_encode_producer() { insert_probe_job "$queue"; }
+default_encode_producer() { insert_probe_job "$physical_queue"; }
 producer="${E2E_ENCODE_PRODUCER:-default_encode_producer}"
 # 打ち間違えた producer は "command not found" として握られ、3.1 が
 # 「encode Job が起きない」で赤くなる（原因が出力から読めない）。
@@ -108,7 +110,7 @@ find_running_job() {
   [ -n "$running_job" ]
 }
 if ! retry_until 240 "an encode job to start running" find_running_job; then
-  fail "3.1" "encode Job が起きない --- backlog=$(queue_backlog "$queue") jobs=$(jobs_owned_by_scaledjob "$scaledjob")"
+  fail "3.1" "encode Job が起きない --- backlog=$(queue_backlog "$physical_queue") jobs=$(jobs_owned_by_scaledjob "$scaledjob")"
   todo "3.2" "実行中の Job が無いので生存を観測していない"
   todo "3.3" "実行中の Job が無いので生存を観測していない"
   todo "3.4" "実行中の Job が無いので positive control を実施していない"
@@ -132,11 +134,11 @@ claimed() {
   if [ "$E2E_ENGINE" = "asynq" ]; then
     # asynq では、掴まれたタスクは件数（deliverable）から外れる。件数が 1 から 0 に
     # 落ちたとき、起きた Job がそのタスクを掴んでいる。件数を読めなければ失敗（0 に潰さない）。
-    n="$(queue_backlog "$queue")" || return 1
+    n="$(queue_backlog "$physical_queue")" || return 1
     [ "$n" = "0" ] && [ -n "$running_job" ]
     return
   fi
-  n="$(psql_q "SELECT count(*) FROM river_job WHERE queue = '$queue' AND state = 'running'" | tr -d '[:space:]')" || return 1
+  n="$(psql_q "SELECT count(*) FROM river_job WHERE queue = '$physical_queue' AND state = 'running'" | tr -d '[:space:]')" || return 1
   [ -n "$n" ] && [ "$n" -ge 1 ]
 }
 if ! retry_until 120 "the encode job to be claimed by the worker" claimed; then
@@ -231,10 +233,10 @@ window=$(( 2 * ${polling:-30} ))
 # ---- 3.2 待ち行列が空になっても殺されない ---------------------------------
 
 log_step "draining ${queue} and watching ${running_job} for ${window}s"
-drain_queue "$queue"
-backlog_empty() { [ "$(queue_backlog "$queue")" = "0" ]; }
+drain_queue "$physical_queue"
+backlog_empty() { [ "$(queue_backlog "$physical_queue")" = "0" ]; }
 if ! retry_until 60 "the backlog to reach 0" backlog_empty; then
-  log_step "backlog is still $(queue_backlog "$queue")"
+  log_step "backlog is still $(queue_backlog "$physical_queue")"
 fi
 
 outcome="$(observe_survival "$window")"

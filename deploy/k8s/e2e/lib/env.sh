@@ -54,6 +54,10 @@ else
 fi
 # asynq の滞留を作るときに kubectl port-forward で開く Redis の host 側ポート。
 E2E_REDIS_LOCAL_PORT="${E2E_REDIS_LOCAL_PORT:-16379}"
+# 判定 3 が encode を積む先の物理キュー。置き場束縛キューは `<論理名>_<置き場>` で、
+# overlays/e2e の置き場は 1 つで `main`。論理名 `encode` のままでは、どの ScaledJob の
+# トリガも数えない（river の queue も asynq の件数も 0 にならず、Job が起きない）。
+E2E_ENCODE_QUEUE="encode_main"
 
 # 判定 6 の置き場。`overlays/e2e-two-stores/config.yml` の `storage.stores` と同じ名前で、
 # PVC は `rokuban-media-<置き場>`、root は `/mnt/stores/<置き場>`。**環境変数で上書きさせない**

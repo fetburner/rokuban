@@ -684,7 +684,7 @@ produce_real_encode_job() {
   # 再試行で新しい Job が起き続けると、判定 3 が「どの Job を見ているのか」を
   # 見失う。
   psql_q "INSERT INTO river_job (state, queue, kind, args, max_attempts, priority, scheduled_at)
-          VALUES ('available', 'encode', 'encode',
+          VALUES ('available', '${E2E_ENCODE_QUEUE}', 'encode',
                   jsonb_build_object('recording_id', ${rec_id}::bigint, 'profile', '${E2E_ENCODE_PROFILE}'),
                   1, 1, now())" >/dev/null || return 1
   log_step "queued a real encode job (recording_id=${rec_id}, profile=${E2E_ENCODE_PROFILE}, source ${size} bytes)"
