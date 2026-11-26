@@ -263,6 +263,16 @@ func configureChapterFixtureMySQL(db *sql.DB, f *contracttest.MediaFixture) {
 INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep) VALUES (?, ?, CAST(? AS JSON)) AS incoming
 ON DUPLICATE KEY UPDATE requested_keep = incoming.requested_keep`, recordingID, profile, string(raw))
 	}
+	f.SetCMRanges = func(t *testing.T, recordingID int64, ranges []chapters.Range) {
+		t.Helper()
+		raw, err := json.Marshal(nonNilRanges(ranges))
+		if err != nil {
+			t.Fatalf("encoding CM ranges: %v", err)
+		}
+		execFixture(t, db, `
+INSERT INTO recording_cm_detections (recording_id, cm_ranges) VALUES (?, CAST(? AS JSON)) AS incoming
+ON DUPLICATE KEY UPDATE cm_ranges = incoming.cm_ranges`, recordingID, string(raw))
+	}
 	f.SetMediaAssetKeepRanges = func(t *testing.T, assetID int64, keep []chapters.Range) {
 		t.Helper()
 		raw, err := json.Marshal(keep)
