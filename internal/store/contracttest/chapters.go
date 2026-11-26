@@ -245,6 +245,15 @@ func runReview(t *testing.T, newStore NewStore) {
 	f.SaveCMDetection(t, id, []chapters.Range{{StartMs: 5000, EndMs: 6000}, {StartMs: 1000, EndMs: 2000}}, material)
 	wantAuto := []chapters.Range{{StartMs: 1000, EndMs: 2000}, {StartMs: 5000, EndMs: 6000}}
 
+	// Read の自動層も、GetRecordingChapters の AutoSpans 経由で並びが応答に出る。
+	initial, err := s.Read(ctx, id)
+	if err != nil {
+		t.Fatalf("reading before adoption: %v", err)
+	}
+	if initial.Owned || !reflect.DeepEqual(initial.CMRanges, wantAuto) {
+		t.Fatalf("Read(automatic).CMRanges = %+v, want the unowned layer with sorted ranges %+v", initial.CMRanges, wantAuto)
+	}
+
 	review, err := s.ReadReview(ctx, id)
 	if err != nil {
 		t.Fatalf("ReadReview(automatic) error = %v", err)
@@ -256,10 +265,6 @@ func runReview(t *testing.T, newStore NewStore) {
 		t.Fatalf("ReadReview(automatic) materials = available %t, logo %+v, elements %+v; want the saved materials with logo ranges sorted", review.MaterialsAvailable, review.LogoRanges, review.Elements)
 	}
 
-	initial, err := s.Read(ctx, id)
-	if err != nil {
-		t.Fatalf("reading before adoption: %v", err)
-	}
 	if err := s.Replace(ctx, id, initial.Version, []chapters.Span{{StartMs: 0, EndMs: 100, Label: "CM", Cut: true}}, false); err != nil {
 		t.Fatalf("adopting chapter layer: %v", err)
 	}

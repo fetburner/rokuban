@@ -94,7 +94,7 @@ func (s *ChapterEdits) ReadReview(ctx context.Context, recordingID int64) (store
 		}
 		result = store.ChapterReviewSnapshot{Chapter: st.snapshot()}
 		result.Chapter.CMRanges = detection.cmRanges
-		if detection.materialsAvailable() {
+		if detection.materials {
 			result.MaterialsAvailable = true
 			result.LogoRanges = detection.logoRanges
 			result.Elements = detection.elements
@@ -240,9 +240,13 @@ func currentChapterVersion(ctx context.Context, tx *sql.Tx, recordingID int64, s
 func chapterVersion(st chapterState, spans []chapters.Span) string {
 	switch {
 	case st.owned:
-		raw, _ := json.Marshal(spans)
-		sum := sha256.Sum256(raw)
-		return fmt.Sprintf("user:%d:%s", st.adoptedAtUs, hex.EncodeToString(sum[:8]))
+		// hash.Hash の Write はエラーを返さない（契約）。区間は行ごとに書き、label は %q で囲んで、
+		// 区切りの文字を含む label でも別の区間列と同じ入力にならないようにする。
+		h := sha256.New()
+		for _, s := range spans {
+			_, _ = fmt.Fprintf(h, "%d %d %t %q\n", s.StartMs, s.EndMs, s.Cut, s.Label)
+		}
+		return fmt.Sprintf("user:%d:%s", st.adoptedAtUs, hex.EncodeToString(h.Sum(nil)[:8]))
 	case st.detected:
 		return fmt.Sprintf("auto:detected:%d", st.detectedAtUs)
 	case st.failed:
@@ -273,13 +277,8 @@ type detectionRow struct {
 	cmRanges   []chapters.Range
 	logoRanges []chapters.Range
 	elements   []chapters.CMElement
-	logoRaw    []byte
-	elemRaw    []byte
-}
-
-// materialsAvailable は材料の両方があるときだけ真（logo と structure は両方あるか両方無いか）。
-func (d detectionRow) materialsAvailable() bool {
-	return d.logoRaw != nil && d.elemRaw != nil
+	// materials は材料の両方があるときだけ真（logo と structure は両方あるか両方無いか）。
+	materials bool
 }
 
 // readDetection は CM 検出行を読み、材料が揃っていれば decode する。
@@ -295,12 +294,12 @@ func readDetection(ctx context.Context, tx *sql.Tx, recordingID int64) (detectio
 	if err != nil {
 		return detectionRow{}, fmt.Errorf("loading CM detection for recording %d: %w", recordingID, err)
 	}
-	row := detectionRow{logoRaw: logoRaw, elemRaw: elemRaw}
+	row := detectionRow{materials: logoRaw != nil && elemRaw != nil}
 	if err := json.Unmarshal(cmRaw, &row.cmRanges); err != nil {
 		return detectionRow{}, fmt.Errorf("decoding CM ranges for recording %d: %w", recordingID, err)
 	}
 	sortRanges(row.cmRanges)
-	if row.materialsAvailable() {
+	if row.materials {
 		if err := json.Unmarshal(logoRaw, &row.logoRanges); err != nil {
 			return detectionRow{}, fmt.Errorf("decoding logo ranges for recording %d: %w", recordingID, err)
 		}
