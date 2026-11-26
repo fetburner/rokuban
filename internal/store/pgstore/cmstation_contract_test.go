@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
@@ -15,6 +17,33 @@ import (
 )
 
 var cmStationContractEventID atomic.Int32
+
+// setCMStationRecordingNames は録画の表示名と site を書き換える。
+func setCMStationRecordingNames(t *testing.T, pool *pgxpool.Pool, recordingID int64, serviceName, site string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET service_name = $2, site = $3 WHERE id = $1`,
+		recordingID, serviceName, site); err != nil {
+		t.Fatalf("renaming recording %d: %v", recordingID, err)
+	}
+}
+
+// enableCMStationDetection は録画の CM 検出を有効にする方針の行を作る。
+func enableCMStationDetection(t *testing.T, pool *pgxpool.Pool, recordingID int64) {
+	t.Helper()
+	dbtest.ProcessingPolicy(t, pool, recordingID, func(p *dbtest.ProcessingPolicyParams) {
+		p.CMDetect = true
+	})
+}
+
+// seedCMStationFailedAttempt は現在の方針世代の failed 試行を作る。
+func seedCMStationFailedAttempt(t *testing.T, pool *pgxpool.Pool, recordingID int64, stage string, attemptedAt time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO recording_cm_attempts (recording_id, state, stage, error, attempted_at, attempt_count, policy_generation)
+VALUES ($1, 'failed', $2, 'injected failure', $3, 1, 0)`, recordingID, stage, attemptedAt); err != nil {
+		t.Fatalf("seeding failed attempt for %d: %v", recordingID, err)
+	}
+}
 
 func TestCMStationContract(t *testing.T) {
 	contracttest.RunCMStation(t, func(t *testing.T) contracttest.CMStationFixture {
@@ -47,6 +76,15 @@ func TestCMStationContract(t *testing.T) {
 			},
 			SeedDetection: func(t *testing.T, recordingID int64) {
 				insertPresentCopiesDetection(t, pool, recordingID)
+			},
+			SetRecordingNames: func(t *testing.T, recordingID int64, serviceName, site string) {
+				setCMStationRecordingNames(t, pool, recordingID, serviceName, site)
+			},
+			EnableCMDetection: func(t *testing.T, recordingID int64) {
+				enableCMStationDetection(t, pool, recordingID)
+			},
+			SeedFailedAttempt: func(t *testing.T, recordingID int64, stage string, attemptedAt time.Time) {
+				seedCMStationFailedAttempt(t, pool, recordingID, stage, attemptedAt)
 			},
 			BeginStationWrite: func(t *testing.T, station store.CMStationRef) func() {
 				t.Helper()

@@ -3,7 +3,8 @@
 -- この表の行の SELECT ... FOR UPDATE で代える。GET_LOCK は commit をまたいで保持され、
 -- 接続が切れるまで解放されないので使わない。
 -- 1 表にするのは、後のタスク（catalog・CM 検出の局・転送のバックログ）が行を足すだけで
--- 同じ機構を使えるようにするため。行は migration で置き、アプリは行を作らない。
+-- 同じ機構を使えるようにするため。固定の名前の行は migration で置き、局のように名前が動的なロックは
+-- 必要になったときにアプリが INSERT ... ON DUPLICATE KEY UPDATE で作る。
 CREATE TABLE named_locks (
     name VARCHAR(64) NOT NULL,
     PRIMARY KEY (name)

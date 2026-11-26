@@ -411,7 +411,7 @@ cut の選択規則は設定の `recording_hls.enabled` に依存し、store は
 
 局単位の状態（ロゴ・枠・候補）を書く操作は局ごとに直列化し、候補の結果を書く操作だけは版の照合で守る。
 
-局の状態は別々の表にあり、初回の書き込みより前にはロックできる行がない。そのため、直列化は局（`network_id`, `service_id`）を単位にする。契約が求めるのは、同じ局の操作が互いに直列化されることだけで、実現の手段は実装が選ぶ。
+局の状態は別々の表にあり、初回の書き込みより前にはロックできる行がない。そのため、直列化は局（`network_id`, `service_id`）を単位にする。契約が求めるのは、同じ局の操作が互いに直列化されることだけで、実現の手段は実装が選ぶ。MySQL では、局ごとのロック用の行を `named_locks` に置いて `FOR UPDATE` で取る。局は事前に分からないので、行は最初に要ったときに作る。`named_locks` の一意キーは主キーだけなので、`ON DUPLICATE KEY UPDATE` で作っても、狙っていないキーの衝突で別の行を書き換えることはない。
 
 `DeleteLogo` が投入先（候補解析か CM 検出の reconcile か）を返し、呼び出し側が commit 後に投入するのは、投入先がロゴの削除と同じトランザクションの中の読みで決まるからである。
 
@@ -421,6 +421,7 @@ cut の選択規則は設定の `recording_hls.enabled` に依存し、store は
 - PostgreSQL 実装: `internal/store/pgstore.Analysis`
 - 契約テスト: `internal/store/contracttest.RunCMStation`
 - 局単位の advisory lock: `LockCMStation`
+- MySQL の局ロック（行の作成を含む）: `internal/store/mysqlstore.lockCMStation`、行が無い局への並行する作成は `TestCMStationLockRowCreatedConcurrently`
 - 候補結果の版照合: `MarkCMLogoCandidateReady` / `MarkCMLogoCandidateFailure`
 
 </details>

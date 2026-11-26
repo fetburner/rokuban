@@ -49,18 +49,19 @@ func runCMStationOriginalPresence(t *testing.T, newStore NewCMStationStore, stat
 	if err != nil {
 		t.Fatalf("ListCMLogoStates: %v", err)
 	}
+	// detected は実体の有無によらず検出結果を数え、redetectable は実体の有る原本の検出だけを数える。
 	type status struct {
-		count, frame int64
+		detected, redetectable, frame int64
 	}
 	got := make(map[store.CMStationRef]status)
 	for _, row := range rows {
-		got[store.CMStationRef{NetworkID: row.NetworkID, ServiceID: row.ServiceID}] = status{row.RedetectableCount, row.FrameRecordingID}
+		got[store.CMStationRef{NetworkID: row.NetworkID, ServiceID: row.ServiceID}] = status{row.DetectedCount, row.RedetectableCount, row.FrameRecordingID}
 	}
-	if got[station] != (status{1, present}) {
-		t.Errorf("mixed station = %+v, want one detectable and frame from %d", got[station], present)
+	if got[station] != (status{2, 1, present}) {
+		t.Errorf("mixed station = %+v, want two detected, one redetectable, and frame from %d", got[station], present)
 	}
-	if missing, ok := got[other]; !ok || missing != (status{0, 0}) {
-		t.Errorf("missing-only station = %+v, found=%v; want zero detectable and no frame", missing, ok)
+	if missing, ok := got[other]; !ok || missing != (status{1, 0, 0}) {
+		t.Errorf("missing-only station = %+v, found=%v; want one detected, no redetectable, and no frame", missing, ok)
 	}
 }
 
