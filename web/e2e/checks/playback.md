@@ -98,7 +98,7 @@ hls.js が non-fatal で報告する次の 4 つは、内容の欠けか停止�
 
 負例は、期待する名前の失敗で落ちたときだけ「期待どおり」とする。名前は `[timecode]`・`[content-jump]`・`[frame-freeze]`・`[seek-frame]`・`[seek-buffered]`・`[audio-gap]`・`[stall]`・`[hls-gap]` のように、各失敗の先頭に付く。待ちが尽きて例外になったものは `[progress]` であり、検出とは数えない。期待する名前は次のとおりである。
 
-負例は、期待する名前が出た時点で残りの待ちを打ち切る。そのため、その後の `[progress]` などは出ない。判定は期待した名前が出たかで決まるので、打ち切っても結果は変わらない。
+負例は期待する名前が出た時点で待ちを打ち切るので、その後の `[progress]` は出ない。判定は変わらない。
 
 - `off-grid` は `[timecode]`・`[content-jump]`・`[frame-freeze]` のどれか
 - `no-offset` は `[seek-frame]`・`[content-jump]`・`[frame-freeze]` のどれか
@@ -140,11 +140,11 @@ Chrome 155.0.8059.85 / hls.js 1.7.3 / ffmpeg 9.0.2 では、fMP4 の連続版・
 
 内蔵の `event/growing` は、`ts/restarted` のセグメントから伸びる playlist を作る。
 
-- 最初は境界の手前へシークできる行数を載せ、`E2E_EVENT_GROW_INTERVAL_MS`（既定は 1 秒。録画のセグメント長 2 秒より短い。2 秒だと終端まで 46 秒かかり、判定の所要の大半を占めた）ごとに 1 行足す
+- 最初は境界の手前へシークできる行数を載せ、`E2E_EVENT_GROW_INTERVAL_MS`（既定は 1 秒）ごとに 1 行足す
 - `E2E_EVENT_SEGMENT_COUNT`（既定 30）行に達した応答で、最後の行の EXTINF を 1 秒にし、`#EXT-X-ENDLIST` を付ける。最後の TS も 1 秒に切り詰め、EXTINF と長さをそろえる
 - 行数の上限はフィクスチャの 30 本である。足りなければ起動時に必要な行数を出して止まる
 
-既定の間隔を 1 秒にしてよい理由は次のとおり。判定が見ている性質（載せた行が変わらない・ENDLIST が付く・`video.duration` が総尺に届く・`video.ended` に届く）は、行が増える速さに依らない。伸びている最中であることは、今どおり `[event-growth]` で確かめる（同じ playlist の行の増加を観測しない場合と、ENDLIST が先に来た場合を NG にする）。アプリと同じく `new Hls({ startPosition })` を使い、`liveMaxLatencyDuration` は設定していない（`web/src/components/live-player.tsx` の `new Hls(` 周辺を読んで確かめた）。ライブ端への飛びは、1 秒の間隔で 10 回続けて通った実行で、着地位置の判定（遠距離シークと ended）が保たれたことから確かめた。
+既定の間隔を 1 秒にしてよい理由: 判定が見ている性質（行が変わらないこと、ENDLIST、総尺、ended）は行が増える速さに依らない。伸びている最中は `[event-growth]` で確かめる。アプリと同じ `new Hls({ startPosition })` で、`liveMaxLatencyDuration` は設定していない（`web/src/components/live-player.tsx` の `new Hls(` で確認）。10 回続けて通った実行で、着地位置の判定が保たれた。
 
 判定は次の順に進む。
 
