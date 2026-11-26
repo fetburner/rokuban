@@ -11,6 +11,7 @@ import (
 )
 
 func TestNeverScheduledEventsContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunNeverScheduled(t, func(t *testing.T) contracttest.NeverScheduledFixture {
 		db := mysqltest.SetupDB(t)
 		return contracttest.NeverScheduledFixture{

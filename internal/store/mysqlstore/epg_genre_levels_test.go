@@ -8,6 +8,7 @@ import (
 // TestEpgGenreLevels は、genre_lv1 の導出（録画の復元と EPG の射影で共用する epgGenreLevels）の規則を確かめる。
 // 規則は Postgres の genre_lv1_of と同じく、lv1 が 0〜15 の整数を表すものだけを数える。
 func TestEpgGenreLevels(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, genres, want string
 	}{

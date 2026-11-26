@@ -15,6 +15,7 @@ import (
 var labelRuleContractEventID atomic.Int32
 
 func TestLabelRulesContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunLabelRules(t, func(t *testing.T) contracttest.LabelRuleFixture {
 		db := mysqltest.SetupDB(t)
 		labelRules := NewLabelRules(db)

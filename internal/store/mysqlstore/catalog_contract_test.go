@@ -18,6 +18,7 @@ import (
 const catalogContractStoreName = "test-store"
 
 func TestCatalogContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunCatalog(t, func(t *testing.T) contracttest.CatalogFixture {
 		db := mysqltest.SetupDB(t)
 		reservations := NewReservations(db)
@@ -147,6 +148,7 @@ func truncateCatalogTables(t *testing.T, db *sql.DB) {
 // TestInsertableSnapshot は、MySQL が拒否する snapshot の行だけを落とすことを境界の値で確かめる。
 // 拒否の実際は TestMySQLDatetimeRangeRejectsYearsAbove9999 が実 MySQL で確かめる。
 func TestInsertableSnapshot(t *testing.T) {
+	t.Parallel()
 	inside := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	base := catalogdoc.ProgramSnapshot{Site: "default", ChannelType: "GR", StartAt: inside, UpdatedAt: inside}
 	for _, tc := range []struct {
@@ -180,6 +182,7 @@ func TestInsertableSnapshot(t *testing.T) {
 // TestMySQLDatetimeRangeRejectsYearsAbove9999 は、insertableSnapshot が写す DATETIME(6) の範囲が
 // 実際の MySQL の拒否と一致することを確かめる。年 999 と 9999 は入り、10000 年は入らない。
 func TestMySQLDatetimeRangeRejectsYearsAbove9999(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -205,6 +208,7 @@ VALUES ('default', 1, 't', ?, 1000, 1, 1, 'GR', 'ch', 1, 'svc')`, tc.value)
 // TestCatalogRestoreSkipsSnapshotsMySQLRejects は、MySQL が拒否する（年 10000 の）snapshot と、それに従属する意図を
 // 落として、残りの復元を続けることを確かめる（落とす判定は insertableSnapshot）。
 func TestCatalogRestoreSkipsSnapshotsMySQLRejects(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	ctx := context.Background()
 	catalog := NewCatalog(db, []string{"default"}, catalogContractStoreName)
@@ -232,6 +236,7 @@ func TestCatalogRestoreSkipsSnapshotsMySQLRejects(t *testing.T) {
 // 分類ルールの value_key）をアプリとして書くことを確かめる。題名から鍵が取れれば書き、取れなければ NULL にする。
 // 分類ルールの値は鍵が無ければ拒む。
 func TestCatalogRestoreWritesDerivedKeys(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	ctx := context.Background()
 	catalog := NewCatalog(db, []string{"default"}, catalogContractStoreName)
@@ -282,6 +287,7 @@ func TestCatalogRestoreWritesDerivedKeys(t *testing.T) {
 // TestCatalogRestoreAdvancesAutoIncrement は、明示 ID で復元した後の採番が復元した ID を避けることを確かめる。
 // Restore の doc comment の「明示 ID の挿入で AUTO_INCREMENT が最大値 + 1 以上に進む」の検査。
 func TestCatalogRestoreAdvancesAutoIncrement(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	ctx := context.Background()
 	catalog := NewCatalog(db, []string{"default"}, catalogContractStoreName)
@@ -310,6 +316,7 @@ func TestCatalogRestoreAdvancesAutoIncrement(t *testing.T) {
 // 題名から導く series_key と genres から導く genre_lv1 が新しい値に変わることを確かめる。
 // 新規の INSERT の経路は TestCatalogRestoreWritesDerivedKeys と TestCatalogRestoreAdvancesAutoIncrement が見る。
 func TestCatalogRestoreRederivesKeysOnUpdate(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	ctx := context.Background()
 	catalog := NewCatalog(db, []string{"default"}, catalogContractStoreName)

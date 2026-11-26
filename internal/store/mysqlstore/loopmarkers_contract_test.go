@@ -10,6 +10,7 @@ import (
 )
 
 func TestLoopMarkersContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunLoopMarkers(t, func(t *testing.T) contracttest.LoopMarkerFixture {
 		db := mysqltest.SetupDB(t)
 		return contracttest.LoopMarkerFixture{

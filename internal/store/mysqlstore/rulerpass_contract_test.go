@@ -11,6 +11,7 @@ import (
 )
 
 func TestRulerPassContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunRulerPass(t, func(t *testing.T) contracttest.RulerPassFixture {
 		db := mysqltest.SetupDB(t)
 		reservations := NewReservations(db)

@@ -15,6 +15,7 @@ import (
 )
 
 func TestEPGContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunEPG(t, func(t *testing.T) contracttest.EPGFixture {
 		db := mysqltest.SetupDB(t)
 		epg := NewEPG(db)
@@ -142,6 +143,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, id, seq, match.Target, match.Mode, match.Value, m
 }
 
 func TestEPGUpsertWritesSeriesKey(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	epg := NewEPG(db)
 	ctx := context.Background()
@@ -184,6 +186,7 @@ SELECT series_key FROM epg_programs WHERE site = 'default' AND program_id = ?`, 
 }
 
 func TestRulesNotificationTriggers(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	ctx := context.Background()
 	const ruleID = 100
