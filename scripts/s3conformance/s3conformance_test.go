@@ -1,5 +1,5 @@
 // ci-source-deps: -tags=s3conformance ./...
-// 全パッケージの s3conformance タグの _test.go を読んで検査するので、ソースを読む宣言にする。
+// 全パッケージの _test.go（s3conformance タグ付きと、対象パッケージのタグ無し）を読んで検査するので、ソースを読む宣言にする。
 
 // Package s3conformance はテストだけを持つ。s3-conformance ジョブの規約を検査する。
 //
