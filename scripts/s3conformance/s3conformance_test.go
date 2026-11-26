@@ -1,5 +1,5 @@
-// ci-extra-deps: -tags=s3conformance,conformance ./...
-// 全パッケージのソースを読んで検査するため、サブプロセス経由の依存だけでは足りない。
+// ci-source-deps: -tags=s3conformance ./...
+// 全パッケージの s3conformance タグの _test.go を読んで検査するので、ソースを読む宣言にする。
 
 // Package s3conformance はテストだけを持つ。`//go:build s3conformance` の _test.go に書かれた
 // Test 関数が、CI の s3-conformance ジョブの `go test -tags s3conformance` の step のどれかで

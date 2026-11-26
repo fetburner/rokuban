@@ -1,5 +1,6 @@
-// ci-extra-deps: -tags=s3conformance,conformance ./...
-// 全パッケージのソースを読んで検査するため、サブプロセス経由の依存だけでは足りない。
+// ci-source-deps: -tags=conformance,s3conformance ./...
+// 全パッケージの .go（_test.go を含む）を読んで検査するので、ソースを読む宣言にする。
+// タグは読む範囲の .go を列挙するために、リポジトリで使うタグを全部並べる。
 
 package main
 
@@ -318,6 +319,61 @@ func TestBodyOnlySelection(t *testing.T) {
 			}
 			if !slices.Equal(got, tt.wantBody) {
 				t.Errorf("body-only packages for %q = %v, want %v", tt.changed, got, tt.wantBody)
+			}
+		})
+	}
+}
+
+// TestSelectDeclaredReaders は、実行時にパッケージの外のファイルや全パッケージのソースを読むテストの宣言が、
+// その読む範囲の変更で選ぶことを確かめる。入力は issue の 3 つ（deploy/k8s の読むファイル、
+// 他パッケージの _test.go を読む検査、citest が全 .go を読む検査）に相当する形にし、関係しない変更は選ばない。
+func TestSelectDeclaredReaders(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("GOWORK", "off")
+	files := map[string]string{
+		"go.mod":                        "module example.com/readers\n\ngo 1.24\n",
+		"cmd/enqueue.go":                "package cmd\n",
+		"deploy/k8s/manifests_test.go":  "// ci-extra-files: cmd/enqueue.go deploy/k8s\n\npackage k8s\n",
+		"scripts/reader/reader.go":      "package reader\n",
+		"scripts/reader/reader_test.go": "// ci-source-deps: -tags=s3conformance ./...\n\npackage reader\n",
+		"internal/other/other.go":       "package other\n",
+		"internal/other/other_test.go":  "package other\n",
+		"internal/other/tagged_test.go": "//go:build s3conformance\n\npackage other\n",
+	}
+	for name, body := range files {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const (
+		k8s    = "example.com/readers/deploy/k8s"
+		cmd    = "example.com/readers/cmd"
+		reader = "example.com/readers/scripts/reader"
+		other  = "example.com/readers/internal/other"
+	)
+	tests := []struct {
+		name    string
+		changed string
+		want    []string
+	}{
+		{name: "ci-extra-files: a file under the declared directory selects the reader", changed: "deploy/k8s/base/api.yaml", want: []string{k8s}},
+		{name: "ci-extra-files: a declared file selects the reader", changed: "cmd/enqueue.go", want: []string{cmd, k8s, reader}},
+		{name: "ci-source-deps: a test file of another package selects the reader", changed: "internal/other/other_test.go", want: []string{other, reader}},
+		{name: "ci-source-deps: a tagged test file of another package selects the reader", changed: "internal/other/tagged_test.go", want: []string{other, reader}},
+		{name: "unrelated markdown selects nothing", changed: "docs/runbook/testing.md", want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := selectPackages(root, "", "", false, []string{"./..."}, []string{tt.changed})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("packages for %q = %v, want %v", tt.changed, got, tt.want)
 			}
 		})
 	}

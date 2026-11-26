@@ -11,15 +11,20 @@ import (
 	"strings"
 )
 
+// extraDependency は ci-extra-deps（source が false）と ci-source-deps（source が true）の 1 行の 1 パターン。
+// source は宣言先の判定の型（selects の target）を決める。ソースを読む検査は宣言先の _test.go を含めて数える。
 type extraDependency struct {
 	tags    string
 	pattern string
+	source  bool
 }
 
 // declarations は .go ファイルの package 節より前の宣言をまとめて表す。
 type declarations struct {
 	deps []extraDependency
-	none bool
+	// sources は ci-source-deps の宣言。宣言先の _test.go を含めて判定する（ソースを読む検査）。
+	sources []extraDependency
+	none    bool
 	// files は ci-extra-files の宣言。モジュールルートからの相対パスで、ディレクトリは配下全体を表す。
 	files []string
 }
@@ -29,7 +34,12 @@ func (d declarations) declaresDeps() bool {
 	return d.none || len(d.deps) > 0
 }
 
-// readDeclarations は .go ファイルの package 節より前の `// ci-extra-deps:` と `// ci-extra-files:` を読む。
+// readDeclarations は .go ファイルの package 節より前の `// ci-extra-deps:`・`// ci-source-deps:`・`// ci-extra-files:` を読む。
+// ci-source-deps は ci-extra-deps と同じ書式で、ソースを読むテストが全パッケージの .go を読む範囲を書く。
+// 判定は宣言先の _test.go を含み、依存先の _test.go を変えたときも選ぶ。go サブプロセスの依存には使わない
+// （依存先の _test.go は依存先自身のテストバイナリにしか入らないので、ci-extra-deps の判定で足りる）。
+// 読む範囲を ci-extra-files のディレクトリ列挙で書かないのは、新しいトップレベルの Go ディレクトリが黙って漏れ、
+// web/ を入れるとフロントエンドだけの PR でも選ぶため。
 // ci-extra-deps の 1 行には任意の -tags=tag1,tag2 と、モジュールルートから go list に渡す空白区切りの
 // パッケージ指定を書く。複数行でサブプロセスごとのタグを表せる。タグの省略はタグ無しを表す。
 // 固定の追加依存が無い場合は `// ci-extra-deps: none` だけを書く。例えば citest の
@@ -56,6 +66,17 @@ func readDeclarations(path string) (*ast.File, declarations, error) {
 					return nil, declarations{}, fmt.Errorf("%s: %w", path, err)
 				}
 				decls.files = append(decls.files, files...)
+				continue
+			}
+			if value, ok := strings.CutPrefix(comment.Text, "// ci-source-deps:"); ok {
+				line, err := parseExtraDependencies(value)
+				if err != nil {
+					return nil, declarations{}, fmt.Errorf("%s: %w", path, err)
+				}
+				for i := range line {
+					line[i].source = true
+				}
+				decls.sources = append(decls.sources, line...)
 				continue
 			}
 			value, ok := strings.CutPrefix(comment.Text, "// ci-extra-deps:")
