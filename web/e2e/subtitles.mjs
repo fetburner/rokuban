@@ -127,10 +127,14 @@ log('\n=== ① VOD: <track> が実ブラウザで WebVTT の cue を読み込む
     const video = document.querySelector('video')
     const track = Array.from(video?.textTracks ?? []).find((item) => item.kind === 'subtitles')
     if (!track) return { trackFound: false }
-    // mode を UI から showing にした後、空リストを読み込み済みと誤認しないよう
-    // cues が入るまで待つ。cue.line はコントロール行の高さを反映している。
+    // cues が入っただけでは待ち終えない。負の cue.line が入るまで待つ。chromium は届いた分の
+    // cue を <track> の load より先に見せる（本文を 2 回に分けて返すと、cue は約 50ms で見え、
+    // load は本文を受け取り終えた約 500ms まで発火しなかった。実測）。ダミー動画は再生しないので
+    // cuechange も来ず（同じ実測で 0 件）、update() が line を上げるのは load の後になる。
     const deadline = Date.now() + 5000
-    while ((track.cues?.length ?? 0) === 0 && Date.now() < deadline) {
+    while (Date.now() < deadline) {
+      const line = track.cues?.[0]?.line
+      if (typeof line === 'number' && line < 0) break
       await new Promise((r) => setTimeout(r, 50))
     }
     return {
@@ -235,7 +239,12 @@ log('\n=== ② ライブ: HLS 字幕 track・キー操作・cue 位置 ===')
         let subtitleTracks = []
         while (Date.now() < deadline) {
           subtitleTracks = Array.from(video.textTracks).filter((t) => t.kind === 'subtitles')
-          if (subtitleTracks.some((track) => (track.cues?.length ?? 0) > 0)) break
+          // ① と同じく、負の cue.line が入るまで待つ。hls.js が足した cue も update() の契機
+          // （cuechange）より先に見えうる（未計測）。後段の判定と同じ track（cues を持つ最初の
+          // subtitles track）の cues[0] を見る。
+          const first = subtitleTracks.find((track) => (track.cues?.length ?? 0) > 0)
+          const line = first?.cues?.[0]?.line
+          if (typeof line === 'number' && line < 0) break
           await new Promise((r) => setTimeout(r, 100))
         }
         return {
