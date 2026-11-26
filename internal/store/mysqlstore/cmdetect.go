@@ -90,8 +90,8 @@ func (s *Analysis) IsDetectionDesired(ctx context.Context, recordingID int64) (b
 
 // BeginAttempt は現在の方針世代で試行を開始し、実行するかを返す。
 // 直列化の順序は録画（共有）→ 試行。録画の行は FOR SHARE で取る。SaveDetection は録画を排他で取るので、
-// 結果の保存とは録画の行で待ち合う。共有で取るのは、同じ録画の並行する開始どうしを待たせないためで、
-// SaveLearnedLogo（局 → 試行 → 録画の外部キー検査の共有）と循環しないのもこの順序による。
+// 結果の保存とは録画の行で待ち合う。共有で取るのは、SaveLearnedLogo（局 → 試行 → 録画の外部キー検査の共有）と
+// 循環しないためである。並行する開始は録画の行では待たず、試行の行で待ち合う。
 // 試行の行は INSERT ... ON DUPLICATE KEY UPDATE の no-op で確保する。並行する初回の開始は、先に入った行の
 // commit を待ってから重複として扱われ、ErrConflict にならない。影響行数が 1 なら新しく作った行、
 // 0 なら既存の行なので、FOR UPDATE で読み直し、nextCMAttemptRow で決めて更新する。
@@ -161,19 +161,6 @@ WHERE recording_id = ?`, next.State, next.Count, next.Stage, next.Error, next.At
 		return store.CMDetectionAttempt{}, false, err
 	}
 	return attempt, shouldRun, nil
-}
-
-// lockRecordingShared は録画の行を共有で取る。録画が無ければ store.ErrNotFound を返す。
-func lockRecordingShared(ctx context.Context, tx *sql.Tx, recordingID int64) error {
-	var locked int64
-	err := tx.QueryRowContext(ctx, `SELECT id FROM recordings WHERE id = ? FOR SHARE`, recordingID).Scan(&locked)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
-	}
-	if err != nil {
-		return fmt.Errorf("locking recording %d: %w", recordingID, err)
-	}
-	return nil
 }
 
 // FailAttempt は一致する running 試行を失敗状態にし、更新したかを返す。
