@@ -18,8 +18,9 @@ func TestRecordObservationsContract(t *testing.T) {
 	contracttest.RunRecordObservations(t, func(t *testing.T) contracttest.RecordObservationFixture {
 		db := mysqltest.SetupDB(t)
 		reservations := NewReservations(db)
+		recordings := NewRecordings(db)
 		return contracttest.RecordObservationFixture{
-			Store: NewRecordings(db), Catalog: NewCatalog(db, []string{"contract-site"}, catalogContractStoreName),
+			Store: recordings, Catalog: NewCatalog(db, []string{"contract-site"}, catalogContractStoreName),
 			Reservations: reservations, RulerPass: reservations, Rules: NewRules(db, []string{"contract-site"}),
 			IngestTarget: NewRecordings(db), Backlog: NewRecordings(db),
 			NewObservation: newContractRecordObservation,
@@ -75,8 +76,7 @@ VALUES (?, ?, ?, ?, 0, ?)`,
 			},
 			SetAfterRecordAcquired: func(t *testing.T, hook func()) {
 				t.Helper()
-				afterRecordAcquired = hook
-				t.Cleanup(func() { afterRecordAcquired = nil })
+				recordings.afterRecordAcquired = hook
 			},
 		}
 	})
