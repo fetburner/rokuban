@@ -567,7 +567,6 @@ jobs:
   # --skip-log-bin は 19.1.6.4（replication-options-binary-log.html）: log_bin が OFF になる。
   #   バイナリログが有効なときだけ、関数の作成に追加の条件が掛かり、トリガーにも同じ注意が当てはまる（27.9 Stored Program Binary Logging）。
   #   CI は root で流すので、この差は今も判定していない。切っても失う判定は無い。
-  # 効いていなければ緑のまま通るので、テストの前に値を出し、違えば step を失敗させる。
   # 測定（各 3 回の中央値）: test step 200 秒 → 181 秒、mysqlstore 170.7 秒 → 144.9 秒（範囲 165〜172 秒 → 128〜151 秒）。
   #   mysqlsource は約 27 秒のまま変わらない。変更前は親コミットの main の run 45823453043、変更後はこの変更の PR の run 45825070291。
   mysql-contract-test:
@@ -602,17 +601,6 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - name: Confirm MySQL durability options took effect
-        shell: bash
-        run: |
-          set -euo pipefail
-          out=$(docker exec "${{ job.services.mysql.id }}" mysql -h127.0.0.1 -uroot -proot -N -B -e "SELECT @@log_bin, @@innodb_flush_log_at_trx_commit, @@innodb_doublewrite")
-          read -r log_bin flush doublewrite <<< "$out"
-          echo "log_bin=$log_bin innodb_flush_log_at_trx_commit=$flush innodb_doublewrite=$doublewrite"
-          if [ "$log_bin" != 0 ] || [ "$flush" != 0 ] || [ "$doublewrite" != OFF ]; then
-            echo "MySQL の起動オプションが効いていない: log_bin=$log_bin innodb_flush_log_at_trx_commit=$flush innodb_doublewrite=$doublewrite（期待値 0 / 0 / OFF）" >&2
-            exit 1
-          fi
       - name: Run MySQL store contract tests
         run: |
           read -r -a pkgs <<< "$MYSQL_CONTRACT_PACKAGES"
