@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/mysqltest"
@@ -18,43 +17,7 @@ func TestChapterEditsContract(t *testing.T) {
 		db := mysqltest.SetupDB(t)
 		var eventSequence atomic.Int32
 		newRecording := func(t *testing.T, o contracttest.RecordingOptions) int64 {
-			t.Helper()
-			eventID := o.EventID
-			if eventID == 0 {
-				eventID = eventSequence.Add(1)
-			}
-			start := o.ProgramStartAt
-			if start.IsZero() {
-				start = time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-			}
-			duration := o.ProgramDurationMs
-			if duration == 0 {
-				duration = 1_800_000
-			}
-			genres, genreLv1, err := recordingQueryGenres(nil)
-			if err != nil {
-				t.Fatalf("encoding fixture genres: %v", err)
-			}
-			var deletedAt, purgedAt any
-			if o.Trashed || o.Purged {
-				deletedAt = time.Now().UTC()
-			}
-			if o.Purged {
-				purgedAt = deletedAt
-			}
-			id, err := execFixture(t, db, `
-INSERT INTO recordings (site, network_id, service_id, event_id, service_name, channel_type, channel,
-    title, genres, is_free, program_start_at, program_duration_ms, status, source, genre_lv1, deleted_at, purged_at)
-VALUES ('contract-site', 32678, 5168, ?, 'contract service', 'GR', 'contract channel',
-    'chapter contract fixture', ?, TRUE, ?, ?, 'finished', 'manual', ?, ?, ?)`,
-				eventID, genres, start, duration, genreLv1, deletedAt, purgedAt).LastInsertId()
-			if err != nil {
-				t.Fatalf("reading fixture recording ID: %v", err)
-			}
-			if o.CMDetectionEnabled {
-				execFixture(t, db, `INSERT INTO recording_processing_policy (recording_id, keep_original, encode_profiles, cm_detect) VALUES (?, 'always', JSON_ARRAY(), TRUE)`, id)
-			}
-			return id
+			return newContractRecording(t, db, o, &eventSequence)
 		}
 		return contracttest.Fixture{
 			Store:        NewChapterEdits(db),

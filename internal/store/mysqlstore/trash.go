@@ -67,8 +67,8 @@ func (s *Recordings) RequestPurge(ctx context.Context, recordingID int64) error 
 		// 既に要求の行があれば何もしない。requested_at は最初の要求のまま据え置く。
 		// この表の一意キーは主キーだけなので、ON DUPLICATE KEY が他の一意キーの衝突で発火することは無い。
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO recording_purge_requests (recording_id, requested_at)
-VALUES (?, CURRENT_TIMESTAMP(6))
+INSERT INTO recording_purge_requests (recording_id)
+VALUES (?)
 ON DUPLICATE KEY UPDATE recording_id = recording_id`, recordingID); err != nil {
 			return fmt.Errorf("requesting purge for recording %d: %w", recordingID, err)
 		}
@@ -77,8 +77,8 @@ ON DUPLICATE KEY UPDATE recording_id = recording_id`, recordingID); err != nil {
 }
 
 // MarkPurged は猶予の cutoff を過ぎ、削除対象アセットが残っていない録画を完全削除済みにし、今回確定した録画を返す。
-// 候補を録画の行ロックで読み、各行を purged_at IS NULL の条件つきで更新する。
-// 更新で 1 行変わった録画だけを返すので、並行に呼ばれても同じ録画を 2 回返さない。
+// 仕組み: 候補を録画の行ロック（FOR UPDATE OF r）で読み、各行を purged_at IS NULL の条件つきで更新する。
+// 更新で 1 行変わった録画だけを返す。並行呼び出しの振る舞いは未検証（契約テストは逐次の 2 回呼びだけを検査する）。
 func (s *Recordings) MarkPurged(ctx context.Context, graceCutoff time.Time) ([]store.PurgedRecording, error) {
 	var purged []store.PurgedRecording
 	err := runTx(ctx, s.db, func(tx *sql.Tx) error {

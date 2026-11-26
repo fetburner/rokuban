@@ -251,7 +251,7 @@ func configureChapterFixtureMySQL(db *sql.DB, f *contracttest.MediaFixture) {
 	}
 	f.WaitForPublishBlocked = func(t *testing.T) {
 		t.Helper()
-		waitForLockWaiter(t, db)
+		waitForLockWaiter(t, db, "publication")
 	}
 	f.SetEncodedAssetRebuildRequest = func(t *testing.T, recordingID int64, profile string, keep []chapters.Range) {
 		t.Helper()
@@ -346,7 +346,7 @@ func killOpenTransactions(t *testing.T, db *sql.DB) {
 // waitForLockWaiter は、この DB のどこかの行ロックで待つ tx が 1 つ以上できるまで待つ。
 // information_schema.innodb_trx は trx ID を持たない locking read の待機を見せないので、
 // performance_schema.data_lock_waits を読む（reservations_contract_test.go の waitLockWaiters と同じ）。
-func waitForLockWaiter(t *testing.T, db *sql.DB) {
+func waitForLockWaiter(t *testing.T, db *sql.DB, operation string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -358,6 +358,9 @@ FROM performance_schema.data_lock_waits w
 JOIN performance_schema.data_locks l
   ON l.ENGINE = w.ENGINE AND l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID
 WHERE l.OBJECT_SCHEMA = DATABASE()`).Scan(&n)
+		if ctx.Err() != nil {
+			t.Fatalf("%s did not wait for a row lock", operation)
+		}
 		if err != nil {
 			t.Fatalf("observing row lock waiters: %v", err)
 		}
@@ -366,7 +369,7 @@ WHERE l.OBJECT_SCHEMA = DATABASE()`).Scan(&n)
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatal("publication did not wait for a row lock")
+			t.Fatalf("%s did not wait for a row lock", operation)
 		case <-time.After(5 * time.Millisecond):
 		}
 	}

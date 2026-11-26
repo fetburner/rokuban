@@ -24,7 +24,7 @@ func TestRecordingTrashContract(t *testing.T) {
 			Serving: NewMediaInStore(db, "tokyo", store.StoragePolicy{}),
 			Catalog: NewCatalog(db, []string{store.DefaultSite}, "tokyo"),
 			NewRecording: func(t *testing.T, options contracttest.RecordingOptions) int64 {
-				return newTrashContractRecording(t, db, options)
+				return newContractRecording(t, db, options, &trashContractEventSeq)
 			},
 			SetDeletedAt: func(t *testing.T, recordingID int64, deletedAt time.Time) {
 				t.Helper()
@@ -36,46 +36,9 @@ func TestRecordingTrashContract(t *testing.T) {
 			BeginRestoreBlocker: func(t *testing.T, recordingID int64) func() {
 				return beginTrashRestoreBlocker(t, db, recordingID)
 			},
-			WaitForLockWaiter: func(t *testing.T, operation string) { waitForLockWaiter(t, db) },
+			WaitForLockWaiter: func(t *testing.T, operation string) { waitForLockWaiter(t, db, operation) },
 		}
 	})
-}
-
-// newTrashContractRecording は録画を 1 行作る。Trashed は deleted_at を、Purged は purged_at も立てる。
-func newTrashContractRecording(t *testing.T, db *sql.DB, o contracttest.RecordingOptions) int64 {
-	t.Helper()
-	if o.CMDetectionEnabled {
-		t.Fatalf("trash contract fixture does not support CMDetectionEnabled")
-	}
-	eventID := o.EventID
-	if eventID == 0 {
-		eventID = trashContractEventSeq.Add(1)
-	}
-	start := o.ProgramStartAt
-	if start.IsZero() {
-		start = time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	}
-	duration := o.ProgramDurationMs
-	if duration == 0 {
-		duration = 1_800_000
-	}
-	genres, genreLv1, err := recordingQueryGenres(nil)
-	if err != nil {
-		t.Fatalf("encoding fixture genres: %v", err)
-	}
-	var deletedAt, purgedAt any
-	if o.Trashed || o.Purged {
-		deletedAt = time.Now().UTC()
-	}
-	if o.Purged {
-		purgedAt = deletedAt
-	}
-	return fixtureID(t, execFixture(t, db, `
-INSERT INTO recordings (site, network_id, service_id, event_id, service_name, channel_type, channel,
-    title, genres, is_free, program_start_at, program_duration_ms, status, source, genre_lv1, deleted_at, purged_at)
-VALUES (?, 32678, 5168, ?, 'trash contract service', 'GR', 'trash contract channel',
-    'store trash contract fixture', ?, TRUE, ?, ?, 'finished', 'manual', ?, ?, ?)`,
-		store.DefaultSite, eventID, genres, start, duration, genreLv1, deletedAt, purgedAt))
 }
 
 // beginTrashPurgeBlocker は録画の行をロックする tx を開き、要求行を入れる操作と commit を返す。
