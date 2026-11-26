@@ -102,3 +102,5 @@ type RangeReader interface {
 type SignedURL interface {
 	Presign(ctx context.Context, key, method string, expires time.Duration, contentType, filename string) (string, error)
 }
+
+// e11-6 measure
