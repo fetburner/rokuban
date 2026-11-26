@@ -340,6 +340,35 @@ func configureMediaPublishFixture(t *testing.T, pool *pgxpool.Pool, fixture *con
 			t.Fatalf("seeding ingest progress for recording %d: %v", recordingID, err)
 		}
 	}
+	fixture.AddTombstoneCopy = func(t *testing.T, assetID int64, storeName, relPath string, generation int64) int64 {
+		t.Helper()
+		var id int64
+		if err := pool.QueryRow(context.Background(), `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state, deleted_at)
+VALUES ($1, $2, $3, $4, 'deleted', now()) RETURNING id`, assetID, storeName, relPath, generation).Scan(&id); err != nil {
+			t.Fatalf("adding tombstone copy for asset %d: %v", assetID, err)
+		}
+		return id
+	}
+	fixture.SetCopyMissing = func(t *testing.T, copyID int64, missing bool) {
+		t.Helper()
+		scoped := testMedia(pool, "tokyo", "")
+		var err error
+		if missing {
+			err = scoped.UpsertMissingMediaAsset(context.Background(), copyID)
+		} else {
+			err = scoped.DeleteMissingMediaAsset(context.Background(), copyID)
+		}
+		if err != nil {
+			t.Fatalf("setting copy %d missing=%t: %v", copyID, missing, err)
+		}
+	}
+	fixture.ExpireIngestLease = func(t *testing.T, recordingID int64) {
+		t.Helper()
+		if _, err := pool.Exec(context.Background(), `UPDATE recording_ingest_checkpoints SET lease_expires_at = now() - interval '1 second' WHERE recording_id = $1`, recordingID); err != nil {
+			t.Fatalf("expiring ingest lease for recording %d: %v", recordingID, err)
+		}
+	}
 	fixture.NewInPlaceInput = func(t *testing.T, relPath string) store.InPlaceInput {
 		t.Helper()
 		return store.InPlaceInput{

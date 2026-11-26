@@ -71,6 +71,12 @@ type MediaFixture struct {
 	// SetRecordingRemovalTimes は録画の deleted_at・purged_at・superseded_at を指定した値に書く。
 	// nil は NULL にする。
 	SetRecordingRemovalTimes func(t *testing.T, recordingID int64, deletedAt, purgedAt, supersededAt *time.Time)
+	// AddTombstoneCopy は論理資産に、回収済み（deleted）の物理コピーを指定の世代で作る。
+	AddTombstoneCopy func(t *testing.T, assetID int64, storeName, relPath string, generation int64) int64
+	// SetCopyMissing は物理コピーを実体無しとして記録する（missing=true）、または記録を消す（false）。
+	SetCopyMissing func(t *testing.T, copyID int64, missing bool)
+	// ExpireIngestLease は録画の writer lease を DB の時計で過去にする。
+	ExpireIngestLease func(t *testing.T, recordingID int64)
 	// SetRecordingTrashed は録画をごみ箱に入れる（deleted_at を埋める）。
 	SetRecordingTrashed func(t *testing.T, recordingID int64)
 	// NewRecordSync は録画に対応する mirakc record の同期行を作る。
@@ -91,7 +97,6 @@ type NewMediaFixture func(t *testing.T) MediaFixture
 // RunMedia は実在のメディア store 実装に対して読み取り・配信・名前空間・監査の契約を実行する。
 func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Helper()
-	t.Run("current cut keep is derived from owned chapters", func(t *testing.T) { runCurrentCutKeep(t, newFixture) })
 	t.Run("recording encode times preserve nullable timestamps", func(t *testing.T) { runRecordingEncodeTimes(t, newFixture) })
 	t.Run("encode notify subject includes purged recordings", func(t *testing.T) { runRecordingNotifySubject(t, newFixture) })
 	t.Run("ingest precheck recognizes committed originals in every state", func(t *testing.T) { runHasOriginalMediaAsset(t, newFixture) })
@@ -121,8 +126,6 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("namespace guard rejects unprefixed originals and encoded files", func(t *testing.T) { runMediaNamespaceUnprefixed(t, newFixture) })
 	t.Run("namespace guard leaves thumbnails and seek tiles to their own namespace", func(t *testing.T) { runMediaNamespaceDerived(t, newFixture) })
 	t.Run("audit lists every media asset path including reserved namespaces", func(t *testing.T) { runMediaAuditPaths(t, newFixture) })
-	t.Run("thumbnail and seek tile candidates require a present original", func(t *testing.T) { runMissingDerivativeCandidates(t, newFixture) })
-	t.Run("thumbnail reselection candidates carry typed timeline and inputs", func(t *testing.T) { runMediaThumbnailCandidates(t, newFixture) })
 	t.Run("orphan ageing compares against the database clock", func(t *testing.T) { runMediaOrphanAgeing(t, newFixture) })
 	t.Run("missing asset ageing compares against the database clock", func(t *testing.T) { runMediaMissingAgeing(t, newFixture) })
 }
@@ -131,6 +134,12 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 func RunMediaPublish(t *testing.T, newFixture NewMediaFixture) {
 	t.Helper()
 	t.Run("clearing ingest progress is idempotent", func(t *testing.T) { runClearIngestProgress(t, newFixture) })
+	runIngestCheckpoint(t, newFixture)
+	runIngestCheckpointCalls(t, newFixture)
+	runMediaReconcileCalls(t, newFixture)
+	t.Run("current cut keep is derived from owned chapters", func(t *testing.T) { runCurrentCutKeep(t, newFixture) })
+	t.Run("thumbnail and seek tile candidates require a present original", func(t *testing.T) { runMissingDerivativeCandidates(t, newFixture) })
+	t.Run("thumbnail reselection candidates carry typed timeline and inputs", func(t *testing.T) { runMediaThumbnailCandidates(t, newFixture) })
 	t.Run("original publication freezes policy and clears progress atomically", func(t *testing.T) { runOriginalPublication(t, newFixture) })
 	t.Run("original callback failure rolls back rows", func(t *testing.T) { runOriginalPublicationRollback(t, newFixture) })
 	t.Run("encoded publication rechecks attempt and desired profiles", func(t *testing.T) { runEncodedPublicationRechecks(t, newFixture) })
@@ -180,7 +189,17 @@ func runOriginalPublication(t *testing.T, newFixture NewMediaFixture) {
 			t.Fatalf("policy inputs = %+v; want recording %d/site %q without reservation", in, id, f.Site)
 		}
 		return store.EncodePolicySnapshot{KeepOriginal: "always", EncodeProfiles: []string{"h264"}, CMDetect: true}, nil
-	}, func() error { publishCalls++; return nil })
+	}, func() error {
+		publishCalls++
+		// 公開の中からは、まだ commit されていない方針と進捗の消去が見えないこと（同じ tx で行うこと）を見る。
+		if written, _ := mediaIngestProgress(t, f, id); written == nil {
+			t.Errorf("ingest progress was cleared before the original publication committed; the clear must share its transaction")
+		}
+		if _, ok := mediaEncodePolicy(t, f, id); ok {
+			t.Errorf("encode policy was frozen before the original publication committed; the freeze must share its transaction")
+		}
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("CommitOriginal: %v", err)
 	}
@@ -979,6 +998,15 @@ func runMediaThumbnailCandidates(t *testing.T, newFixture NewMediaFixture) {
 	}
 	if gotPlain.MediaAssetID != plainID || gotPlain.Profile != plainProfile || gotPlain.RelPath != plainPath || gotPlain.Cut || len(gotPlain.KeepRanges) != 0 {
 		t.Fatalf("uncut input = %+v, want asset %d %q at %q without keep ranges", gotPlain, plainID, plainProfile, plainPath)
+	}
+
+	// チャプターを所有せず CM 検出も無い録画は、サムネイルがあっても再選択の候補に入らない。
+	unowned := f.NewRecording(t)
+	f.NewAsset(t, unowned, "original", nil, fmt.Sprintf("sites/home/%d/unowned.m2ts", unowned), "active")
+	f.NewAsset(t, unowned, "thumbnail", nil, fmt.Sprintf("thumbnails/%d.jpg", unowned), "active")
+	rows, err = f.Reconcile.ListThumbnailReselectCandidates(ctx, store.MediaReconcilePage{AfterRecordingID: id - 1, RowLimit: 10})
+	if err != nil || len(rows) != 1 || rows[0].RecordingID != id {
+		t.Fatalf("candidates with an unowned recording = %+v, %v; want only recording %d", rows, err, id)
 	}
 
 	// 取得候補の録画は残し、実体無しの原本・encoded だけを入力から外す。

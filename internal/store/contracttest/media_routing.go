@@ -217,9 +217,7 @@ func runOrphanStoreScope(t *testing.T, newFixture NewMediaFixture) {
 
 func observeMissingContractCopy(t *testing.T, f MediaFixture, assetID int64) {
 	t.Helper()
-	if err := f.Storage.UpsertMissingMediaAsset(t.Context(), f.CopyID(t, assetID)); err != nil {
-		t.Fatalf("reporting missing copy for asset %d: %v", assetID, err)
-	}
+	f.SetCopyMissing(t, f.CopyID(t, assetID), true)
 }
 
 func runMissingDerivativeCandidates(t *testing.T, newFixture NewMediaFixture) {
@@ -227,16 +225,34 @@ func runMissingDerivativeCandidates(t *testing.T, newFixture NewMediaFixture) {
 	present, missing := f.NewRecording(t), f.NewRecording(t)
 	f.NewAsset(t, present, "original", nil, "originals/present.ts", "active")
 	observeMissingContractCopy(t, f, f.NewAsset(t, missing, "original", nil, "originals/missing.ts", "active"))
+	// 派生物が既にある録画は、その kind の候補から外れ、もう一方の kind の候補には残る。
+	hasThumbnail, hasTiles := f.NewRecording(t), f.NewRecording(t)
+	f.NewAsset(t, hasThumbnail, "original", nil, "originals/has-thumbnail.ts", "active")
+	f.NewAsset(t, hasThumbnail, "thumbnail", nil, fmt.Sprintf("thumbnails/%d.jpg", hasThumbnail), "active")
+	f.NewAsset(t, hasTiles, "original", nil, "originals/has-tiles.ts", "active")
+	f.NewAsset(t, hasTiles, "seek_tiles", nil, fmt.Sprintf("thumbnails/%d_tiles.jpg", hasTiles), "active")
 	for _, tc := range []struct {
-		name string
-		list func(context.Context, store.MediaReconcilePage) ([]int64, error)
+		name    string
+		list    func(context.Context, store.MediaReconcilePage) ([]int64, error)
+		include []int64
+		exclude []int64
 	}{
-		{"thumbnail", f.Reconcile.ListMissingThumbnailRecordings},
-		{"seek tiles", f.Reconcile.ListMissingSeekTilesRecordings},
+		{"thumbnail", f.Reconcile.ListMissingThumbnailRecordings, []int64{present, hasTiles}, []int64{hasThumbnail, missing}},
+		{"seek tiles", f.Reconcile.ListMissingSeekTilesRecordings, []int64{present, hasThumbnail}, []int64{hasTiles, missing}},
 	} {
 		rows, err := tc.list(t.Context(), store.MediaReconcilePage{RowLimit: 10})
-		if err != nil || !slices.Contains(rows, present) || slices.Contains(rows, missing) {
-			t.Errorf("%s candidates = %v, %v; want present original %d included and missing original %d excluded", tc.name, rows, err, present, missing)
+		if err != nil {
+			t.Fatalf("%s candidates: %v", tc.name, err)
+		}
+		for _, id := range tc.include {
+			if !slices.Contains(rows, id) {
+				t.Errorf("%s candidates = %v; want recording %d included", tc.name, rows, id)
+			}
+		}
+		for _, id := range tc.exclude {
+			if slices.Contains(rows, id) {
+				t.Errorf("%s candidates = %v; want recording %d excluded", tc.name, rows, id)
+			}
 		}
 	}
 }
