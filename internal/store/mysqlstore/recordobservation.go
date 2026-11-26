@@ -23,7 +23,7 @@ var (
 // 本番では nil。直列化の契約テストが、確保の直後に同期点を差し込むために使う。
 var afterRecordAcquired func()
 
-// Recordings は録画の観測・失敗の記録・取り込み先・未取り込みの滞留量を MySQL で実装する。
+// Recordings は録画の観測・失敗の記録・取り込み先・未取り込みの滞留量・ごみ箱と完全削除を MySQL で実装する。
 // 各書き込みは 1 つの tx で行い、録画の行に触れる前に行ロックを取る。
 type Recordings struct {
 	db *sql.DB
