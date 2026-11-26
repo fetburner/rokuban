@@ -75,7 +75,7 @@ type MediaFixture struct {
 	// SetRecordingRemovalTimes は録画の deleted_at・purged_at・superseded_at を指定した値に書く。
 	// nil は NULL にする。
 	SetRecordingRemovalTimes func(t *testing.T, recordingID int64, deletedAt, purgedAt, supersededAt *time.Time)
-	// DeleteCopy は物理コピーの行を消す。論理資産が束縛していない置き場にだけ残る状態を作るために使う。
+	// DeleteCopy は物理コピーの行を消す。原本のコピーが、検査する置き場以外にだけある状態を作るために使う。
 	DeleteCopy func(t *testing.T, copyID int64)
 	// AddTombstoneCopy は論理資産に、回収済み（deleted）の物理コピーを指定の世代で作る。
 	AddTombstoneCopy func(t *testing.T, assetID int64, storeName, relPath string, generation int64) int64
@@ -123,6 +123,7 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("active media assets are listed per store", func(t *testing.T) { runActiveMediaAssetsByStore(t, newFixture) })
 	t.Run("missing asset candidates are listed and cleared per store", func(t *testing.T) { runMissingAssetCandidatesByStore(t, newFixture) })
 	t.Run("serving returns only active assets", func(t *testing.T) { runMediaServingActiveOnly(t, newFixture) })
+	t.Run("serving copy selection prefers the first store in name order", func(t *testing.T) { runServingCopySelection(t, newFixture) })
 	t.Run("serving covers thumbnails and seek tiles", func(t *testing.T) { runMediaServingDerived(t, newFixture) })
 	t.Run("recording HLS target shares the committed-original visibility predicate", func(t *testing.T) { runMediaRecordingHLSTarget(t, newFixture) })
 	t.Run("recording removal state reports deleted, purged and superseded times", func(t *testing.T) { runMediaRecordingRemovalState(t, newFixture) })
@@ -131,7 +132,6 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("namespace guard leaves thumbnails and seek tiles to their own namespace", func(t *testing.T) { runMediaNamespaceDerived(t, newFixture) })
 	t.Run("audit lists every media asset path including reserved namespaces", func(t *testing.T) { runMediaAuditPaths(t, newFixture) })
 	t.Run("orphan ageing compares against the database clock", func(t *testing.T) { runMediaOrphanAgeing(t, newFixture) })
-	t.Run("serving copy selection prefers the first store in name order", func(t *testing.T) { runServingCopySelection(t, newFixture) })
 	t.Run("missing asset ageing compares against the database clock", func(t *testing.T) { runMediaMissingAgeing(t, newFixture) })
 }
 
