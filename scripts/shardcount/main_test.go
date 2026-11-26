@@ -91,6 +91,14 @@ func TestRunEstimatesShardCount(t *testing.T) {
 			`{"include":[{"id":0,"estimatedRuntime":"1m0s","packages":"example.com/m/a","description":"0 - a"},{"id":1,"estimatedRuntime":"0s","packages":"example.com/m/new","description":"1 - new"}]}` + "\n",
 		},
 		{
+			// none は skip 事象だけの記録（Elapsed 0）。実測として数えるので未実測にならず、1 本のまま。
+			// skip を実測に数えないと none が未実測になり、上限の 3 本になる。
+			"skip 事象だけのパッケージは 0 秒の実測（合計 110 秒は 1 本）",
+			"example.com/m/a\nexample.com/m/b\nexample.com/m/none\n",
+			plan{parallel: 3, setupSec: 50},
+			`{"include":[{"id":0,"estimatedRuntime":"1m50s","packages":"example.com/m/a example.com/m/b example.com/m/none","description":"0 - a and 2 others"}]}` + "\n",
+		},
+		{
 			"空行は無視する",
 			"\nexample.com/m/a\n\n",
 			plan{parallel: 1, setupSec: 40},

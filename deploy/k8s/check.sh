@@ -10,6 +10,12 @@
 #   3. e2e/lib/selftest.sh: クラスタを要らない判定ハーネスの純粋な部分
 #   4. shellcheck: e2e の判定ハーネスの .sh（設定は e2e/.shellcheckrc）
 #
+# **回さないもの。** 受け入れ判定ハーネス（e2e の run.sh・checks・faults）は CI では回さない。回すのは人間で、
+# タイミングと理由は docs/runbook/k8s.md §受け入れ判定ハーネス。ここで見るのは、ハーネスが持つマニフェスト
+# （overlays/e2e・足場・CRD を含まない fixture）が組めてスキーマに合うことまで。回さないものが腐るのを、
+# せめてここで止める。ConfigMap の中身（overlay の config.yml）は kustomize にも kubeconform にも不透明なので、
+# go test ./deploy/k8s/（TestOverlayConfigsLoad）が見る。
+#
 # 必要なツール: kustomize・kubeconform・shellcheck。版は .tool-versions の値と揃える（CI は同じ値を入れる）。
 # 冒頭で版を表示し、.tool-versions と違えば警告する（失敗はさせない。手元の版が違うのは許すため）。
 #

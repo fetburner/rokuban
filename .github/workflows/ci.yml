@@ -32,7 +32,8 @@ jobs:
   # setup-go を 1 回にする。step id と job の outputs は計画ごとに分ける。
   # 計画のどれか 1 つでも失敗すると、このジョブは失敗する。3 つの集約ジョブ（browser-e2e・test・mirakc-conformance）は
   # needs.plan.result が success でなければ赤になる。shard の skip は planned_skip で表し、集約ジョブが判定する。
-  # runs-on は ubuntu-latest のまま。ubuntu-slim に変えた場合の時間は測っていない。
+  # runs-on は ubuntu-latest のまま。ubuntu-slim では、setup-go と gotestsum のビルドを含めて 24 秒 → 110 秒に延びた（実測）。
+  # gotestsum を plan から外した後は測り直していない。
   plan:
     runs-on: ubuntu-latest
     permissions:

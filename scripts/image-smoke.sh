@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # ローカルでビルドしたイメージの起動検査。CI の docker ジョブの bake の後の検査と同じものを回す。
 #
-#   docker buildx bake -f docker-bake.hcl image full --load \
+#   docker buildx bake --set '*.platform=linux/amd64' -f docker-bake.hcl image full --load \
 #     --set image.tags=rokuban:test --set full.tags=rokuban:test-full
 #   scripts/image-smoke.sh
+#
+# bake の手順は docker-bake.hcl 冒頭（手元の手順）が権威。ここの例はそれと同じで、実際に回したもの。
 #
 # 検査は次の順。イメージ名は rokuban:test（migrate 用）と rokuban:test-full（server --all 用。ffmpeg 入り）。
 #   1. JLSE のバイナリが共有ライブラリを解決できる（full）

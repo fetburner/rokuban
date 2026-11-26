@@ -322,6 +322,6 @@ mirakcmock/            mirakc モック（Go。`go test ./deploy/k8s/e2e/...` �
 deploy/k8s/check.sh
 ```
 
-shellcheck の除外（SC1091・SC2034・SC2317・SC2329）と理由は `deploy/k8s/e2e/.shellcheckrc` に書いてある。判定の述語を `retry_until` と `trap` に**間接的に**渡す形が多いため、SC2317 / SC2329 は誤検出になる。番号が 2 つあるのは、shellcheck の版によってどちらで報告されるかが違うから（`.tool-versions` で版を固定している）。
+shellcheck の除外の番号と根拠は `deploy/k8s/e2e/.shellcheckrc` にある。
 
 **`lib/` の純粋な部分にはテストがある**（対象の探索・watch ログの読み取り・終了コード）。そこが無かったせいで、レビュー修正で入れた「複数一致は FAIL」の経路が**大域変数の代入が `$( )` の子シェルに閉じるせいで一度も動いていなかった**。実機 2 周でも変異注入でも捕まえられなかった（変異がその状態を作らなかったため）。判定の外側（クラスタが要る部分）は変異注入で、内側はここで見る。

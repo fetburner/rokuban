@@ -212,7 +212,8 @@ func collectTests(root string) (map[string]*pkgTests, error) {
 			return err
 		}
 		if d.IsDir() {
-			if p != root && (strings.HasPrefix(d.Name(), ".") || d.Name() == "node_modules") {
+			// testdata は go のツールが無視するので、意図的に壊した _test.go を置いても検査の対象にしない。
+			if p != root && (strings.HasPrefix(d.Name(), ".") || d.Name() == "node_modules" || d.Name() == "testdata") {
 				return filepath.SkipDir
 			}
 			return nil

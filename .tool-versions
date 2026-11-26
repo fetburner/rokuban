@@ -2,7 +2,7 @@
 # 読むのは lint ジョブ（golangci-lint-action の version-file）、manifests ジョブ（kustomize・kubeconform は
 # yokawasa/action-setup-kube-tools の version-file、shellcheck は install の step）。
 # golangci-lint は、自分をビルドした Go より新しい go.mod では起動を拒む。Go を上げるときは
-# golangci-lint もこの PR で上げる（ずれれば lint ジョブが自分で落ちる）。
+# golangci-lint は同じ PR で上げる（ずれれば lint ジョブが自分で落ちる）。
 golangci-lint 2.13.2
 kustomize 5.8.1
 kubeconform 0.8.0
