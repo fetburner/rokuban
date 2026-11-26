@@ -1,5 +1,9 @@
-// ci-extra-deps: -tags=s3conformance,conformance ./...
-// 全パッケージのソースを読んで検査するため、サブプロセス経由の依存だけでは足りない。
+// ci-source-deps: -tags=conformance,s3conformance,ruleguard ./...
+// 全パッケージの .go（_test.go を含む）を読んで検査するので、ソースを読む宣言にする。
+// タグを並べるのは、タグ付きのファイルしか無いディレクトリ（例: ruleguard だけの tools/lintrules）も列挙させるため。
+// ignore は並べない。ignore のファイルが同じディレクトリの他のファイルと別のパッケージ（生成用の main など）だと、
+// go list が found packages で失敗するため（一時モジュールで確認）。そのため、ignore のファイルしか無い
+// ディレクトリの変更では選ばれない。
 
 package main
 
@@ -318,6 +322,89 @@ func TestBodyOnlySelection(t *testing.T) {
 			}
 			if !slices.Equal(got, tt.wantBody) {
 				t.Errorf("body-only packages for %q = %v, want %v", tt.changed, got, tt.wantBody)
+			}
+		})
+	}
+}
+
+// TestSelectDeclaredReaders は ci-source-deps の判定を一時モジュールで確かめる。入力は、他パッケージの
+// _test.go と、タグが付いたファイルだけのディレクトリ（タグを並べないと go list に出ない）にする。
+func TestSelectDeclaredReaders(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("GOWORK", "off")
+	files := map[string]string{
+		"go.mod":                        "module example.com/readers\n\ngo 1.24\n",
+		"scripts/reader/reader.go":      "package reader\n",
+		"scripts/reader/reader_test.go": "// ci-source-deps: -tags=s3conformance ./...\n\npackage reader\n",
+		"internal/other/other.go":       "package other\n",
+		"internal/other/other_test.go":  "package other\n",
+		"internal/tagged/tagged.go":     "//go:build s3conformance\n\npackage tagged\n",
+	}
+	for name, body := range files {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const (
+		reader = "example.com/readers/scripts/reader"
+		other  = "example.com/readers/internal/other"
+	)
+	tests := []struct {
+		name    string
+		changed string
+		want    []string
+	}{
+		{name: "another package's test file selects the reader", changed: "internal/other/other_test.go", want: []string{other, reader}},
+		{name: "a directory that builds only with the declared tag selects the reader", changed: "internal/tagged/tagged.go", want: []string{reader}},
+		{name: "unrelated markdown selects nothing", changed: "docs/runbook/testing.md", want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := selectPackages(root, "", "", false, []string{"./..."}, []string{tt.changed})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("packages for %q = %v, want %v", tt.changed, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSelectRealRepoDeclarations は、パッケージの外のファイルやソースを読むテストの宣言が、読む範囲の変更で
+// そのテストのパッケージを選ぶことを、実リポジトリの宣言で検査する。宣言を外すか旧形に戻すと落ちる。
+// 対象は表が主張する 3 パッケージに絞る。go list が実リポジトリを読むので、モジュールルートは絶対パスで渡す。
+func TestSelectRealRepoDeclarations(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		changed string
+		want    []string
+	}{
+		{name: "k8s base manifest", changed: "deploy/k8s/base/api.yaml", want: []string{"github.com/fetburner/rokuban/deploy/k8s"}},
+		{name: "k8s e2e overlay config", changed: "deploy/k8s/overlays/e2e/config.yml", want: []string{"github.com/fetburner/rokuban/deploy/k8s"}},
+		{name: "k8s e2e lib script", changed: "deploy/k8s/e2e/lib/env.sh", want: []string{"github.com/fetburner/rokuban/deploy/k8s"}},
+		{name: "s3conformance test file in another package", changed: "internal/encode/s3_conformance_test.go", want: []string{"github.com/fetburner/rokuban/scripts/citest", "github.com/fetburner/rokuban/scripts/s3conformance"}},
+		{name: "citest reads every test file", changed: "internal/api/spec_bounds_test.go", want: []string{"github.com/fetburner/rokuban/scripts/citest", "github.com/fetburner/rokuban/scripts/s3conformance"}},
+		{name: "ruleguard-only directory", changed: "tools/lintrules/rules.go", want: []string{"github.com/fetburner/rokuban/scripts/citest"}},
+		{name: "docs runbook selects nothing", changed: "docs/runbook/k8s.md", want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := selectPackages(root, "", "", false, []string{"./deploy/k8s", "./scripts/citest", "./scripts/s3conformance"}, []string{tt.changed})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("packages for %q = %v, want %v", tt.changed, got, tt.want)
 			}
 		})
 	}

@@ -239,7 +239,7 @@ func (s packageSelection) matchesDeclarations(pkg listedPackage, target bool) (b
 			}
 			s.declarations[filename] = decls
 		}
-		for _, dep := range decls.deps {
+		for _, dep := range slices.Concat(decls.deps, decls.sources) {
 			match, err := s.matchesExtra(dep)
 			if err != nil || match {
 				return match, err
@@ -266,18 +266,19 @@ func (s packageSelection) matchesExtra(dep extraDependency) (bool, error) {
 	if match, ok := s.extraMatches[dep]; ok {
 		return match, nil
 	}
-	graph, err := goList(s.root, dep.tags, "-json=Dir,EmbedPatterns,Module", "-deps", dep.pattern)
+	graph, err := goList(s.root, dep.tags, graphFields, "-deps", dep.pattern)
 	if err != nil {
 		return false, err
 	}
-	match := slices.ContainsFunc(graph, func(pkg listedPackage) bool { return s.selects(pkg, false) })
+	match := slices.ContainsFunc(graph, func(pkg listedPackage) bool { return s.selects(pkg, dep.source) })
 	s.extraMatches[dep] = match
 	return match, nil
 }
 
 // selects は pkg が選定の根拠になるかを返す。変更ファイルが pkg の選定に効くとき、または pkg が
-// 版の変わったモジュールのパッケージのとき。依存グラフの判定（affectedPackage）と ci-extra-deps の
-// 宣言先の判定（matchesExtra）は、どちらもこの述語を使う。片方だけ直す形にしないため。
+// 版の変わったモジュールのパッケージのとき。依存グラフの判定（affectedPackage）と ci-extra-deps・ci-source-deps の
+// 宣言先の判定（matchesExtra）は、どちらもこの述語を使う。片方だけ直す形にしないため。target は pkg を
+// テスト対象として扱い、その _test.go と testdata も数えるかを表す。matchesExtra では ci-source-deps だけが真にする。
 func (s packageSelection) selects(pkg listedPackage, target bool) bool {
 	return s.changed.matches(pkg, target) || pkg.Module != nil && s.modules[pkg.Module.Path]
 }
