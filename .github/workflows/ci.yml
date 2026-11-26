@@ -562,14 +562,14 @@ jobs:
           retention-days: 1
 
   # MySQL の永続化を緩めて起動する。緩めるのはクラッシュ時の永続性だけで、分離・一意制約・ロック待ちは変えない。
-  # 根拠: 17.2（mysql-acid.html）は doublewrite と innodb_flush_log_at_trx_commit を Durability に挙げ、Isolation には autocommit・分離レベル・ロックだけを挙げる。
+  # 根拠（MySQL 9.7 リファレンス）: 17.2（mysql-acid.html）は doublewrite と innodb_flush_log_at_trx_commit を Durability に挙げ、Isolation には autocommit・分離レベル・ロックだけを挙げる。
   # 17.7.3（innodb-locks-set.html）の INSERT ... SELECT のロックの取り方は分離レベルで決まり、バイナリログの有無は条件に挙がらない。
   # --skip-log-bin は 19.1.6.4（replication-options-binary-log.html）: log_bin が OFF になる。
   #   バイナリログが有効なときだけ、関数の作成に追加の条件が掛かり、トリガーにも同じ注意が当てはまる（27.9 Stored Program Binary Logging）。
   #   CI は root で流すので、この差は今も判定していない。切っても失う判定は無い。
   # 効いていなければ緑のまま通るので、テストの前に値を出し、違えば step を失敗させる。
-  # 測定（run 45812879762）: ジョブ 208 秒、test step 167 秒、mysqlstore 141.6 秒、mysqlsource 27.1 秒。
-  # 変更後: 未測定。
+  # 測定（各 3 回の中央値）: test step 200 秒 → 181 秒、mysqlstore 170.7 秒 → 144.9 秒（範囲 165〜172 秒 → 128〜151 秒）。
+  #   mysqlsource は約 27 秒のまま変わらない。変更前は親コミットの main の run 45823453043、変更後はこの変更の PR の run 45825070291。
   mysql-contract-test:
     name: mysql contract test (${{ matrix.mysql }})
     needs: plan
