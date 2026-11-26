@@ -11,7 +11,7 @@
 // mirakc-conformance ジョブが `go list -tags conformance` でパッケージごと実行するので、
 // 関数単位の照合は要らない。
 //
-// 計画（ci.yml の env の S3_CONFORMANCE_PACKAGES。test-matrix が citest に渡す一覧）と step のパッケージ集合の一致も、
+// 計画（ci.yml の env の S3_CONFORMANCE_PACKAGES。plan ジョブの test 計画が citest に渡す一覧）と step のパッケージ集合の一致も、
 // TestS3ConformancePackagesMatchSteps が検査する。
 package s3conformance
 
@@ -70,7 +70,7 @@ func TestEveryS3ConformanceTestHasStep(t *testing.T) {
 	}
 }
 
-// TestS3ConformancePackagesMatchSteps は、計画（ci.yml の env の S3_CONFORMANCE_PACKAGES。test-matrix が
+// TestS3ConformancePackagesMatchSteps は、計画（ci.yml の env の S3_CONFORMANCE_PACKAGES。plan ジョブの test 計画が
 // citest に渡す）と s3-conformance ジョブの step のパッケージ集合が一致することを検査する。
 // 計画に無いパッケージの step は、そのパッケージだけを変えた PR で実行されない。step に無いパッケージは
 // 計画が空振りさせる。どちらも片側だけ直したときに落とす。

@@ -620,7 +620,7 @@ func TestSelectModuleChanges(t *testing.T) {
 	}
 }
 
-// TestBrowserE2EPathFiltersMatchAllPackagesRule は ci.yml の browser-e2e-plan の paths-filter にある
+// TestBrowserE2EPathFiltersMatchAllPackagesRule は ci.yml の plan ジョブの paths-filter にある
 // .github/ 始まりのエントリが、requiresAllPackages が全件にする範囲（githubAllPackagesPaths）と完全一致することを検査する。
 // 両方向のずれ（Go 側の追加・削除と、YAML 側の変更）を落とす。
 func TestBrowserE2EPathFiltersMatchAllPackagesRule(t *testing.T) {
@@ -640,13 +640,13 @@ func TestBrowserE2EPathFiltersMatchAllPackagesRule(t *testing.T) {
 		t.Fatalf("ci.yml を YAML として読めない: %v", err)
 	}
 	var filters string
-	for _, step := range workflow.Jobs["browser-e2e-plan"].Steps {
+	for _, step := range workflow.Jobs["plan"].Steps {
 		if strings.HasPrefix(step.Uses, "dorny/paths-filter@") {
 			filters, _ = step.With["filters"].(string)
 		}
 	}
 	if filters == "" {
-		t.Fatal("browser-e2e-plan に dorny/paths-filter の filters がありません")
+		t.Fatal("plan ジョブに dorny/paths-filter の filters がありません")
 	}
 	// filters 文字列は、フィルタ名から glob の一覧への YAML である。
 	var defined map[string][]string

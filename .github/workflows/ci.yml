@@ -14,7 +14,7 @@ env:
   # runner が片付けるので停止 step が要らず、job.services.rustfs.id で失敗時のログ（docker logs）を取れる。
   RUSTFS_IMAGE: &rustfs_image rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
   # s3-conformance と mysql-contract-test の対象パッケージの一覧。
-  # mysql-contract-test は、test-matrix の計画（citest）と step の両方がこの値を読む。
+  # mysql-contract-test は、plan ジョブの test 計画（citest）と step の両方がこの値を読む。
   # s3-conformance は、計画だけがこの値を読み、step は go test 行に直書きする（scripts/s3conformance が行を解析するため）。
   # 計画の一覧と step の集合の一致は scripts/s3conformance の TestS3ConformancePackagesMatchSteps が検査する。
   S3_CONFORMANCE_PACKAGES: ./internal/objstore/conformance ./internal/objstore/s3store ./internal/storagemaint ./internal/encode ./internal/thumbnail
@@ -29,16 +29,27 @@ on:
   pull_request:
 
 jobs:
-  # PR の変更と citest から browser-e2e の matrix を作る。main の全件実行は冒頭の役割分担に従う。
-  browser-e2e-plan:
+  # 計画ジョブ。browser-e2e・test・mirakc-conformance の 3 つの計画を 1 本にまとめ、checkout・base の fetch・
+  # setup-go を 1 回にする。step id と job の outputs は計画ごとに分ける。
+  # 計画のどれか 1 つでも失敗すると、このジョブは失敗する。3 つの集約ジョブ（browser-e2e・test・mirakc-conformance）は
+  # needs.plan.result が success でなければ赤になる。shard の skip は planned_skip で表し、集約ジョブが判定する。
+  # ubuntu-slim にしない。setup-go と gotestsum のビルドで 24 秒 → 110 秒に延びた。
+  plan:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
-      scripts: ${{ steps.plan.outputs.scripts }}
-      planned_skip: ${{ steps.plan.outputs.planned_skip }}
+      browser_e2e_matrix: ${{ steps.plan-browser-e2e.outputs.matrix }}
+      browser_e2e_scripts: ${{ steps.plan-browser-e2e.outputs.scripts }}
+      browser_e2e_planned_skip: ${{ steps.plan-browser-e2e.outputs.planned_skip }}
+      test_matrix: ${{ steps.plan-test.outputs.matrix }}
+      test_planned_skip: ${{ steps.plan-test.outputs.planned_skip }}
+      run_browser_s3_302: ${{ steps.plan-test.outputs.run_browser_s3_302 }}
+      run_s3_conformance: ${{ steps.plan-test.outputs.run_s3_conformance }}
+      run_mysql_contract: ${{ steps.plan-test.outputs.run_mysql_contract }}
+      mirakc_conformance_matrix: ${{ steps.plan-mirakc-conformance.outputs.matrix }}
+      mirakc_conformance_planned_skip: ${{ steps.plan-mirakc-conformance.outputs.planned_skip }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
@@ -57,16 +68,151 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
-      # 部分選定では citest を実行するため planner に Go が要る。実判定の shard は needs_go で個別に決まる。
+      # test と mirakc-conformance の計画は常に go を実行するので、setup-go は常に実行する。
       - uses: actions/setup-go@v7
-        if: github.event_name == 'pull_request' && steps.changes.outputs.web != 'true'
         with:
           go-version-file: go.mod
-      - id: plan
+      # 追跡済みの web/dist/.gitkeep が go:embed all:dist の置き場を満たすため、go list の前にフロントエンドのビルドは要らない。
+      # test と mirakc-conformance の見積もりはどちらも path: timings で復元する。同じディレクトリへ 2 本を復元すると
+      # 混ざるので、test の分を timings-test へ移してから mirakc-conformance の分を復元する。
+      # actions/cache はキャッシュの version を path から作るため、path を変えると main が保存した分に当たらなくなる。
+      - uses: actions/cache/restore@v6
+        with:
+          path: timings
+          key: go-test-timings-${{ github.run_id }}
+          restore-keys: go-test-timings-
+      - name: Move test timings aside
+        run: mkdir -p timings && mv timings timings-test
+      - uses: actions/cache/restore@v6
+        with:
+          path: timings
+          key: mirakc-conformance-timings-${{ github.run_id }}
+          restore-keys: mirakc-conformance-timings-
+      # PR の変更と citest から browser-e2e の matrix を作る。main の全件実行は冒頭の役割分担に従う。
+      - id: plan-browser-e2e
         env:
           E2E_CI_FULL: ${{ steps.changes.outputs.web == 'true' || github.event_name == 'push' }}
           E2E_CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node web/e2e/run.mjs --ci-plan
+      # 振り分けは直前の main 実行の実測（go-test-timings- のキャッシュ）を見て gotestsum の ci-matrix が
+      # 決める。手で名前を並べると、パッケージが増えるたびに直すことになるため。
+      # 実測が無いパッケージは 0 秒と見積もられる（初回・キャッシュ切れ）。
+      # PR は citest で変更の影響を受けるパッケージだけを選ぶ。main は go list の全件。
+      # 対象が空になるのは PR で変更がテストに影響しないときだけで、その場合は planned_skip を出して
+      # shard を作らず、集約ジョブ test がそれを成功とみなす（mirakc-conformance と同じ形）。
+      # PR の shard 数は選ばれたパッケージの見積もり（main の実測の合計）から決める（scripts/shardcount）。
+      # 1 本の準備は run 45591817397 の実測で 40〜51 秒（job 開始から「Run go test shard」開始まで。
+      # 3 本の値は 49・51・40 秒）。ここでは 50 秒を使う。本数を 1 つ増やすとこの準備分のランナー時間が増える。
+      # shard 内は -p 8 で並行に回るので、実時間は合計 ÷ 約 3 になる（同じ run の shard 1: 合計 540 秒・step 184 秒、
+      # shard 2: 合計 569 秒・step 178 秒。step にはビルドも入る）。そこで並行度 3 を shardcount に渡す。
+      # 縮みが準備以上のときだけ 1 本増やす。結果は合計 300 秒で 2 本、900 秒で 3 本、上限 3 本。
+      # 最長パッケージが実時間の下限になる点は式に入れていない。その分は本数が多い側（従来寄り）に外れる。
+      # 実測の無いパッケージが 1 つでもあれば 3 本にする。重さが分からない見積もりの欠けは、ランナー時間が
+      # 余る側に寄せる（今までの振り分けと同じ）。0 秒と見なして本数を減らすと、待ちが延びる側に外れる。
+      # run_browser_s3_302・run_s3_conformance・run_mysql_contract は、browser-s3-302・s3-conformance・mysql-contract-test の
+      # job レベルの if が読む。それらは skip されても skipped と表示されるだけでマージを止めない（必須でない）。
+      # そのため計画が失敗したときに赤を出すのは、計画の失敗を受ける必須の集約ジョブの役目になる。
+      - id: plan-test
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed="$RUNNER_TEMP/changed.z"
+          changed_lines="$RUNNER_TEMP/changed.txt"
+          packages_file="$RUNNER_TEMP/packages.txt"
+          # 代入で受けるのは、citest などの失敗を set -e で step の失敗にするため。if の中の $(...) では失敗が握り潰される。
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            git diff --name-only -z --no-renames "$BASE_SHA" HEAD > "$changed"
+            tr '\0' '\n' < "$changed" > "$changed_lines"
+            read -r -a s3_pkgs <<< "$S3_CONFORMANCE_PACKAGES"
+            read -r -a mysql_pkgs <<< "$MYSQL_CONTRACT_PACKAGES"
+            streamer=$(go run ./scripts/citest -base "$BASE_SHA" -tags s3conformance ./internal/streamer/conformance < "$changed")
+            s3=$(go run ./scripts/citest -base "$BASE_SHA" -tags s3conformance "${s3_pkgs[@]}" < "$changed")
+            mysql=$(go run ./scripts/citest -base "$BASE_SHA" "${mysql_pkgs[@]}" < "$changed")
+            # web 側の変更は browser-s3-302 だけが使う（web/src/ は使わない。web/dist の build も無い）。
+            web=false
+            if grep -Eq '^(web/e2e/|web/package\.json$|web/pnpm-lock\.yaml$|\.node-version$)' "$changed_lines"; then web=true; fi
+            browser=false
+            if [[ -n "$streamer" || "$web" == true ]]; then browser=true; fi
+            s3_run=false
+            if [[ -n "$s3" ]]; then s3_run=true; fi
+            mysql_run=false
+            if [[ -n "$mysql" ]]; then mysql_run=true; fi
+            go run ./scripts/citest -base "$BASE_SHA" ./... < "$changed" > "$packages_file"
+          else
+            browser=true
+            s3_run=true
+            mysql_run=true
+            go list ./... > "$packages_file"
+          fi
+          {
+            echo "run_browser_s3_302=$browser"
+            echo "run_s3_conformance=$s3_run"
+            echo "run_mysql_contract=$mysql_run"
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ ! -s "$packages_file" ]]; then
+            test "$GITHUB_EVENT_NAME" = pull_request
+            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo 'planned_skip=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            shards=$(go run ./scripts/shardcount --timing-files 'timings-test/*.json' --parallel 3 --setup-sec 50 < "$packages_file")
+            if [[ "$shards" -eq 1 ]]; then
+              # ci-matrix は 2 以上の分割しか受けないので、1 本だけは直接作る。
+              matrix=$(jq -Rsc '{include: [{id: 0, packages: (split("\n") | map(select(. != "")) | join(" ")), description: "0 - all"}]}' < "$packages_file")
+            else
+              matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings-test/*.json' --partitions "$shards" < "$packages_file")
+              # 少数パッケージを割り当てたときに残る空のシャードを除く。
+              matrix=$(jq -ce '.include |= map(select(.packages != "")) | select(.include | length > 0)' <<< "$matrix")
+            fi
+          else
+            matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings-test/*.json' --partitions 3 < "$packages_file")
+          fi
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+      # 冒頭の「PR と main の役割分担」に従う。PR は citest の選定結果、main は go list の全件を
+      # gotestsum ci-matrix に渡し、main の test2json 実測を使って最大 3 シャードへ振り分ける。
+      # PR の本数は見積もり（mirakc-conformance-shard の実測。mirakc-conformance-timings- のキャッシュ）の合計から、
+      # test の計画と同じ式（実効並列度 1、準備 40 秒）で決める。
+      # 実効並列度は 1 なので、合計がそのまま待ち時間になる。線は 80 秒で 2 本、240 秒で 3 本。
+      - id: plan-mirakc-conformance
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          packages_file="$RUNNER_TEMP/conformance-packages.txt"
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            git diff --name-only -z --no-renames "$BASE_SHA" HEAD |
+              go run ./scripts/citest -base "$BASE_SHA" -tags conformance ./internal/mirakc/conformance/... > "$packages_file"
+          else
+            go list -tags conformance ./internal/mirakc/conformance/... > "$packages_file"
+          fi
+          if [[ ! -s "$packages_file" ]]; then
+            test "$GITHUB_EVENT_NAME" = pull_request
+            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo 'planned_skip=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # PR の shard 数は test の計画と同じ式（scripts/shardcount）で決める。shard 内は -p 1 の直列なので
+          # 実効並列度は 1。準備は run 45591817397 の実測で 33・33・40 秒（job 開始から「Run conformance shard」
+          # 開始まで）なので 40 秒を渡す。
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            shards=$(go run ./scripts/shardcount --timing-files 'timings/*.json' --parallel 1 --setup-sec 40 < "$packages_file")
+            if [[ "$shards" -eq 1 ]]; then
+              # ci-matrix は 2 以上の分割しか受けないので、1 本だけは直接作る。
+              matrix=$(jq -Rsc '{include: [{id: 0, packages: (split("\n") | map(select(. != "")) | join(" ")), description: "0 - all"}]}' < "$packages_file")
+            else
+              matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions "$shards" < "$packages_file")
+              # 少数パッケージを割り当てたときに残る空のシャードを除く。
+              matrix=$(jq -ce '.include |= map(select(.packages != "")) | select(.include | length > 0)' <<< "$matrix")
+            fi
+          else
+            matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions 3 < "$packages_file")
+          fi
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   # 必須チェック名 web-test を担い、paths-filter が失敗した場合もチェックを赤にする。
   web-test:
@@ -110,16 +256,16 @@ jobs:
   # 必須チェック名 `browser-e2e` は下の集約ジョブが担う。
   browser-e2e-shard:
     name: browser-e2e-shard (${{ matrix.shard }}/${{ matrix.count }})
-    needs: browser-e2e-plan
-    if: needs.browser-e2e-plan.outputs.planned_skip != 'true'
+    needs: plan
+    if: needs.plan.outputs.browser_e2e_planned_skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.browser-e2e-plan.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.browser_e2e_matrix) }}
     env:
       E2E_URL: http://localhost:40773
-      E2E_SCRIPTS: ${{ needs.browser-e2e-plan.outputs.scripts }}
+      E2E_SCRIPTS: ${{ needs.plan.outputs.browser_e2e_scripts }}
       E2E_SHARD: ${{ matrix.shard }}/${{ matrix.count }}
     steps:
       - uses: actions/checkout@v7
@@ -195,21 +341,21 @@ jobs:
 
   # 必須チェック名 `browser-e2e` を保つ集約ジョブ。skip / cancelled / failure を緑にしない。
   browser-e2e:
-    needs: [browser-e2e-plan, browser-e2e-shard]
+    needs: [plan, browser-e2e-shard]
     if: always()
     runs-on: ubuntu-slim
     steps:
       # 単一の失敗 step に集約し、空や未知の planned_skip も success shard を要求する。
       - name: Validate plan and shard results
-        if: ${{ always() && (needs.browser-e2e-plan.result != 'success' || (needs.browser-e2e-plan.outputs.planned_skip == 'true' && needs.browser-e2e-shard.result != 'skipped') || (needs.browser-e2e-plan.outputs.planned_skip != 'true' && needs.browser-e2e-shard.result != 'success')) }}
+        if: ${{ always() && (needs.plan.result != 'success' || (needs.plan.outputs.browser_e2e_planned_skip == 'true' && needs.browser-e2e-shard.result != 'skipped') || (needs.plan.outputs.browser_e2e_planned_skip != 'true' && needs.browser-e2e-shard.result != 'success')) }}
         run: exit 1
 
   # S3 の 302 と中継を実 Chrome で測る。`browser-e2e` と別ジョブにしている
   # のは、RustFS の固定イメージと実 Chrome（`playwright install chrome`）を用意するため。
   # 実 Safari の測定は macOS のローカルで行い、CI には載せない。
   browser-s3-302:
-    needs: test-matrix
-    if: needs.test-matrix.outputs.run_browser_s3_302 == 'true'
+    needs: plan
+    if: needs.plan.outputs.run_browser_s3_302 == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
@@ -294,120 +440,15 @@ jobs:
   # 約 600 秒）を詰めると、CPU の取り合いで最長パッケージがそのままジョブ長になるため。
   # 分ける軸は所要時間で、ffmpeg の要否ではない。ffmpeg を見るテストは ROKUBAN_REQUIRE_FFMPEG を
   # 見ずに黙って skip するもの（internal/ffargs）があるので、全シャードに ffmpeg を入れる。
-  # 振り分けは直前の main 実行の実測（go-test-timings- のキャッシュ）を見て gotestsum の ci-matrix が
-  # 決める。手で名前を並べると、パッケージが増えるたびに直すことになるため。
-  # 実測が無いパッケージは 0 秒と見積もられる（初回・キャッシュ切れ）。
   # 必須チェック名 `test` は下の集約ジョブが担う。
-  # PR は citest で変更の影響を受けるパッケージだけを選ぶ。main は go list の全件。
-  # 対象が空になるのは PR で変更がテストに影響しないときだけで、その場合は planned_skip を出して
-  # shard を作らず、集約ジョブ test がそれを成功とみなす（mirakc-conformance と同じ形）。
-  # PR の shard 数は選ばれたパッケージの見積もり（main の実測の合計）から決める（scripts/shardcount）。
-  # 1 本の準備は run 45591817397 の実測で 40〜51 秒（job 開始から「Run go test shard」開始まで。
-  # 3 本の値は 49・51・40 秒）。ここでは 50 秒を使う。本数を 1 つ増やすとこの準備分のランナー時間が増える。
-  # shard 内は -p 8 で並行に回るので、実時間は合計 ÷ 約 3 になる（同じ run の shard 1: 合計 540 秒・step 184 秒、
-  # shard 2: 合計 569 秒・step 178 秒。step にはビルドも入る）。そこで並行度 3 を shardcount に渡す。
-  # 縮みが準備以上のときだけ 1 本増やす。結果は合計 300 秒で 2 本、900 秒で 3 本、上限 3 本。
-  # 最長パッケージが実時間の下限になる点は式に入れていない。その分は本数が多い側（従来寄り）に外れる。
-  # 実測の無いパッケージが 1 つでもあれば 3 本にする。重さが分からない見積もりの欠けは、ランナー時間が
-  # 余る側に寄せる（今までの振り分けと同じ）。0 秒と見なして本数を減らすと、待ちが延びる側に外れる。
-  test-matrix:
-    # 全シャードの開始を待たせる。ubuntu-slim では setup-go と gotestsum のビルドで 24s → 110s に伸びた。
-    # 下の run_* は browser-s3-302・s3-conformance・mysql-contract-test の要否。既存の計画ジョブに出力を足すのは、
-    # checkout・base fetch・setup-go が既にあり、新しいジョブを足すと準備が 1 本増えるため。
-    # 3 ジョブは job レベルの if で決まり、skip されても skipped と表示されるだけでマージは止めない（必須でない）。
-    # そのため計画が失敗したときに赤を出すのは、この job の失敗を受ける必須の集約ジョブ test の役目になる。
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
-      planned_skip: ${{ steps.plan.outputs.planned_skip }}
-      run_browser_s3_302: ${{ steps.plan.outputs.run_browser_s3_302 }}
-      run_s3_conformance: ${{ steps.plan.outputs.run_s3_conformance }}
-      run_mysql_contract: ${{ steps.plan.outputs.run_mysql_contract }}
-    steps:
-      - uses: actions/checkout@v7
-      - name: Fetch PR base
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      # 追跡済みの web/dist/.gitkeep が go:embed all:dist の置き場を満たすため、go list の前にフロントエンドのビルドは要らない。
-      - uses: actions/cache/restore@v6
-        with:
-          path: timings
-          key: go-test-timings-${{ github.run_id }}
-          restore-keys: go-test-timings-
-      - id: plan
-        shell: bash
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          changed="$RUNNER_TEMP/changed.z"
-          changed_lines="$RUNNER_TEMP/changed.txt"
-          packages_file="$RUNNER_TEMP/packages.txt"
-          # 代入で受けるのは、citest などの失敗を set -e で step の失敗にするため。if の中の $(...) では失敗が握り潰される。
-          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            git diff --name-only -z --no-renames "$BASE_SHA" HEAD > "$changed"
-            tr '\0' '\n' < "$changed" > "$changed_lines"
-            read -r -a s3_pkgs <<< "$S3_CONFORMANCE_PACKAGES"
-            read -r -a mysql_pkgs <<< "$MYSQL_CONTRACT_PACKAGES"
-            streamer=$(go run ./scripts/citest -base "$BASE_SHA" -tags s3conformance ./internal/streamer/conformance < "$changed")
-            s3=$(go run ./scripts/citest -base "$BASE_SHA" -tags s3conformance "${s3_pkgs[@]}" < "$changed")
-            mysql=$(go run ./scripts/citest -base "$BASE_SHA" "${mysql_pkgs[@]}" < "$changed")
-            # web 側の変更は browser-s3-302 だけが使う（web/src/ は使わない。web/dist の build も無い）。
-            web=false
-            if grep -Eq '^(web/e2e/|web/package\.json$|web/pnpm-lock\.yaml$|\.node-version$)' "$changed_lines"; then web=true; fi
-            browser=false
-            if [[ -n "$streamer" || "$web" == true ]]; then browser=true; fi
-            s3_run=false
-            if [[ -n "$s3" ]]; then s3_run=true; fi
-            mysql_run=false
-            if [[ -n "$mysql" ]]; then mysql_run=true; fi
-            go run ./scripts/citest -base "$BASE_SHA" ./... < "$changed" > "$packages_file"
-          else
-            browser=true
-            s3_run=true
-            mysql_run=true
-            go list ./... > "$packages_file"
-          fi
-          {
-            echo "run_browser_s3_302=$browser"
-            echo "run_s3_conformance=$s3_run"
-            echo "run_mysql_contract=$mysql_run"
-          } >> "$GITHUB_OUTPUT"
-
-          if [[ ! -s "$packages_file" ]]; then
-            test "$GITHUB_EVENT_NAME" = pull_request
-            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
-            echo 'planned_skip=true' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            shards=$(go run ./scripts/shardcount --timing-files 'timings/*.json' --parallel 3 --setup-sec 50 < "$packages_file")
-            if [[ "$shards" -eq 1 ]]; then
-              # ci-matrix は 2 以上の分割しか受けないので、1 本だけは直接作る。
-              matrix=$(jq -Rsc '{include: [{id: 0, packages: (split("\n") | map(select(. != "")) | join(" ")), description: "0 - all"}]}' < "$packages_file")
-            else
-              matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions "$shards" < "$packages_file")
-              # 少数パッケージを割り当てたときに残る空のシャードを除く。
-              matrix=$(jq -ce '.include |= map(select(.packages != "")) | select(.include | length > 0)' <<< "$matrix")
-            fi
-          else
-            matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions 3 < "$packages_file")
-          fi
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-
   test-shard:
     name: test (${{ matrix.description }})
-    needs: test-matrix
-    if: needs.test-matrix.outputs.planned_skip != 'true'
+    needs: plan
+    if: needs.plan.outputs.test_planned_skip != 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.test-matrix.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.test_matrix) }}
     services:
       postgres:
         image: postgres:17
@@ -522,8 +563,8 @@ jobs:
 
   mysql-contract-test:
     name: mysql contract test (${{ matrix.mysql }})
-    needs: test-matrix
-    if: needs.test-matrix.outputs.run_mysql_contract == 'true'
+    needs: plan
+    if: needs.plan.outputs.run_mysql_contract == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -575,14 +616,14 @@ jobs:
   # 必須チェック名 test を保つ集約ジョブ。冒頭の「PR と main の役割分担」に従う。
   # PR は citest の選定結果が空のときだけ shard の skip を成功とし、それ以外の skip / cancelled / failure を緑にしない。
   test:
-    needs: [test-matrix, test-shard]
+    needs: [plan, test-shard]
     if: always()
     runs-on: ubuntu-slim
     steps:
       - shell: bash
         env:
-          PLAN_RESULT: ${{ needs.test-matrix.result }}
-          PLANNED_SKIP: ${{ needs.test-matrix.outputs.planned_skip }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PLANNED_SKIP: ${{ needs.plan.outputs.test_planned_skip }}
           SHARD_RESULT: ${{ needs.test-shard.result }}
         run: |
           test "$PLAN_RESULT" = success
@@ -593,80 +634,18 @@ jobs:
           fi
 
   # rokuban が mirakc に期待する API 挙動を実物のコンテナに対して判定する。
-  # 冒頭の「PR と main の役割分担」に従う。PR は citest の選定結果、main は go list の全件を
-  # gotestsum ci-matrix に渡し、main の test2json 実測を使って最大 3 シャードへ振り分ける。
   # 各病態ケースは独立したパッケージなので、長い EventIDReset / ingest resume / TestRecordLifecycle なども
   # パッケージ単位で分散できる。Postgres は ingestresume がどのシャードへ入っても使えるよう全てに置く。
   # 必須チェック名 `mirakc-conformance` は下の集約ジョブが担う。
-  # PR の本数は見積もり（この job の実測）の合計から、test-matrix と同じ式（実効並列度 1、準備 40 秒）で決める。
-  # 実効並列度は 1 なので、合計がそのまま待ち時間になる。線は 80 秒で 2 本、240 秒で 3 本。
-  mirakc-conformance-matrix:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
-      planned_skip: ${{ steps.plan.outputs.planned_skip }}
-    steps:
-      - uses: actions/checkout@v7
-      - name: Fetch PR base
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: git fetch --no-tags --depth=1 origin "$BASE_SHA"
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-      - run: mkdir -p web/dist && touch web/dist/.keep
-      - uses: actions/cache/restore@v6
-        with:
-          path: timings
-          key: mirakc-conformance-timings-${{ github.run_id }}
-          restore-keys: mirakc-conformance-timings-
-      - id: plan
-        shell: bash
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          packages_file="$RUNNER_TEMP/packages.txt"
-          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            git diff --name-only -z --no-renames "$BASE_SHA" HEAD |
-              go run ./scripts/citest -base "$BASE_SHA" -tags conformance ./internal/mirakc/conformance/... > "$packages_file"
-          else
-            go list -tags conformance ./internal/mirakc/conformance/... > "$packages_file"
-          fi
-          if [[ ! -s "$packages_file" ]]; then
-            test "$GITHUB_EVENT_NAME" = pull_request
-            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
-            echo 'planned_skip=true' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # PR の shard 数は test-matrix と同じ式（scripts/shardcount）で決める。shard 内は -p 1 の直列なので
-          # 実効並列度は 1。準備は run 45591817397 の実測で 33・33・40 秒（job 開始から「Run conformance shard」
-          # 開始まで）なので 40 秒を渡す。
-          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            shards=$(go run ./scripts/shardcount --timing-files 'timings/*.json' --parallel 1 --setup-sec 40 < "$packages_file")
-            if [[ "$shards" -eq 1 ]]; then
-              # ci-matrix は 2 以上の分割しか受けないので、1 本だけは直接作る。
-              matrix=$(jq -Rsc '{include: [{id: 0, packages: (split("\n") | map(select(. != "")) | join(" ")), description: "0 - all"}]}' < "$packages_file")
-            else
-              matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions "$shards" < "$packages_file")
-              # 少数パッケージを割り当てたときに残る空のシャードを除く。
-              matrix=$(jq -ce '.include |= map(select(.packages != "")) | select(.include | length > 0)' <<< "$matrix")
-            fi
-          else
-            matrix=$(go run gotest.tools/gotestsum@v1.13.0 tool ci-matrix --timing-files 'timings/*.json' --partitions 3 < "$packages_file")
-          fi
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
-
   mirakc-conformance-shard:
     name: mirakc-conformance (${{ matrix.description }})
-    needs: mirakc-conformance-matrix
-    if: needs.mirakc-conformance-matrix.outputs.planned_skip != 'true'
+    needs: plan
+    if: needs.plan.outputs.mirakc_conformance_planned_skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 43
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.mirakc-conformance-matrix.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.mirakc_conformance_matrix) }}
     # harness はコンテナ名を t.Name() と PID で一意にする。シャード内のパッケージは -p 1 で直列にし、
     # mirakc コンテナ同時起動による時刻判定の揺れを避ける。並列化はランナーを分ける matrix が担う。
     # -timeout は各パッケージの test binary ごとに掛かる。named wait の積算では
@@ -729,14 +708,14 @@ jobs:
 
   # 必須チェック名 mirakc-conformance を保つ。skip の扱いは冒頭の「PR と main の役割分担」に従う。
   mirakc-conformance:
-    needs: [mirakc-conformance-matrix, mirakc-conformance-shard]
+    needs: [plan, mirakc-conformance-shard]
     if: always()
     runs-on: ubuntu-slim
     steps:
       - shell: bash
         env:
-          PLAN_RESULT: ${{ needs.mirakc-conformance-matrix.result }}
-          PLANNED_SKIP: ${{ needs.mirakc-conformance-matrix.outputs.planned_skip }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          PLANNED_SKIP: ${{ needs.plan.outputs.mirakc_conformance_planned_skip }}
           SHARD_RESULT: ${{ needs.mirakc-conformance-shard.result }}
         run: |
           test "$PLAN_RESULT" = success
@@ -748,8 +727,8 @@ jobs:
 
   # S3 API の互換性をダイジェスト固定した RustFS イメージで検査する。
   s3-conformance:
-    needs: test-matrix
-    if: needs.test-matrix.outputs.run_s3_conformance == 'true'
+    needs: plan
+    if: needs.plan.outputs.run_s3_conformance == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
