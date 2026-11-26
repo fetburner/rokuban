@@ -154,13 +154,15 @@ thumbnail と seek tiles の ffmpeg 出力先は recording ID を接頭辞にし
 
 thumbnail と seek tiles の次世代は、論理行と削除済みを含む copy 履歴の大きい方から採る。古いキーの削除が遅れて完了しても、再公開したキーを消さないためである。
 
-先行 job がすでに `active` の行を commit していた場合や、ffmpeg 実行中に録画が削除され原本が active でなくなった場合、後続 job は公開を飛ばして成功扱いにする。
+先行 job がすでに `active` の行を commit していた場合や、ffmpeg 実行中に録画が削除され原本が active でなくなった場合、後続 job は公開を飛ばして成功扱いにする。先行 job が同じキーを `pending` で予約していれば、commit 前でも後続は公開を飛ばして成功扱いにする。行の無い既存のキー（孤児）には `pending` 行を作らず、上書きもせずに失敗にする。`pending` 行を作ると、回収がその行を基準に、この job が置いていないキーまで消すためである。
 
 FS store 内の staging file は予約 prefix 付きで `List` から隠し、mtime 猶予とエイジングの後に回収する。S3 store の multipart upload は Put の中で完了または abort する。canonical を直接書き換えないため、処理中に配信側が途中の画像を観測しない。
 
 <details><summary>根拠</summary>
 
-- 同じ recording の並行実行で scratch directory を共有しないこと: `TestNewWorkerScratchDirIsUniqueForSameRecording`
+- 同じ recording の並行実行で scratch directory を共有しないこと: `TestNewScratchDirIsUniqueForSameRecording`
+- 先行が予約済みのキーに後から来た試行が成功扱いになること: `TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts`
+- 行の無い既存キーには `pending` 行を作らず、上書きもせずに失敗にすること: `TestObjectPublishFailsOnOrphanKeyWithoutLiveOwner`
 
 </details>
 

@@ -67,6 +67,16 @@ func PublishGeneratedObject(
 	}
 	pending.SizeBytes = size
 	if err := RequireGeneratedObjectKeyAvailable(ctx, objects, pending.RelPath); err != nil {
+		// 相手の公開が先に Put したキーは、相手の pending 行が持っている。Put の no-replace 負けと
+		// 同じなので nil で抜ける（TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts）。
+		// pendingPrepared は自分の行を既に持つので、判定に含めると孤児キーを見逃す（TestObjectPublishFailsOnOrphanKeyWithoutLiveOwner）。
+		live, liveErr := occupantIsLiveCopy(ctx, publisher, pending.RelPath, err, pendingPrepared)
+		if liveErr != nil {
+			return 0, false, liveErr
+		}
+		if live {
+			return 0, false, nil
+		}
 		return 0, false, err
 	}
 	for _, companion := range companions {
@@ -174,6 +184,20 @@ func deleteUnpublishedGeneratedObjects(ctx context.Context, objects objstore.Sto
 		}
 	}
 	return cleanupErr
+}
+
+// occupantIsLiveCopy は、公開前の空き確認が返した checkErr が「キーは既に占有されている」なら、
+// その占有者に生きた行（相手の pending か active）があるかを返す。pendingPrepared なら自分の行を
+// 既に持つので数えてはならない。判定に含めると、自分の行を理由に孤児キーを見逃す。
+func occupantIsLiveCopy(ctx context.Context, publisher store.DerivedMediaPublisher, relPath string, checkErr error, pendingPrepared bool) (bool, error) {
+	if pendingPrepared || !errors.Is(checkErr, objstore.ErrAlreadyExists) {
+		return false, nil
+	}
+	live, err := publisher.HasLiveMediaAssetCopy(ctx, relPath)
+	if err != nil {
+		return false, fmt.Errorf("checking owner of occupied generated object %q: %w", relPath, err)
+	}
+	return live, nil
 }
 
 // RequireGeneratedObjectKeyAvailable は key に既存のオブジェクトがあればエラーを返す。

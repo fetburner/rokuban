@@ -3,11 +3,13 @@ package thumbnail
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -217,80 +220,180 @@ func runSeekTilesJob(t *testing.T, w *SeekTilesWorker, recordingID int64) error 
 	)
 }
 
+// headAfterPutObjectStore は、同じキーへの 4 回目の Head（後から公開に入った試行の Head）を、
+// 先に公開した試行の Put が終わるまで待たせる。2 試行の公開が「片方の Put の後に、
+// もう片方がキーを確かめる」順で重なる窓を固定する。待ちを実際に掛けたかを gated で記録する。
+type headAfterPutObjectStore struct {
+	objstore.Store
+	key     string
+	putDone chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	heads   int
+	gated   bool
+}
+
+// Head は同じキーの呼び出しを数え、4 回目だけ最初の Put の完了まで待ってから内側の Head を呼ぶ。
+// 1・2 回目は nextUnusedSeekTilesRelPath（ffmpeg の前）、3・4 回目は公開時の Head である。
+func (s *headAfterPutObjectStore) Head(ctx context.Context, key string) (objstore.Object, error) {
+	if key == s.key {
+		s.mu.Lock()
+		s.heads++
+		n := s.heads
+		s.mu.Unlock()
+		if n == 4 {
+			select {
+			case <-s.putDone:
+			case <-ctx.Done():
+				return objstore.Object{}, ctx.Err()
+			case <-time.After(10 * time.Second):
+				return objstore.Object{}, fmt.Errorf("first Put of %q did not finish", key)
+			}
+			s.mu.Lock()
+			s.gated = true
+			s.mu.Unlock()
+		}
+	}
+	return s.Store.Head(ctx, key)
+}
+
+// Put は内側の Put が終わった時点で、待っている Head を解放する。
+func (s *headAfterPutObjectStore) Put(ctx context.Context, key string, src io.Reader, size int64, checksum [32]byte, contentType string) error {
+	err := s.Store.Put(ctx, key, src, size, checksum, contentType)
+	if key == s.key {
+		s.once.Do(func() { close(s.putDone) })
+	}
+	return err
+}
+
+// requireOnlyActiveSeekTilesCopy は、録画の seek_tiles のコピー行（削除済みを除く）がちょうど 1 つで、
+// state が active かつ rel_path が want であることを確かめる。pending の残りもここで検出する。
+func requireOnlyActiveSeekTilesCopy(t *testing.T, pool *pgxpool.Pool, recordingID int64, want string) {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `
+		SELECT c.state, c.rel_path FROM media_asset_copies c
+		JOIN media_assets a ON a.id = c.media_asset_id
+		WHERE a.recording_id = $1 AND a.kind = 'seek_tiles' AND c.deleted_at IS NULL`, recordingID)
+	testutil.RequireNoError(t, err, "querying seek_tiles copy rows")
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var state, relPath string
+		testutil.RequireNoError(t, rows.Scan(&state, &relPath), "scanning seek_tiles copy row")
+		got = append(got, state+" "+relPath)
+	}
+	testutil.RequireNoError(t, rows.Err(), "iterating seek_tiles copy rows")
+	if wantRows := []string{"active " + want}; !slices.Equal(got, wantRows) {
+		t.Fatalf("seek_tiles copy rows = %q, want exactly %q", got, wantRows)
+	}
+}
+
+// TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts は、同じ録画の seek tiles を
+// 2 試行が重ねて走らせたとき、どちらも nil で終わり、コピー行がちょうど 1 つ active になることを固定する。
+// 表の 2 行は公開時の Head の順序だけを変える。
+//   - 順序を固定しない: 実際の並びに任せる。
+//   - 2 本目の公開時 Head を 1 本目の Put の後に固定する: ラッパで待たせ、待ちが掛かったことも確かめる。
+//     公開前の Head が、相手が Put を済ませたキーを見つけても失敗にしないことをこの行が固定する。
+//
+// どちらの行も、ffmpeg の出力パスは試行ごとに異なる。
 func TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testing.T) {
 	t.Parallel()
-	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
-	scratchDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
-	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/tiles-overlap.m2ts")
+	for _, tc := range []struct {
+		name       string
+		orderHeads bool
+	}{
+		{name: "unordered", orderHeads: false},
+		{name: "second head after first put", orderHeads: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pool := testutil.SetupDB(t)
+			mediaDir := t.TempDir()
+			scratchDir := t.TempDir()
+			recordingID := dbtest.Recording(t, pool)
+			seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/tiles-overlap.m2ts")
+			wantKey := fmt.Sprintf("thumbnails/%d_tiles.jpg", recordingID)
 
-	paths := make(chan string, 64)
-	release := make(chan struct{})
-	results := make(chan error, 2)
-	w := &SeekTilesWorker{
-		Objects:         testFSObjectStore(mediaDir),
-		ObjectPublisher: pgstoretest.Media(pool),
-		Media:           pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
-		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
-			if strings.Contains(name, "ffprobe") || containsArg(args, "stream=duration") {
-				return []byte("11\n"), nil
+			objects := testFSObjectStore(mediaDir)
+			var gate *headAfterPutObjectStore
+			if tc.orderHeads {
+				gate = &headAfterPutObjectStore{Store: objects, key: wantKey, putDone: make(chan struct{})}
+				objects = gate
 			}
-			if len(args) == 0 {
-				return nil, fmt.Errorf("ffmpeg: no args")
-			}
-			out := args[len(args)-1]
-			paths <- out
-			select {
-			case <-release:
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-			if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
-				return nil, err
-			}
-			return nil, os.WriteFile(out, tinyJPEG, 0o644)
-		},
-	}
 
-	for attempt := 3; attempt <= 4; attempt++ {
-		job := jobs.SeekTilesJobArgs{RecordingID: recordingID}
-		go func(job jobs.SeekTilesJobArgs) {
-			results <- jobqfaketest.RunWorkerOnce(context.Background(), w, job)
-		}(job)
-	}
-
-	gotPaths := make([]string, 0, 2)
-	deadline := time.After(10 * time.Second)
-	pathsTimedOut := false
-	for len(gotPaths) < 2 {
-		select {
-		case path := <-paths:
-			gotPaths = append(gotPaths, path)
-		case <-deadline:
-			pathsTimedOut = true
-		}
-		if pathsTimedOut {
-			break
-		}
-	}
-	close(release)
-
-	for range 2 {
-		select {
-		case err := <-results:
-			if err != nil {
-				t.Errorf("SeekTilesWorker.Work: %v", err)
+			paths := make(chan string, 64)
+			release := make(chan struct{})
+			results := make(chan error, 2)
+			w := &SeekTilesWorker{
+				Objects:         objects,
+				ObjectPublisher: pgstoretest.Media(pool),
+				Media:           pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
+				runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+					if strings.Contains(name, "ffprobe") || containsArg(args, "stream=duration") {
+						return []byte("11\n"), nil
+					}
+					if len(args) == 0 {
+						return nil, fmt.Errorf("ffmpeg: no args")
+					}
+					out := args[len(args)-1]
+					paths <- out
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
+					if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+						return nil, err
+					}
+					return nil, os.WriteFile(out, tinyJPEG, 0o644)
+				},
 			}
-		case <-time.After(10 * time.Second):
-			t.Fatal("overlapping seek-tiles attempts did not finish after ffmpeg was released")
-		}
-	}
-	if len(gotPaths) != 2 {
-		t.Fatalf("ffmpeg output paths = %v, want both overlapping attempts to reach extraction", gotPaths)
-	}
-	if gotPaths[0] == gotPaths[1] {
-		t.Fatalf("overlapping attempts share ffmpeg output path %q", gotPaths[0])
+
+			for range 2 {
+				go func() {
+					results <- jobqfaketest.RunWorkerOnce(context.Background(), w, jobs.SeekTilesJobArgs{RecordingID: recordingID})
+				}()
+			}
+			gotPaths := make([]string, 0, 2)
+			deadline := time.After(10 * time.Second)
+		collect:
+			for len(gotPaths) < 2 {
+				select {
+				case path := <-paths:
+					gotPaths = append(gotPaths, path)
+				case <-deadline:
+					break collect
+				}
+			}
+			// 到達が揃わなくても release で止まった試行を解放し、結果を読み切ってから検査する。
+			close(release)
+
+			for range 2 {
+				select {
+				case err := <-results:
+					if err != nil {
+						t.Errorf("SeekTilesWorker.Work: %v", err)
+					}
+				case <-time.After(15 * time.Second):
+					t.Fatal("overlapping seek-tiles attempts did not finish after ffmpeg was released")
+				}
+			}
+			if len(gotPaths) != 2 {
+				t.Fatalf("ffmpeg reached %d of 2 overlapping attempts", len(gotPaths))
+			}
+			if gotPaths[0] == gotPaths[1] {
+				t.Fatalf("overlapping attempts share ffmpeg output path %q", gotPaths[0])
+			}
+			if gate != nil {
+				gate.mu.Lock()
+				gated := gate.gated
+				gate.mu.Unlock()
+				if !gated {
+					t.Fatal("the second publish Head did not wait for the first Put, so the ordering this row fixes was not forced")
+				}
+			}
+			requireOnlyActiveSeekTilesCopy(t, pool, recordingID, wantKey)
+		})
 	}
 }
 
