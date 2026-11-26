@@ -37,8 +37,9 @@
 # 同じ意味にしてある。`available` は全件、`retryable` と `scheduled` は scheduled_at が
 # 来たものだけを数え、lease が有効な `running` は数えない（KEDA の `accurate` 戦略の前提）。
 # 期限前を数えると、長い Snooze の間に空振りの Job が起き続けるので、期限で絞る。
-# 期限が来た retryable の昇格は notifier の常駐 client（JobScheduler）が担うので、
-# one-shot Pod には依存しない。
+# 期限が来た retryable の昇格（River）は notifier の常駐 client（JobScheduler）が担う。
+# asynq では期限が来たタスクを待機列へ戻すのは KEDA が起こした Job の Server であり、
+# 常駐は担わない（internal/jobq/asynqadapter/deliverable.go の doc コメント）。
 #
 # **`rollout.strategy: gradual` は書き忘れてはならない 1 行である。**
 # 省略も `immediate` も、Pod テンプレートの更新で実行中の Job が消える（kind で

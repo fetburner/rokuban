@@ -83,7 +83,7 @@ SQL が 0 行となり、Job の ACTIVE がすべて 0 になったことを確�
 
 retryable・scheduled の行は残したまま進んでよい。同じ DB を引き継ぐ `--all` が、再試行待ちと snooze の待機中のジョブを処理する。
 
-[スケーラの件数と回収](../operations/k8s.md#スケーラの件数と回収) は待機中と再試行待ちを数える。投入元を止めて available・running の行を消化してから削除する順序とし、KEDA の pause 機能や削除時の実行中 Job の扱いは前提にしない。
+[スケーラの件数と回収](../operations/k8s.md#スケーラの件数と回収) は待機中と、期限が来た再試行待ち・予約済みを数える。投入元を止めて available・running の行を消化してから削除する順序とし、KEDA の pause 機能や削除時の実行中 Job の扱いは前提にしない。
 
 #### 残りの常駐ロールと ScaledJob の停止
 

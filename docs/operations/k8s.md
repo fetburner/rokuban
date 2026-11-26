@@ -240,6 +240,14 @@ Work を抜けてから producer が止まるまでの間に次のジョブが f
 
 常駐 client の JobScheduler が `retryable` を昇格させるため、この集合は rescue の正しさを担わない。期限前の `retryable` と `scheduled` を数えないのは、長い Snooze の間に巡回ごとの空振りの Job を起こさないためである。
 
+件数の口は両構成で notifier が公開する。件数を実装する adapter だけが notifier に載る。KEDA は件数を読むだけで DB に繋がない。notifier が止まっている間は、滞留があっても Job は起きない（e2e で 60 秒観測）。クラスタ内の KEDA が直接読むこの口は Host 検査の対象外とする。
+
+<details><summary>根拠</summary>
+
+- HTTP 配線と Host 検査: `TestBuildHTTPServer_QueueCountHostExemption`
+
+</details>
+
 常駐 River client の 1 つは notifier Deployment に置く。notifier は常時起動し、api でなく、site にも束縛されない。全 kind の worker を登録し、Start に必要な実キューとして site 非依存で DB 完結の `ruler` だけを購読する。
 
 JobRescuer と JobScheduler は leader だけが動かす。`river.Config.LeaderElectionDisabled` の doc も、stuck job rescue を leader 側の仕事として書いている。
@@ -308,28 +316,14 @@ River 構成では、実行中のまま死んだジョブが回収されるま�
 
 </details>
 
-#### 配送可能件数と回収
+#### asynq の配送可能件数と回収
 
-両構成で、常駐 notifier の HTTP ハンドラが物理キューごとの配送可能件数を返し、KEDA の metrics-api トリガが読む。KEDA が起こした Job の Server は、購読するキューで期限が来たタスクの昇格と孤児の回収を担う。回収可能になるまでの猶予中に起きた Job は、空振りで終わりうる。
+asynq 構成では、KEDA が起こした Job の Server が、購読するキューで期限が来たタスクの待機列への昇格と、孤児の実行中の回収を担う。回収可能になるまでの猶予中に起きた Job は、空振りで終わりうる。
 
-待機中、期限が来た再試行待ちと予約済み、孤児の実行中を数える。lease が有効な実行中タスクは数えない。KEDA の accurate 戦略は実行中を件数に含めない前提である。
+件数は待機中、期限が来た再試行待ちと予約済み、孤児の実行中を数える。lease が有効な実行中タスクは数えない。期限前の再試行待ちと予約済みは数えない（Snooze 中に空振りの Job を起こさないため）。
 
-期限前の再試行待ちと予約済みタスクは数えない。Snooze 中に数えると、KEDA の巡回ごとに空振りの Job が起き続けるためである。
+notifier の常駐 worker は ruler のヒントを即座に引くために残す。外すと反映が ruler の pollingInterval に縛られ、判定 1.8 が閾値を超える。watcher の常駐 worker は両エンジンでサイトごとの reconciler を引くために残す。
 
-件数を出す notifier が止まっている間は、滞留があっても Job は起きない（e2e で 60 秒観測）。復旧後は件数が読め、Job が起きて消化する。
-
-asynq 構成でも notifier の常駐 worker が ruler のヒントを即座に引く（River と同じ経路）。これを外すと反映は ruler の pollingInterval に縛られ、e2e で約 10 秒かかり、判定 1.8 が閾値 3 秒を超える。
-
-asynq 構成でも notifier の常駐 worker は残す（base の `--roles notifier,worker --queues ruler` のまま）。ScaledJob の ruler は、常駐が取り切れなかった分の余剰容量として働く。watcher の常駐 worker は、両エンジンでサイトごとの reconciler を引くために残す。定期投入は引き続き CronJob が担う。トリガは base / site / store が持ち、両構成で同じである。名前空間が既定でない overlay（`overlays/e2e`・`overlays/e2e-two-stores`）だけが URL を差し替える。配置の理由は [deploy/k8s/README.md](../../deploy/k8s/README.md) §asynq 構成にある。
-
-件数パスは両構成で公開する。件数を実装する adapter だけが notifier に載る。クラスタ内の KEDA が直接読む件数パスは Host 検査の対象外とする。
-
-
-<details><summary>根拠</summary>
-
-- HTTP 配線と Host 検査: `TestBuildHTTPServer_QueueCountHostExemption`
-
-</details>
 
 #### キューは argv で絞る
 

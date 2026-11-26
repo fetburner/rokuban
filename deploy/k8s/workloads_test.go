@@ -466,6 +466,10 @@ func triggerURL(t *testing.T, w workload) string {
 	if got := strAt(tr, "metadata", "valueLocation"); got != "value" {
 		t.Errorf("%s valueLocation = %q, want \"value\"", w.id(), got)
 	}
+	// accurate 戦略で 1 Job = 1 アイテムになるのは targetValue が 1 のときだけ。
+	if got := strAt(tr, "metadata", "targetValue"); got != "1" {
+		t.Errorf("%s targetValue = %q, want \"1\" (accurate scaling starts one Job per item only at 1)", w.id(), got)
+	}
 	return strAt(tr, "metadata", "url")
 }
 
