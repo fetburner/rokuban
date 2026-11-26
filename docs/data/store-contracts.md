@@ -48,7 +48,7 @@ River の `InsertTx` のように同じ tx でジョブを投入すると、DB �
 
 一意違反・排他制約違反は `ErrConflict`、対象が無いときは `ErrNotFound` に写す。DB 固有のエラーコードや `pgx.ErrNoRows` を呼び出し側へ漏らすと、別の実装が同じ契約を満たせなくなる。
 
-MySQL の `RETURNING` は使わず、書き込み後に同じ tx で必要な値を読み直す。`ON DUPLICATE KEY UPDATE` はどの一意キーの衝突でも発火するため、upsert で狙うキーのほかに一意キーがある表では使わない。
+MySQL の `RETURNING` は使わず、書き込み後に同じ tx で必要な値を読み直す。`ON DUPLICATE KEY UPDATE` はどの一意キーの衝突でも発火するため、upsert で狙うキーのほかに一意キーがある表では使わない。MySQL の影響行数は値が変わった行だけを数えるので、lease や世代の判定は影響行数ではなく、`FOR UPDATE` で読んだ行の値で行う（同じ値の再保存が 0 行になるため）。
 
 ### 述語の置き場
 
