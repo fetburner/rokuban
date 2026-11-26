@@ -172,9 +172,10 @@ VALUES ($1, 'h264', '{[0,60000)}'::int8multirange)`, recordingID); err != nil {
 	}
 }
 
-// 置き場を限定しない読み手（api）は、複数の置き場に active コピーがあれば store 名順で先頭の 1 件を選ぶ。
-// deleting のコピーは候補に入らない。設定済みの置き場を持つ読み手はその置き場のコピーを選ぶ。
-func TestMediaReadersPickActiveCopyDeterministically(t *testing.T) {
+// TestPreferredActiveMediaAssetCopyFunction は、Postgres の関数 preferred_active_media_asset_copy が
+// 置き場名順で先頭の active コピーを 1 件返し、deleting を候補にしないことを名前で直接読む。
+// 配信の読み手の選び方は contracttest の runServingCopySelection が見る。
+func TestPreferredActiveMediaAssetCopyFunction(t *testing.T) {
 	ctx := context.Background()
 	env := newStoreScopeEnv(t)
 	rec := env.recording(t)
@@ -186,7 +187,6 @@ func TestMediaReadersPickActiveCopyDeterministically(t *testing.T) {
 		store.AssetKindSeekTiles: env.asset(t, rec, store.AssetKindSeekTiles, nil),
 	}
 	for kind, id := range kinds {
-		// dbtest が作る test-store の active コピーに、先頭になる置き場の deleting と active を足す。
 		for _, c := range []struct{ store, state string }{{"a-store", "deleting"}, {"b-store", "active"}, {"z-store", "active"}} {
 			if _, err := sqlcgen.New(env.pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
 				MediaAssetID: id, Store: c.store, RelPath: fmt.Sprintf("sites/default/pick/%s-%s", kind, c.store), State: c.state,
@@ -202,27 +202,6 @@ func TestMediaReadersPickActiveCopyDeterministically(t *testing.T) {
 	}
 	if n != 1 || first != "b-store" {
 		t.Fatalf("preferred_active_media_asset_copy returned %d rows (first store %q), want exactly the b-store copy", n, first)
-	}
-	api := testMedia(env.pool, "", "")
-	readers := map[string]func(*Media) (store.MediaAsset, error){
-		"original":      func(m *Media) (store.MediaAsset, error) { return m.GetOriginalMediaAssetForServing(ctx, rec) },
-		"active origin": func(m *Media) (store.MediaAsset, error) { return m.GetActiveOriginalMediaAsset(ctx, rec) },
-		"encoded":       func(m *Media) (store.MediaAsset, error) { return m.GetEncodedMediaAssetForServing(ctx, rec, profile) },
-		"thumbnail":     func(m *Media) (store.MediaAsset, error) { return m.GetThumbnailMediaAssetForServing(ctx, rec) },
-		"seek tiles":    func(m *Media) (store.MediaAsset, error) { return m.GetSeekTilesMediaAssetForServing(ctx, rec) },
-	}
-	for name, read := range readers {
-		got, err := read(api)
-		if err != nil {
-			t.Fatalf("%s without a configured store: %v", name, err)
-		}
-		if got.Store != "b-store" {
-			t.Errorf("%s without a configured store picked %q, want b-store (first active copy by store name; a-store is deleting)", name, got.Store)
-		}
-		got, err = read(testMedia(env.pool, "z-store", ""))
-		if err != nil || got.Store != "z-store" {
-			t.Errorf("%s with z-store = (%+v, %v), want the z-store copy", name, got, err)
-		}
 	}
 }
 
