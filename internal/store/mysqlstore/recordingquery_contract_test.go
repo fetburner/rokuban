@@ -18,6 +18,7 @@ import (
 const recordingQueryContractStore = "recording-query-store"
 
 func TestRecordingQueryContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunRecordingQuery(t, func(t *testing.T) contracttest.RecordingQueryFixture {
 		db := mysqltest.SetupDB(t)
 		ctx := context.Background()

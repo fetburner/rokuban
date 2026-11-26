@@ -18,6 +18,7 @@ import (
 var mediaContractEventSeq atomic.Int32
 
 func TestMediaPublishContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunMediaPublish(t, newMediaContractFixture)
 }
 

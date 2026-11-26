@@ -24,6 +24,7 @@ func countNotifications(t *testing.T, db *sql.DB) int {
 }
 
 func TestNotifyTopicWritesRow(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	if err := NotifyTopic(context.Background(), db, "recordings"); err != nil {
 		t.Fatalf("NotifyTopic: %v", err)
@@ -40,6 +41,7 @@ func TestNotifyTopicWritesRow(t *testing.T) {
 // TestNotifyTopicRollsBackWithTransaction は、通知がデータと同じ tx に入ることを検査する。
 // tx の commit を外して auto-commit で書く変異は、rollback 後の行数で落ちる。
 func TestNotifyTopicRollsBackWithTransaction(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	ctx := context.Background()
 	err := runTx(ctx, db, func(tx *sql.Tx) error {
@@ -57,6 +59,7 @@ func TestNotifyTopicRollsBackWithTransaction(t *testing.T) {
 }
 
 func TestNotifyTopicRejectsOversizedPayload(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	err := NotifyTopic(context.Background(), db, strings.Repeat("a", maxNotificationBytes+1))
 	if err == nil {
@@ -70,6 +73,7 @@ func TestNotifyTopicRejectsOversizedPayload(t *testing.T) {
 // TestCircuitBreakerTriggersNotify は、circuit_breakers の INSERT・UPDATE・DELETE それぞれが
 // "breakers" を 1 行ずつ書くことを検査する。3 本のうち 1 本を外すと、対応する操作の行数で落ちる。
 func TestCircuitBreakerTriggersNotify(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	ctx := context.Background()
 	breakers := NewBreakers(db)
@@ -105,6 +109,7 @@ func TestCircuitBreakerTriggersNotify(t *testing.T) {
 // TestPruneNotificationsRemovesOnlyOldRows は、掃除が保持期間より古い行だけを消すことを検査する。
 // created_at を明示して、保持期間より十分古い行と十分新しい行を入れる（時刻の境界には頼らない）。
 func TestPruneNotificationsRemovesOnlyOldRows(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	ctx := context.Background()
 	old := NotificationRetention * 2
@@ -137,6 +142,7 @@ func TestPruneNotificationsRemovesOnlyOldRows(t *testing.T) {
 
 // TestReservationTriggersNotify は、各 DML の通知と rollback 時の取り消しを検査する。
 func TestReservationTriggersNotify(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		table, topic, insert, update, delete string
 	}{
@@ -218,6 +224,7 @@ func TestReservationTriggersNotify(t *testing.T) {
 // TestRecordingIngestProgressUpdateWithoutGenerationDoesNotNotify は、temp_generation を変えない UPDATE
 // （written_bytes だけの進捗）が通知を残さないことを検査する。表の行には書けない条件なので別に置く。
 func TestRecordingIngestProgressUpdateWithoutGenerationDoesNotNotify(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	p := seedReservationProgram(t, db, "progress fixture", contracttest.ReservationProgramOptions{Snapshot: true})
 	rule := fixtureID(t, execFixture(t, db, "INSERT INTO rules (name) VALUES ('progress fixture')"))
@@ -234,6 +241,7 @@ VALUES (?, 10, 'sites/x/.rokuban-ingest', 1, 'test-store')`, recordingID)
 
 // TestSnapshotPruneNotifiesCascadedDeletes は、GC で消える 3 つの子行に対応する通知を検査する。
 func TestSnapshotPruneNotifiesCascadedDeletes(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	ctx := t.Context()
 	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
@@ -256,6 +264,7 @@ func TestSnapshotPruneNotifiesCascadedDeletes(t *testing.T) {
 
 // TestApplyPassNotifiesOnlyChangedReservations は、予約を変えた行だけに通知が出ることを検査する。
 func TestApplyPassNotifiesOnlyChangedReservations(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	ctx := t.Context()
 	reservations := NewReservations(db)

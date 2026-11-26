@@ -12,6 +12,7 @@ import (
 )
 
 func TestTunersContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunTuners(t, func(t *testing.T) contracttest.TunerFixture {
 		db := mysqltest.SetupDB(t)
 		tuners := NewTuners(db)

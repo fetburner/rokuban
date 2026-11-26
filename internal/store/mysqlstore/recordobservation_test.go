@@ -14,6 +14,7 @@ import (
 // スナップショットから書くことを、値がある場合と無い場合の両方で検査する。
 // MySQL では両方とも生成列でなくアプリが書くので、書き忘れると既定値（NULL・'[]'）のまま残る。
 func TestRecordingDerivedColumnsFollowSnapshot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name      string

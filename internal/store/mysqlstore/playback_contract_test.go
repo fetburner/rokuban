@@ -12,6 +12,7 @@ import (
 )
 
 func TestPlaybackStateContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunPlayback(t, func(t *testing.T) contracttest.PlaybackFixture {
 		db := mysqltest.SetupDB(t)
 		var eventSequence atomic.Int32

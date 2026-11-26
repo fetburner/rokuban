@@ -12,6 +12,7 @@ import (
 )
 
 func TestScheduleSyncContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunScheduleSync(t, func(t *testing.T) contracttest.ScheduleSyncFixture {
 		db := mysqltest.SetupDB(t)
 		s := NewScheduleSync(db)

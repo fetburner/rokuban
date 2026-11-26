@@ -14,6 +14,7 @@ import (
 )
 
 func TestRecordObservationsContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunRecordObservations(t, func(t *testing.T) contracttest.RecordObservationFixture {
 		db := mysqltest.SetupDB(t)
 		reservations := NewReservations(db)

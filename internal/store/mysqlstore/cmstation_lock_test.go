@@ -13,6 +13,7 @@ import (
 // 先の tx が行を作ったまま commit しないとき、後の tx の INSERT は待ち、commit 後に重複として更新に回って成功する。
 // ON DUPLICATE KEY UPDATE を外すと後の tx は重複キーで失敗する。
 func TestCMStationLockRowCreatedConcurrently(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	ctx := context.Background()
 	station := store.CMStationRef{NetworkID: 32678, ServiceID: 5168}

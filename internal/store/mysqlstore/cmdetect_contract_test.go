@@ -17,6 +17,7 @@ import (
 var cmDetectionContractStation = store.CMStationRef{NetworkID: 32678, ServiceID: 5168}
 
 func TestCMDetectionContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunCMDetection(t, func(t *testing.T) contracttest.CMDetectionFixture {
 		db := mysqltest.SetupDB(t)
 		analysis := NewAnalysis(db, cmStationContractStoreName)
@@ -140,6 +141,7 @@ WHERE asset.recording_id = ? AND asset.kind = 'original' AND copy.store = ?`, re
 // TestCMDetectionBeginAttemptFirstRowRace は、行の無い録画への並行する初回の開始が、先に入った行の commit を待ってから
 // 既存の行として扱われ、エラーにならないことを確かめる。先の開始の挿入は、開始と同じ文を保持した tx で再現する。
 func TestCMDetectionBeginAttemptFirstRowRace(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	ctx := context.Background()
 	id := insertCMDetectionRecording(t, db, 1, "active")

@@ -81,6 +81,7 @@ func expectNoTopic(t *testing.T, sub <-chan string) {
 // TestCircuitBreakerTriggersReachHub は、circuit_breakers の 3 操作がそれぞれ
 // breakers のイベントとして EventHub に届くことを検査する。
 func TestCircuitBreakerTriggersReachHub(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	sub := startHub(t, db)
 	ctx := context.Background()
@@ -103,6 +104,7 @@ func TestCircuitBreakerTriggersReachHub(t *testing.T) {
 // TestRolledBackNotifyDoesNotReachHub は、rollback した tx の NotifyTopic が届かないことを検査する。
 // 後から届いた rules が、先に書かれて rollback された recordings より前に来ないことを見る。
 func TestRolledBackNotifyDoesNotReachHub(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	sub := startHub(t, db)
 	ctx := context.Background()
@@ -131,6 +133,7 @@ func TestRolledBackNotifyDoesNotReachHub(t *testing.T) {
 // B が届いてから A をコミットし、A の "recordings" が遡る時間の中で届くことを見る。
 // 「最後に読んだ id より後」で読む実装は、A を飛ばして落ちる。
 func TestOutOfOrderCommitIsDelivered(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	sub := startHub(t, db)
 	ctx := context.Background()
@@ -163,6 +166,7 @@ func TestOutOfOrderCommitIsDelivered(t *testing.T) {
 
 // TestSentRowsAreNotResent は、遡る時間の中の行が読み直しで再送されないことを検査する。
 func TestSentRowsAreNotResent(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	sub := startHub(t, db)
 	if err := mysqlstore.NotifyTopic(context.Background(), db, "rules"); err != nil {
@@ -174,6 +178,7 @@ func TestSentRowsAreNotResent(t *testing.T) {
 
 // TestTwoReplicasReceiveSameEvent は、2 つの notifier レプリカが同じ通知を両方受けることを検査する。
 func TestTwoReplicasReceiveSameEvent(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	subA := startHub(t, db)
 	subB := startHub(t, db)
@@ -186,6 +191,7 @@ func TestTwoReplicasReceiveSameEvent(t *testing.T) {
 
 // TestStartupDoesNotReplayExistingRows は、起動前の行を既読にして配り直さないことを検査する。
 func TestStartupDoesNotReplayExistingRows(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	ctx := context.Background()
 	if err := mysqlstore.NotifyTopic(ctx, db, "rules"); err != nil {
@@ -202,6 +208,7 @@ func TestStartupDoesNotReplayExistingRows(t *testing.T) {
 // TestEncodeProgressCoalescesByRecordingAndProfile は、MySQL 構成でも進捗が
 // recording と profile の単位で合流し、最新の値だけが届くことを検査する。
 func TestEncodeProgressCoalescesByRecordingAndProfile(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	sub := startHub(t, db)
 	ctx := context.Background()

@@ -15,6 +15,7 @@ import (
 )
 
 func TestReservationsContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunReservations(t, func(t *testing.T) contracttest.ReservationsFixture {
 		db := mysqltest.SetupDB(t)
 		reservations := NewReservations(db)

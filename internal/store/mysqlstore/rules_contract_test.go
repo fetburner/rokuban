@@ -14,6 +14,7 @@ import (
 )
 
 func TestRulesContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunRules(t, func(t *testing.T) contracttest.RulesFixture {
 		db := mysqltest.SetupDB(t)
 		allSites := []string{"rev-a", "rev-b", "rev-c"}
@@ -107,6 +108,7 @@ VALUES (?, 'rule', 'rules-contract', 1, 1, 1, 'store contract', 'GR', '27', 'rec
 // TestRuleDeleteNotifiesRecordings は、録画の参照を外す更新が recordings の通知を出すことを確かめる。
 // FK の ON DELETE SET NULL だけでは参照は外れるが、トリガーが発火せず通知が出ない。
 func TestRuleDeleteNotifiesRecordings(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	ctx := context.Background()
 	rules := NewRules(db, []string{"rules-contract"})

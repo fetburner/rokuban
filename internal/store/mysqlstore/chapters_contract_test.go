@@ -13,6 +13,7 @@ import (
 )
 
 func TestChapterEditsContract(t *testing.T) {
+	t.Parallel()
 	contracttest.Run(t, func(t *testing.T) contracttest.Fixture {
 		db := mysqltest.SetupDB(t)
 		var eventSequence atomic.Int32

@@ -23,6 +23,7 @@ var databaseSequence atomic.Uint64
 
 // SetupDB はテスト専用 DB を作り、MySQL 用の初期 migration を適用する。
 // テスト終了時に DB を削除する。DSN はサーバーを指し、テスト自身は変更しない。
+// テストごとに DB を分けるので、呼び出し元の t.Parallel と両立する。
 func SetupDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := TestDSN(t)

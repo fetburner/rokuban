@@ -16,6 +16,7 @@ import (
 var trashContractEventSeq atomic.Int32
 
 func TestRecordingTrashContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunTrash(t, func(t *testing.T) contracttest.TrashFixture {
 		db := mysqltest.SetupDB(t)
 		return contracttest.TrashFixture{

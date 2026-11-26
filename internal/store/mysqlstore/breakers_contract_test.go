@@ -13,6 +13,7 @@ import (
 )
 
 func TestBreakersContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunBreakers(t, func(t *testing.T) contracttest.BreakersFixture {
 		s := NewBreakers(mysqltest.SetupDB(t))
 		return contracttest.BreakersFixture{Breakers: s, Admin: s}
@@ -22,6 +23,7 @@ func TestBreakersContract(t *testing.T) {
 // TestRunTxRollsBackAfterStatementFailure は rollback を外す変異を検出する。
 // 別の tx の INSERT がロック待ちタイムアウトで失敗し、後始末では保持中の tx を rollback して DB 削除を待たせない。
 func TestRunTxRollsBackAfterStatementFailure(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	db.SetMaxOpenConns(2)
 	if _, err := db.ExecContext(context.Background(), `CREATE TABLE tx_rollback_probe (id INT PRIMARY KEY) ENGINE=InnoDB`); err != nil {
@@ -79,6 +81,7 @@ func TestRunTxRollsBackAfterStatementFailure(t *testing.T) {
 }
 
 func TestRunTxMapsUniqueViolationToConflict(t *testing.T) {
+	t.Parallel()
 	db := mysqltest.SetupDB(t)
 	if _, err := db.ExecContext(context.Background(), `CREATE TABLE tx_unique_probe (id INT PRIMARY KEY)`); err != nil {
 		t.Fatalf("creating unique probe table: %v", err)

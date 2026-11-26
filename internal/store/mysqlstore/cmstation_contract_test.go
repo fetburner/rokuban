@@ -16,6 +16,7 @@ import (
 const cmStationContractStoreName = "test-store"
 
 func TestCMStationContract(t *testing.T) {
+	t.Parallel()
 	contracttest.RunCMStation(t, func(t *testing.T) contracttest.CMStationFixture {
 		db := mysqltest.SetupDB(t)
 		var eventSequence atomic.Int32
