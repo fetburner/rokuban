@@ -25,7 +25,6 @@ var mediaContractEventID atomic.Int32
 func TestMediaStoreContract(t *testing.T) {
 	contracttest.RunMedia(t, newMediaStoreContractFixture)
 	contracttest.RunMediaIngestAndTransfer(t, newMediaStoreContractFixture)
-	contracttest.RunMediaServingSelection(t, newMediaStoreContractFixture)
 	contracttest.RunMediaPublish(t, newMediaStoreContractFixture)
 }
 
@@ -239,6 +238,7 @@ WHERE media_asset_id = $2`, state, id); err != nil {
 	configureMediaObservationFixture(t, pool, &fixture)
 	configureMediaStorageFixture(t, pool, &fixture)
 	configureMediaRoutingFixture(pool, &fixture)
+	configureMediaCopyRowsFixture(pool, &fixture)
 	return fixture
 }
 
@@ -468,6 +468,16 @@ VALUES ($1, $2, $3, $4)`, assetID, position.ByteOffset, position.Pid, position.E
 				t.Fatalf("encode progress notification type = %q; want %q", event.Type, serverevent.EncodeProgressEventType)
 			}
 			return store.EncodeProgress{RecordingID: event.RecordingID, Profile: event.Profile, Progress: event.Progress}
+		}
+	}
+}
+
+// configureMediaCopyRowsFixture は物理コピーの行を直接書き換えるフックを足す。
+func configureMediaCopyRowsFixture(pool *pgxpool.Pool, fixture *contracttest.MediaFixture) {
+	fixture.DeleteCopy = func(t *testing.T, copyID int64) {
+		t.Helper()
+		if _, err := pool.Exec(t.Context(), `DELETE FROM media_asset_copies WHERE id = $1`, copyID); err != nil {
+			t.Fatalf("deleting copy %d: %v", copyID, err)
 		}
 	}
 }

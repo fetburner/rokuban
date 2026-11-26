@@ -57,18 +57,17 @@ LIMIT 1`, relPath, nullableString(s.storeName), nullableString(s.storeName)).Sca
 	return recordingID, nil
 }
 
-// ListEncodeQueue は現在の設定で未生成の encoded と実行状態を返す。pgstore の ListEncodeQueue と同じ述語を使う。
+// ListEncodeQueue は現在の設定で未生成の encoded と実行状態を返す。述語は ListMissingEncodeProfiles と同じ断片を引く。
 // 作り直しの側には cut の確認条件を掛けない（押した時点の keep が確認そのもの）。
 func (s *Media) ListEncodeQueue(ctx context.Context, params store.EncodeQueueParams) ([]store.EncodeQueueEntry, error) {
 	known := nonNilProfiles(params.KnownProfiles)
 	cut := nonNilProfiles(params.CutProfiles)
-	knownIn, knownArgs := inSQL("u.profile", known)
-	cutNot, cutNotArgs := notInSQL("u.profile", cut)
+	encodable, encodableArgs := encodableProfileSQL("u.recording_id", "u.profile", known, cut)
 	cutIn, cutInArgs := inSQL("q.profile", cut)
+	exhausted := encodeAttemptsExhaustedSQL("m.recording_id", "m.profile")
 
 	var args []any
-	args = append(args, knownArgs...)
-	args = append(args, cutNotArgs...)
+	args = append(args, encodableArgs...)
 	args = append(args, cutInArgs...)
 	args = append(args, params.AttemptLimit)
 
@@ -76,10 +75,7 @@ func (s *Media) ListEncodeQueue(ctx context.Context, params store.EncodeQueuePar
 WITH pending AS (
     SELECT u.recording_id, u.profile
     FROM unencoded_desired_profiles u
-    JOIN encodable_recordings er ON er.recording_id = u.recording_id
-    WHERE `+knownIn+`
-      AND (`+cutNot+` OR EXISTS (
-          SELECT 1 FROM recording_chapter_ownership o WHERE o.recording_id = u.recording_id))
+    WHERE `+encodable+`
     UNION
     SELECT q.recording_id, q.profile
     FROM unsatisfied_encode_rebuilds q
@@ -92,11 +88,7 @@ SELECT m.recording_id, m.profile,
        ) AS running
 FROM pending m
 JOIN encodable_recordings er ON er.recording_id = m.recording_id
-WHERE NOT EXISTS (
-    SELECT 1 FROM recording_encode_attempts a
-    WHERE a.recording_id = m.recording_id AND a.profile = m.profile
-      AND a.state = 'failed' AND a.attempt_count >= ?
-)
+WHERE NOT `+exhausted+`
 ORDER BY m.recording_id, m.profile`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing encode queue: %w", err)

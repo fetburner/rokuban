@@ -94,7 +94,7 @@ func (s *Media) ListAllMediaAssetRelPaths(ctx context.Context) ([]string, error)
 // UpsertOrphanFile は孤児候補を記録し、既存候補の first_seen を保持する。
 func (s *Media) UpsertOrphanFile(ctx context.Context, relPath string) error {
 	if _, err := s.db.ExecContext(ctx, `
-INSERT INTO orphan_files (store, rel_path) VALUES (?, ?) AS incoming
+INSERT INTO orphan_files (store, rel_path) VALUES (?, ?)
 ON DUPLICATE KEY UPDATE first_seen = first_seen`, s.storeName, relPath); err != nil {
 		return fmt.Errorf("recording orphan path %q: %w", relPath, err)
 	}

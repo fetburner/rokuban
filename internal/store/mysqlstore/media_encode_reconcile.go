@@ -7,6 +7,24 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
+// encodableProfileSQL は Postgres の encodable_profile に当たる述語の SQL 断片と引数を返す。
+// 録画 recCol の profile profCol が known に含まれ、かつ cut に含まれないか、チャプターが確認済み（ownership の行がある）であること。
+// ListMissingEncodeProfiles と ListEncodeQueue が、この断片を引いて同じ判定を共有する。
+func encodableProfileSQL(recCol, profCol string, known, cut []string) (string, []any) {
+	knownIn, knownArgs := inSQL(profCol, known)
+	cutNot, cutNotArgs := notInSQL(profCol, cut)
+	sql := "(" + knownIn + ") AND (" + cutNot + " OR EXISTS (SELECT 1 FROM recording_chapter_ownership o WHERE o.recording_id = " + recCol + "))"
+	return sql, append(knownArgs, cutNotArgs...)
+}
+
+// encodeAttemptsExhaustedSQL は Postgres の encode_attempts_exhausted に当たる述語の SQL 断片を返す。
+// (recCol, profCol) の failed 試行が上限に達したかを表す。引数は上限の 1 つで、呼び出し側が末尾に積む。
+// 否定して使うときは呼び出し側が NOT を付ける。
+func encodeAttemptsExhaustedSQL(recCol, profCol string) string {
+	return "EXISTS (SELECT 1 FROM recording_encode_attempts a WHERE a.recording_id = " + recCol +
+		" AND a.profile = " + profCol + " AND a.state = 'failed' AND a.attempt_count >= ?)"
+}
+
 // ListMissingEncodeProfiles は不足と満たされていない作り直しを合わせた候補をページ単位で返す。
 // 録画は pending の候補のうち recording_id の小さい順に row_limit 件まで。
 // 引数の並びは、CTE の中の ? の出現順に合わせる（rebuilds → missing → 最後の LIMIT）。
@@ -15,15 +33,15 @@ func (s *Media) ListMissingEncodeProfiles(ctx context.Context, params store.Miss
 	cut := nonNilProfiles(params.CutProfiles)
 	rec := nullableRecordingID(params.RecordingID)
 	cutIn, cutArgs := inSQL("q.profile", cut)
-	knownIn, knownArgs := inSQL("u.profile", known)
-	cutNot, cutNotArgs := notInSQL("u.profile", cut)
+	encodable, encodableArgs := encodableProfileSQL("u.recording_id", "u.profile", known, cut)
+	rebuildExhausted := encodeAttemptsExhaustedSQL("q.recording_id", "q.profile")
+	missingExhausted := encodeAttemptsExhaustedSQL("u.recording_id", "u.profile")
 
 	var args []any
 	args = append(args, cutArgs...)
 	args = append(args, params.AfterRecordingID, rec, rec, params.AttemptLimit)
 	args = append(args, params.AfterRecordingID, rec, rec)
-	args = append(args, knownArgs...)
-	args = append(args, cutNotArgs...)
+	args = append(args, encodableArgs...)
 	args = append(args, params.AttemptLimit)
 	args = append(args, params.RowLimit)
 
@@ -35,29 +53,19 @@ WITH rebuilds AS (
     WHERE `+cutIn+`
       AND q.recording_id > ?
       AND (? IS NULL OR q.recording_id = ?)
-      AND NOT EXISTS (
-          SELECT 1 FROM recording_encode_attempts a
-          WHERE a.recording_id = q.recording_id AND a.profile = q.profile
-            AND a.state = 'failed' AND a.attempt_count >= ?
-      )
+      AND NOT `+rebuildExhausted+`
 ), missing AS (
     SELECT u.recording_id, u.profile, CAST(NULL AS JSON) AS requested_keep, FALSE AS is_rebuild, MIN(u.ordinality) AS ord
     FROM unencoded_desired_profiles u
     JOIN encodable_recordings er ON er.recording_id = u.recording_id
     WHERE u.recording_id > ?
       AND (? IS NULL OR u.recording_id = ?)
-      AND `+knownIn+`
-      AND (`+cutNot+` OR EXISTS (
-          SELECT 1 FROM recording_chapter_ownership o WHERE o.recording_id = u.recording_id))
+      AND `+encodable+`
       AND NOT EXISTS (
           SELECT 1 FROM unsatisfied_encode_rebuilds rb
           WHERE rb.recording_id = u.recording_id AND rb.profile = u.profile
       )
-      AND NOT EXISTS (
-          SELECT 1 FROM recording_encode_attempts a
-          WHERE a.recording_id = u.recording_id AND a.profile = u.profile
-            AND a.state = 'failed' AND a.attempt_count >= ?
-      )
+      AND NOT `+missingExhausted+`
     GROUP BY u.recording_id, u.profile
 ), pending AS (
     SELECT * FROM rebuilds

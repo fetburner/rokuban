@@ -75,6 +75,8 @@ type MediaFixture struct {
 	// SetRecordingRemovalTimes は録画の deleted_at・purged_at・superseded_at を指定した値に書く。
 	// nil は NULL にする。
 	SetRecordingRemovalTimes func(t *testing.T, recordingID int64, deletedAt, purgedAt, supersededAt *time.Time)
+	// DeleteCopy は物理コピーの行を消す。論理資産が束縛していない置き場にだけ残る状態を作るために使う。
+	DeleteCopy func(t *testing.T, copyID int64)
 	// AddTombstoneCopy は論理資産に、回収済み（deleted）の物理コピーを指定の世代で作る。
 	AddTombstoneCopy func(t *testing.T, assetID int64, storeName, relPath string, generation int64) int64
 	// SetCopyMissing は物理コピーを実体無しとして記録する（missing=true）、または記録を消す（false）。
@@ -105,6 +107,7 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("encode notify subject includes purged recordings", func(t *testing.T) { runRecordingNotifySubject(t, newFixture) })
 	t.Run("ingest precheck recognizes committed originals in every state", func(t *testing.T) { runHasOriginalMediaAsset(t, newFixture) })
 	t.Run("live rel_path precheck skips tombstones and counts deleting rows", func(t *testing.T) { runLiveMediaAssetRecordingID(t, newFixture) })
+	t.Run("ingest original rel_path reads its own store and prefers active copies", func(t *testing.T) { runIngestOriginalRelPath(t, newFixture) })
 	t.Run("media jobs read active inputs through their contract", func(t *testing.T) { runMediaJobInputs(t, newFixture) })
 	t.Run("encode planning reads asset and request state through its contract", func(t *testing.T) { runMediaEncodePlanning(t, newFixture) })
 	t.Run("encode queue filters desired profiles and attempts", func(t *testing.T) { runEncodeQueue(t, newFixture) })
@@ -117,6 +120,8 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("original serving requires a visible copy in the requested store", func(t *testing.T) { runOriginalServingInStore(t, newFixture) })
 	t.Run("storage observations are scoped by store and root", func(t *testing.T) { runStorageSyncScope(t, newFixture) })
 	t.Run("orphan paths are scoped by store", func(t *testing.T) { runOrphanStoreScope(t, newFixture) })
+	t.Run("active media assets are listed per store", func(t *testing.T) { runActiveMediaAssetsByStore(t, newFixture) })
+	t.Run("missing asset candidates are listed and cleared per store", func(t *testing.T) { runMissingAssetCandidatesByStore(t, newFixture) })
 	t.Run("serving returns only active assets", func(t *testing.T) { runMediaServingActiveOnly(t, newFixture) })
 	t.Run("serving covers thumbnails and seek tiles", func(t *testing.T) { runMediaServingDerived(t, newFixture) })
 	t.Run("recording HLS target shares the committed-original visibility predicate", func(t *testing.T) { runMediaRecordingHLSTarget(t, newFixture) })
@@ -126,8 +131,8 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("namespace guard leaves thumbnails and seek tiles to their own namespace", func(t *testing.T) { runMediaNamespaceDerived(t, newFixture) })
 	t.Run("audit lists every media asset path including reserved namespaces", func(t *testing.T) { runMediaAuditPaths(t, newFixture) })
 	t.Run("orphan ageing compares against the database clock", func(t *testing.T) { runMediaOrphanAgeing(t, newFixture) })
+	t.Run("serving copy selection prefers the first store in name order", func(t *testing.T) { runServingCopySelection(t, newFixture) })
 	t.Run("missing asset ageing compares against the database clock", func(t *testing.T) { runMediaMissingAgeing(t, newFixture) })
-	t.Run("storage observation rows are read and cleared per store", func(t *testing.T) { runStorageObservationRows(t, newFixture) })
 }
 
 // RunMediaIngestAndTransfer は取り込みの保存先の選択・書き手の状態・転送の元の選び方の契約を実行する。
@@ -139,12 +144,6 @@ func RunMediaIngestAndTransfer(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("transfer selects present sources for listing and preparation", func(t *testing.T) { runTransferSourcePresence(t, newFixture) })
 	t.Run("placement pruning requires a present desired copy", func(t *testing.T) { runPlacementPruningPresence(t, newFixture) })
 	t.Run("corrupt derived copy retirement requires a present original", func(t *testing.T) { runCorruptCopyRetirementPresence(t, newFixture) })
-}
-
-// RunMediaServingSelection は配信の読み手がコピーを選ぶ規則の契約を実行する。RunMedia 全体は MySQL の fixture がまだ満たさないので、この主張だけを直接回せるようにしている。
-func RunMediaServingSelection(t *testing.T, newFixture NewMediaFixture) {
-	t.Helper()
-	runServingCopySelection(t, newFixture)
 }
 
 // RunMediaPublish はメディアの公開・準備・回収と in-place 登録の契約を実行する。
@@ -490,6 +489,45 @@ func runRecordingNotifySubject(t *testing.T, newFixture NewMediaFixture) {
 	}
 	if _, err := f.Reconcile.GetRecordingNotifySubject(ctx, int64(1<<63-1)); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetRecordingNotifySubject for missing recording error = %v, want ErrNotFound", err)
+	}
+}
+
+// runIngestOriginalRelPath は転送前確認が束縛した置き場の原本の rel_path を読むことを検査する。
+// 原本が無い、または置き場に無いときは store.ErrNotFound を返す（呼び出し元は置き場に無いと読む）。
+// 同じ置き場に複数あるときは active のコピーを選ぶ。
+func runIngestOriginalRelPath(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := t.Context()
+	if _, err := f.Precheck.GetIngestOriginalRelPath(ctx, f.NewRecording(t)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetIngestOriginalRelPath without an original = %v, want ErrNotFound", err)
+	}
+	for _, state := range []string{"active", "deleting", "deleted"} {
+		recordingID := f.NewRecording(t)
+		relPath := "sites/default/ingest-original-" + state + ".m2ts"
+		f.NewAsset(t, recordingID, "original", nil, relPath, state)
+		got, err := f.Precheck.GetIngestOriginalRelPath(ctx, recordingID)
+		if err != nil || got != relPath {
+			t.Fatalf("GetIngestOriginalRelPath with a %s original = (%q, %v), want (%q, nil)", state, got, err, relPath)
+		}
+	}
+
+	// 原本のコピーが束縛していない置き場にだけある。
+	elsewhere := f.NewRecording(t)
+	elsewhereAsset := f.NewAsset(t, elsewhere, "original", nil, "sites/default/elsewhere-original.m2ts", "active")
+	f.AddCopy(t, elsewhereAsset, "takamatsu", "sites/default/elsewhere-original-takamatsu.m2ts")
+	f.DeleteCopy(t, f.CopyID(t, elsewhereAsset))
+	if got, err := f.Precheck.GetIngestOriginalRelPath(ctx, elsewhere); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetIngestOriginalRelPath with the original only in another store = (%q, %v), want ErrNotFound", got, err)
+	}
+
+	// 同じ置き場に active と deleted のコピーがあるとき、新しいのは deleted で、active を選ぶ。
+	both := f.NewRecording(t)
+	activePath := "sites/default/both-active.m2ts"
+	bothAsset := f.NewAsset(t, both, "original", nil, activePath, "active")
+	f.SetCopyCreatedAt(t, f.CopyID(t, bothAsset), time.Now().Add(-time.Hour))
+	f.AddTombstoneCopy(t, bothAsset, "tokyo", "sites/default/both-deleted.m2ts", 0)
+	if got, err := f.Precheck.GetIngestOriginalRelPath(ctx, both); err != nil || got != activePath {
+		t.Fatalf("GetIngestOriginalRelPath with an older active and a newer deleted copy = (%q, %v), want (%q, nil)", got, err, activePath)
 	}
 }
 
@@ -862,6 +900,7 @@ func runMediaAuditPaths(t *testing.T, newFixture NewMediaFixture) {
 	}
 }
 
+// 経過時間は DB の時計で比べる。ただし、ホストと DB が同じ時計を指す 1 台の環境では、ホストの時計で比べる実装を見分けられない。
 func runMediaOrphanAgeing(t *testing.T, newFixture NewMediaFixture) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -888,6 +927,7 @@ func runMediaOrphanAgeing(t *testing.T, newFixture NewMediaFixture) {
 	}
 }
 
+// 経過時間は DB の時計で比べる。ただし、ホストと DB が同じ時計を指す 1 台の環境では、ホストの時計で比べる実装を見分けられない。
 func runMediaMissingAgeing(t *testing.T, newFixture NewMediaFixture) {
 	f := newFixture(t)
 	ctx := context.Background()

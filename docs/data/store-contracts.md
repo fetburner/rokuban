@@ -264,7 +264,7 @@ ingest の転送前確認は `IngestPrecheck` に分ける。転送前確認が 
 
 MySQL の `media_assets` は NULL のプロファイルを生成列で空文字に写し、録画・種類・プロファイルの組の一意性を通常の一意索引で守る。
 
-MySQL の `orphan_files` は `rel_path` を `LONGTEXT` で持つので、主キーには SHA-256 の生成列 `rel_path_key` を使う。孤児と実体無しの経過時間は、どちらも DB の `NOW(6)` と比べる。エンコード進捗は通知表に 1 行書き、読み手は通知表を読み直す。MySQL には接続に届く通知が無いためである。
+MySQL の `orphan_files` は `rel_path` を `LONGTEXT` で持つので、主キーには SHA-256 の生成列 `rel_path_key` を使う。エンコード進捗は通知表に 1 行書き、読み手は通知表を読み直す。MySQL には接続に届く通知が無いためである。
 
 <details><summary>根拠</summary>
 
