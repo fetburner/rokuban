@@ -277,8 +277,8 @@ func (s packageSelection) matchesExtra(dep extraDependency) (bool, error) {
 
 // selects は pkg が選定の根拠になるかを返す。変更ファイルが pkg の選定に効くとき、または pkg が
 // 版の変わったモジュールのパッケージのとき。依存グラフの判定（affectedPackage）と ci-extra-deps・ci-source-deps の
-// 宣言先の判定（matchesExtra）は、どちらもこの述語を使う。片方だけ直す形にしないため。target は宣言先の
-// _test.go を数えるかで、ci-source-deps（ソースを読む検査）だけが真にする。
+// 宣言先の判定（matchesExtra）は、どちらもこの述語を使う。片方だけ直す形にしないため。target は pkg を
+// テスト対象として扱い、その _test.go と testdata も数えるかを表す。matchesExtra では ci-source-deps だけが真にする。
 func (s packageSelection) selects(pkg listedPackage, target bool) bool {
 	return s.changed.matches(pkg, target) || pkg.Module != nil && s.modules[pkg.Module.Path]
 }

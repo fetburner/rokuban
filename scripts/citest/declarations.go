@@ -12,7 +12,7 @@ import (
 )
 
 // extraDependency は ci-extra-deps（source が false）と ci-source-deps（source が true）の 1 行の 1 パターン。
-// source は宣言先の判定の型（selects の target）を決める。ソースを読む検査は宣言先の _test.go を含めて数える。
+// source は、selects で宣言先をテスト対象（target）として扱うかを決める。ソースを読む検査は宣言先の _test.go も数える。
 type extraDependency struct {
 	tags    string
 	pattern string
@@ -35,15 +35,15 @@ func (d declarations) declaresDeps() bool {
 }
 
 // readDeclarations は .go ファイルの package 節より前の `// ci-extra-deps:`・`// ci-source-deps:`・`// ci-extra-files:` を読む。
-// ci-source-deps は ci-extra-deps と同じ書式で、ソースを読むテストが全パッケージの .go を読む範囲を書く。
-// 判定は宣言先の _test.go を含み、依存先の _test.go を変えたときも選ぶ。go サブプロセスの依存には使わない
-// （依存先の _test.go は依存先自身のテストバイナリにしか入らないので、ci-extra-deps の判定で足りる）。
-// 読む範囲を ci-extra-files のディレクトリ列挙で書かないのは、新しいトップレベルの Go ディレクトリが黙って漏れ、
-// web/ を入れるとフロントエンドだけの PR でも選ぶため。
 // ci-extra-deps の 1 行には任意の -tags=tag1,tag2 と、モジュールルートから go list に渡す空白区切りの
 // パッケージ指定を書く。複数行でサブプロセスごとのタグを表せる。タグの省略はタグ無しを表す。
 // 固定の追加依存が無い場合は `// ci-extra-deps: none` だけを書く。例えば citest の
 // go list の対象は CLI の入力と、そこから辿った宣言で決まる。
+// ci-source-deps は、他のパッケージのソースを読むテストが ci-extra-deps と同じ書式で読む範囲を書く。
+// 宣言先をテスト対象と同じに扱い、宣言先の _test.go と testdata の変更でも選ぶ。go サブプロセスの依存は
+// ci-extra-deps で書く（依存先の _test.go は依存先自身のテストバイナリにしか入らない）。
+// 読む範囲をディレクトリの ci-extra-files で書かないのは、新しいトップレベルの Go ディレクトリが
+// 気づかないうちに漏れ、web/ を並べるとフロントエンドだけの PR でも選ぶため。
 // ci-extra-files は、実行時にパッケージの外のファイルを読むテストが書く。空白区切りの
 // モジュールルートからの相対パスで、ファイルはそのファイルの変更に、ディレクトリは配下のどの変更にも一致する。
 // 一致した変更があるとパッケージを選ぶ。

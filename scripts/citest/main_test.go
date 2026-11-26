@@ -1,8 +1,9 @@
 // ci-source-deps: -tags=conformance,s3conformance,ruleguard ./...
 // 全パッケージの .go（_test.go を含む）を読んで検査するので、ソースを読む宣言にする。
-// タグは、タグ付きのファイルだけで成るディレクトリ（tools/lintrules は ruleguard のみ）を列挙するために並べる。
-// ignore は並べない。並べると、ignore のファイルと同じディレクトリの通常のファイルが別パッケージ（main）として混ざり、go list が失敗する（一時モジュールで確認）。
-// その帰結として、ignore のファイルしか無いディレクトリの変更は選ばれない。
+// タグを並べるのは、タグ付きのファイルしか無いディレクトリ（例: ruleguard だけの tools/lintrules）も列挙させるため。
+// ignore は並べない。ignore のファイルが同じディレクトリの他のファイルと別のパッケージ（生成用の main など）だと、
+// go list が found packages で失敗するため（一時モジュールで確認）。そのため、ignore のファイルしか無い
+// ディレクトリの変更では選ばれない。
 
 package main
 
