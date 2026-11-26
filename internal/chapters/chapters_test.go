@@ -45,6 +45,28 @@ func TestReviewCandidates_GridErrorThresholdBothSigns(t *testing.T) {
 	}
 }
 
+// TestReviewCandidates_GridRequiresCMLabelAndCutOverlap は、15 秒格子の候補が
+// 「:CM に限る」「カット区間に重なる」の両方を満たす要素だけから出ることを固定する。
+func TestReviewCandidates_GridRequiresCMLabelAndCutOverlap(t *testing.T) {
+	cut := []Span{{StartMs: 0, EndMs: FrameToMs(300), Label: LabelCM, Cut: true}}
+	for _, tt := range []struct {
+		name     string
+		elements []CMElement
+	}{
+		{name: "non-CM label inside cut", elements: []CMElement{{StartMs: 0, EndMs: FrameToMs(120), ErrorFrames: 6, Label: ":Sponsor(cut)"}}},
+		{name: "empty label inside cut", elements: []CMElement{{StartMs: 0, EndMs: FrameToMs(120), ErrorFrames: 6, Label: ""}}},
+		// カット区間の外の :CM。カットと重ならないので既知長も立たず、missed_cm も出ない。
+		{name: "CM label outside cut", elements: []CMElement{{StartMs: FrameToMs(500), EndMs: FrameToMs(620), ErrorFrames: 6, Label: ":CM"}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ReviewCandidates(cut, nil, tt.elements)
+			if want := []ReviewCandidate{}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("ReviewCandidates() = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
 func TestReviewCandidates_KnownLengthMatchTolerance(t *testing.T) {
 	cut := []Span{
 		{StartMs: 0, EndMs: FrameToMs(400), Label: LabelCM, Cut: true},
