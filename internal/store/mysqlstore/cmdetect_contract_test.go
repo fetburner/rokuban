@@ -108,10 +108,10 @@ WHERE network_id = ? AND service_id = ?`,
 					}
 				}
 			},
-			// 録画の行ロックは録画の行の FOR UPDATE で、局のロックは named_locks の 1 行への待ちとして見える。
+			// 録画の行の待ちは、録画の行を FOR UPDATE で取る文として確かめる（待ちの有無だけでは外部キーの検査と区別できない）。
 			WaitForRecordingWriteWait: func(t *testing.T, recordingID int64, name string) {
 				t.Helper()
-				waitLockWaiters(t, db, "recordings", 1)
+				waitForRecordingLockStatement(t, db)
 			},
 			WaitForStationWriteWait: func(t *testing.T, station store.CMStationRef, name string) {
 				t.Helper()
@@ -164,4 +164,37 @@ func insertFixtureRow(t *testing.T, db *sql.DB, query string, args ...any) int64
 		t.Fatalf("reading fixture row ID: %v", err)
 	}
 	return id
+}
+
+// waitForRecordingLockStatement は録画の行で待っている文が、録画の行を FOR UPDATE で取る文であることを確かめる。
+// 録画を親に持つ表への INSERT も外部キーの検査で録画の行を共有ロックして待つため、待ちの有無だけでは
+// 録画の行を取る順序を区別できない。pgstore の waitForCMDetectionRecordingLock が文の内容で同じことを確かめる。
+func waitForRecordingLockStatement(t *testing.T, db *sql.DB) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		var waiting bool
+		if err := db.QueryRowContext(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM performance_schema.data_lock_waits w
+    JOIN performance_schema.data_locks l
+      ON l.ENGINE = w.ENGINE AND l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID
+    JOIN performance_schema.events_statements_current st
+      ON st.THREAD_ID = w.REQUESTING_THREAD_ID
+    WHERE l.OBJECT_SCHEMA = DATABASE() AND l.OBJECT_NAME = 'recordings'
+      AND st.SQL_TEXT LIKE '%FROM recordings%' AND st.SQL_TEXT LIKE '%FOR UPDATE%'
+)`).Scan(&waiting); err != nil {
+			t.Fatalf("checking the recording row lock wait: %v", err)
+		}
+		if waiting {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("no statement waits on a FOR UPDATE of the recording row: %v", ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
