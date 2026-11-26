@@ -27,7 +27,7 @@ kind・kubectl・kustomize と Docker を用意する。DB は使い捨てで立
 - overlay は overlays/asynq（本番形。名前空間は default）。判定ハーネスの形は overlays/e2e-asynq で、E2E_OVERLAY=e2e-asynq を渡す。
 - Secret `rokuban-secrets` に `REDIS_URL`（例: `redis://rokuban-redis.default.svc.cluster.local:6379/0`）を入れる。base は Secret を出荷しないので、供給は環境の仕事である。
 - Postgres は River 構成と同じく要る（asynq でも業務データは Postgres）。`migrate up` は River のスキーマを作らない。
-- 別の名前空間に入れるときは、overlay のトリガの URL（13 本、e2e は 17 本）と REDIS_URL の名前空間を直す。直し漏れると、そのキューだけが黙ってスケールしない。`deploy/k8s/asynq_test.go` は 1 overlay 内の URL が揃っていることは見るが、Secret の値は見ない。
+- 別の名前空間に入れるときは、REDIS_URL のホストをその名前空間の Redis に揃えて直す。
 
 配置の理由と、River 構成との差分は [deploy/k8s/README.md](../../deploy/k8s/README.md) §asynq 構成 にある。
 
@@ -163,6 +163,8 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 
    `curl -fsS http://127.0.0.1:40773/internal/queues/ruler/deliverable-count` が `{"value": n}` を返すこと。旧い版では 200 が返らないので、この確認が手順 1 の完了判定になる。
 2. その後で ScaledJob のマニフェスト（トリガを `metrics-api` にしたもの）を出す。逆にすると、トリガの読み先が無く、件数が読めないので worker が起きない。
+
+   名前空間が `default` でなければ、出す前に全 ScaledJob のトリガの URL のホストを overlay で差し替える。実例は `overlays/e2e` にある。直し漏れると、KEDA は別の名前空間の notifier を読むか解決できず、黙ってスケールしない。
 3. 切り替えた後は KEDA が notifier に依存する。notifier が止まると、滞留があっても worker は起きない。監視には notifier の Ready と件数の応答を入れる。
 4. 切り戻すときは逆順にする（トリガを旧い形に戻してから rokuban を戻す）。`POSTGRES_CONNECTION_STRING` は切り戻しの可能性が無くなってから、`rokuban-secrets` から消す。
 
