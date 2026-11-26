@@ -35,6 +35,11 @@ type TSScanFixture struct {
 	SeedSnapshot            func(t *testing.T, assetID int64, snapshot TSScanSnapshot)
 	BeginAssetStateChange   func(t *testing.T, assetID int64, state string) func()
 	WaitForLockWaiter       func(t *testing.T, operation string)
+	// InPlace と OtherStoreInPlace は、同じ置き場と別の置き場から既存ファイルを登録する。
+	InPlace                 InPlaceRegistrar
+	OtherStoreInPlace       InPlaceRegistrar
+	NewInPlaceOriginalInput func(t *testing.T, relPath string) store.InPlaceInput
+	SetAssetSHA256          func(t *testing.T, assetID int64)
 }
 
 // NewTSScanStore は TS scan 契約の実装とフィクスチャを作る。
@@ -60,6 +65,15 @@ func RunTSScan(t *testing.T, newStore NewTSScanStore) {
 	})
 	t.Run("rolls back statistics and marker after a failed replacement", func(t *testing.T) {
 		runTSScanReplacementRollback(t, newStore)
+	})
+	t.Run("in-place registration of an original discards its scan only when the content changes", func(t *testing.T) {
+		runTSScanInPlaceInvalidation(t, newStore)
+	})
+	t.Run("in-place registration during a scan rejects the stale replacement", func(t *testing.T) {
+		runTSScanInPlaceReplacementInFlight(t, newStore)
+	})
+	t.Run("catalog restore during a scan rejects the stale replacement", func(t *testing.T) {
+		runTSScanCatalogRestoreInFlight(t, newStore)
 	})
 }
 

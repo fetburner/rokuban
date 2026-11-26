@@ -21,8 +21,9 @@ func TestTSScanStoreContract(t *testing.T) {
 func newTSScanContractFixture(t *testing.T) contracttest.TSScanFixture {
 	t.Helper()
 	pool := testutil.SetupDB(t)
+	media := testMedia(pool, dbtest.StoreName, "")
 	return contracttest.TSScanFixture{
-		Store:   testMedia(pool, dbtest.StoreName, ""),
+		Store:   media,
 		Catalog: NewCatalog(pool, []string{store.DefaultSite}, dbtest.StoreName),
 		NewOriginal: func(t *testing.T, sizeBytes int64, trashed bool) (int64, int64) {
 			t.Helper()
@@ -109,6 +110,17 @@ INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes) VALUES ($1
 		WaitForLockWaiter: func(t *testing.T, operation string) {
 			t.Helper()
 			waitForContractLockWaiter(t, pool, operation)
+		},
+		InPlace:           media,
+		OtherStoreInPlace: testMedia(pool, "other-store", ""),
+		NewInPlaceOriginalInput: func(t *testing.T, relPath string) store.InPlaceInput {
+			return scanOriginalInput(relPath)
+		},
+		SetAssetSHA256: func(t *testing.T, assetID int64) {
+			t.Helper()
+			if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET sha256 = decode(repeat('ab', 32), 'hex') WHERE id = $1`, assetID); err != nil {
+				t.Fatalf("setting media asset digest: %v", err)
+			}
 		},
 	}
 }
