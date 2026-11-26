@@ -12,7 +12,7 @@
 | §4 | ストレージ運用: 録画バッファのサイジング / アーカイブの速度要件 / disaster recovery（catalog + rescue） | [operations/storage.md](operations/storage.md) |
 | §5 | k8s 運用: ロールとキュー購読の関係 / キューの site 修飾と置き場所 / KEDA ScaledJob / CronJob による定期投入 / シングルトンロールのリーダー選出 / マニフェストの配布形式（kustomize） | [operations/k8s.md](operations/k8s.md) |
 | §5 | streamer のスケール | [operations/k8s-streamer.md](operations/k8s-streamer.md) |
-| §5 | k8s のヘルスチェックと障害対応 | [operations/k8s-availability.md](operations/k8s-availability.md) |
+| §5 | k8s のヘルスチェックと障害対応 / asynq 構成の Redis の喪失と切断からの回復 | [operations/k8s-availability.md](operations/k8s-availability.md) |
 
 読む順の目安は次の通り。
 

@@ -292,3 +292,59 @@ CI が見るのは、クラスタが要らない範囲の 3 つである。回�
 - ScaledJob が `Ready=False / ScaledJobCheckFailed` のまま Job を起こさない: トリガの接続先を疑う。理由は [operations.md](../operations.md) §5「worker: KEDA ScaledJob」。ログは `kubectl -n keda logs deploy/keda-operator | grep -i error` で見る。直しても spec が変わらないと再 reconcile されない。ScaledJob を作り直すのが早い
 - `--oracles` を中断した後、製品の Job が起きない / CronJob が止まっている: オラクル 2〜5 は製品のワークロードを止めてから回す。身代わりと同じキューと同じ mirakc モックを共有しているためである（[deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md)）。止めた印はクラスタ側の annotation（`rokuban-e2e/paused-by-harness`）にあり、次の `run.sh` が起動時に戻す。手で戻すなら `kubectl -n rokuban-e2e get scaledjobs,cronjobs,deployments -o json | grep paused-by-harness` で対象を出す。次に `autoscaling.keda.sh/paused` の annotation と `spec.suspend` / `spec.replicas` を戻す
 - クラスタを作り直したい: `run.sh --fresh`（`--down` してから立て直す）
+
+## asynq 構成で Redis を失ったとき
+
+Redis の中身を失っても、手で戻す作業は要らない。失った仕事は reconcile の次の周期で戻る。かかる時間と、Job が起きない窓の注意は [operations/k8s-availability.md](../operations/k8s-availability.md) §Redis の喪失と切断 にある。
+
+早く戻したいときは、reconcile の CronJob からその場で Job を作る。手で起こした Job は新しいプロセスなので、その Job が積むキューでは、件数の口が常駐プロセスのヒントを数えない窓も閉じる。
+
+```sh
+kubectl get cronjob                       # 名前は rokuban-enqueue-<reconcile>
+kubectl create job --from=cronjob/rokuban-enqueue-encode-reconcile encode-reconcile-manual-$(date +%s)
+```
+
+## asynq の回復を測り直す
+
+asynq の版を上げたら、Redis の喪失と切断からの回復を測り直す。lease と回収の巡回の間隔は asynq の公開設定ではなく、版で変わりうる。前回の値は [operations/k8s-availability.md](../operations/k8s-availability.md) §Redis の喪失と切断 にある。
+
+### 環境
+
+ScaledJob の測定は kind の e2e-asynq、常駐 worker の測定は compose で行う。前回は Colima 4 CPU / 8 GB の上に両方を立てた。
+
+- kind は `E2E_OVERLAY=e2e-asynq ./deploy/k8s/e2e/run.sh` で立てる。測る前に、全 ScaledJob の `pollingInterval` を base の 30 秒に戻し、Job の履歴を増やす（e2e は 10 秒・3 件）
+- compose は Postgres・Redis（永続化なし）・api・常駐 worker 2 台で立てる。設定は `worker.engine: asynq`、`worker.periodic_jobs: false` にする
+- キューの中身は asynq の公開 API（`Inspector`）で 1 秒ごとに読む。時刻は Redis の `TIME` と DB の `clock_timestamp()` で取る。手元の Mac と Colima の VM の時計は秒単位でずれていた
+
+```sh
+for sj in $(kubectl -n rokuban-e2e get scaledjob -o name); do
+  kubectl -n rokuban-e2e patch "$sj" --type merge \
+    -p '{"spec":{"pollingInterval":30,"successfulJobsHistoryLimit":200,"failedJobsHistoryLimit":200}}'
+done
+```
+
+### 手順
+
+測る項目は 5 つある。どれも、新しい投入が測定に紛れない状態で測る。
+
+1. 全消去: 子の仕事の ScaledJob を止め（`autoscaling.keda.sh/paused`）、CronJob を suspend する。fixture の録画を作り、各 reconcile を積んで、子のタスクが待機列に載るのを見る。`redis-cli FLUSHALL` の後に消費側を戻し、120 秒何も進まないことを確かめる。reconcile を 1 本ずつ積み、子が走り出すまでを測る
+2. プロセス死（ScaledJob）: 判定 3 と同じ手順（`produce_real_encode_job`）で encode を走らせ、Pod を `--force --grace-period=0` で消す。kill の時刻から `recording_encode_attempts.attempted_at` が進むまでを測る。kill の時刻を 0〜30 秒ずらし、KEDA の巡回との位相を散らす
+3. プロセス死（常駐）: compose で encode を走らせた worker を `docker kill -s KILL` する。もう 1 台を残す形と、同じ worker をすぐ再起動する形を測る
+4. 切断: encode を走らせた worker の netns で、Redis との往復を落とす（下記）。切断の長さを変え、cancel されたか（試行の行が戻ったか）と試行の回数を見る
+5. 空振り: 測定の間に ScaledJob が起こした Job を集め、`worker: once mode finished` の `outcome` が `idle_timeout` の Job を数える。原因は、Job の作成前 35 秒のキューの中身で分ける
+
+```sh
+# 切断（戻すときは -I を -D に替える）
+docker run --rm --network container:<worker のコンテナ> --cap-add NET_ADMIN nicolaka/netshoot \
+  sh -c 'iptables -I OUTPUT -d <redis の IP> -j DROP && iptables -I INPUT -s <redis の IP> -j DROP'
+```
+
+### 測るときの罠
+
+前回の測定で実際に踏んだものを挙げる。
+
+- 派生物のキーは原本のパスから決まる。同じパスの原本で encode を繰り返すと、前回の出力とキーがぶつかって失敗する。原本のパスを毎回変える
+- 前の回の録画が encode 待ちで残っていると、reconcile がそれも積み、worker の枠を取り合う。前の回の録画の処理方針を消してから次の回を始める
+- 全消去の後は、常駐プロセスだけが積んだキューを `Inspector` が列挙しない。キューを読む観測も、その間は何も見えない。新しいプロセスから同じキューへ積むと見えるようになる
+- cm_detect の方針を立てた録画は、判定 3 の掃除が消せない（CM 検出の試行の行が残る）。先に消す
+- Snooze を起こすには、SHA-256 と終了時刻を返さない録画が要る。今の mirakc モックにはその注入の口が無い。前回は測定のためだけに一時的に足した
