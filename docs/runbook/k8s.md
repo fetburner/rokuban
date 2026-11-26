@@ -153,6 +153,17 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 - Pod が `CreateContainerConfigError` になる（`secret "rokuban-secrets" not found`）: base は Secret を出荷しない。overlay の `secretGenerator` か手で作った Secret が要る。`kubectl get secret | grep rokuban-secrets` で見る
 - api が `db.password is required` で落ちる: Secret はあるが値が空。`kubectl get secret <名前> -o jsonpath='{.data}'` で中身を見る
 
+### 件数の読み先を River 構成の本番で切り替える
+
+旧い DB 直読みのトリガから、件数の口へ替えるときの順序である。順序を逆にしない。
+
+1. 件数のハンドラを持つ rokuban を先に出す。
+
+   ツールボックスから `http://rokuban-notifier:40773/internal/queues/<物理キュー名>/deliverable-count` を叩き、`{"value": n}` が返ることを確かめてから次へ進む。
+2. その後で ScaledJob のマニフェスト（トリガを `metrics-api` にしたもの）を出す。逆にすると、トリガの読み先が無く、件数が読めないので worker が起きない。
+3. 切り替えた後は KEDA が notifier に依存する。notifier が止まると、滞留があっても worker は起きない。監視には notifier の Ready と件数の応答を入れる。
+4. 切り替えが済んだら、`rokuban-secrets` から `POSTGRES_CONNECTION_STRING` を消してよい。KEDA も rokuban も読まない（ScaledJob の件数は notifier の HTTP）。
+
 ## 受け入れ判定ハーネス（kind + KEDA）
 
 ロール分割デプロイの受け入れ 5 項目を機械判定する。上の手順が「中央 1 式が上がること」を人間の目で見るのに対して、こちらは合否が終了コードで出る。設計と判定の中身は [deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md)。
@@ -238,7 +249,7 @@ E2E_OVERLAY=e2e-two-stores E2E_NAMESPACE=rokuban-e2e-stores ./deploy/k8s/e2e/run
 
 CI イメージに kind / KEDA / Postgres という新しい依存が増える。さらに判定 3 は実際に ffmpeg でエンコードを回すので、CPU も要る。
 
-静的に見られるぶんは既に CI にある。`go test ./deploy/k8s/` が見るのは次の 4 つである。キューと ScaledJob の対応・`rokuban enqueue` の全ジョブに CronJob があること・トリガのクエリが物理キュー名であること・overlay の patch が site 名を指していること。ここが赤くなる類の退行は、クラスタを立てなくても CI で止まる。
+静的に見られるぶんは既に CI にある。`go test ./deploy/k8s/` が見るのは次の 4 つである。キューと ScaledJob の対応・`rokuban enqueue` の全ジョブに CronJob があること・トリガの URL が物理キュー名を指すこと・overlay の patch が site 名を指していること。ここが赤くなる類の退行は、クラスタを立てなくても CI で止まる。
 
 #### 回すタイミング
 

@@ -83,13 +83,13 @@ SQL が 0 行となり、Job の ACTIVE がすべて 0 になったことを確�
 
 retryable・scheduled の行は残したまま進んでよい。同じ DB を引き継ぐ `--all` が、再試行待ちと snooze の待機中のジョブを処理する。
 
-[スケーラのクエリと回収](../operations/k8s.md#スケーラのクエリと回収) は待機中と再試行待ちを数える。投入元を止めて available・running の行を消化してから削除する順序とし、KEDA の pause 機能や削除時の実行中 Job の扱いは前提にしない。
+[スケーラの件数と回収](../operations/k8s.md#スケーラの件数と回収) は待機中と再試行待ちを数える。投入元を止めて available・running の行を消化してから削除する順序とし、KEDA の pause 機能や削除時の実行中 Job の扱いは前提にしない。
 
 #### 残りの常駐ロールと ScaledJob の停止
 
 実行中 Job がなくなってから常駐ロールを停止する。対象 Pod の終了を待ち、上の SQL と Job の確認を再実行してから ScaledJob を削除する。
 
-待っている間に retryable が available へ昇格し、削除の直前に Job が起きる場合がある。削除後も下のコマンドで Job・Pod の残りを確認し、旧配置の消費者が終了するまで `--all` を起動しない。running のまま残った行の回収は、River の `RescueStuckJobsAfter` の公開契約に従う。設定の対応は [スケーラのクエリと回収](../operations/k8s.md#スケーラのクエリと回収) を参照する。
+待っている間に retryable が available へ昇格し、削除の直前に Job が起きる場合がある。削除後も下のコマンドで Job・Pod の残りを確認し、旧配置の消費者が終了するまで `--all` を起動しない。running のまま残った行の回収は、River の `RescueStuckJobsAfter` の公開契約に従う。設定の対応は [スケーラの件数と回収](../operations/k8s.md#スケーラの件数と回収) を参照する。
 
 ```sh
 kubectl -n "$NS" get deployment -l app.kubernetes.io/name=rokuban

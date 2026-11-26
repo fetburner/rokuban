@@ -44,7 +44,9 @@ API は、store の commit 後にヒントとして投入する。投入の失�
 
 River クライアントと投入オプションへの変換は、adapter に閉じ込める。worker の登録だけは River の公開 API が具体型を要求するので、River adapter を通す。asynq adapter は中立なレジストリに登録された worker を使う。
 
-import 境界の linter は、本番コードによる River adapter の直接 import を禁止する。例外は worker の登録とテスト DB 作成だけである。構成の根である起動コードは adapter を組み立てるので、対象外にする。テストも River の import を adapter に閉じる。唯一の例外は KEDA の SQL テストで、ScaledJob の状態名を River のスキーマと照合する。asynq と go-redis の import も、テストを含め asynq adapter に閉じる。
+import 境界の linter は、本番コードによる River adapter の直接 import を禁止する。例外は worker の登録とテスト DB 作成だけである。構成の根である起動コードは adapter を組み立てるので、対象外にする。テストも River の import を adapter に閉じる。KEDA は River の表を読まない。ScaledJob の件数は notifier の HTTP（`DeliverableCounter`）から読む。asynq と go-redis の import も、テストを含め asynq adapter に閉じる。
+
+配送される件数は両 adapter で同じ意味にする。いま worker を 1 台起こせば配送されるジョブ数で、available 全件と、期限が来た retryable / scheduled を数える。running は数えない（lease が有効な実行中を含めると、KEDA が余計に Job を起こす）。River adapter は River が件数を返す公開 API を持たないので、公開の JobList をページ送りして数え、期限は Go 側で比べる。river_job を SQL で数えると内部表への依存（不変条件 14）になるので取らない。
 
 逆向きの境界も持つ。adapter の本番コードは、契約とエンジンだけに依存する。禁止リストで製品パッケージを塞ぐと、リストに無い別の製品パッケージへの依存が通る。そのため許可リストで判定し、テストは対象外にする。
 
@@ -312,7 +314,7 @@ ffmpeg の `out_time` を実入力 duration に対する割合にして、最大
 
 ブラウザへの SSE 配送の担い手は notifier ロールで、api ロールは担わない。api ロールは mirakc にもファイルシステムにも依存せず（不変条件 1）、長寿命接続の LISTEN セッションも持たない。
 
-配送のエンドポイントは `/api/events` である。サーバーレス（scale-to-zero）に載せるためには、常駐前提の LISTEN を api に置けない。notifier は Postgres を LISTEN してブラウザへ配り直す常駐プロセスとして api から分離してある。k8s では同じプロセスが worker ロールも兼ね（購読する実キューは ruler）、その常駐 River client は回収と昇格の leader にもなりうる。watcher の常駐 client も同様である（[運用の k8s 節](../operations/k8s.md) §スケーラのクエリと回収）。障害範囲は配送に限らない。形は `deploy/k8s/base/notifier.yaml` にある。
+配送のエンドポイントは `/api/events` である。サーバーレス（scale-to-zero）に載せるためには、常駐前提の LISTEN を api に置けない。notifier は Postgres を LISTEN してブラウザへ配り直す常駐プロセスとして api から分離してある。k8s では同じプロセスが worker ロールも兼ね（購読する実キューは ruler）、その常駐 River client は回収と昇格の leader にもなりうる。watcher の常駐 client も同様である（[運用の k8s 節](../operations/k8s.md) §スケーラの件数と回収）。障害範囲は配送に限らない。形は `deploy/k8s/base/notifier.yaml` にある。
 
 ### notifier の多重化
 

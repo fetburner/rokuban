@@ -227,12 +227,11 @@ linters:
               desc: tests build state through store contracts or internal/db/dbtest
         river-adapter-only:
           # River の型はテストも含め runtime adapter の境界に閉じ込める。
-          # KEDA の SQL テストだけは YAML の状態名を River のスキーマと照合する。
+          # KEDA のトリガは件数の HTTP を読むので、テストも River の型を要らない。
           list-mode: lax
           files:
             - "${config-path}/**"
             - "!${config-path}/internal/jobq/riveradapter/**"
-            - "!${config-path}/deploy/k8s/workloads_test.go"
           deny:
             - pkg: github.com/riverqueue/river
               desc: River imports are limited to internal/jobq/riveradapter

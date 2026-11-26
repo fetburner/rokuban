@@ -242,13 +242,3 @@ lint が落とすのは、呼び出しに直接書いた定数と、単独の co
 外部プロセス（mirakc / ffmpeg）は対象外である。ドキュメントに無い挙動を実測で決めざるを得ないので、不変条件 2 と CLAUDE.md の「測っていない挙動を断言しない」で扱う。
 
 ブラウザも対象外である。hls.js のように、ブラウザの実挙動の上で動くものの実測を含む（例: Chrome が HLS の MIME に `canPlayType` で `'maybe'` を返す）。扱いは「測っていない挙動を断言しない」だけで、不変条件 2 は掛からない。
-
-### KEDA のクエリの例外
-
-マニフェストの KEDA クエリは、River の PostgreSQL スキーマを参照する。KEDA のトリガは River の公開 API を呼べないので、この SQL を維持する。クエリは、テストが実 DB で検証する。
-
-<details><summary>根拠</summary>
-
-- KEDA クエリを実 DB で検証するテスト: `deploy/k8s/workloads_test.go::TestScaledJobTriggerQueriesRunAgainstRiverSchema`
-
-</details>
