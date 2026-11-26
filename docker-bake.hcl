@@ -20,7 +20,7 @@ variable "GITHUB_ACTIONS" {
 }
 
 # "false" のとき gha への書き出し（cache-to）だけを止める。読み取り（cache-from）は変えない。
-# 既定は書き出す。false を渡すのは ci.yml の docker ジョブの PR だけ（理由は ci.yml の docker ジョブ）。
+# 既定は書き出す。false を渡すのは ci.yml の docker ジョブの PR と、publish-sha.yml の main 以外の push（理由は各 workflow）。
 variable "GHA_CACHE_WRITE" {
   default = "true"
 }
