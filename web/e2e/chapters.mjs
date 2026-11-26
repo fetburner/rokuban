@@ -370,16 +370,34 @@ if (Math.abs(duration - 120) > 5) {
 // 再生位置は localStorage に残る。前回の実行の続きから始まると判定が揺れるので消す。
 await page.evaluate(() => localStorage.clear())
 
-/** seek は再生位置を動かし、seek の完了を待つ。 */
+/**
+ * seek は再生位置を動かし、seeked の後の描画までを待つ。
+ * 実装は onSeeked で直前位置（previousSecondsRef）を更新するので、seeked の後に 2 フレーム待てば
+ * 後段が読む状態は揃う。seeked が 5 秒で来なければ、
+ * 後段の判定とは別に「seek が完了しない」を NG にする。
+ */
 async function seek(seconds) {
-  await video.evaluate((v, s) => {
+  const completed = await video.evaluate((v, s) => new Promise((resolve) => {
+    // 同じ位置への seek は seeked を出さないので、その場で完了とみなす。
+    if (!v.seeking && Math.abs(v.currentTime - s) < 0.01) {
+      resolve(true)
+      return
+    }
+    const finish = () => {
+      if (v.seeking) return
+      clearTimeout(timer)
+      v.removeEventListener('seeked', finish)
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))
+    }
+    const timer = setTimeout(() => {
+      v.removeEventListener('seeked', finish)
+      resolve(false)
+    }, 5000)
+    // リスナーは代入の前に登録する。代入の後だと seeked を取りこぼす。
+    v.addEventListener('seeked', finish)
     v.currentTime = s
-  }, seconds)
-  await page
-    .waitForFunction(() => !document.querySelector('video')?.seeking, undefined, { timeout: 5000 })
-    .catch(() => {})
-  // seeked の後に実装が直前位置を更新するのを待つ（timeupdate を 1 回跨がせる）。
-  await page.waitForTimeout(300)
+  }), seconds)
+  if (!completed) ng.push(`seek が完了しない（${seconds}s へ 5000ms 以内に seeked が来ない）`)
 }
 
 /** waitForPosition は位置（必要なら停止も）を最大 30 秒待ち、未到達を NG にする。 */
@@ -867,10 +885,33 @@ if (!beforeFollow || !afterFollow || !crossedOldRangeEnd ||
   if (boundaryCount === 0) {
     ng.push('⑰ 追従後の境界選択対象が無い')
   } else {
-    await filmstripBoundary.first().click().catch(() => {})
-    const afterBoundary = await rangeSnapshot()
-    if (!afterBoundary || afterBoundary.start !== afterPause.start || afterBoundary.end !== afterPause.end) {
-      ng.push(`⑰ 境界選択後に追従範囲が戻る（停止後=${JSON.stringify(afterPause)} 境界選択後=${JSON.stringify(afterBoundary)}）`)
+    // 表示範囲の外の境界は track の overflow で切れていて押せない。範囲内の境界を選んで押す。
+    const visibleBoundaryMs = await page.evaluate(() => {
+      const track = document.querySelector('[data-testid="chapter-filmstrip-track"]')
+      const start = Number(track?.dataset.visibleStartSeconds)
+      const end = Number(track?.dataset.visibleEndSeconds)
+      const inRange = [...document.querySelectorAll('[data-testid="chapter-filmstrip-boundary"]')]
+        .map((el) => Number(el.dataset.timeMs))
+        .filter((ms) => ms / 1000 > start && ms / 1000 < end)
+      return inRange[0] ?? null
+    })
+    if (visibleBoundaryMs === null) {
+      ng.push('⑰ 追従後の表示範囲内に境界が無い')
+    } else {
+      const visibleBoundary = page.locator(`[data-testid="chapter-filmstrip-boundary"][data-time-ms="${visibleBoundaryMs}"]`)
+      let clicked = true
+      try {
+        await visibleBoundary.click({ timeout: 5000 })
+      } catch (error) {
+        clicked = false
+        ng.push(`⑰ 表示範囲内の境界を選べない（${visibleBoundaryMs}ms: ${String(error).split('\n')[0]}）`)
+      }
+      if (clicked) {
+        const afterBoundary = await rangeSnapshot()
+        if (!afterBoundary || afterBoundary.start !== afterPause.start || afterBoundary.end !== afterPause.end) {
+          ng.push(`⑰ 境界選択後に追従範囲が戻る（停止後=${JSON.stringify(afterPause)} 境界選択後=${JSON.stringify(afterBoundary)}）`)
+        }
+      }
     }
   }
   const zoomOutButton = page.getByRole('button', { name: 'フィルムストリップを縮小' })
@@ -1078,11 +1119,21 @@ await page.waitForSelector('[data-testid="chapter-edit-layout"]', { state: 'deta
 log('\n=== ⑥ 再生中のバー: マウスで押した後は隠れ、キーボードの Tab で届く ===')
 const controls = page.locator('[data-testid="player-controls"]')
 const controlsOpacity = () => controls.evaluate((el) => getComputedStyle(el).opacity)
+// バーの opacity が want になるまで待つ（自動非表示の 3 秒と 150 ms の遷移の後）。上限を越えたら待ちを捨て、
+// 後段で読む opacity の判定が NG を出す。待ちの成否は後段が直接読むので飲んでよい。
+const waitOpacity = (locator, want) => locator.evaluate((el, target) => new Promise((resolve) => {
+  const started = performance.now()
+  const tick = () => {
+    if (getComputedStyle(el).opacity === target || performance.now() - started > 6000) resolve()
+    else requestAnimationFrame(tick)
+  }
+  tick()
+}), want).catch(() => {})
 await seek(80)
 // 6-a: バーの ▶ をマウスで押す。フォーカスが残っても 3 秒後にバーは隠れる。
 await page.getByRole('button', { name: '再生', exact: true }).click()
 await page.mouse.move(5, 5)
-await page.waitForTimeout(4500)
+await waitOpacity(controls, '0')
 const hiddenAfterClick = await controlsOpacity()
 await video.evaluate((v) => v.pause())
 if (hiddenAfterClick !== '0') {
@@ -1091,7 +1142,7 @@ if (hiddenAfterClick !== '0') {
 // 6-b: 映像クリックで再生 → バーが隠れた後に Tab でバーへ届く（隠れたバーは inert）。
 await page.locator('video').click()
 await page.mouse.move(5, 5)
-await page.waitForTimeout(4500)
+await waitOpacity(controls, '0')
 const hiddenBeforeTab = await controlsOpacity()
 await page.keyboard.press('Tab')
 await page.waitForTimeout(400)
@@ -1421,7 +1472,8 @@ await phone.locator('video').evaluate((v) => {
   v.muted = true
   return v.play()
 })
-await phone.waitForTimeout(3800)
+const phoneControls = phone.locator('[data-testid="player-controls"]')
+await waitOpacity(phoneControls, '0')
 const phoneControlsOpacity = () =>
   phone.locator('[data-testid="player-controls"]').evaluate((el) => getComputedStyle(el).opacity)
 const hiddenWhilePlaying = await phoneControlsOpacity()

@@ -45,8 +45,8 @@ function positiveIntegerEnv(name, fallback) {
   return value
 }
 
-// 録画中 EVENT fixture の公開間隔と終端までの行数。既定の間隔は録画と同じ、セグメント長ごとに 1 行。
-export const EVENT_GROW_INTERVAL_MS = positiveIntegerEnv('E2E_EVENT_GROW_INTERVAL_MS', SEGMENT_SECONDS * 1_000)
+// 録画中 EVENT fixture の公開間隔と終端までの行数。既定は 1 秒。判定が見ている性質（行が変わらない・ENDLIST・総尺・ended）は行が増える速さに依らず、伸びている最中は [event-growth] で確かめる。
+export const EVENT_GROW_INTERVAL_MS = positiveIntegerEnv('E2E_EVENT_GROW_INTERVAL_MS', 1_000)
 export const EVENT_SEGMENT_COUNT = positiveIntegerEnv('E2E_EVENT_SEGMENT_COUNT', FIXTURE_SECONDS / SEGMENT_SECONDS)
 export const EVENT_FINAL_SEGMENT_SECONDS = SEGMENT_SECONDS / 2
 

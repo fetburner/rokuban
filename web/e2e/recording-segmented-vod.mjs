@@ -735,10 +735,14 @@ function markerMismatches(frames, currentTolerance = 1) {
     .filter((sample) => Math.abs(sample.markerMediaDeltaFrames) > 1.05 || Math.abs(sample.mediaCurrentDeltaFrames) > currentTolerance + 0.05)
 }
 
-async function waitForState(adapter, predicate, timeoutMs, description) {
+/** NegativeSettled は、負例で期待した失敗が出たので残りの待ちを打ち切ったことを示す。判定は期待した失敗が出たかで決まるので、打ち切っても結果は変わらない。 */
+class NegativeSettled extends Error {}
+
+async function waitForState(adapter, predicate, timeoutMs, description, abortWhen = () => false) {
   const startedAt = Date.now()
   let state
   while (Date.now() - startedAt < timeoutMs) {
+    if (abortWhen()) throw new NegativeSettled(description)
     state = await adapter.evaluate(() => window.__e2e.state())
     if (state.startError) throw new Error(`再生開始に失敗: ${state.startError}`)
     if (predicate(state)) return state
@@ -789,13 +793,17 @@ async function chooseFarSeekTarget(adapter, server, playlistMark, growing) {
  * audio-unavailable / track / stall / content-jump / frame-freeze / hls-gap / hls-error /
  * event-growth / ended / playlist-shrink / playlist-mutated。
  */
-async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY = DEFAULT_BOUNDARY, checkPrefetch = true, eventURL = false, expectGrowing = false, requireEnded = false }) {
+async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY = DEFAULT_BOUNDARY, checkPrefetch = true, eventURL = false, expectGrowing = false, requireEnded = false, expect = null }) {
   const failures = []
   const add = (tag, message) => failures.push(`[${tag}] ${message}`)
+  // 負例は期待した名前の失敗が出た時点で、残りの待ちを打ち切る（判定は expect のどれかが出たかで決まる）。
+  // 正例は expect が null なので打ち切らない。
+  const expectedSettled = () => expect !== null && failures.some((failure) => expect.some((tag) => failure.startsWith(`[${tag}]`)))
+  const waitState = (predicate, timeoutMs, description) => waitForState(adapter, predicate, timeoutMs, description, expectedSettled)
   const playlistMark = server.playlistMark()
   await adapter.navigate(adapter.serverURL + HARNESS_PATH)
   const loaded = await adapter.evaluate(async (url) => window.__e2e.load(url), masterURL)
-  await waitForState(adapter, (s) => s.tracks.length === 3, 10_000, '音声 rendition 3 本')
+  await waitState((s) => s.tracks.length === 3, 10_000, '音声 rendition 3 本')
   const summary = { browserPath: loaded.path }
   let growing = false
   let growthEvidenceFailureReported = false
@@ -836,7 +844,7 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
       add('seek-frame', `一時停止中の seek 先フレームが目標 ${target}s (frame ${expected}) と合わない: last marker=${seeked.frame}, reads=${seeked.frameReads}, wait=${seeked.frameReadMs.toFixed(0)}ms`)
     }
     await resume()
-    await waitForState(adapter, (s) => !s.paused && s.currentTime >= target + 0.6, 15_000, `${target}s への seek の後の再生`)
+    await waitState((s) => !s.paused && s.currentTime >= target + 0.6, 15_000, `${target}s への seek の後の再生`)
     const frames = await adapter.evaluate((range) => window.__e2e.framesBetween(range[0], range[1]), [target - 0.3, target + 0.8])
     const start = frames.findIndex((sample) => Math.abs(sample.mediaTime - target) <= 0.5)
     summary[`seek${target}`] = frames.slice(0, 8).map((sample) => `${sample.frame}@${sample.mediaTime.toFixed(2)}`).join(' ')
@@ -869,17 +877,17 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
       }
       checkGrowthState('境界判定の開始')
     }
-    let state = await waitForState(adapter, (s) => !s.paused && s.currentTime >= BOUNDARY - 1.5 * SEGMENT + 0.5, 15_000, '再生開始')
+    let state = await waitState((s) => !s.paused && s.currentTime >= BOUNDARY - 1.5 * SEGMENT + 0.5, 15_000, '再生開始')
     if (hold) {
       // 保留した映像 segment は再生が境界に着くまで返さない。止まるまで待ってから返す。
       try {
-        await waitForState(adapter, (s) => s.currentTime >= BOUNDARY - 0.3 && hold.received, 15_000, '保留した segment を要求したまま境界の手前へ到達')
-        await waitForState(adapter, (s) => s.stalls.length > 0, 4_000, 'stall')
+        await waitState((s) => s.currentTime >= BOUNDARY - 0.3 && hold.received, 15_000, '保留した segment を要求したまま境界の手前へ到達')
+        await waitState((s) => s.stalls.length > 0, 4_000, 'stall')
       } finally {
         hold.release()
       }
     }
-    state = await waitForState(adapter, (s) => s.currentTime >= BOUNDARY + 2.5, 15_000, '再起動境界の後の再生継続')
+    state = await waitState((s) => s.currentTime >= BOUNDARY + 2.5, 15_000, '再起動境界の後の再生継続')
 
     const played = await adapter.evaluate((range) => window.__e2e.framesBetween(range[0], range[1]), [BOUNDARY - 1.5 * SEGMENT + 0.5, BOUNDARY + 2.6])
     if (process.env.E2E_DUMP_FRAMES) summary.dump = played.filter((sample) => sample.currentTime >= BOUNDARY - 0.3 && sample.currentTime <= BOUNDARY + 1.6).map((sample) => `cur=${sample.currentTime.toFixed(4)} media=${sample.mediaTime.toFixed(4)} marker=${sample.frame} grid=${(sample.frame / FRAME_RATE).toFixed(4)} media-grid=${((sample.mediaTime - sample.frame / FRAME_RATE) * 1000).toFixed(1)}ms at=${sample.at.toFixed(0)}`)
@@ -920,7 +928,7 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
 
     for (const [trackIndex, expected, label] of [[1, [440, 440], '主'], [2, [880, 880], '副'], [0, [440, 880], '標準']]) {
       await adapter.evaluate(async (index) => window.__e2e.selectTrack(index), trackIndex)
-      state = await waitForState(adapter, (s) => channelMatches(s.audio.at(-1), expected), 8_000, `${label}音声への切替 (WebAudio の左右周波数)`)
+      state = await waitState((s) => channelMatches(s.audio.at(-1), expected), 8_000, `${label}音声への切替 (WebAudio の左右周波数)`)
     }
     checkGrowthState('音声 rendition 切替')
 
@@ -935,7 +943,7 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     if (!checkPrefetch) summary.skipped = 'シーク前の要求 (先読みの外になる位置がない)'
     else if (target.length === 0) add('seek-buffered', `シーク先 ${farSeek.target}s を含む segment を現在の playlist から特定できない`)
     else if (early.length > 0) add('seek-buffered', `シーク先 ${farSeek.target}s の segment をシーク前に要求していた (バッファ内でのシーク): ${early.join(', ')}`)
-    state = await waitForState(adapter, (s) => !s.paused && s.currentTime >= farSeek.target + 1, 15_000, '遠距離シーク後の再生継続')
+    state = await waitState((s) => !s.paused && s.currentTime >= farSeek.target + 1, 15_000, '遠距離シーク後の再生継続')
     checkGrowthState('遠距離 seek の着地')
 
     if (requireEnded && growing) {
@@ -944,11 +952,11 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
       // 着地から 3 セグメント - 1 秒以上進むことも要る（着地がすでに終端なら ended は再生なしで立つ）。
       try {
         const total = server.endListDurationSince(playlistMark)
-        await waitForState(adapter, (s) => Math.abs(s.duration - total) <= 0.5, ENDED_TIMEOUT_MS, `video.duration が ENDLIST 時の総尺 ${total.toFixed(3)}s に届く`)
+        await waitState((s) => Math.abs(s.duration - total) <= 0.5, ENDED_TIMEOUT_MS, `video.duration が ENDLIST 時の総尺 ${total.toFixed(3)}s に届く`)
         const advance = 3 * SEGMENT - 1
         const landed = (await adapter.evaluate(async (seconds) => window.__e2e.seek(seconds), Math.max(0, total - 3 * SEGMENT))).landing
         await adapter.evaluate(async () => window.__e2e.start())
-        state = await waitForState(adapter, (s) => s.ended && s.currentTime >= landed + advance, ENDED_TIMEOUT_MS, `着地 ${landed.toFixed(3)}s から ${advance}s 以上進んだ video.ended`)
+        state = await waitState((s) => s.ended && s.currentTime >= landed + advance, ENDED_TIMEOUT_MS, `着地 ${landed.toFixed(3)}s から ${advance}s 以上進んだ video.ended`)
         summary.ended = true
         summary.endedAt = state.currentTime
       } catch (error) {
@@ -964,7 +972,7 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     if (state.stalls.length > 0) add('stall', `${state.stalls.length} 回: ${JSON.stringify(state.stalls)}`)
   } catch (error) {
     // 途中の待ちが尽きたとき。原因を読めるよう、バッファ範囲と hls.js のエラーを含めて名前を付ける。
-    add('progress', error.message)
+    if (!(error instanceof NegativeSettled)) add('progress', error.message)
   }
   summary.playlistRequests = server.playlistObservationsSince?.(playlistMark)?.length
   for (const violation of server.violationsSince(playlistMark)) {
@@ -1030,6 +1038,7 @@ async function main() {
           eventURL: entry.eventURL,
           expectGrowing: entry.eventMode === 'growing',
           requireEnded: entry.requireEnded,
+          expect: entry.expect ?? null,
         })
       } catch (error) {
         log(`NG: ${entry.name}: ${error.message}`)

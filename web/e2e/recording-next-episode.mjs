@@ -577,7 +577,9 @@ async function transitionsAlong(png) {
   log('\n=== ⑦ シリーズへの導線（1280、各状態） ===')
   for (const [id, label] of seriesStates) {
     await page.goto(`${URL_BASE}/recordings/${id}`, { waitUntil: 'domcontentloaded' })
-    await page.locator('a[href$="/series"]').first().waitFor({ timeout: 10000 }).catch(() => {})
+    // 1280 幅では lg:hidden の方のリンクが DOM の先頭に来るので、見えているリンクだけを待つ。
+    // 失敗を飲んでも seriesEntries が見えるリンクだけを数えるので、0 個の NG として出る。
+    await page.locator('a[href$="/series"]:visible').first().waitFor({ timeout: 10000 }).catch(() => {})
     // 棚の見出しは棚の問い合わせの後に出るので、棚がある状態では見出しのリンクを待つ。
     if (id !== 6) await page.locator('[data-testid="recording-series-shelf"] h3 a').waitFor({ timeout: 10000 }).catch(() => {})
     const entries = await seriesEntries(page)
