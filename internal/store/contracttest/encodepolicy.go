@@ -29,7 +29,10 @@ type EncodePolicyFixture struct {
 	SetRemovalRequest func(t *testing.T, recordingID int64, profile string)
 	// HasRemovalRequest は削除要求の行があるかを返す。契約の読み取りは desired に残る profile の
 	// 要求を除いて返すので、再追加や却下の後に行が残っていても見分けられない。
-	HasRemovalRequest  func(t *testing.T, recordingID int64, profile string) bool
+	HasRemovalRequest func(t *testing.T, recordingID int64, profile string) bool
+	// HasPolicyRow は方針の行があるかを返す。RecordingQuery.Get は行が無いときも既定値を補うため、
+	// 既定値の行を誤って作った場合と区別できない。
+	HasPolicyRow       func(t *testing.T, recordingID int64) bool
 	SetAttempt         func(t *testing.T, recordingID int64, profile, state string, count int32)
 	SetChapterSpans    func(t *testing.T, recordingID int64, durationMs int64, spans []chapters.Span)
 	BeginChapterEdit   func(t *testing.T, recordingID int64, durationMs int64, spans []chapters.Span) (commit func())
@@ -79,6 +82,9 @@ func RunEncodePolicy(t *testing.T, newFixture NewEncodePolicyFixture) {
 	})
 	t.Run("policy update is atomic and returns typed precondition errors", func(t *testing.T) {
 		runSetPolicy(t, newFixture)
+	})
+	t.Run("rejected CM detection leaves the policy unfrozen", func(t *testing.T) {
+		runRejectedCMDetectionLeavesPolicyUnfrozen(t, newFixture)
 	})
 	t.Run("attempt begin enforces the supplied limit", func(t *testing.T) {
 		runAttemptLimit(t, newFixture)
@@ -434,16 +440,22 @@ func runSetPolicy(t *testing.T, newFixture NewEncodePolicyFixture) {
 	f.SetDesired(t, id, []string{"h264"})
 	keep := "until_encoded"
 	enabled := true
-	if err := f.Policy.SetPolicy(ctx, id, store.EncodePolicyUpdate{KeepOriginal: &keep, CMDetect: &enabled}); err != nil {
-		t.Fatalf("SetPolicy: %v", err)
-	}
-	row := encodePolicyRow(t, f, id)
-	if row.KeepOriginal != keep || !sameStrings(row.EncodeProfiles, []string{"h264"}) {
-		t.Fatalf("RecordingQuery.Get(%d).KeepOriginal/EncodeProfiles after SetPolicy = (%q, %v), want %q/[h264]", id, row.KeepOriginal, row.EncodeProfiles, keep)
-	}
-	desired, err := f.CMDetection.IsDetectionDesired(ctx, id)
-	if err != nil || !desired {
-		t.Fatalf("IsDetectionDesired after SetPolicy = (%t, %v), want true", desired, err)
+	for _, update := range []store.EncodePolicyUpdate{
+		{KeepOriginal: &keep, CMDetect: &enabled},
+		{KeepOriginal: &keep},
+		{CMDetect: &enabled},
+	} {
+		if err := f.Policy.SetPolicy(ctx, id, update); err != nil {
+			t.Fatalf("setting or resending policy: %v", err)
+		}
+		row := encodePolicyRow(t, f, id)
+		if row.KeepOriginal != keep || !sameStrings(row.EncodeProfiles, []string{"h264"}) {
+			t.Fatalf("RecordingQuery.Get(%d).KeepOriginal/EncodeProfiles after SetPolicy = (%q, %v), want %q/[h264]", id, row.KeepOriginal, row.EncodeProfiles, keep)
+		}
+		desired, err := f.CMDetection.IsDetectionDesired(ctx, id)
+		if err != nil || !desired {
+			t.Fatalf("IsDetectionDesired after SetPolicy = (%t, %v), want true", desired, err)
+		}
 	}
 	attempt, shouldRun, err := f.CMDetection.BeginAttempt(ctx, id, 1)
 	if err != nil || !shouldRun || attempt.PolicyGeneration != 1 {
@@ -490,8 +502,33 @@ func runSetPolicy(t *testing.T, newFixture NewEncodePolicyFixture) {
 	if err := f.Policy.SetPolicy(ctx, unfrozenID, store.EncodePolicyUpdate{KeepOriginal: &keep}); !errors.Is(err, store.ErrEncodeProfilesRequired) {
 		t.Fatalf("SetPolicy(unfrozen until_encoded) error = %v, want ErrEncodeProfilesRequired", err)
 	}
+	t.Run("frozen policy without desired profiles rejects until_encoded", func(t *testing.T) {
+		frozenID := f.NewRecording(t)
+		f.SetDesired(t, frozenID, []string{})
+		if err := f.Policy.SetPolicy(t.Context(), frozenID, store.EncodePolicyUpdate{KeepOriginal: &keep}); !errors.Is(err, store.ErrEncodeProfilesRequired) {
+			t.Fatalf("SetPolicy(frozen until_encoded without desired profiles) error = %v, want ErrEncodeProfilesRequired", err)
+		}
+		if got := encodePolicyRow(t, f, frozenID).KeepOriginal; got != "always" {
+			t.Fatalf("RecordingQuery.Get(%d).KeepOriginal after rejected update = %q, want always", frozenID, got)
+		}
+	})
 	if err := f.Policy.SetPolicy(ctx, -1, store.EncodePolicyUpdate{}); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("SetPolicy(missing) error = %v, want ErrNotFound", err)
+	}
+}
+
+func runRejectedCMDetectionLeavesPolicyUnfrozen(t *testing.T, newFixture NewEncodePolicyFixture) {
+	f := newFixture(t)
+	id := f.NewRecording(t)
+	original := f.NewAsset(t, id, "original", nil)
+	f.MarkOriginalMissing(t, original)
+
+	enabled := true
+	if err := f.Policy.SetPolicy(t.Context(), id, store.EncodePolicyUpdate{CMDetect: &enabled}); !errors.Is(err, store.ErrOriginalUnavailable) {
+		t.Fatalf("enabling detection with missing original: %v, want ErrOriginalUnavailable", err)
+	}
+	if f.HasPolicyRow(t, id) {
+		t.Error("recording with missing original got a policy row, want none")
 	}
 }
 

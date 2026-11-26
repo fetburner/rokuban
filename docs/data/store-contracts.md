@@ -398,11 +398,16 @@ cut の選択規則は設定の `recording_hls.enabled` に依存し、store は
 
 追加と作り直し要求のジョブ投入は store の commit 後のヒントである。投入に失敗しても API の 204 応答を変えず、定期 reconcile が DB の desired から不足分を拾う。
 
+MySQL では方針更新が適用条件を満たしたかと、試行の upsert が行を新規作成したかを、書き込み文で判定し、その結果を同じ接続の `LAST_INSERT_ID` で受け取る。影響行数で方針更新の成否を判定すると、値が変わらない再送を失敗と取り違える。
+
 <details><summary>根拠</summary>
 
 - 方針と作り直し要求: `internal/store.EncodePolicy`
 - 試行: `internal/store.EncodeAttempts`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
+- MySQL 実装: `internal/store/mysqlstore.Media`
+- 同じ値の再送が成功すること: `RunEncodePolicy` の「policy update is atomic and returns typed precondition errors」
+- desired が空の凍結済み方針で `until_encoded` を拒むこと: `RunEncodePolicy` の「frozen policy without desired profiles rejects until_encoded」
 
 </details>
 
