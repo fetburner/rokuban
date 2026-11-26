@@ -373,7 +373,7 @@ await page.evaluate(() => localStorage.clear())
 /**
  * seek は再生位置を動かし、seeked の後の描画までを待つ。
  * 実装は onSeeked で直前位置（previousSecondsRef）を更新するので、seeked の後に 2 フレーム待てば
- * 後段が読む状態は揃う。以前は 300 ms の固定待ちだった。seeked が 5 秒で来なければ、
+ * 後段が読む状態は揃う。seeked が 5 秒で来なければ、
  * 後段の判定とは別に「seek が完了しない」を NG にする。
  */
 async function seek(seconds) {
