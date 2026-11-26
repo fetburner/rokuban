@@ -146,7 +146,7 @@ func selectPackages(root, tags, base string, bodyOnly bool, patterns, changed []
 	return slices.Compact(selected), nil
 }
 
-// githubAllPackagesPaths は .github/ のうち変更で全件を回すパス。ci.yml の browser-e2e-plan の
+// githubAllPackagesPaths は .github/ のうち変更で全件を回すパス。ci.yml の plan ジョブの
 // paths-filter にある .github/ 始まりのエントリと同じ glob 表記で書く。両者の一致は
 // TestBrowserE2EPathFiltersMatchAllPackagesRule が YAML として検査する。
 var githubAllPackagesPaths = []string{".github/workflows/ci.yml", ".github/actions/**"}
