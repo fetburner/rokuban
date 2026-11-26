@@ -305,6 +305,17 @@ func runEncodedCutWaitsForChapterEdit(t *testing.T, newFixture NewMediaFixture) 
 	case <-time.After(5 * time.Second):
 		t.Fatal("PublishEncoded(cut) did not finish after the chapter edit committed")
 	}
+	// 再判定は編集後の区間を読む。同じ試行を編集後の keep で出し直すと、今度は公開される。
+	// 再判定を外す、または編集前の区間を読む実装は、ここで公開されず落ちる。
+	edited := chapters.KeepRanges(chapters.Derive(true, []chapters.Span{{StartMs: 0, EndMs: 20_000, Cut: true}}, nil, 60_000))
+	publishCalls = 0
+	again, againErr := f.Publisher.PublishEncoded(ctx, store.EncodedPublishInput{
+		RecordingID: id, Profile: "cut", Attempt: attempt, Cut: true, KeepRanges: edited,
+		RelPath: fmt.Sprintf("sites/%s/%d/cut.mp4", f.Site, id), SizeBytes: 1,
+	}, func() error { publishCalls++; return nil })
+	if againErr != nil || !again || publishCalls != 1 {
+		t.Fatalf("PublishEncoded(cut) with the edited keep = (%v, %v) with %d publish calls; want published once", again, againErr, publishCalls)
+	}
 }
 
 func runThumbnailReplacementPresence(t *testing.T, newFixture NewMediaFixture) {
@@ -325,15 +336,13 @@ func runThumbnailReplacementPresence(t *testing.T, newFixture NewMediaFixture) {
 		RecordingID: id, InputAssetID: original, RelPath: "thumbnails/next.jpg", SizeBytes: 1, DerivedGeneration: 1,
 		Expected: &store.ThumbnailObservation{ID: asset.ID, Store: asset.Store, RelPath: "thumbnails/first.jpg", SeekMs: &seek},
 	}
-	observeMissingContractCopy(t, f, original)
+	f.SetCopyMissing(t, f.CopyID(t, original), true)
 	calls := 0
 	publish := func() error { calls++; return nil }
 	if ok, err := f.Publisher.PublishThumbnail(ctx, next, publish); err != nil || ok || calls != 0 {
 		t.Fatalf("replacement with missing input = %v, %v; calls %d, want false, nil and no callback", ok, err, calls)
 	}
-	if err := f.Storage.DeleteMissingMediaAsset(ctx, f.CopyID(t, original)); err != nil {
-		t.Fatalf("restoring the input: %v", err)
-	}
+	f.SetCopyMissing(t, f.CopyID(t, original), false)
 	if ok, err := f.Publisher.PublishThumbnail(ctx, next, publish); err != nil || !ok || calls != 1 {
 		t.Fatalf("replacement after input is found = %v, %v; calls %d, want true, nil and one callback", ok, err, calls)
 	}

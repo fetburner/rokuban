@@ -71,6 +71,8 @@ type MediaFixture struct {
 	// SetRecordingRemovalTimes は録画の deleted_at・purged_at・superseded_at を指定した値に書く。
 	// nil は NULL にする。
 	SetRecordingRemovalTimes func(t *testing.T, recordingID int64, deletedAt, purgedAt, supersededAt *time.Time)
+	// SetCopyMissing は物理コピーを実体無しとして記録する（missing=true）、または記録を消す（false）。
+	SetCopyMissing func(t *testing.T, copyID int64, missing bool)
 	// ExpireIngestLease は録画の writer lease を DB の時計で過去にする。
 	ExpireIngestLease func(t *testing.T, recordingID int64)
 	// SetRecordingTrashed は録画をごみ箱に入れる（deleted_at を埋める）。
@@ -134,6 +136,8 @@ func RunMediaPublish(t *testing.T, newFixture NewMediaFixture) {
 	t.Helper()
 	t.Run("clearing ingest progress is idempotent", func(t *testing.T) { runClearIngestProgress(t, newFixture) })
 	RunIngestCheckpoint(t, newFixture)
+	RunIngestCheckpointCalls(t, newFixture)
+	RunMediaReconcileCalls(t, newFixture)
 	t.Run("original publication freezes policy and clears progress atomically", func(t *testing.T) { runOriginalPublication(t, newFixture) })
 	t.Run("original callback failure rolls back rows", func(t *testing.T) { runOriginalPublicationRollback(t, newFixture) })
 	t.Run("encoded publication rechecks attempt and desired profiles", func(t *testing.T) { runEncodedPublicationRechecks(t, newFixture) })
@@ -183,7 +187,17 @@ func runOriginalPublication(t *testing.T, newFixture NewMediaFixture) {
 			t.Fatalf("policy inputs = %+v; want recording %d/site %q without reservation", in, id, f.Site)
 		}
 		return store.EncodePolicySnapshot{KeepOriginal: "always", EncodeProfiles: []string{"h264"}, CMDetect: true}, nil
-	}, func() error { publishCalls++; return nil })
+	}, func() error {
+		publishCalls++
+		// 公開の中からは、まだ commit されていない方針と進捗の消去が見えないこと（同じ tx で行うこと）を見る。
+		if written, _ := mediaIngestProgress(t, f, id); written == nil {
+			t.Errorf("ingest progress was cleared before the original publication committed; the clear must share its transaction")
+		}
+		if _, ok := mediaEncodePolicy(t, f, id); ok {
+			t.Errorf("encode policy was frozen before the original publication committed; the freeze must share its transaction")
+		}
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("CommitOriginal: %v", err)
 	}
