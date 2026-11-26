@@ -281,37 +281,38 @@ export const homeWatchScreen = {
 }
 
 /**
- * settleAfterOpen は、開いた直後のフォント（Geist Variable / Noto Sans JP Variable）の
- * 適用と、有限のアニメーション（入場の遷移など）の終わりを待つ。以前は 400 ms の固定待ちだった。
- * 無限のアニメーション（animate-pulse など）は finished が解決しないので対象から外す。
- * 終わらない有限のアニメーションに当たっても上限 3000 ms で打ち切る。後段の判定は
- * 描画された状態を測るので、打ち切りは NG にしない。
+ * settleAfterOpen は、開いた後に描かれる内容が揃うまで待つ。待つのは次の 3 つ。
+ * フォント（Geist Variable / Noto Sans JP Variable）、有限のアニメーション（入場の遷移など。
+ * 無限のアニメーションは finished が解決しないので除く）、そして処理中の要求が 0 件で
+ * DOM が 150 ms 変わらないこと。二次クエリの応答は要求が終わるまで描かれないので、
+ * 要求を数えないと応答の前に計測が始まる。上限 3000 ms で揃わなければ、その旨を返して NG にする。
+ * 有限のアニメーションの待ちだけは上限で打ち切る（後段の判定は描画された状態を測る）。
  */
-async function settleAfterOpen(page) {
+async function settleAfterOpen(page, pending, label) {
   await page.evaluate(async () => {
     await document.fonts.ready
     const finite = document.getAnimations().filter((a) => a.effect?.getComputedTiming().endTime !== Infinity)
-    const settled = Promise.all(finite.map((a) => a.finished.catch(() => {})))
-    await Promise.race([settled, new Promise((resolve) => setTimeout(resolve, 3000))])
-    // データの到着で後から描かれる分を待つ。DOM が 150 ms 変わらなければ静かとみなす（上限 3000 ms）。
-    await new Promise((resolve) => {
-      let quiet
-      const done = () => {
-        observer.disconnect()
-        clearTimeout(cap)
-        clearTimeout(quiet)
-        resolve()
-      }
-      const observer = new MutationObserver(() => {
-        clearTimeout(quiet)
-        quiet = setTimeout(done, 150)
-      })
-      const cap = setTimeout(done, 3000)
-      observer.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true })
-      quiet = setTimeout(done, 150)
-    })
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    await Promise.race([
+      Promise.all(finite.map((a) => a.finished.catch(() => {}))),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ])
+    window.__e2eLastMutation = performance.now()
+    new MutationObserver(() => {
+      window.__e2eLastMutation = performance.now()
+    }).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true })
   })
+  const deadline = Date.now() + 3000
+  let quietFor = 0
+  while (Date.now() < deadline) {
+    quietFor = await page.evaluate(() => performance.now() - window.__e2eLastMutation)
+    if (pending.count === 0 && quietFor >= 150) break
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  if (pending.count !== 0 || quietFor < 150) {
+    return `${label}: 開いた後の要求・DOM が 3000ms で静まらない（処理中 ${pending.count} 件、DOM の最終変化から ${Math.round(quietFor)} ms）`
+  }
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  return null
 }
 
 /** createOpen は判定スクリプトごとに色設定の変更確認を一度だけ行う open を作る。 */
@@ -347,6 +348,19 @@ export function createOpen(browser, ng) {
       await context.addInitScript((value) => localStorage.setItem('rokuban:reservations:group', value), reservationGrouping)
     }
     const page = await context.newPage()
+    // 処理中の問い合わせを数える。route で応えたものも requestfinished を出す。
+    // EventSource は終わらない連続配信なので数えない（判定が接続を保留することがある）。
+    const pending = { count: 0 }
+    const isQuery = (request) => request.resourceType() !== 'eventsource'
+    page.on('request', (request) => {
+      if (isQuery(request)) pending.count++
+    })
+    page.on('requestfinished', (request) => {
+      if (isQuery(request)) pending.count--
+    })
+    page.on('requestfailed', (request) => {
+      if (isQuery(request)) pending.count--
+    })
     if (installClock) {
       await page.clock.install({ time: FIXED_NOW })
     } else {
@@ -390,7 +404,8 @@ export function createOpen(browser, ng) {
         ng.push(`${screen.name}/${theme}/${viewport.name}: 目印「${screen.wait}」が出ない`)
       })
     }
-    await settleAfterOpen(page)
+    const unsettled = await settleAfterOpen(page, pending, `${screen.name}/${theme}/${viewport.name}`)
+    if (unsettled !== null) ng.push(unsettled)
     return { context, page }
   }
 }
