@@ -191,6 +191,23 @@ func runStorageSyncScope(t *testing.T, newFixture NewMediaFixture) {
 	check("takamatsu", rows, err, map[[2]string]store.StorageObservationInput{
 		{"takamatsu", "media"}: {Path: "/mnt/takamatsu", TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90},
 	})
+
+	// 削除は束縛した置き場の中だけに効く。今回の config が要求しない root だけを消し、空の集合はその置き場の全行を消す。
+	if err := f.OpenStore("tokyo").Storage.DeleteStorageSyncExcept(ctx, []string{"media"}); err != nil {
+		t.Fatalf("DeleteStorageSyncExcept(tokyo, media): %v", err)
+	}
+	rows, err = f.OpenStore("").StorageSync.ListStorageSync(ctx)
+	check("after pruning tokyo to media", rows, err, map[[2]string]store.StorageObservationInput{
+		{"tokyo", "media"}:     {Path: "/media", TotalBytes: 100, UsedBytes: 25, AvailableBytes: 75},
+		{"takamatsu", "media"}: {Path: "/mnt/takamatsu", TotalBytes: 100, UsedBytes: 10, AvailableBytes: 90},
+	})
+	if err := f.OpenStore("takamatsu").Storage.DeleteStorageSyncExcept(ctx, nil); err != nil {
+		t.Fatalf("DeleteStorageSyncExcept(takamatsu, nil): %v", err)
+	}
+	rows, err = f.OpenStore("").StorageSync.ListStorageSync(ctx)
+	check("after clearing takamatsu", rows, err, map[[2]string]store.StorageObservationInput{
+		{"tokyo", "media"}: {Path: "/media", TotalBytes: 100, UsedBytes: 25, AvailableBytes: 75},
+	})
 }
 
 func runOrphanStoreScope(t *testing.T, newFixture NewMediaFixture) {
@@ -218,6 +235,74 @@ func runOrphanStoreScope(t *testing.T, newFixture NewMediaFixture) {
 func observeMissingContractCopy(t *testing.T, f MediaFixture, assetID int64) {
 	t.Helper()
 	f.SetCopyMissing(t, f.CopyID(t, assetID), true)
+}
+
+// runActiveMediaAssetsByStore は実体無しの差集合に使う active コピーが、束縛した置き場のものだけであることを検査する。
+func runActiveMediaAssetsByStore(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := t.Context()
+	activeRecording, deletingRecording, deletedRecording := f.NewRecording(t), f.NewRecording(t), f.NewRecording(t)
+	activePath := "sites/default/active-listed.m2ts"
+	activeAssetID := f.NewAsset(t, activeRecording, "original", nil, activePath, "active")
+	f.NewAsset(t, deletingRecording, "original", nil, "sites/default/deleting-listed.m2ts", "deleting")
+	f.NewAsset(t, deletedRecording, "original", nil, "sites/default/deleted-listed.m2ts", "deleted")
+	takamatsuPath := "sites/default/active-listed-takamatsu.m2ts"
+	f.AddCopy(t, activeAssetID, "takamatsu", takamatsuPath)
+
+	tokyo, err := f.OpenStore("tokyo").Storage.ListActiveMediaAssets(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveMediaAssets(tokyo): %v", err)
+	}
+	want := store.ActiveMediaAsset{
+		ID: f.CopyID(t, activeAssetID), MediaAssetID: activeAssetID, RecordingID: activeRecording,
+		RelPath: activePath, Kind: "original",
+	}
+	if len(tokyo) != 1 || tokyo[0] != want {
+		t.Fatalf("ListActiveMediaAssets(tokyo) = %+v, want only %+v", tokyo, want)
+	}
+
+	takamatsu, err := f.OpenStore("takamatsu").Storage.ListActiveMediaAssets(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveMediaAssets(takamatsu): %v", err)
+	}
+	if len(takamatsu) != 1 || takamatsu[0].RelPath != takamatsuPath || takamatsu[0].MediaAssetID != activeAssetID {
+		t.Fatalf("ListActiveMediaAssets(takamatsu) = %+v, want only the takamatsu copy at %q", takamatsu, takamatsuPath)
+	}
+}
+
+// runMissingAssetCandidatesByStore は実体無し候補の ID 一覧と消去が、束縛した置き場の候補だけに効くことを検査する。
+func runMissingAssetCandidatesByStore(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := t.Context()
+	assetID := f.NewAsset(t, f.NewRecording(t), "original", nil, "sites/default/missing-listed.m2ts", "active")
+	tokyoCopy := f.CopyID(t, assetID)
+	takamatsuCopy := f.AddCopy(t, assetID, "takamatsu", "sites/default/missing-listed-takamatsu.m2ts")
+	tokyo := f.OpenStore("tokyo").Storage
+	takamatsu := f.OpenStore("takamatsu").Storage
+	if err := tokyo.UpsertMissingMediaAsset(ctx, tokyoCopy); err != nil {
+		t.Fatalf("UpsertMissingMediaAsset(tokyo): %v", err)
+	}
+	if err := takamatsu.UpsertMissingMediaAsset(ctx, takamatsuCopy); err != nil {
+		t.Fatalf("UpsertMissingMediaAsset(takamatsu): %v", err)
+	}
+
+	check := func(when string, s store.StorageObservation, want ...int64) {
+		t.Helper()
+		got, err := s.ListAllMissingMediaAssetIDs(ctx)
+		slices.Sort(got)
+		slices.Sort(want)
+		if err != nil || !slices.Equal(got, want) {
+			t.Fatalf("ListAllMissingMediaAssetIDs (%s) = %v, %v; want %v", when, got, err, want)
+		}
+	}
+	check("tokyo", tokyo, tokyoCopy)
+	check("takamatsu", takamatsu, takamatsuCopy)
+
+	if err := tokyo.DeleteMissingMediaAsset(ctx, tokyoCopy); err != nil {
+		t.Fatalf("DeleteMissingMediaAsset(tokyo): %v", err)
+	}
+	check("tokyo after the candidate was observed again", tokyo)
+	check("takamatsu after tokyo was cleared", takamatsu, takamatsuCopy)
 }
 
 func runMissingDerivativeCandidates(t *testing.T, newFixture NewMediaFixture) {

@@ -17,25 +17,35 @@ import (
 
 var mediaContractEventSeq atomic.Int32
 
-func TestMediaServingSelectionContract(t *testing.T) {
-	contracttest.RunMediaServingSelection(t, newMediaContractFixture)
-}
-
 func TestMediaPublishContract(t *testing.T) {
 	t.Parallel()
 	contracttest.RunMediaPublish(t, newMediaContractFixture)
 }
 
-// newMediaContractFixture は MySQL の実装と、RunMediaPublish が使う状態作りのフックを組み立てる。
-// 状態作りは test 側の SQL で行う（store の契約ではない）。Storage・Precheck・Reader は RunMediaPublish が使わないので nil のまま。
+func TestMediaStoreContract(t *testing.T) {
+	t.Parallel()
+	contracttest.RunMedia(t, newMediaContractFixture)
+}
+
+// newMediaContractFixture は MySQL の実装と、RunMedia・RunMediaPublish が使う状態作りのフックを組み立てる。
 func newMediaContractFixture(t *testing.T) contracttest.MediaFixture {
-	db := mysqltest.SetupDB(t)
+	return newMediaContractFixtureOn(mysqltest.SetupDB(t))
+}
+
+// newMediaContractFixtureOn は migration 済みの db の上に fixture を組み立てる。
+// 状態作りは test 側の SQL で行う（store の契約ではない）。読み取り・観測・公開の実装は、いずれも既定の置き場 tokyo に束縛する。
+func newMediaContractFixtureOn(db *sql.DB) contracttest.MediaFixture {
 	zero := store.StoragePolicy{}
 	routing := store.NewStoragePolicy(nil, []string{"tokyo", "osaka"}, "remote")
+	tokyo := NewMediaInStore(db, "tokyo", zero)
 	fixture := contracttest.MediaFixture{
-		Serving:   NewMediaInStore(db, "tokyo", zero),
-		Reconcile: NewMediaInStore(db, "tokyo", zero),
-		Publisher: NewMediaInStore(db, "tokyo", zero),
+		Serving:   tokyo,
+		Reconcile: tokyo,
+		Precheck:  tokyo,
+		Storage:   tokyo,
+		Reader:    tokyo,
+		Progress:  tokyo,
+		Publisher: tokyo,
 		Query:     NewRecordingQueries(db, "tokyo"),
 		Catalog:   NewCatalog(db, []string{store.DefaultSite}, "tokyo"),
 		Chapters:  NewChapterEdits(db),
@@ -45,7 +55,7 @@ func newMediaContractFixture(t *testing.T) contracttest.MediaFixture {
 			if name != "" {
 				scoped = NewMediaInStore(db, name, routing)
 			}
-			return contracttest.MediaStoreScope{Publisher: scoped, Reclaim: scoped}
+			return contracttest.MediaStoreScope{Locator: scoped, Storage: scoped, StorageSync: scoped, Publisher: scoped, Reclaim: scoped}
 		},
 		NewRecording: func(t *testing.T) int64 {
 			t.Helper()
@@ -63,6 +73,7 @@ VALUES (?, 32678, 5168, ?, 'media contract service', 'GR', 'media contract chann
 		},
 	}
 	configureMediaPublishFixtureMySQL(db, &fixture)
+	configureMediaObservationFixtureMySQL(db, &fixture)
 	return fixture
 }
 
@@ -162,6 +173,10 @@ SELECT id, ?, ?, derived_generation, 'active' FROM media_assets WHERE id = ?`, s
 	f.SetCopyState = func(t *testing.T, copyID int64, state string) {
 		t.Helper()
 		execFixture(t, db, `UPDATE media_asset_copies SET state = ?, deleted_at = NULL WHERE id = ?`, state, copyID)
+	}
+	f.DeleteCopy = func(t *testing.T, copyID int64) {
+		t.Helper()
+		execFixture(t, db, `DELETE FROM media_asset_copies WHERE id = ?`, copyID)
 	}
 	f.SetCopyCreatedAt = func(t *testing.T, copyID int64, createdAt time.Time) {
 		t.Helper()

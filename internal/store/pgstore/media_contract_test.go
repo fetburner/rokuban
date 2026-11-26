@@ -24,7 +24,7 @@ var mediaContractEventID atomic.Int32
 
 func TestMediaStoreContract(t *testing.T) {
 	contracttest.RunMedia(t, newMediaStoreContractFixture)
-	contracttest.RunMediaServingSelection(t, newMediaStoreContractFixture)
+	contracttest.RunMediaIngestAndTransfer(t, newMediaStoreContractFixture)
 	contracttest.RunMediaPublish(t, newMediaStoreContractFixture)
 }
 
@@ -524,6 +524,12 @@ func configureMediaObservationFixture(t *testing.T, pool *pgxpool.Pool, fixture 
 
 func configureMediaStorageFixture(t *testing.T, pool *pgxpool.Pool, fixture *contracttest.MediaFixture) {
 	t.Helper()
+	fixture.DeleteCopy = func(t *testing.T, copyID int64) {
+		t.Helper()
+		if _, err := pool.Exec(t.Context(), `DELETE FROM media_asset_copies WHERE id = $1`, copyID); err != nil {
+			t.Fatalf("deleting copy %d: %v", copyID, err)
+		}
+	}
 	fixture.SetOrphanFirstSeenAgo = func(t *testing.T, relPath string, ago time.Duration) {
 		t.Helper()
 		if _, err := pool.Exec(context.Background(),
