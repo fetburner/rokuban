@@ -26,6 +26,11 @@ func TestMediaPublishContract(t *testing.T) {
 	contracttest.RunMediaPublish(t, newMediaContractFixture)
 }
 
+func TestMediaStoreContract(t *testing.T) {
+	t.Parallel()
+	contracttest.RunMedia(t, newMediaContractFixture)
+}
+
 // newMediaContractFixture は MySQL の実装と、RunMediaPublish が使う状態作りのフックを組み立てる。
 // 状態作りは test 側の SQL で行う（store の契約ではない）。Storage・Precheck・Reader は RunMediaPublish が使わないので nil のまま。
 func newMediaContractFixture(t *testing.T) contracttest.MediaFixture {
@@ -35,6 +40,10 @@ func newMediaContractFixture(t *testing.T) contracttest.MediaFixture {
 	fixture := contracttest.MediaFixture{
 		Serving:   NewMediaInStore(db, "tokyo", zero),
 		Reconcile: NewMediaInStore(db, "tokyo", zero),
+		Precheck:  NewMediaInStore(db, "tokyo", zero),
+		Storage:   NewMediaInStore(db, "tokyo", zero),
+		Reader:    NewMediaInStore(db, "tokyo", zero),
+		Progress:  NewMediaInStore(db, "tokyo", zero),
 		Publisher: NewMediaInStore(db, "tokyo", zero),
 		Query:     NewRecordingQueries(db, "tokyo"),
 		Catalog:   NewCatalog(db, []string{store.DefaultSite}, "tokyo"),
@@ -45,7 +54,7 @@ func newMediaContractFixture(t *testing.T) contracttest.MediaFixture {
 			if name != "" {
 				scoped = NewMediaInStore(db, name, routing)
 			}
-			return contracttest.MediaStoreScope{Publisher: scoped, Reclaim: scoped}
+			return contracttest.MediaStoreScope{Locator: scoped, Storage: scoped, StorageSync: scoped, Publisher: scoped, Reclaim: scoped}
 		},
 		NewRecording: func(t *testing.T) int64 {
 			t.Helper()
@@ -63,6 +72,7 @@ VALUES (?, 32678, 5168, ?, 'media contract service', 'GR', 'media contract chann
 		},
 	}
 	configureMediaPublishFixtureMySQL(db, &fixture)
+	configureMediaObservationFixtureMySQL(db, &fixture)
 	return fixture
 }
 
