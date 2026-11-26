@@ -1,14 +1,16 @@
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 
-# asynq 構成の**共有部品**（Redis と、asynq で notifier が担うものの差分）。
+# asynq 構成の**共有部品**。今は Redis だけを置く。
 #
 # 置き場は component にした。**ここに置くのは overlay の種類によらず同じ形のもの**だけ:
 #
 #   - Redis（永続ボリュームを持たない。redis.yaml）
-#   - notifier の常駐 worker を外す（base は `notifier,worker --queues ruler` で、
-#     River の保守と ruler の常駐実行のため。asynq でこれが残ると、常駐 consumer が
-#     ruler のタスクを ScaledJob の Job より先に取る）
+#
+# notifier の常駐 worker は base のまま残す（`--roles notifier,worker --queues ruler`）。
+# asynq でも River と同じく、PUT の ruler ヒントを常駐が即座に引く。これを外すと、
+# ruler の反映が ScaledJob の pollingInterval と Job の起動に縛られる（判定 1.8 が
+# 閾値 3 秒を超える。docs/operations/k8s.md §5）。件数の口は常駐にある notifier が出す。
 #
 # ここに**置かないもの**と理由:
 #
@@ -21,19 +23,8 @@ kind: Component
 #     target が一致しなくなる。
 #   - Secret（REDIS_URL を含む）: 環境の仕事（base は Secret を出荷しない）。
 #
-# E10-7 で ScaledJob のトリガが base に寄ると、ここに残るのは Redis と notifier の
-# 差分だけになる。トリガの URL の site 修飾は、そのとき site/ の argv と同じ位置の
-# patch で当てる。
+# E10-7 で ScaledJob のトリガが base に寄ると、ここに残るのは Redis だけになる。
+# トリガの URL の site 修飾は、そのとき site/ の argv と同じ位置の patch で当てる。
 
 resources:
   - redis.yaml
-
-patches:
-  # notifier は件数を出すだけに留める。`--sites=` は River の形と同じく空を明示する。
-  - target:
-      kind: Deployment
-      name: rokuban-notifier
-    patch: |-
-      - op: replace
-        path: /spec/template/spec/containers/0/args
-        value: ["server", "--roles", "notifier", "--sites=", "--config", "/etc/rokuban/config.yml"]

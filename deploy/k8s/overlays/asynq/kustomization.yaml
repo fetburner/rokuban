@@ -6,7 +6,7 @@ kind: Kustomization
 # River 構成との差分は overlay の 3 つだけ:
 #   1. config.yml（`worker.engine: asynq` と `redis_url`。同じ節の外は base と同じ。
 #      `deploy/k8s/asynq_test.go` が差分を worker 節に閉じ込めていることを固定する）
-#   2. `../../asynq` component（Redis と、notifier の常駐 worker を外す patch）
+#   2. `../../asynq` component（Redis）
 #   3. ScaledJob 13 本のトリガを metrics-api に差し替える（下の patches）
 #
 # **Secret は出荷しない。** 環境が `rokuban-secrets` に `REDIS_URL`

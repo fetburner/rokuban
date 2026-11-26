@@ -301,12 +301,13 @@ func TestAsynqRedisIsReachableByItsServiceName(t *testing.T) {
 	}
 }
 
-// TestAsynqNotifierDoesNotConsumeQueues は、asynq の component が notifier の
-// 常駐 worker を外すことを固定する。base の notifier は River の保守のために
-// `worker` ロールと `--queues ruler` を持つ。asynq でそれが残ると、常駐 consumer
-// が ruler のタスクを ScaledJob の Job より先に取り、KEDA が起こす先がなくなる
-// （実測: 件数は 0 のまま `asynq:{ruler}:processed` だけが進んだ）。
-func TestAsynqNotifierDoesNotConsumeQueues(t *testing.T) {
+// TestAsynqNotifierKeepsItsResidentRulerWorker は、asynq 構成でも notifier が
+// `--roles notifier,worker --queues ruler` の常駐 worker を持つことを固定する。
+// PUT の ruler ヒントは常駐が即座に引く（River と同じ経路）。ここを外すと、反映が
+// ScaledJob の pollingInterval と Job の起動に縛られ、判定 1.8 が閾値を超える。
+// 実測: 外したとき 9〜11 秒、残したとき River と同じ 0〜1 秒。
+// asynq の component は notifier の args に触れない（base の形のまま）。
+func TestAsynqNotifierKeepsItsResidentRulerWorker(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(asynqComponentDir, "kustomization.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -315,38 +316,26 @@ func TestAsynqNotifierDoesNotConsumeQueues(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &k); err != nil {
 		t.Fatal(err)
 	}
-	var args []string
-	found := false
 	for _, p := range k.Patches {
-		if p.Target.Kind != "Deployment" || p.Target.Name != "rokuban-notifier" {
-			continue
+		if p.Target.Kind == "Deployment" && p.Target.Name == "rokuban-notifier" {
+			t.Errorf("the asynq component patches the notifier; the resident ruler worker must stay (base args)")
 		}
-		var ops []jsonPatchOp
-		if err := yaml.Unmarshal([]byte(p.Patch), &ops); err != nil {
-			t.Fatalf("decoding the notifier patch: %v", err)
-		}
-		if len(ops) != 1 || ops[0].Path != "/spec/template/spec/containers/0/args" {
-			t.Fatalf("notifier patch must replace only the container args, got %+v", ops)
-		}
-		raw, _ := yaml.Marshal(ops[0].Value)
-		if err := yaml.Unmarshal(raw, &args); err != nil {
-			t.Fatal(err)
-		}
-		found = true
 	}
-	if !found {
-		t.Fatal("the asynq component does not patch the notifier args (base runs notifier,worker --queues ruler)")
-	}
-	if !argsContainPair(args, "--roles", "notifier") {
-		t.Errorf("asynq notifier --roles = %v, want exactly notifier", args)
-	}
-	for _, a := range args {
-		if a == "--queues" {
-			t.Errorf("asynq notifier passes --queues (%v); a resident consumer would take ScaledJob work before the Job starts", args)
+	var notifier []string
+	for _, o := range loadBase(t) {
+		if o.kind() == "Deployment" && o.name() == "rokuban-notifier" {
+			c := soleContainer(t, workload{object: o, dir: baseDir})
+			notifier = argsOf(c)
 		}
-		if a == "worker" || strings.Contains(a, "worker") {
-			t.Errorf("asynq notifier args %v still include the worker role", args)
-		}
+	}
+	if notifier == nil {
+		t.Fatal("base has no notifier Deployment")
+	}
+	if !argsContainPair(notifier, "--roles", "notifier,worker") {
+		t.Errorf("base notifier --roles = %v, want notifier,worker (the resident worker)", notifier)
+	}
+	if !argsContainPair(notifier, "--queues", "ruler") {
+		t.Errorf("base notifier --queues = %v, want ruler (the resident ruler consumer)", notifier)
 	}
 }
 
