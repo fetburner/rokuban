@@ -14,6 +14,8 @@ pgstore はドメインごとの struct（pool を持つ）で、そのドメイ
 
 置き場は `internal/store` である。1 パッケージにするのは、エラーとドメイン型を全ドメインで共有するためである。契約パッケージは pgx と `sqlcgen` を import せず、depguard がこれを検査する。
 
+PR の CI が回すテストの選定を狭めることは、契約を分ける理由にしない。adapter の pgstore は全ドメインの契約を実装し、store を使うパッケージのテストの多くは `pgstoretest` を通して pgstore を import する。そのため、契約をドメインごとに分けても、1 つのドメインの契約を変えるだけでそれらのテストが選ばれる。
+
 実装は方言ごとの `internal/store/pgstore` と `internal/store/mysqlstore` に置く。MySQL の接続プール作成と goose migration は `internal/mysqldb` に集め、初期 migration は同パッケージ内に置く。これにより、接続設定や migration 処理をドメインごとのパッケージに重複して持たせない。MySQL のクエリは `database/sql` の手書き SQL を基本にする。
 
 MySQL は分離レベル・`sql_mode`・接続の照合順序・タイムゾーンを接続ごとに設定し、作成時に接続上の値を検査する。サーバーや DB の既定照合順序だけでは接続の照合順序が決まらないため、`@@collation_connection` を確認する。
@@ -25,6 +27,10 @@ MySQL のデッドロックと lock wait timeout は自動再試行しない。�
 <details><summary>根拠</summary>
 
 - テスト DB 作成方式の計測: `TestMeasureDatabaseSetupStrategies`
+- 2026-11-26、main（c2927eba）で測定。store 本体（`_test.go` 以外）を変えると、citest は 44 パッケージを選ぶ。そのうち 25 は、pgstore の本体を変えたときにも選ばれる。
+- 同じ時点の依存グラフで、store を変えた直近 9 コミットの選定を見積もった。契約をファイル単位まで分けた場合（分割の効果の上限）、go test の shard 数（最大 3）が減るのは 1 コミットだけ。テスト合計秒数の減りは 0〜21%。
+- 見積もりの方法: go/types で各パッケージが参照する store のファイルを取り、import グラフの store への辺を参照先のファイルへの辺に置き換えて、citest と同じ規則で選定を数えた。現状の形では、この方法の選定は citest の実測と一致する。テスト合計秒数は、main の CI のパッケージ別の所要時間で数えた。
+- 見積もりの仮定: pgstore・mysqlstore・contracttest は全ドメインを実装するので、契約を分けても全ドメインに依存するとした。
 
 </details>
 
