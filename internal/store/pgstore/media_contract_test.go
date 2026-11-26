@@ -24,6 +24,7 @@ var mediaContractEventID atomic.Int32
 
 func TestMediaStoreContract(t *testing.T) {
 	contracttest.RunMedia(t, newMediaStoreContractFixture)
+	contracttest.RunMediaServingSelection(t, newMediaStoreContractFixture)
 	contracttest.RunMediaPublish(t, newMediaStoreContractFixture)
 }
 
@@ -349,6 +350,16 @@ VALUES ($1, $2, $3, $4, 'deleted', now()) RETURNING id`, assetID, storeName, rel
 			t.Fatalf("adding tombstone copy for asset %d: %v", assetID, err)
 		}
 		return id
+	}
+	// ServingIn の "" は置き場で絞らない読み手（testMedia の既定と同じ）。
+	fixture.ServingIn = func(storeName string) store.MediaServing {
+		return testMedia(pool, storeName, "")
+	}
+	fixture.SetCopyState = func(t *testing.T, copyID int64, state string) {
+		t.Helper()
+		if _, err := pool.Exec(t.Context(), `UPDATE media_asset_copies SET state = $2, deleted_at = NULL WHERE id = $1`, copyID, state); err != nil {
+			t.Fatalf("setting copy %d state to %s: %v", copyID, state, err)
+		}
 	}
 	fixture.SetCopyMissing = func(t *testing.T, copyID int64, missing bool) {
 		t.Helper()

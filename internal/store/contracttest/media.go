@@ -34,8 +34,12 @@ type MediaFixture struct {
 	OpenStore             func(name string) MediaStoreScope
 	NewIngestStoreChooser func(policy store.StoragePolicy) store.IngestStoreChooser
 	AddCopy               func(t *testing.T, assetID int64, storeName, relPath string) int64
-	SetIngestCheckpoint   func(t *testing.T, recordingID, writerGeneration int64)
-	SetIngestDisplayPath  func(t *testing.T, recordingID int64, relPath string)
+	// ServingIn は storeName の置き場に束縛した配信の読み手を返す。storeName が "" なら置き場で絞らない読み手。
+	ServingIn func(storeName string) store.MediaServing
+	// SetCopyState はコピー行の状態だけを書く（active・deleting など。公開や削除の遷移は通さない）。
+	SetCopyState         func(t *testing.T, copyID int64, state string)
+	SetIngestCheckpoint  func(t *testing.T, recordingID, writerGeneration int64)
+	SetIngestDisplayPath func(t *testing.T, recordingID int64, relPath string)
 	// Chapters は、公開と直列化する書き手として使う。
 	Chapters store.ChapterEdits
 
@@ -128,6 +132,12 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("audit lists every media asset path including reserved namespaces", func(t *testing.T) { runMediaAuditPaths(t, newFixture) })
 	t.Run("orphan ageing compares against the database clock", func(t *testing.T) { runMediaOrphanAgeing(t, newFixture) })
 	t.Run("missing asset ageing compares against the database clock", func(t *testing.T) { runMediaMissingAgeing(t, newFixture) })
+}
+
+// RunMediaServingSelection は配信の読み手がコピーを選ぶ規則の契約を実行する。RunMedia 全体は MySQL の fixture がまだ満たさないので、この主張だけを直接回せるようにしている。
+func RunMediaServingSelection(t *testing.T, newFixture NewMediaFixture) {
+	t.Helper()
+	runServingCopySelection(t, newFixture)
 }
 
 // RunMediaPublish はメディアの公開・準備・回収と in-place 登録の契約を実行する。

@@ -292,11 +292,13 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 
 遷移の時点で削除条件を再確認するのは `MarkUntilEncodedDeleting` と `RevertToActive` だけである。ごみ箱の猶予の cutoff は呼び出し側から受け取る（[時刻](#時刻) の例外）。
 
-原本の規則・FS 置き場・派生物の置き場は、server の起動時に `StoragePolicy` にし、store の構築時に束ねる。設定で決まる値をメソッドの引数で渡すと、構築時に束ねた方針と異なる方針を渡せてしまう。JSON にするのは pgstore である。
+原本の規則・FS 置き場・派生物の置き場は、server の起動時に `StoragePolicy` にし、store の構築時に束ねる。設定で決まる値をメソッドの引数で渡すと、構築時に束ねた方針と異なる方針を渡せてしまう。JSON にするのは pgstore と mysqlstore である。
 
 `PrepareMediaAssetTransfer` の `fsStores` は、パスごとにマーカーを検査して決まる実行時のマウント集合なので引数に残す。設定にある FS 置き場をすべて渡すと、マウントしていない置き場の派生物コピーを転送元に選べてしまう。
 
 配置削除は転送先が 2 つ以上あるときだけ有効にする。無効なら `PlacementPolicy` はゼロ値を返し、desired から外れたコピーも削除候補にならない。
+
+MySQL には引数を取る view が無いので、置き場や方針を引数に取る until_encoded と配置の述語は SQL 断片の定数に置く。引数を取らない旧世代の判定は view にする。MySQL の UPDATE は、副問い合わせで更新対象の表を読むとエラー 1093 になる。そのため遷移では、対象のコピー行を `FOR UPDATE` で取った後に削除条件を SELECT で判定し、UPDATE は id で行う。
 
 <details><summary>根拠</summary>
 

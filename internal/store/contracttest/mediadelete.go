@@ -12,24 +12,58 @@ import (
 )
 
 // MediaDeleteFixture はメディア削除契約と、その状態を作るための実装別フックをまとめる。
+// フックは状態を作るだけで、store の契約ではない（SQL で直接書いてよい）。
 type MediaDeleteFixture struct {
-	Store                         store.MediaDelete
-	Storage                       store.StorageObservation
-	NewOldGeneration              func(t *testing.T) (oldCopyID, currentCopyID int64)
-	NewRetainedEncoded            func(t *testing.T, recordingID int64)
-	SetAssetState                 func(t *testing.T, assetID int64, state string)
-	Serving                       store.MediaServing
-	Catalog                       store.Catalog
-	NewUntilEncodedOriginal       func(t *testing.T) (recordingID, assetID int64)
+	// Store は worker の置き場（BoundStore）に束縛し、派生物の置き場も同じ置き場とする。
+	Store store.MediaDelete
+	// StoreWithDerived は BoundStore に束縛し、派生物の置き場を derivedStore にする（"" なら未設定）。
+	StoreWithDerived func(derivedStore string) store.MediaDelete
+	// StoreWithPlacement は BoundStore に束縛し、原本の規則と派生の置き場の方針で作り、配置削除の有無は enabled で決める。
+	StoreWithPlacement func(originalRules []store.OriginalStoreRule, derivedStore string, enabled bool) store.MediaDelete
+	// BoundStore は Store が束縛している置き場の名前である。
+	BoundStore string
+	Serving    store.MediaServing
+	Catalog    store.Catalog
+	// MarkMissing は copyID の実体が無いことを観測として記録する。
+	MarkMissing func(t *testing.T, copyID int64)
+	// NewOriginal は録画を 1 件作り、その原本を BoundStore の active コピーで持たせる。
+	NewOriginal func(t *testing.T) (recordingID, assetID int64)
+	// NewOldGeneration は派生物の旧世代コピー（BoundStore・active）と、その現行世代のコピーを作る。
+	NewOldGeneration func(t *testing.T) (oldCopyID, currentCopyID int64)
+	// NewRetainedEncoded は録画に残る版（別の profile）の encoded を作り、その asset ID を返す。
+	NewRetainedEncoded func(t *testing.T, recordingID int64) (assetID int64)
+	SetAssetState      func(t *testing.T, assetID int64, state string)
+	// NewUntilEncodedOriginal は until_encoded の削除条件を満たす録画を作る（派生物は BoundStore にある）。
+	NewUntilEncodedOriginal func(t *testing.T) (recordingID, assetID int64)
+	// AssetOfKind は録画の kind の asset ID を返す（encoded が複数あるときは使わない）。
+	AssetOfKind func(t *testing.T, recordingID int64, kind string) int64
+	// BeginUntilEncodedInvalidation は録画の行をロックし、作り直し要求を書いた tx を開いたままにする（commit を返す）。
 	BeginUntilEncodedInvalidation func(t *testing.T, recordingID int64) (commit func())
-	NewDeletedAsset               func(t *testing.T) (recordingID, assetID int64)
-	NewRemovedEncoded             func(t *testing.T) (recordingID, assetID int64)
-	CopyID                        func(t *testing.T, assetID int64) int64
+	// BeginCopyDeletion は copyID を deleted にする tx を開いたままにする（commit を返す）。
+	BeginCopyDeletion func(t *testing.T, copyID int64) (commit func())
+	NewDeletedAsset   func(t *testing.T) (recordingID, assetID int64)
+	NewRemovedEncoded func(t *testing.T) (recordingID, assetID int64)
+	// TrashRecording は録画をごみ箱に入れる。purgeRequested なら即時削除の要求も書く。
+	TrashRecording func(t *testing.T, recordingID int64, deletedAt time.Time, purgeRequested bool)
+	// CopyID は assetID の BoundStore のコピー ID を返す。
+	CopyID func(t *testing.T, assetID int64) int64
+	// CopyState はコピー行の状態を返す。
+	CopyState func(t *testing.T, copyID int64) string
+	// MoveCopy は assetID のコピーを from の置き場から to の置き場へ移し、移した後のコピー ID を返す。
+	MoveCopy func(t *testing.T, assetID int64, from, to string) int64
+	// AdvanceDerivedGeneration は派生物の現行世代を 1 つ進める（新しい世代のコピーはまだ無い）。
+	AdvanceDerivedGeneration func(t *testing.T, assetID int64)
+	// AddCurrentCopy は assetID の現行世代の active コピーを storeName に作り、そのコピー ID を返す。
+	AddCurrentCopy func(t *testing.T, assetID int64, storeName string) int64
 	// RemovalRequestExists は削除要求の行があるかを返す。ListRemovedEncodedAssetsToDelete は
 	// deleted の asset を返さないので、MarkDeleted が要求の行を消したかを確かめられない。
 	RemovalRequestExists func(t *testing.T, recordingID int64, profile string) bool
-	WaitForLockWaiter    func(t *testing.T, operation string)
+	// WaitForLockWaiter は、operation が行ロックの FOR UPDATE で待つまで待つ。
+	WaitForLockWaiter func(t *testing.T, operation string)
 }
+
+// mediaDeleteOtherStore は、worker の置き場以外の置き場の名前である。
+const mediaDeleteOtherStore = "other-store"
 
 // NewMediaDeleteStore はメディア削除契約の実装とフィクスチャを作る。
 type NewMediaDeleteStore func(t *testing.T) MediaDeleteFixture
@@ -38,10 +72,37 @@ type NewMediaDeleteStore func(t *testing.T) MediaDeleteFixture
 func RunMediaDelete(t *testing.T, newStore NewMediaDeleteStore) {
 	t.Helper()
 	t.Run("until-encoded deletion requires present derived copies", func(t *testing.T) { runUntilEncodedPresence(t, newStore) })
+	t.Run("until-encoded deletion requires derived copies in the desired store", func(t *testing.T) {
+		runUntilEncodedDesiredStore(t, newStore)
+	})
+	t.Run("until-encoded deletion requires a current-generation derived copy", func(t *testing.T) {
+		runUntilEncodedCurrentGeneration(t, newStore)
+	})
+	t.Run("until-encoded deletion uses the derived store, not the worker store", func(t *testing.T) {
+		runUntilEncodedUsesDerivedStore(t, newStore)
+	})
 	t.Run("old-generation deletion requires a present current copy", func(t *testing.T) { runOldGenerationPresence(t, newStore) })
+	t.Run("old-generation deletion waits for the overlap cutoff", func(t *testing.T) { runOldGenerationOverlap(t, newStore) })
 	t.Run("removed encoded deletion requires another present version", func(t *testing.T) { runRemovedEncodedPresence(t, newStore) })
+	t.Run("removed encoded deletion counts only current-generation copies", func(t *testing.T) {
+		runRemovedEncodedCurrentGeneration(t, newStore)
+	})
+	t.Run("trash deletion takes recordings past the grace or with a purge request", func(t *testing.T) {
+		runTrashDeletion(t, newStore)
+	})
+	t.Run("placement deletion prunes a copy once its desired copy is past the overlap", func(t *testing.T) {
+		runPlacementPrunes(t, newStore)
+	})
+	t.Run("list methods ignore copies in other stores", func(t *testing.T) { runListsIgnoreOtherStoreCopies(t, newStore) })
+	t.Run("transitions ignore copies in other stores", func(t *testing.T) { runTransitionsIgnoreOtherStoreCopies(t, newStore) })
+	t.Run("until-encoded transition refuses a trashed recording", func(t *testing.T) {
+		runUntilEncodedTrashed(t, newStore)
+	})
 	t.Run("until-encoded transition waits for and rechecks recording writes", func(t *testing.T) {
 		runUntilEncodedSerialization(t, newStore)
+	})
+	t.Run("mark deleting waits for a concurrent copy transition and does not resurrect", func(t *testing.T) {
+		runMarkDeletingWaitsForCopyTransition(t, newStore)
 	})
 	t.Run("revert does not restore a deleted asset", func(t *testing.T) {
 		runDeletedAssetIsNotReverted(t, newStore)
@@ -134,6 +195,43 @@ func runDeletedAssetIsNotReverted(t *testing.T, newStore NewMediaDeleteStore) {
 		t.Fatal("RevertToActive(deleted) updated the asset, want no change")
 	}
 	assertMediaAssetDeleted(t, f, recordingID, assetID, store.AssetKindOriginal, "")
+}
+
+// runMarkDeletingWaitsForCopyTransition は、別の tx がコピーを deleted にしている間は待ち、
+// commit 後にその結果を見て、deleted を deleting に戻さない。
+func runMarkDeletingWaitsForCopyTransition(t *testing.T, newStore NewMediaDeleteStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	_, assetID := f.NewOriginal(t)
+	copyID := f.CopyID(t, assetID)
+	commit := f.BeginCopyDeletion(t, copyID)
+	var commitOnce sync.Once
+	commitBlocker := func() { commitOnce.Do(commit) }
+	defer commitBlocker()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.Store.MarkDeleting(ctx, copyID, "active")
+		done <- err
+	}()
+	f.WaitForLockWaiter(t, "MarkDeleting")
+	select {
+	case err := <-done:
+		t.Fatalf("MarkDeleting returned (%v) before the concurrent transition committed, want it to wait", err)
+	default:
+	}
+	commitBlocker()
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			t.Fatalf("MarkDeleting after commit: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("MarkDeleting did not finish after the concurrent transition committed")
+	}
+	if got := f.CopyState(t, copyID); got != "deleted" {
+		t.Fatalf("copy state = %q, want deleted (MarkDeleting must not move a deleted copy back to deleting)", got)
+	}
 }
 
 func assertMediaAssetDeleted(t *testing.T, f MediaDeleteFixture, recordingID, assetID int64, kind, profile string) {

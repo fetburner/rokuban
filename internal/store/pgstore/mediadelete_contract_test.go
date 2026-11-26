@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -15,6 +16,7 @@ import (
 
 var mediaDeleteContractEventID atomic.Int32
 
+//nolint:funlen // 契約の各フックを 1 か所に並べる表。分割すると、フックと状態作りの対応が追えなくなる。
 func TestMediaDeleteStoreContract(t *testing.T) {
 	contracttest.RunMediaDelete(t, func(t *testing.T) contracttest.MediaDeleteFixture {
 		pool := testutil.SetupDB(t)
@@ -39,9 +41,29 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 
 			return id
 		}
+		storage := testMedia(pool, dbtest.StoreName, "")
 		return contracttest.MediaDeleteFixture{
-			Store: testMedia(pool, dbtest.StoreName, dbtest.StoreName), Serving: testMedia(pool, dbtest.StoreName, ""), Catalog: NewCatalog(pool, []string{store.DefaultSite}, dbtest.StoreName),
-			Storage: testMedia(pool, dbtest.StoreName, ""),
+			Store:      testMedia(pool, dbtest.StoreName, dbtest.StoreName),
+			BoundStore: dbtest.StoreName,
+			StoreWithDerived: func(derivedStore string) store.MediaDelete {
+				return testMedia(pool, dbtest.StoreName, derivedStore)
+			},
+			StoreWithPlacement: func(rules []store.OriginalStoreRule, derivedStore string, enabled bool) store.MediaDelete {
+				return NewMediaInStore(pool, dbtest.StoreName, store.NewStoragePolicy(rules, nil, derivedStore).WithPlacementEnabled(enabled))
+			},
+			Serving: storage,
+			Catalog: NewCatalog(pool, []string{store.DefaultSite}, dbtest.StoreName),
+			MarkMissing: func(t *testing.T, copyID int64) {
+				t.Helper()
+				if err := storage.UpsertMissingMediaAsset(t.Context(), copyID); err != nil {
+					t.Fatalf("reporting missing copy %d: %v", copyID, err)
+				}
+			},
+			NewOriginal: func(t *testing.T) (int64, int64) {
+				t.Helper()
+				recordingID := newRecording(t)
+				return recordingID, newAsset(t, recordingID, store.AssetKindOriginal, nil)
+			},
 			SetAssetState: func(t *testing.T, assetID int64, state string) {
 				dbtest.SetMediaAssetState(t, pool, assetID, state)
 			},
@@ -54,13 +76,13 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 				current := dbtest.ReplaceDerivedMediaAssetCopy(t, pool, assetID, dbtest.StoreName, path, 1)
 				return oldCopy, current
 			},
-			NewRetainedEncoded: func(t *testing.T, recordingID int64) {
+			NewRetainedEncoded: func(t *testing.T, recordingID int64) int64 {
 				t.Helper()
 				if _, err := pool.Exec(t.Context(), `
 UPDATE recording_processing_policy SET encode_profiles = ARRAY['p2'] WHERE recording_id = $1`, recordingID); err != nil {
 					t.Fatalf("adding retained profile: %v", err)
 				}
-				dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+				return dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 					profile := "p2"
 					p.Kind, p.Profile = "encoded", &profile
 					p.RelPath = fmt.Sprintf("sites/default/store-contract/%d/p2.mp4", recordingID)
@@ -68,11 +90,49 @@ UPDATE recording_processing_policy SET encode_profiles = ARRAY['p2'] WHERE recor
 			},
 			CopyID: func(t *testing.T, assetID int64) int64 {
 				t.Helper()
+				return dbtest.MediaAssetCopyID(t, pool, assetID, dbtest.StoreName)
+			},
+			CopyState: func(t *testing.T, copyID int64) string {
+				t.Helper()
+				var state string
+				if err := pool.QueryRow(t.Context(), `SELECT state FROM media_asset_copies WHERE id = $1`, copyID).Scan(&state); err != nil {
+					t.Fatalf("reading state of copy %d: %v", copyID, err)
+				}
+				return state
+			},
+			MoveCopy: func(t *testing.T, assetID int64, from, to string) int64 {
+				t.Helper()
+				if _, err := pool.Exec(t.Context(),
+					`UPDATE media_asset_copies SET store = $3 WHERE media_asset_id = $1 AND store = $2`,
+					assetID, from, to); err != nil {
+					t.Fatalf("moving copy of asset %d from %s to %s: %v", assetID, from, to, err)
+				}
+				return dbtest.MediaAssetCopyID(t, pool, assetID, to)
+			},
+			AdvanceDerivedGeneration: func(t *testing.T, assetID int64) {
+				t.Helper()
+				if _, err := pool.Exec(t.Context(), `UPDATE media_assets SET derived_generation = derived_generation + 1 WHERE id = $1`, assetID); err != nil {
+					t.Fatalf("advancing derived generation of asset %d: %v", assetID, err)
+				}
+			},
+			AddCurrentCopy: func(t *testing.T, assetID int64, storeName string) int64 {
+				t.Helper()
 				var copyID int64
-				if err := pool.QueryRow(context.Background(), `SELECT id FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, assetID, dbtest.StoreName).Scan(&copyID); err != nil {
-					t.Fatalf("getting copy ID for media asset %d: %v", assetID, err)
+				if err := pool.QueryRow(t.Context(), `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+SELECT id, $2, $3, derived_generation, 'active' FROM media_assets WHERE id = $1
+RETURNING id`, assetID, storeName, fmt.Sprintf("sites/%s/store-contract/current/%d/%s", store.DefaultSite, assetID, storeName)).Scan(&copyID); err != nil {
+					t.Fatalf("adding current copy of asset %d in %s: %v", assetID, storeName, err)
 				}
 				return copyID
+			},
+			AssetOfKind: func(t *testing.T, recordingID int64, kind string) int64 {
+				t.Helper()
+				var assetID int64
+				if err := pool.QueryRow(t.Context(), `SELECT id FROM media_assets WHERE recording_id = $1 AND kind = $2`, recordingID, kind).Scan(&assetID); err != nil {
+					t.Fatalf("reading %s asset of recording %d: %v", kind, recordingID, err)
+				}
+				return assetID
 			},
 			NewUntilEncodedOriginal: func(t *testing.T) (int64, int64) {
 				t.Helper()
@@ -116,6 +176,23 @@ VALUES ($1, 'h264', '{[0,1000)}'::int8multirange)`, recordingID); err != nil {
 					}
 				}
 			},
+			BeginCopyDeletion: func(t *testing.T, copyID int64) func() {
+				t.Helper()
+				ctx := context.Background()
+				tx, err := pool.Begin(ctx)
+				if err != nil {
+					t.Fatalf("beginning copy deletion transaction: %v", err)
+				}
+				t.Cleanup(func() { _ = tx.Rollback(ctx) })
+				if _, err := tx.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE id = $1`, copyID); err != nil {
+					t.Fatalf("marking copy %d deleted in the open transaction: %v", copyID, err)
+				}
+				return func() {
+					if err := tx.Commit(ctx); err != nil {
+						t.Errorf("committing copy deletion: %v", err)
+					}
+				}
+			},
 			NewDeletedAsset: func(t *testing.T) (int64, int64) {
 				t.Helper()
 				recordingID := newRecording(t)
@@ -140,6 +217,17 @@ VALUES ($1, 'always', '{}', false)`, recordingID); err != nil {
 					t.Fatalf("inserting removal request: %v", err)
 				}
 				return recordingID, assetID
+			},
+			TrashRecording: func(t *testing.T, recordingID int64, deletedAt time.Time, purgeRequested bool) {
+				t.Helper()
+				if _, err := pool.Exec(t.Context(), `UPDATE recordings SET deleted_at = $2 WHERE id = $1`, recordingID, deletedAt); err != nil {
+					t.Fatalf("trashing recording %d: %v", recordingID, err)
+				}
+				if purgeRequested {
+					if _, err := pool.Exec(t.Context(), `INSERT INTO recording_purge_requests (recording_id) VALUES ($1)`, recordingID); err != nil {
+						t.Fatalf("requesting purge of recording %d: %v", recordingID, err)
+					}
+				}
 			},
 			RemovalRequestExists: func(t *testing.T, recordingID int64, profile string) bool {
 				t.Helper()

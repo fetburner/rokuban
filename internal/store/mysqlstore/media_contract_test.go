@@ -17,6 +17,10 @@ import (
 
 var mediaContractEventSeq atomic.Int32
 
+func TestMediaServingSelectionContract(t *testing.T) {
+	contracttest.RunMediaServingSelection(t, newMediaContractFixture)
+}
+
 func TestMediaPublishContract(t *testing.T) {
 	t.Parallel()
 	contracttest.RunMediaPublish(t, newMediaContractFixture)
@@ -146,6 +150,18 @@ VALUES (?, 'tokyo', ?, 0, ?, CASE WHEN ? = 'deleted' THEN CURRENT_TIMESTAMP(6) E
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
 SELECT id, ?, ?, derived_generation, 'active' FROM media_assets WHERE id = ?`, storeName, relPath, assetID)
 		return fixtureID(t, res)
+	}
+	// ServingIn の "" は置き場で絞らない読み手（NewMediaUnboundWithPolicy）で、Postgres の testMedia(pool, "", "") と同じ構成。
+	// servingStores は nil のままなので、派生物の配信はすべての置き場を読める。
+	f.ServingIn = func(storeName string) store.MediaServing {
+		if storeName == "" {
+			return NewMediaUnboundWithPolicy(db, store.StoragePolicy{})
+		}
+		return NewMediaInStore(db, storeName, store.StoragePolicy{})
+	}
+	f.SetCopyState = func(t *testing.T, copyID int64, state string) {
+		t.Helper()
+		execFixture(t, db, `UPDATE media_asset_copies SET state = ?, deleted_at = NULL WHERE id = ?`, state, copyID)
 	}
 	f.SetCopyCreatedAt = func(t *testing.T, copyID int64, createdAt time.Time) {
 		t.Helper()
