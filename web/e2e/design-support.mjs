@@ -280,6 +280,40 @@ export const homeWatchScreen = {
   wait: '[data-testid="home-primary-action"]',
 }
 
+/**
+ * settleAfterOpen は、開いた直後のフォント（Geist Variable / Noto Sans JP Variable）の
+ * 適用と、有限のアニメーション（入場の遷移など）の終わりを待つ。以前は 400 ms の固定待ちだった。
+ * 無限のアニメーション（animate-pulse など）は finished が解決しないので対象から外す。
+ * 終わらない有限のアニメーションに当たっても上限 3000 ms で打ち切る。後段の判定は
+ * 描画された状態を測るので、打ち切りは NG にしない。
+ */
+async function settleAfterOpen(page) {
+  await page.evaluate(async () => {
+    await document.fonts.ready
+    const finite = document.getAnimations().filter((a) => a.effect?.getComputedTiming().endTime !== Infinity)
+    const settled = Promise.all(finite.map((a) => a.finished.catch(() => {})))
+    await Promise.race([settled, new Promise((resolve) => setTimeout(resolve, 3000))])
+    // データの到着で後から描かれる分を待つ。DOM が 150 ms 変わらなければ静かとみなす（上限 3000 ms）。
+    await new Promise((resolve) => {
+      let quiet
+      const done = () => {
+        observer.disconnect()
+        clearTimeout(cap)
+        clearTimeout(quiet)
+        resolve()
+      }
+      const observer = new MutationObserver(() => {
+        clearTimeout(quiet)
+        quiet = setTimeout(done, 150)
+      })
+      const cap = setTimeout(done, 3000)
+      observer.observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true })
+      quiet = setTimeout(done, 150)
+    })
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+  })
+}
+
 /** createOpen は判定スクリプトごとに色設定の変更確認を一度だけ行う open を作る。 */
 export function createOpen(browser, ng) {
   let checkedColorSchemeChange = false
@@ -356,9 +390,7 @@ export function createOpen(browser, ng) {
         ng.push(`${screen.name}/${theme}/${viewport.name}: 目印「${screen.wait}」が出ない`)
       })
     }
-    // フォント（Geist Variable / Noto Sans JP Variable）の適用とレイアウト確定を待つ。
-    await page.evaluate(() => document.fonts.ready)
-    await page.waitForTimeout(400)
+    await settleAfterOpen(page)
     return { context, page }
   }
 }
