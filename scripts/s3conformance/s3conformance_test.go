@@ -10,6 +10,9 @@
 // 対象は s3conformance だけ。conformance タグ（internal/mirakc/conformance）は
 // mirakc-conformance ジョブが `go list -tags conformance` でパッケージごと実行するので、
 // 関数単位の照合は要らない。
+//
+// 計画（ci.yml の env の S3_CONFORMANCE_PACKAGES。test-matrix が citest に渡す一覧）と step のパッケージ集合の一致も、
+// TestS3ConformancePackagesMatchSteps が検査する。
 package s3conformance
 
 import (
@@ -65,6 +68,72 @@ func TestEveryS3ConformanceTestHasStep(t *testing.T) {
 	for _, msg := range uncovered(tests, steps) {
 		t.Error(msg)
 	}
+}
+
+// TestS3ConformancePackagesMatchSteps は、計画（ci.yml の env の S3_CONFORMANCE_PACKAGES。test-matrix が
+// citest に渡す）と s3-conformance ジョブの step のパッケージ集合が一致することを検査する。
+// 計画に無いパッケージの step は、そのパッケージだけを変えた PR で実行されない。step に無いパッケージは
+// 計画が空振りさせる。どちらも片側だけ直したときに落とす。
+func TestS3ConformancePackagesMatchSteps(t *testing.T) {
+	t.Parallel()
+	src, err := os.ReadFile(ciOpen)
+	if err != nil {
+		t.Fatalf("%s を読めない: %v", ciName, err)
+	}
+	steps, err := parseSteps(src)
+	if err != nil {
+		t.Fatalf("%s: %v", ciName, err)
+	}
+	planned, err := parsePlanPackages(src)
+	if err != nil {
+		t.Fatalf("%s: %v", ciName, err)
+	}
+	inSteps := map[string]bool{}
+	for _, st := range steps {
+		inSteps[st.pkg] = true
+	}
+	inPlan := map[string]bool{}
+	for _, p := range planned {
+		inPlan[p] = true
+	}
+	for _, p := range sortedKeys(inSteps) {
+		if !inPlan[p] {
+			t.Errorf("%s の s3-conformance の step のパッケージ %s が env の S3_CONFORMANCE_PACKAGES に無い。PR はこのパッケージの変更で s3-conformance を回さない", ciName, p)
+		}
+	}
+	for _, p := range sortedKeys(inPlan) {
+		if !inSteps[p] {
+			t.Errorf("%s の env の S3_CONFORMANCE_PACKAGES の %s に対応する step が s3-conformance に無い", ciName, p)
+		}
+	}
+}
+
+// parsePlanPackages は ci.yml の workflow env の S3_CONFORMANCE_PACKAGES を "./internal/..." の形で返す。
+func parsePlanPackages(src []byte) ([]string, error) {
+	var doc struct {
+		Env map[string]string `yaml:"env"`
+	}
+	if err := yaml.Unmarshal(src, &doc); err != nil {
+		return nil, fmt.Errorf("ci.yml を解析できない: %w", err)
+	}
+	list := strings.Fields(doc.Env["S3_CONFORMANCE_PACKAGES"])
+	if len(list) == 0 {
+		return nil, fmt.Errorf("env に S3_CONFORMANCE_PACKAGES が無いか空")
+	}
+	pkgs := make([]string, 0, len(list))
+	for _, p := range list {
+		pkgs = append(pkgs, "./"+path.Clean(p))
+	}
+	return pkgs, nil
+}
+
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func TestStepForms(t *testing.T) {
