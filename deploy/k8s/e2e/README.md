@@ -52,10 +52,9 @@ Ingress controller は kind に無いので、6.5 は Ingress の行き先の Se
 
     E2E_OVERLAY=e2e-asynq ./deploy/k8s/e2e/run.sh
 
-判定 2 と 3 は、asynq で観測する手段が River と違う。滞留の数え方と作り方を次のように変えている。
+判定 2 と 3 の滞留は、両構成とも notifier の件数の口をツールボックスから読む（queue_backlog。KEDA のトリガが読むものと同じ口で、読めないときは 0 にせず失敗させる）。滞留の作り方は構成で違う。
 
-- 滞留の数え方は notifier の件数の口を、ツールボックスから読む（queue_backlog）。読めないときは 0 にせず失敗させる。
-- 滞留の作り方は asynqprobe が積む。投入は rokuban の契約（internal/jobq）と adapter を通す。Redis の内部キーには触れない。
+- asynq の滞留は asynqprobe が積む。投入は rokuban の契約（internal/jobq）と adapter を通す。Redis の内部キーには触れない。
 - asynqprobe は手元の Go で go run する。kube.sh が kubectl port-forward で Redis を手元に開いてから呼ぶので、Go と kubectl が要る。
 - 判定 3 の encode は、両構成とも製品の経路で desired プロファイルを足し（encode-profiles の API）、asynq は encode-reconcile で積む。River は積んだ行を river_job に直接 INSERT する（River の表は asynq に無いため）。
 
@@ -93,7 +92,7 @@ CI は代わりに overlays/asynq と overlays/e2e-asynq を kustomize build し
 
 - 全キューに ScaledJob があるか
 - `rokuban enqueue` の全ジョブに CronJob があるか
-- トリガのクエリが物理キュー名か
+- トリガの URL が物理キュー名か
 
 一覧の権威は `internal/jobs` と `cmd/rokuban/enqueue.go` にある。
 
@@ -227,12 +226,12 @@ API restart、NOTIFY/SSE 欠落、media mount 遅延、mirakc 再起動はこの
 | 変異 | どこを壊すか | 期待 |
 |---|---|---|
 | `O1.mut-selector` | api Service のセレクタを外す（Pod は生きたまま Endpoints が空） | 判定 1.5 が FAIL |
-| `O2.mut-trigger` | ScaledJob のトリガのクエリが常に 0 を返す | 判定 2.4 が FAIL |
+| `O2.mut-trigger` | ScaledJob のトリガが未使用のキューを読み、常に 0 を返す | 判定 2.4 が FAIL |
 | `O2.mut-cron` | 投入側の CronJob を suspend | 判定 2.1 が FAIL |
 | `O3.mut-rollout` | `rollout.strategy` を `immediate` に | 判定 3.3 が FAIL |
 | `O3.mut-omitted` | `rollout` ごと省略する（書き忘れ） | 判定 3.3 が FAIL |
 | `O4.mut-lock` | **`pg_try_advisory_lock` の戻り値を無視したイメージ**（`mutants/ignore-advisory-lock.py`） | 判定 4.2 が FAIL |
-| `O5.mut-queue` | サイト A のトリガから site 修飾を外す（`queue LIKE 'epg%'`） | 判定 5.2 が FAIL |
+| `O5.mut-queue` | サイト A のトリガが site B の件数を読む（site 修飾を外したのと同じ形） | 判定 5.2 が FAIL |
 
 **上の変異はすべて実際に注入して、期待どおり判定が赤くなることを確認してある。** 実測値（件数）は環境と対にして `docs/runbook/k8s.md` §受け入れ判定ハーネス に置いてある。ここには書かない（両方に書いたら片方だけ古くなった）。
 
@@ -273,8 +272,8 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
     - media ボリュームの上の原本（`cluster/media-seed-job.yaml`）。**ツールボックスからは書けない。** 製品の PVC はツールボックスより後に立つので、挿すと足場が Pending で止まる
     - その原本を指す `recordings` / `media_assets` の行
     - `encode` キューへの直 INSERT（**`rokuban enqueue` に `encode` は無い**。あるのは DB を読んで投入する `encode-reconcile`）
-- **前の周回が残した `retryable` 1 件で判定 2 が二重に落ちうる。** `retryable` は滞留（`riverBacklogStates`）に数えられるので、2.2 の「待ち行列が空」が 180 秒粘って FAIL する。同時に `pendingJobStates`（`internal/jobs/queue.go`）にも入るので、`enqueue` が投入をスキップして 2.3 も落ちる。notifier の常駐 River client が `JobScheduler` を動かすため、`retryable` は backoff 後に昇格する。backoff 中も KEDA の backlog に数えるので one-shot Pod が先に起きることはあるが、claim できない job しか無ければ `--once-idle-timeout` で終了する。
-- **トリガが数える River の状態は `available` / `retryable`。** ハーネスの「滞留」の定義（`lib/kube.sh` の `riverBacklogStates`）と同じ集合にすること。ずれると、失敗して指数バックオフ中（`scheduled`）のジョブ 1 件で判定 2 が誤 FAIL し、判定 5 が「滞留を作れない」で落ちる
+- **前の周回が残した `retryable` 1 件で判定 2 が二重に落ちうる。** `retryable` は期限が来ると滞留に数えられるので、2.2 の「待ち行列が空」が 180 秒粘って FAIL する。同時に `pendingJobStates`（`internal/jobs/queue.go`）にも入るので、`enqueue` が投入をスキップして 2.3 も落ちる。notifier の常駐 River client が `JobScheduler` を動かすため、`retryable` は backoff 後に昇格する。backoff 中も KEDA の backlog に数えるので one-shot Pod が先に起きることはあるが、claim できない job しか無ければ `--once-idle-timeout` で終了する。
+- **件数の集合は notifier の DeliverableCounter が持つ。** available 全件と、期限が来た retryable / scheduled を数え、running は数えない。ハーネスは同じ口を読むので、集合を別に持たない。ずれると、失敗して指数バックオフ中（期限前）のジョブ 1 件で判定 2 が誤 FAIL し、判定 5 が「滞留を作れない」で落ちる
 - **env の解決に失敗した ScaledJob は、原因を直しても spec が変わらなければ再 reconcile されない**（接続文字列を直した後も 3 分間 `ScaledJobCheckFailed` のままだった。実測）。作り直すのが早い
 - **判定 3 が置いていく残骸が 2 つある。** 3.4 が Job を消すので、取られていた `river_job` の行は一時的に **`running` のまま残る**。encode は保存した締切（最低 1 時間）までは `running` のままなので、ハーネスは rescue を待たず、`produce_real_encode_job` が次の周回の頭で行を消してから測り直す。それと media ボリュームの原本も周回の頭で消してから測り直す。 **`$producer` は関数名でもコマンド文字列でも受ける**（引用せずに展開する）ので、別の作り方を試すときは env で差し替えればよい
 - **未解決: 判定 3 は encode を KEDA ScaledJob で回す形を前提にしている。** 別の形（Deployment + HPA 等）を採るなら、この判定は永久に TODO のままになる。つまり受け入れ 3 が一度も検査されないまま終わる。形を変えるなら判定も同じ PR で書き換えること

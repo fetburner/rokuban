@@ -219,3 +219,125 @@ patches:
           name: media
           persistentVolumeClaim:
             claimName: rokuban-media
+  # トリガの URL（件数を読むキュー名と notifier のホスト）を名前空間ごとに差し替える。
+  # 件数の口は両構成で同じなので、ここが唯一の差し替え先である（e2e-asynq は継承する）。
+  # site / 置き場の名前は nameSuffix 後の名前（rokuban-worker-ingest-sitea 等）で引く。
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-ruler
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/ruler/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-cleanup
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/cleanup/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-ingest-sitea
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/ingest_sitea/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-epg-sitea
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/epg_sitea/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-reconciler-sitea
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/reconciler_sitea/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-record-sweep-sitea
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/watcher_sitea/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-ingest-siteb
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/ingest_siteb/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-epg-siteb
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/epg_siteb/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-reconciler-siteb
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/reconciler_siteb/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-record-sweep-siteb
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/watcher_siteb/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-ts-scan
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/ts_scan_main/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-encode
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/encode_main/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-thumbnail
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/thumbnail_main/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-cm-detect
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/cm_detect_main/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-transfer
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/transfer_main/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-original
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/original_main/deliverable-count"
+  - target:
+      kind: ScaledJob
+      name: rokuban-worker-storage
+    patch: |-
+      - op: replace
+        path: /spec/triggers/0/metadata/url
+        value: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/storage_main/deliverable-count"

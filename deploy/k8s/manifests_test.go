@@ -522,8 +522,7 @@ func TestManifestReferencesResolve(t *testing.T) {
 		}
 	}
 
-	// base + site の全ワークロードぶん（config volume / envFrom /
-	// `POSTGRES_CONNECTION_STRING` の secretKeyRef）で 55 件ある。
+	// base + site + store の全ワークロードぶん（config volume / envFrom の参照）。
 	// ワークロードを足すなら増える一方なので、下回ったら検査が空回りしている。
 	// **下限は少し緩く取ってある** --- 1 つの Pod の参照が減っただけで落ちる
 	// 値にすると、正当な整理のたびに数を書き換えることになり、そのうち

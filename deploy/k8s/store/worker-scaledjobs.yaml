@@ -68,12 +68,6 @@ spec:
               - 5s
               - --config
               - /etc/rokuban/config.yml
-            env:
-              - name: POSTGRES_CONNECTION_STRING
-                valueFrom:
-                  secretKeyRef:
-                    name: rokuban-secrets
-                    key: POSTGRES_CONNECTION_STRING
             envFrom:
               - secretRef:
                   name: rokuban-secrets
@@ -103,12 +97,11 @@ spec:
             persistentVolumeClaim:
               claimName: rokuban-media
   triggers:
-    - type: postgresql
+    - type: metrics-api
       metadata:
-        query: >-
-          SELECT count(*) FROM river_job WHERE queue = 'ts_scan_main' AND state IN ('available','retryable')
-        targetQueryValue: "1"
-        connectionFromEnv: POSTGRES_CONNECTION_STRING
+        url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/ts_scan_main/deliverable-count"
+        valueLocation: value
+        targetValue: "1"
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
@@ -181,12 +174,6 @@ spec:
               - 1h
               - --config
               - /etc/rokuban/config.yml
-            env:
-              - name: POSTGRES_CONNECTION_STRING
-                valueFrom:
-                  secretKeyRef:
-                    name: rokuban-secrets
-                    key: POSTGRES_CONNECTION_STRING
             envFrom:
               - secretRef:
                   name: rokuban-secrets
@@ -223,12 +210,11 @@ spec:
           - name: scratch
             emptyDir: {}
   triggers:
-    - type: postgresql
+    - type: metrics-api
       metadata:
-        query: >-
-          SELECT count(*) FROM river_job WHERE queue = 'encode_main' AND state IN ('available','retryable')
-        targetQueryValue: "1"
-        connectionFromEnv: POSTGRES_CONNECTION_STRING
+        url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/encode_main/deliverable-count"
+        valueLocation: value
+        targetValue: "1"
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
@@ -292,12 +278,6 @@ spec:
               - 60s
               - --config
               - /etc/rokuban/config.yml
-            env:
-              - name: POSTGRES_CONNECTION_STRING
-                valueFrom:
-                  secretKeyRef:
-                    name: rokuban-secrets
-                    key: POSTGRES_CONNECTION_STRING
             envFrom:
               - secretRef:
                   name: rokuban-secrets
@@ -330,12 +310,11 @@ spec:
           - name: scratch
             emptyDir: {}
   triggers:
-    - type: postgresql
+    - type: metrics-api
       metadata:
-        query: >-
-          SELECT count(*) FROM river_job WHERE queue = 'thumbnail_main' AND state IN ('available','retryable')
-        targetQueryValue: "1"
-        connectionFromEnv: POSTGRES_CONNECTION_STRING
+        url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/thumbnail_main/deliverable-count"
+        valueLocation: value
+        targetValue: "1"
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
@@ -393,12 +372,6 @@ spec:
               - 60s
               - --config
               - /etc/rokuban/config.yml
-            env:
-              - name: POSTGRES_CONNECTION_STRING
-                valueFrom:
-                  secretKeyRef:
-                    name: rokuban-secrets
-                    key: POSTGRES_CONNECTION_STRING
             envFrom:
               - secretRef:
                   name: rokuban-secrets
@@ -431,12 +404,11 @@ spec:
           - name: scratch
             emptyDir: {}
   triggers:
-    - type: postgresql
+    - type: metrics-api
       metadata:
-        query: >-
-          SELECT count(*) FROM river_job WHERE queue = 'cm_detect_main' AND state IN ('available','retryable')
-        targetQueryValue: "1"
-        connectionFromEnv: POSTGRES_CONNECTION_STRING
+        url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/cm_detect_main/deliverable-count"
+        valueLocation: value
+        targetValue: "1"
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
@@ -498,12 +470,6 @@ spec:
               - 5s
               - --config
               - /etc/rokuban/config.yml
-            env:
-              - name: POSTGRES_CONNECTION_STRING
-                valueFrom:
-                  secretKeyRef:
-                    name: rokuban-secrets
-                    key: POSTGRES_CONNECTION_STRING
             envFrom:
               - secretRef:
                   name: rokuban-secrets
@@ -532,12 +498,11 @@ spec:
             persistentVolumeClaim:
               claimName: rokuban-media
   triggers:
-    - type: postgresql
+    - type: metrics-api
       metadata:
-        query: >-
-          SELECT count(*) FROM river_job WHERE queue = 'transfer_main' AND state IN ('available','retryable')
-        targetQueryValue: "1"
-        connectionFromEnv: POSTGRES_CONNECTION_STRING
+        url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/transfer_main/deliverable-count"
+        valueLocation: value
+        targetValue: "1"
 
 ---
 apiVersion: keda.sh/v1alpha1
@@ -606,12 +571,6 @@ spec:
               - 60s
               - --config
               - /etc/rokuban/config.yml
-            env:
-              - name: POSTGRES_CONNECTION_STRING
-                valueFrom:
-                  secretKeyRef:
-                    name: rokuban-secrets
-                    key: POSTGRES_CONNECTION_STRING
             envFrom:
               - secretRef:
                   name: rokuban-secrets
@@ -640,12 +599,11 @@ spec:
             persistentVolumeClaim:
               claimName: rokuban-media
   triggers:
-    - type: postgresql
+    - type: metrics-api
       metadata:
-        query: >-
-          SELECT count(*) FROM river_job WHERE queue = 'original_main' AND state IN ('available','retryable')
-        targetQueryValue: "1"
-        connectionFromEnv: POSTGRES_CONNECTION_STRING
+        url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/original_main/deliverable-count"
+        valueLocation: value
+        targetValue: "1"
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
@@ -705,12 +663,6 @@ spec:
               - 5s
               - --config
               - /etc/rokuban/config.yml
-            env:
-              - name: POSTGRES_CONNECTION_STRING
-                valueFrom:
-                  secretKeyRef:
-                    name: rokuban-secrets
-                    key: POSTGRES_CONNECTION_STRING
             envFrom:
               - secretRef:
                   name: rokuban-secrets
@@ -748,9 +700,8 @@ spec:
           - name: scratch
             emptyDir: {}
   triggers:
-    - type: postgresql
+    - type: metrics-api
       metadata:
-        query: >-
-          SELECT count(*) FROM river_job WHERE queue = 'storage_main' AND state IN ('available','retryable')
-        targetQueryValue: "1"
-        connectionFromEnv: POSTGRES_CONNECTION_STRING
+        url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/storage_main/deliverable-count"
+        valueLocation: value
+        targetValue: "1"

@@ -57,9 +57,10 @@ patches:
       - op: replace
         path: /spec/jobTemplate/spec/template/spec/containers/0/args/3
         value: sitea
-  # ScaledJob は argv（index 7）に加えて**トリガのクエリ**も site 修飾する。
-  # ここを忘れると、サイト A のスケーラが `<queue>_default` という誰も使わない
-  # キューを見続けて永久にスケールしない（症状は「KEDA が壊れた」ではない）。
+  # ScaledJob は argv（index 7）も site 修飾する。トリガの URL（件数を読む
+  # キュー名）は overlays/e2e の top-level patch が site 修飾する。ここを忘れると、
+  # そのスケーラが `<queue>_default` という誰も使わないキューを見続けて永久にスケール
+  # しない（症状は「KEDA が壊れた」ではない）。
   - target:
       kind: ScaledJob
       name: rokuban-worker-ingest
@@ -67,9 +68,6 @@ patches:
       - op: replace
         path: /spec/jobTargetRef/template/spec/containers/0/args/7
         value: sitea
-      - op: replace
-        path: /spec/triggers/0/metadata/query
-        value: SELECT count(*) FROM river_job WHERE queue = 'ingest_sitea' AND state IN ('available','retryable')
   - target:
       kind: ScaledJob
       name: rokuban-worker-epg
@@ -77,9 +75,6 @@ patches:
       - op: replace
         path: /spec/jobTargetRef/template/spec/containers/0/args/7
         value: sitea
-      - op: replace
-        path: /spec/triggers/0/metadata/query
-        value: SELECT count(*) FROM river_job WHERE queue = 'epg_sitea' AND state IN ('available','retryable')
   - target:
       kind: ScaledJob
       name: rokuban-worker-reconciler
@@ -87,9 +82,6 @@ patches:
       - op: replace
         path: /spec/jobTargetRef/template/spec/containers/0/args/7
         value: sitea
-      - op: replace
-        path: /spec/triggers/0/metadata/query
-        value: SELECT count(*) FROM river_job WHERE queue = 'reconciler_sitea' AND state IN ('available','retryable')
   - target:
       kind: ScaledJob
       name: rokuban-worker-record-sweep
@@ -97,6 +89,3 @@ patches:
       - op: replace
         path: /spec/jobTargetRef/template/spec/containers/0/args/7
         value: sitea
-      - op: replace
-        path: /spec/triggers/0/metadata/query
-        value: SELECT count(*) FROM river_job WHERE queue = 'watcher_sitea' AND state IN ('available','retryable')

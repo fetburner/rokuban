@@ -143,7 +143,7 @@ log_step "waiting for KEDA to spawn and drain a worker job"
 # 通ったこと**が主張したいことなので、名前で結ぶ。
 #
 # backlog が 0 に戻ったことは根拠に**しない**。River の `running` は
-# riverBacklogStates に入っていないので、掴んだまま固まっている Job でも 0 に
+# 件数（running を含まない）に入っていないので、掴んだまま固まっている Job でも 0 に
 # なる --- それはこの判定が捕まえるべき失敗そのものである。
 spawned_and_drained() {
   local name

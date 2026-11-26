@@ -59,10 +59,8 @@ spec:
                 cpu: 20m
                 memory: 32Mi
   triggers:
-    - type: postgresql
+    - type: metrics-api
       metadata:
-        query: >-
-          SELECT count(*) FROM river_job
-          WHERE queue = 'encode' AND state IN ('available','retryable')
-        targetQueryValue: "1"
-        connectionFromEnv: POSTGRES_CONNECTION_STRING
+        url: "http://rokuban-notifier.rokuban-e2e.svc.cluster.local:40773/internal/queues/encode/deliverable-count"
+        valueLocation: value
+        targetValue: "1"

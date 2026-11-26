@@ -496,43 +496,25 @@ observed_new_job_reached() {
 
 # ---- 滞留の数え方と作り方（エンジンで分かれる）-----------------------------
 #
-# 判定が「待っている」と呼ぶ件数は 2 つの経路で数える。**集合の定義はどちらも
-# KEDA のトリガと同じでなければならない。** ずれると、ハーネスだけが待ち続ける。
+# 判定が「待っている」と呼ぶ件数は、エンジンによらず notifier の件数の HTTP で数える。
+# KEDA のトリガが読むものと同じ口なので、集合の定義はサーバ側（jobq の
+# DeliverableCounter の実装）が 1 か所に持つ。ハーネスが river_job を数えると、
+# トリガと集合がずれたときに判定だけが誤った値を見る。
 #
-#   - river:  river_job の state（下の riverBacklogStates）。
-#   - asynq:  件数の HTTP（notifier の deliverable-count）。トリガが読むものそのもの。
-#             ハーネスは同じ口を叩くので、集合の定義はサーバ側（asynqadapter の
-#             CountDeliverable）が 1 か所に持つ。
-
-# riverBacklogStates は「待っている」とみなす River の状態。
-#
-# **KEDA のトリガが数える集合とここは同じでなければならない。** ずれると、
-# ハーネスだけが待ち続ける（トリガは 0 なのでスケールしないのが正しいのに、
-# ハーネスは滞留があると思って 0 → 1 → 0 を待つ）。`scheduled` を入れて
-# いたときは、失敗して指数バックオフ中のジョブ 1 件で判定 2 が誤 FAIL、
-# 判定 5 が「滞留を作れない」で落ちる形になっていた。
-#
-# **本物の ScaledJob への契約でもある**: そちらのトリガもこの集合を数えること。
-riverBacklogStates="'available','retryable'"
+# 作り方（insert_probe_job）は river だけが DB 直接 INSERT を持つ。
 
 # queue_backlog <queue> --- 待ち行列にいるジョブ数（KEDA のトリガと同じ条件）。
 #
-# 呼び出し元は判定（checks/）で、エンジンを知らなくてよい。asynq では件数の口を
-# ツールボックスから叩く（製品の Pod から叩くと、判定の観測が判定対象の生死に
-# 巻き込まれる --- tb_curl の注記）。
+# 呼び出し元は判定（checks/）で、エンジンを知らなくてよい。件数の口はツールボックス
+# から叩く（製品の Pod から叩くと、判定の観測が判定対象の生死に巻き込まれる --- tb_curl
+# の注記）。読めなかったときは 0 にせず非 0 を返す。0 を返すと「起きなくてよい」と
+# 読めてしまい、判定が壊れていることを隠す。
 queue_backlog() {
-  if [ "$E2E_ENGINE" = "asynq" ]; then
-    # 読めなかったときは 0 にせず非 0 を返す（River 側と同じ規律）。パイプの終了状態は
-    # 最後のコマンド（sed）のものになるので、取得は変数に受けて個別に確かめる。
-    local body value
-    body="$(tb_curl -sS --fail "http://rokuban-notifier:40773/internal/queues/$1/deliverable-count")" || return 1
-    value="$(printf '%s' "$body" | sed -n 's/.*"value":\([0-9][0-9]*\).*/\1/p')"
-    [ -n "$value" ] || return 1
-    printf '%s\n' "$value"
-    return 0
-  fi
-  psql_q "SELECT count(*) FROM river_job WHERE queue = '$1' AND state IN (${riverBacklogStates})" \
-    | tr -d '[:space:]'
+  local body value
+  body="$(tb_curl -sS --fail "http://rokuban-notifier:40773/internal/queues/$1/deliverable-count")" || return 1
+  value="$(printf '%s' "$body" | sed -n 's/.*"value":\([0-9][0-9]*\).*/\1/p')"
+  [ -n "$value" ] || return 1
+  printf '%s\n' "$value"
 }
 
 # insert_probe_job <queue> [count]

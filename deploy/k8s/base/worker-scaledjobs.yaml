@@ -32,26 +32,25 @@
 # TestScaledJobsCoverEveryQueue は `internal/jobs` を走査していて、
 # `Queue: river.QueueDefault` が現れた日に落ちる。
 #
-# **トリガが数えるのは `available` と `retryable` の 2 つ。** notifier 上の常駐
-# client が JobScheduler を動かすため、`retryable` の昇格は one-shot Pod に依存しない。
-# retryable も数えるのはバックオフ中から KEDA の backlog に含めるためで、まだ
-# claim できない job のために起きた Pod は `--once-idle-timeout` で終了する。
-# この空振り起動は ingest / encode など定期パス以外の kind だけで起きる。定期パスは
-# MaxAttempts=1 で、失敗しても `retryable` にならず discarded になるので起きない。
-# **受け入れ判定ハーネスの「滞留」の定義（`deploy/k8s/e2e/lib/kube.sh` の
-# `riverBacklogStates`）と同じ集合にすること。**
+# **トリガは notifier の件数（`GET /internal/queues/{queue}/deliverable-count`）を読む。**
+# 数えるのは「いま worker を 1 台起こせば配送されるジョブ数」で、asynq と River で
+# 同じ意味にしてある。`available` は全件、`retryable` と `scheduled` は scheduled_at が
+# 来たものだけを数え、lease が有効な `running` は数えない（KEDA の `accurate` 戦略の前提）。
+# 期限前を数えると、長い Snooze の間に空振りの Job が起き続けるので、期限で絞る。
+# 期限が来た retryable の昇格は notifier の常駐 client（JobScheduler）が担うので、
+# one-shot Pod には依存しない。
 #
 # **`rollout.strategy: gradual` は書き忘れてはならない 1 行である。**
 # 省略も `immediate` も、Pod テンプレートの更新で実行中の Job が消える（kind で
 # 実測。docs/operations.md §5 の表）。運用でこれを踏むのはイメージのタグを
 # 上げたときで、症状は「デプロイしたら録画のエンコードが飛ぶ」になる。
 #
-# **postgresql トリガの接続先は FQDN で書く。** 接続を張るのは Job の Pod では
-# なく keda 名前空間の operator なので、短い Service 名は operator 側の search
-# domain で解決されない。このとき ScaledJob は `Ready=False /
-# ScaledJobCheckFailed` のまま Job を一度も起こさず、**症状は「KEDA が壊れた」
-# ではなく「いつまでもスケールしない」**になる（kind で実測）。接続文字列は
-# Secret の `POSTGRES_CONNECTION_STRING`（`base/secret.example.yaml`）。
+# **metrics-api トリガの URL は FQDN で書く。** 件数を引くのは Job の Pod ではなく
+# keda 名前空間の operator なので、短い Service 名は operator 側の search domain で
+# 解決されない。このとき ScaledJob は `Ready=False / ScaledJobCheckFailed` のまま
+# Job を一度も起こさず、**症状は「KEDA が壊れた」ではなく「いつまでもスケールしない」**
+# になる（kind で実測）。ホストは既定の名前空間 `default` の notifier を指す。別の
+# 名前空間の overlay は、そのトリガの URL のホストを書き換える。
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
@@ -111,15 +110,6 @@ spec:
               - 5s
               - --config
               - /etc/rokuban/config.yml
-            env:
-              # KEDA の postgresql トリガが読む接続文字列（`connectionFromEnv`）。
-              # **env として宣言するのは、参照解決の検査（manifests_test.go）に
-              # キー名を見せるため** --- `envFrom` だけだとキー名を誰も見ない。
-              - name: POSTGRES_CONNECTION_STRING
-                valueFrom:
-                  secretKeyRef:
-                    name: rokuban-secrets
-                    key: POSTGRES_CONNECTION_STRING
             envFrom:
               - secretRef:
                   name: rokuban-secrets
@@ -143,12 +133,11 @@ spec:
             configMap:
               name: rokuban-config
   triggers:
-    - type: postgresql
+    - type: metrics-api
       metadata:
-        query: >-
-          SELECT count(*) FROM river_job WHERE queue = 'ruler' AND state IN ('available','retryable')
-        targetQueryValue: "1"
-        connectionFromEnv: POSTGRES_CONNECTION_STRING
+        url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/ruler/deliverable-count"
+        valueLocation: value
+        targetValue: "1"
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledJob
@@ -209,12 +198,6 @@ spec:
               - 60s
               - --config
               - /etc/rokuban/config.yml
-            env:
-              - name: POSTGRES_CONNECTION_STRING
-                valueFrom:
-                  secretKeyRef:
-                    name: rokuban-secrets
-                    key: POSTGRES_CONNECTION_STRING
             envFrom:
               - secretRef:
                   name: rokuban-secrets
@@ -238,9 +221,8 @@ spec:
             configMap:
               name: rokuban-config
   triggers:
-    - type: postgresql
+    - type: metrics-api
       metadata:
-        query: >-
-          SELECT count(*) FROM river_job WHERE queue = 'cleanup' AND state IN ('available','retryable')
-        targetQueryValue: "1"
-        connectionFromEnv: POSTGRES_CONNECTION_STRING
+        url: "http://rokuban-notifier.default.svc.cluster.local:40773/internal/queues/cleanup/deliverable-count"
+        valueLocation: value
+        targetValue: "1"

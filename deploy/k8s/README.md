@@ -31,7 +31,7 @@ schemas/         kubeconform に渡す CRD スキーマ（KEDA の ScaledJob）
 
 **置き場も同じ形である。** `store/` は置き場名 `main`（`base/config.yml` の `storage.stores` の唯一の要素）で書いてあり、単一置き場の overlay は patch が要らない。
 
-置き場を増やす差分は 2 つである。1 つは、`storage.stores` に root 付きで 1 要素を足すこと。もう 1 つは、`store/` を 1 組生やすことで、nameSuffix と、argv の置き場名・マウント先・トリガのクエリを差し替える patch を書く。実例は `overlays/e2e-two-stores/stores/` にある。
+置き場を増やす差分は 2 つである。1 つは、`storage.stores` に root 付きで 1 要素を足すこと。もう 1 つは、`store/` を 1 組生やすことで、nameSuffix と、argv の置き場名・マウント先・トリガの URL を差し替える patch を書く。実例は `overlays/e2e-two-stores/stores/` にある。
 
 **ingest と central streamer だけは、置き場を overlay の patch で足す。** ingest は規則が選びうる全置き場を、central streamer は派生物の置き場を足す。
 
@@ -65,19 +65,19 @@ FS 置き場が 2 つ以上になると、`server` ロールの worker と strea
 |---|---|---|
 | config.yml の worker 節（engine と redis_url） | overlay ごとの config.yml | エンジンは配備全体の決定である。base の冒頭が環境ごとの差は overlay で当てると決めている。環境変数で切り替えると、River の config まで環境変数に依存する |
 | Redis | asynq/ の component | どの overlay に重ねても同じ形で当たる |
-| ScaledJob 13 本（e2e は 17 本）のトリガ | overlay ごとの patches | URL に物理キュー名と notifier の FQDN を書く。site の数と名前空間が決まる overlay でしか書けない |
+| ScaledJob 13 本（e2e は 17 本）のトリガ | base / site / store が既定の名前空間の URL を持つ。名前空間が違う overlay だけが URL のホストと物理キュー名を patch で差し替える | 件数の口は両構成で同じ。物理キュー名は site と置き場の数で決まる |
 | rokuban-secrets の REDIS_URL | 環境の Secret（overlay は出荷しない） | base が Secret を出荷しないのと同じ。パスワードを含みうる値は env で渡す |
 
-component に置くのは Redis だけである。Redis は site の名前も名前空間も知らない。notifier の常駐 worker は base のまま残す（PUT の ruler ヒントを即座に引くため。外すと判定 1.8 が閾値を超える）。トリガを component に入れないのは、URL が site の名前と、e2e の nameSuffix 付きの ScaledJob 名を必要とするからである。kustomize は target が一致しない patch を黙って無視するので、トリガは site の名前を知る overlay に置く。
+component に置くのは Redis だけである。Redis は site の名前も名前空間も知らない。notifier の常駐 worker は base のまま残す（PUT の ruler ヒントを即座に引くため。外すと判定 1.8 が閾値を超える）。トリガは両構成で同じ件数の口を読むので、base / site / store に置く。kustomize は target が一致しない patch を黙って無視するので、差し替えの patch は `asynq_test.go` と `stores_test.go` が数を固定する。
 
-E10-7 でトリガが base に寄った後に残るのは、Redis・config の worker 節・REDIS_URL の 3 つである。site 修飾は site/ の argv と同じ位置の patch で当てる。overlays/e2e-asynq が既にその形の patch を持つ。
+ScaledJob のトリガは両構成で共通なので、asynq の overlay に残るのは Redis・config の worker 節・REDIS_URL の 3 つである。overlays/e2e-asynq はトリガの差し替えを overlays/e2e から継承する。
 
-名前空間は overlay が決める。overlays/asynq は default、overlays/e2e-asynq は rokuban-e2e である。トリガの URL と REDIS_URL の FQDN は、その名前空間を指す。別の名前空間に入れるなら、その overlay の URL と Secret を揃えて直す。
+名前空間は overlay が決める。overlays/asynq は default、overlays/e2e-asynq は rokuban-e2e である。トリガの URL のホストと REDIS_URL の FQDN は、その名前空間を指す。別の名前空間に入れるなら、その overlay の URL と Secret を揃えて直す。
 
 <details><summary>根拠</summary>
 
-- 1 つの overlay の全トリガが同じホストを指す: `asynq_test.go` の `TestAsynqOverlaysShareOneNotifierHost`
-- 複製された ScaledJob の集合と patch の集合の一致: `TestAsynqOverlaysRetargetEveryScaledJobExactly`
+- overlays/asynq と overlays/e2e-asynq はトリガを差し替えない: `asynq_test.go` の `TestAsynqOverlaysInheritTheTriggersOfE2E`
+- overlays/e2e の差し替えと ScaledJob の集合の一致: `asynq_test.go` の `TestE2EOverlayRetargetsEveryScaledJobExactly`
 - config の worker 節以外が River と同一、rescue_stuck_jobs_after を持たない: `TestAsynqConfigDiffersFromRiverOnlyInTheWorkerSection`
 - notifier の常駐 worker を残す（component が notifier に触れない）: `TestAsynqNotifierKeepsItsResidentRulerWorker`
 
@@ -100,10 +100,8 @@ base は Secret を出荷しない（理由は [docs/operations/k8s.md](../../do
 
 ```sh
 # 1. 秘密（初回だけ。または overlay の secretGenerator で供給する）
-#    2 つ目のキーは KEDA の postgresql トリガが読む接続文字列（base/secret.example.yaml）。
 kubectl create secret generic rokuban-secrets \
-  --from-literal=POSTGRES_PASSWORD='...' \
-  --from-literal=POSTGRES_CONNECTION_STRING='postgresql://rokuban:...@postgres.<ns>.svc.cluster.local:5432/rokuban?sslmode=disable'
+  --from-literal=POSTGRES_PASSWORD='...'
 
 # 2. マイグレーション → 中央 → サイトの順で通す（入口までまとめる場合は overlay を使う）
 kubectl delete job rokuban-migrate --ignore-not-found
@@ -132,7 +130,7 @@ kubectl rollout status deployment/rokuban-api
 - **Pod ごとに違うのは argv だけ。** キューの絞り込みも argv（`--queues`）に寄せてある。config キー（`worker.queues`）でしか指定できないと、ScaledJob の数だけ ConfigMap が増えるため。**共有する config.yml に `worker.queues` を書くと、 `--queues` を渡している worker が全部起動エラーになる**（両方指定は排他）
 - **worker の Job は 1 件消化して自分で終了する**（`--once`）。ScaledJob は Job の自己終了を前提にした機構で、常駐する `--roles worker` を載せると「0 → 1 → 0」が成立しない。`--once` は成功・失敗を問わず exit 0 なので `backoffLimit: 0` / `restartPolicy: Never` と組ませる（リトライは River が持つ）
 - **worker の `terminationGracePeriodSeconds` は drain を包む**。`preStop の sleep + 10s + --soft-stop-timeout + 10s` より長くする（[docs/operations.md](../../docs/operations.md) §5「Deployment 併用時」。終了猶予はテストで固定する）。**api の値をそのまま写さないこと** --- api は River クライアントを Start しないので、足し算の後ろ 2 項が落ちている
-- **KEDA のトリガのクエリは物理キュー名で書く。** site 束縛キューは `<論理名>_<site>` に修飾される。論理名のまま書くと**誰も入れないキューを数え続けて永久にスケールしない**（クエリと物理キュー名の一致はテストで固定する）
+- **KEDA のトリガ URL のキュー名は物理キュー名で書く。** site 束縛キューは `<論理名>_<site>` に修飾される。論理名のまま書くと**誰も入れないキューを数え続けて永久にスケールしない**（URL と物理キュー名の一致はテストで固定する）
 - **パスワードに改行を含むものは使えない。前後の空白は落ちる**（`base/config.yml` の `password:` のコメントに実測付き）。記号（`'` `"` `\` `*` `{` `#` `: `）は通る
 - **image はロールごとに差し替えられる。** overlay の `images:` で `ghcr.io/fetburner/rokuban` を置換する（`overlays/kind` が実例）。ffmpeg を要する役（worker / site のライブ streamer）は別の image 名を書く（公式イメージは ffmpeg を含まない。`Dockerfile.full` でセルフビルドする）。共有 config の `live.enabled: true` による起動時検査を通すため、中央の streamer も full image を指すが、中央 Pod は `--sites=` なので ffmpeg を実際の要求には使わない
 - **api は 2 レプリカ + PDB（`minAvailable: 1`）で出荷**。PDB が無いと `kubectl drain` が両方同時に退去させるので、ノード 1 台の退避で全断する。レプリカを別ノードへ散らす指定は soft（`ScheduleAnyway`）にしてあるので、1 ノードのクラスタでも Pending にはならない
@@ -163,7 +161,7 @@ kind での動作確認手順は [docs/runbook/k8s.md](../../docs/runbook/k8s.md
 
 **argv とキュー名の噛み合わせは `workloads_test.go` が見る。** 見ているものは次のとおり。
 
-- `--queues` とトリガのクエリが同じ物理キュー名を指していること
+- `--queues` とトリガの URL が同じ物理キュー名を指していること
 - site 束縛キューの ScaledJob が `site/` に、置き場束縛キューの ScaledJob が `store/` に居ること。`stores_test.go` は、置き場が 2 つの overlay で、置き場ごとの ScaledJob・CronJob・配信 Deployment・Ingress 行を見る
 - base が置き場を知らないこと（PVC・`--stores`・`storage adopt` を持たない）
 - ffmpeg を要る役だけが `Dockerfile.full` のイメージを指していること
