@@ -17,6 +17,8 @@ func (stubPruner) PruneNotifications(context.Context) (int64, error) { return 0,
 // 預けられることを検査する。一覧から 1 つ消すと、NewAdapter が「kinds registered without an
 // adapter "river" worker」で拒み、ここが落ちる。DB は使わない（nil の pool で client を組む）。
 // notify_prune は NotificationPruner がある構成と無い構成の両方で検査する。
+// nil の pool は契約内である。riverpgxv5.New の doc が「The database pool may be nil」と明記し、
+// その場合 client は組めて Start だけがエラーになると定めている（go doc で確認）。
 func TestBindAllCoversEveryWorkerKind(t *testing.T) {
 	t.Parallel()
 	for name, deps := range map[string]*worker.Deps{

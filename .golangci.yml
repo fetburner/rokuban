@@ -237,14 +237,14 @@ linters:
               desc: River imports are limited to internal/jobq/riveradapter
         riveradapter-import:
           # River adapter の直接 import は内部の本番コードで禁止する。
-          # riverbind は River の型付き登録の一覧（River の公開 AddWorker[T] が具体型を要求する）で、この adapter を import する唯一の製品パッケージとして例外にする。
+          # riverbind は River の型付き登録の一覧（River の公開 AddWorker[T] が具体型を要求する）。worker の隣に置き、internal/ の本番コードで River adapter を import するのは riverbind だけなので例外にする。
           # testutil はテスト DB の作成で riveradapter/migrate を使うため除外する。
           # cmd/ は構成の根として adapter を組み立てるので、そもそも対象にしない。
           list-mode: lax
           files:
             - "${config-path}/internal/**"
             - "!${config-path}/internal/jobq/riveradapter/**"
-            - "!${config-path}/internal/jobq/riverbind/**"
+            - "!${config-path}/internal/worker/riverbind/**"
             - "!${config-path}/internal/testutil/**"
             - "!$test"
           deny:

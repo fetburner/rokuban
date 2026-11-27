@@ -192,7 +192,7 @@ func (deps *Deps) perStore() map[string]*StoreDeps {
 // 購読キューは client 設定で絞るため、ここでは登録を減らさない。
 // k8s の常駐 client も `ruler` queue だけを購読しながら全 kind を登録する。
 // ここは中立な jobq.Register だけを呼ぶ。River の登録（型引数つきの builder）は
-// internal/jobq/riverbind が、この registry に対して後から預ける。
+// internal/worker/riverbind が、この registry に対して後から預ける。
 // River 以外の adapter は中立な jobq.Registry をそのまま使える。
 func NewWorkers(deps *Deps) *jobq.Registry {
 	workers := jobq.NewRegistry()

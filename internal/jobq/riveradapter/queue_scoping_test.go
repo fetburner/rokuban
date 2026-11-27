@@ -11,12 +11,12 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
-	"github.com/fetburner/rokuban/internal/jobq/riverbind"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
+	"github.com/fetburner/rokuban/internal/worker/riverbind"
 )
 
 // TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues は issue #185（M4-13）の受け入れ

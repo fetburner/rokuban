@@ -2,38 +2,24 @@ package worker
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
 // TestNewWorkersRegistersNoRiverBuilder は worker.NewWorkers が River の builder を 1 つも
-// 預けないことを固定する。River の登録は internal/jobq/riverbind が後から預ける。
-// NewWorkers が riveradapter.Register に戻ると、どの kind にも builder があるので
-// RegisterAdapterWorkers の「builder が無い」検査が通らなくなり、このテストが落ちる。
+// 預けないことを固定する。River の登録は internal/worker/riverbind が後から預ける。
+// 各 kind に "river" の builder を 1 つ足せるかを試す。AddAdapterWorker は同じ adapter・kind の
+// 2 つ目を拒むので、NewWorkers が 1 つでも預けていれば、ここで落ちる。
 func TestNewWorkersRegistersNoRiverBuilder(t *testing.T) {
 	t.Parallel()
 	registry := NewWorkers(&Deps{NotificationPruner: fakeRiverCheckPruner{}})
-	kinds := map[string]bool{}
-	for _, args := range registry.ZeroArgs() {
-		kinds[args.Kind()] = true
-	}
+	kinds := registry.ZeroArgs()
 	if len(kinds) == 0 {
 		t.Fatal("NewWorkers registered no kinds")
 	}
-	// 1 つでも River の builder があれば、その kind は missing に載らない。全 kind が
-	// missing に載ることを要求するので、部分的な登録も落ちる。
-	err := registry.RegisterAdapterWorkers("river", nil)
-	if err == nil || !strings.Contains(err.Error(), "without an adapter") {
-		t.Fatalf("RegisterAdapterWorkers(river) = %v, want a missing-builder error", err)
-	}
-	msg := err.Error()
-	missing := map[string]bool{}
-	for _, kind := range strings.Split(msg[strings.LastIndex(msg, ": ")+2:], ", ") {
-		missing[kind] = true
-	}
-	for kind := range kinds {
-		if !missing[kind] {
-			t.Errorf("kind %q has a River builder in NewWorkers; want none", kind)
+	for _, args := range kinds {
+		kind := args.Kind()
+		if err := registry.AddAdapterWorker("river", kind, func(any) error { return nil }); err != nil {
+			t.Errorf("kind %q already has a River builder from NewWorkers: %v", kind, err)
 		}
 	}
 }

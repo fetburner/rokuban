@@ -88,15 +88,15 @@ func NewAdapter(pool *pgxpool.Pool, registry *jobq.Registry, queueFor QueueFunc,
 	return &Adapter{pool: pool, registry: registry, queueFor: queueFor, config: cfg, client: client, once: gate, now: time.Now, deliverablePageSize: defaultDeliverablePageSize}, nil
 }
 
-// workerTarget は Register が預けた builder に渡す、River の登録先と投入先の解決関数。
+// workerTarget は Bind が預けた builder に渡す、River の登録先と投入先の解決関数。
 type workerTarget struct {
 	workers  *river.Workers
 	queueFor QueueFunc
 }
 
-// Register は worker を jobq の registry に登録し、River の登録も預ける。
-// worker.NewWorkers は jobq.Register と Bind に分けて呼ぶ（登録の入口に River を混ぜない）。
-// テストで worker を 1 つずつ River に載せるための便宜として残す。
+// Register は worker を jobq の registry に登録し、続けて Bind で River の builder を預ける。
+// worker.NewWorkers は jobq.Register だけを呼び、River の builder は一覧（internal/worker/riverbind）が
+// 後から預ける。Register は、worker を 1 つずつ River に載せるテストの便宜として残す。
 func Register[T jobq.Args](registry *jobq.Registry, worker jobq.Worker[T]) {
 	jobq.Register(registry, worker)
 	if err := Bind[T](registry); err != nil {

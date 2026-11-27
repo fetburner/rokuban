@@ -1,10 +1,9 @@
 // Package riverbind は、worker.NewWorkers が登録する kind に River の型付き builder を預ける一覧を持つ。
 //
-// 一覧を worker パッケージに置かないのは、River の公開 AddWorker[T] が型引数を要求し、
-// worker が riveradapter と River と pgx に依存することを避けるためである。この一覧は
-// riveradapter を import する唯一の製品パッケージで、cmd/rokuban（River 構成の根）と
-// riveradapter の外部テストだけが呼ぶ。cmd/rokuban は main なのでテストから import できず、
-// 一覧を別パッケージに置く必要がある。
+// 一覧は worker の隣に置く。kind を足す・消すたびに NewWorkers と同じ理由で変わるため、
+// 同じ場所で直すほうが漏れにくい。River の公開 AddWorker[T] が型引数を要求するので、
+// この一覧は River の adapter を直接 import する。internal/ の本番コードで riveradapter を
+// import するのはこのパッケージだけで、構成の根（cmd/rokuban）とテストが呼ぶ。
 //
 // 一覧は worker.NewWorkers の登録と同じ集合でなければならない。漏れは riveradapter.NewAdapter が
 // 「kinds registered without an adapter "river" worker」で拒む。余分な kind は Bind が拒む。
@@ -19,7 +18,7 @@ import (
 	"github.com/fetburner/rokuban/internal/tsscan"
 )
 
-// bindings は worker.NewWorkers が登録する kind と同じ順に並べる。
+// bindings の順序に意味は無い（NewWorkers の登録順とも一致しない）。並びは kind の集合を見やすくするためだけ。
 var bindings = []func(*jobq.Registry) error{
 	riveradapter.Bind[jobs.IngestJobArgs],
 	riveradapter.Bind[jobs.EncodeReconcileArgs],

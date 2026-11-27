@@ -9,10 +9,10 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/asynqadapter"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	"github.com/fetburner/rokuban/internal/jobq/riverbind"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/worker"
+	"github.com/fetburner/rokuban/internal/worker/riverbind"
 )
 
 type workerQueue interface {
