@@ -16,6 +16,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
+	"github.com/fetburner/rokuban/internal/worker/riverbind"
 )
 
 // TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues は issue #185（M4-13）の受け入れ
@@ -68,6 +69,9 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 		spec.Queues = append(spec.Queues, jobq.QueueSpec{
 			Logical: logical, Physical: []string{jobs.PhysicalQueueName(logical, "tokyo")}, MaxWorkers: 1,
 		})
+	}
+	if err := riverbind.BindAll(workers); err != nil {
+		t.Fatalf("binding River workers: %v", err)
 	}
 	adapter, err := riveradapter.NewAdapter(pool, workers, jobs.PhysicalQueueFor, riveradapter.Config{Spec: spec})
 	if err != nil {

@@ -42,9 +42,9 @@
 
 API は、store の commit 後にヒントとして投入する。投入の失敗はログに残し、定期 reconcile に委ねる。watcher も、観測の commit の後にヒントとして投入する。CLI は単発で投入し、合流の有無を結果から表示する。
 
-River クライアントと投入オプションへの変換は、adapter に閉じ込める。worker の登録だけは River の公開 API が具体型を要求するので、River adapter を通す。asynq adapter は中立なレジストリに登録された worker を使う。
+River クライアントと投入オプションへの変換は、adapter に閉じ込める。worker の登録は中立なレジストリだけで済む。River は公開 API が型引数を要求するので、River 構成が型付きの登録の一覧（`internal/worker/riverbind`）を呼び、登録済みの registry に River の builder を後から預ける。asynq adapter は中立なレジストリに登録された worker を使う。
 
-import 境界の linter は、本番コードによる River adapter の直接 import を禁止する。例外は worker の登録とテスト DB 作成だけである。構成の根である起動コードは adapter を組み立てるので、対象外にする。テストも River の import を adapter に閉じる。asynq と go-redis の import も、テストを含め asynq adapter に閉じる。
+import 境界の linter は、本番コードによる River adapter の直接 import を禁止する。例外は River の型付き登録の一覧（`internal/worker/riverbind`）とテスト DB 作成だけである。構成の根である起動コードは adapter を組み立てるので、対象外にする。テストも River の import を adapter に閉じる。asynq と go-redis の import も、テストを含め asynq adapter に閉じる。
 
 配送される件数は両 adapter で同じ意味にする。いま worker を 1 台起こせば配送されるジョブ数で、available 全件と、期限が来た retryable / scheduled を数え、lease が有効な実行中は数えない（含めると、KEDA が余計に Job を起こす）。lease が切れた実行中は、asynq は孤児として数え、River は rescuer が retryable に戻してから期限で数える。River adapter は River が件数を返す公開 API を持たないので、公開の JobList をページ送りして数え、期限は Go 側で比べる。river_job を SQL で数えると内部表への依存（不変条件 14）になるので取らない。
 
@@ -71,12 +71,12 @@ River と asynq の adapter は構築時に、登録済みのすべての kind �
 - commit 後のヒントの投入と CLI の単発投入: `Enqueue`、合流の表示は `Result.Coalesced`
 - River への変換の閉じ込め先: `internal/jobq/riveradapter`、投入オプションは `InsertOpts`
 - 中立なレジストリ: `jobq.Registry`
-- River の零値検査: `riveradapter.Register` が登録する builder。`TestNewAdapterRejectsSiteBoundArgsWithoutQueueSite` で検査する
+- River の零値検査: `riveradapter.Bind` が預ける builder（登録の一覧は `internal/worker/riverbind`）。`TestNewAdapterRejectsSiteBoundArgsWithoutQueueSite` で検査する
 - asynq の零値検査: `jobq.Registry.ZeroArgs`。`TestNewAdapterChecksRegisteredQueueWithoutPeriodicJobs` で検査する
 - 仕様の型と検査: `jobq.WorkerSpec` の `Validate` / `Select` / `CheckKinds` / `CheckQueueFor`
 - 仕様の組み立て: `cmd/rokuban` の `newWorkerSpec`（`tsscan` が `internal/jobs` を import するので jobs には置けない）
 - import 境界の判定: `.golangci.yml` の depguard。adapter の本番コードは `riveradapter-allowlist` と `asynqadapter-allowlist`（許可リスト）
-- import の例外: `internal/` の本番コードでは `internal/worker/worker.go` と `internal/testutil`
+- import の例外: `internal/` の本番コードでは `internal/worker/riverbind`（River の型付き登録の一覧）と `internal/testutil`
 - 対象外にする起動コード: `cmd/`
 - SHA-256 待ち後の再開: `TestIngestWorker_CompletesUntilLateContentSHA256`
 - 古い publish 計画の再確認: `TestEncodeWorker_StaleCutPlanDoesNotRewindRow`

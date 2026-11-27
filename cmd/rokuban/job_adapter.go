@@ -12,6 +12,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/worker"
+	"github.com/fetburner/rokuban/internal/worker/riverbind"
 )
 
 type workerQueue interface {
@@ -100,7 +101,11 @@ func newJobAdapter(ctx context.Context, cfg *config.Config, pool *dbHandle, base
 		riverConfig.RescueStuckJobsAfter = *cfg.Worker.RescueStuckJobsAfter
 	}
 	base.RecoveryGrace = riverConfig.RecoveryGrace()
-	adapter, err := riveradapter.NewAdapter(pool.pgxPool(), worker.NewWorkers(base), jobs.PhysicalQueueFor, riverConfig)
+	registry := worker.NewWorkers(base)
+	if err := riverbind.BindAll(registry); err != nil {
+		return nil, nil, err
+	}
+	adapter, err := riveradapter.NewAdapter(pool.pgxPool(), registry, jobs.PhysicalQueueFor, riverConfig)
 	if err != nil {
 		return nil, nil, err
 	}

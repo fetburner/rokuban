@@ -8,7 +8,6 @@ import (
 	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/ingest"
 	"github.com/fetburner/rokuban/internal/jobq"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/objstore"
@@ -192,15 +191,16 @@ func (deps *Deps) perStore() map[string]*StoreDeps {
 // NewWorkers は全 kind のワーカーを登録した jobq.Registry を返す。
 // 購読キューは client 設定で絞るため、ここでは登録を減らさない。
 // k8s の常駐 client も `ruler` queue だけを購読しながら全 kind を登録する。
-// River の公開 AddWorker[T] API は worker の具体型を要求するため、ここで riveradapter.Register を通す。
+// ここは中立な jobq.Register だけを呼ぶ。River の登録（型引数つきの builder）は
+// internal/worker/riverbind が、この registry に対して後から預ける。
 // River 以外の adapter は中立な jobq.Registry をそのまま使える。
 func NewWorkers(deps *Deps) *jobq.Registry {
 	workers := jobq.NewRegistry()
 	registerStoreRoutedWorkers(workers, deps)
-	riveradapter.Register(workers, newIngestRoute(deps, func(d *Deps, s *StoreDeps) jobq.Worker[jobs.IngestJobArgs] {
+	jobq.Register(workers, newIngestRoute(deps, func(d *Deps, s *StoreDeps) jobq.Worker[jobs.IngestJobArgs] {
 		return newIngestWorker(d, s)
 	}))
-	riveradapter.Register(workers, &encode.EncodeReconcileWorker{
+	jobq.Register(workers, &encode.EncodeReconcileWorker{
 		Enqueuer: deps.Enqueuer,
 		Media:    deps.UnscopedMediaReconcile,
 		// 転送待ちが backlog_limit に達した置き場への encode 投入を止める（背圧）。
@@ -211,7 +211,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Profiles: deps.Encode,
 		Markers:  deps.LoopMarkers,
 	})
-	riveradapter.Register(workers, &EpgSyncWorker{
+	jobq.Register(workers, &EpgSyncWorker{
 		Enqueuer:       deps.Enqueuer,
 		MirakcClients:  deps.MirakcClients,
 		Store:          deps.EPGSync,
@@ -219,13 +219,13 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Markers:        deps.LoopMarkers,
 		RetentionGrace: deps.EpgRetentionGrace,
 	})
-	riveradapter.Register(workers, &TunerSyncWorker{
+	jobq.Register(workers, &TunerSyncWorker{
 		MirakcClients: deps.MirakcClients,
 		TunerStore:    deps.TunerStore,
 		CapacityStore: deps.CapacityStore,
 		Markers:       deps.LoopMarkers,
 	})
-	riveradapter.Register(workers, &ruler.PassWorker{
+	jobq.Register(workers, &ruler.PassWorker{
 		Config:         deps.Ruler,
 		Stores:         deps.RulerStores,
 		Enqueuer:       deps.Enqueuer,
@@ -233,11 +233,11 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		NeverScheduled: deps.NeverScheduled,
 		LoopMarkers:    deps.LoopMarkers,
 	})
-	riveradapter.Register(workers, &LabelRuleReconcileWorker{Store: deps.LabelRuleReevaluation})
+	jobq.Register(workers, &LabelRuleReconcileWorker{Store: deps.LabelRuleReevaluation})
 	if deps.NotificationPruner != nil {
-		riveradapter.Register(workers, &NotifyPruneWorker{Store: deps.NotificationPruner})
+		jobq.Register(workers, &NotifyPruneWorker{Store: deps.NotificationPruner})
 	}
-	riveradapter.Register(workers, &reconciler.PassWorker{
+	jobq.Register(workers, &reconciler.PassWorker{
 		MirakcClients:   deps.MirakcClients,
 		ScheduleSync:    deps.ScheduleSync,
 		Breakers:        deps.Breakers,
@@ -245,37 +245,37 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		LoopMarkers:     deps.LoopMarkers,
 		StartDelayGrace: deps.ReconcileStartDelayGrace,
 	})
-	riveradapter.Register(workers, &watcher.SweepWorker{
+	jobq.Register(workers, &watcher.SweepWorker{
 		Enqueuer:           deps.Enqueuer,
 		MirakcClients:      deps.MirakcClients,
 		RecordObservations: deps.RecordObservations,
 		LoopMarkers:        deps.LoopMarkers,
 		Webhook:            deps.Webhook,
 	})
-	riveradapter.Register(workers, &thumbnail.ThumbnailReconcileWorker{
+	jobq.Register(workers, &thumbnail.ThumbnailReconcileWorker{
 		Enqueuer: deps.Enqueuer,
 		Media:    deps.UnscopedMediaReconcile,
 		Markers:  deps.LoopMarkers,
 	})
-	riveradapter.Register(workers, &cmdetect.CMDetectReconcileWorker{
+	jobq.Register(workers, &cmdetect.CMDetectReconcileWorker{
 		Enqueuer:       deps.Enqueuer,
 		Locator:        deps.OriginalLocator,
 		DetectionStore: deps.UnscopedCMDetectionStore,
 		RecoveryGrace:  deps.RecoveryGrace,
 	})
-	riveradapter.Register(workers, &storagemaint.StorageTransferReconcileWorker{
+	jobq.Register(workers, &storagemaint.StorageTransferReconcileWorker{
 		Enqueuer: deps.Enqueuer,
 		Storage:  deps.UnscopedStorageTransfer,
 		Config:   deps.StorageTransferPolicy,
 	})
-	riveradapter.Register(workers, &storagemaint.StorageTransferWorker{
+	jobq.Register(workers, &storagemaint.StorageTransferWorker{
 		Storage:      deps.UnscopedStorageTransfer,
 		Config:       deps.StorageTransferPolicy,
 		Roots:        deps.StorageRoots,
 		ObjectStores: deps.StorageObjects,
 		ScratchDir:   deps.ScratchDir,
 	})
-	riveradapter.Register(workers, &tsscan.ReconcileWorker{ReconcileStores: deps.UnscopedTSScan, Enqueuer: deps.Enqueuer, Locator: deps.OriginalLocator, Markers: deps.LoopMarkers})
+	jobq.Register(workers, &tsscan.ReconcileWorker{ReconcileStores: deps.UnscopedTSScan, Enqueuer: deps.Enqueuer, Locator: deps.OriginalLocator, Markers: deps.LoopMarkers})
 	return workers
 }
 
@@ -299,7 +299,7 @@ func newIngestWorker(d *Deps, s *StoreDeps) *ingest.IngestWorker {
 // registerStoreRoutedWorkers は、原本のある置き場に束ねて動くワーカーを登録する。ジョブの置き場を
 // マウントしていないプロセスでは、どれもファイルに触れる前に失敗する（newStoreRoute）。
 func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
-	riveradapter.Register[jobs.EncodeJobArgs](workers, newStoreRoute("encode", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.EncodeJobArgs] {
+	jobq.Register[jobs.EncodeJobArgs](workers, newStoreRoute("encode", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.EncodeJobArgs] {
 		return &encode.EncodeWorker{
 			Stores:          s.Encode,
 			Media:           s.MediaReconcile,
@@ -315,14 +315,14 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 			Webhook:         d.Webhook,
 		}
 	}))
-	riveradapter.Register[jobs.CatalogExportArgs](workers, newStoreRoute("catalog_export", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.CatalogExportArgs] {
+	jobq.Register[jobs.CatalogExportArgs](workers, newStoreRoute("catalog_export", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.CatalogExportArgs] {
 		return &CatalogExportWorker{
 			Store:          s.Catalog,
 			MediaDir:       s.MediaDir,
 			MediaStoreName: s.MediaStoreName,
 		}
 	}))
-	riveradapter.Register[jobs.ThumbnailJobArgs](workers, newStoreRoute("thumbnail", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.ThumbnailJobArgs] {
+	jobq.Register[jobs.ThumbnailJobArgs](workers, newStoreRoute("thumbnail", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.ThumbnailJobArgs] {
 		return &thumbnail.ThumbnailWorker{
 			Media:           s.MediaReconcile,
 			ObjectPublisher: s.DerivedMediaPublish,
@@ -335,7 +335,7 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 			FFprobe:         d.Encode.FFprobe,
 		}
 	}))
-	riveradapter.Register[jobs.SeekTilesJobArgs](workers, newStoreRoute("seek_tiles", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.SeekTilesJobArgs] {
+	jobq.Register[jobs.SeekTilesJobArgs](workers, newStoreRoute("seek_tiles", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.SeekTilesJobArgs] {
 		return &thumbnail.SeekTilesWorker{
 			Media:           s.MediaReconcile,
 			ObjectPublisher: s.DerivedMediaPublish,
@@ -347,7 +347,7 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 			FFprobe:         d.Encode.FFprobe,
 		}
 	}))
-	riveradapter.Register[jobs.CMDetectJobArgs](workers, newStoreRoute("cm_detect", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.CMDetectJobArgs] {
+	jobq.Register[jobs.CMDetectJobArgs](workers, newStoreRoute("cm_detect", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.CMDetectJobArgs] {
 		return &cmdetect.CMDetectWorker{
 			Enqueuer:       d.Enqueuer,
 			DetectionStore: s.CMDetectionStore,
@@ -358,7 +358,7 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 			FFprobe:        d.Encode.FFprobe,
 		}
 	}))
-	riveradapter.Register[jobs.CMLogoCandidateJobArgs](workers, newStoreRoute("cm_logo_candidate", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.CMLogoCandidateJobArgs] {
+	jobq.Register[jobs.CMLogoCandidateJobArgs](workers, newStoreRoute("cm_logo_candidate", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.CMLogoCandidateJobArgs] {
 		return &cmdetect.CMLogoCandidateWorker{
 			Store:      s.CMStationStore,
 			MediaDir:   s.MediaDir,
@@ -367,17 +367,17 @@ func registerStoreRoutedWorkers(workers *jobq.Registry, deps *Deps) {
 			FFprobe:    d.Encode.FFprobe,
 		}
 	}))
-	riveradapter.Register[jobs.DeleteReconcileArgs](workers, newStoreRoute("delete_reconcile", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.DeleteReconcileArgs] {
+	jobq.Register[jobs.DeleteReconcileArgs](workers, newStoreRoute("delete_reconcile", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.DeleteReconcileArgs] {
 		return newDeleteReconcileWorker(d, s)
 	}))
-	riveradapter.Register[jobs.StorageSyncArgs](workers, newStoreRoute("storage_sync", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.StorageSyncArgs] {
+	jobq.Register[jobs.StorageSyncArgs](workers, newStoreRoute("storage_sync", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[jobs.StorageSyncArgs] {
 		return &StorageSyncWorker{
 			Storage:    s.StorageObservation,
 			MediaDir:   s.MediaDir,
 			ScratchDir: d.ScratchDir,
 		}
 	}))
-	riveradapter.Register[tsscan.ScanArgs](workers, newStoreRoute("ts_scan", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[tsscan.ScanArgs] {
+	jobq.Register[tsscan.ScanArgs](workers, newStoreRoute("ts_scan", deps, deps.perStore(), func(d *Deps, s *StoreDeps) jobq.Worker[tsscan.ScanArgs] {
 		return &tsscan.ScanWorker{ScanStores: s.TSScan, MediaDir: s.MediaDir}
 	}))
 }

@@ -237,19 +237,20 @@ linters:
               desc: River imports are limited to internal/jobq/riveradapter
         riveradapter-import:
           # River adapter の直接 import は内部の本番コードで禁止する。
-          # worker.go だけは River の公開登録 API が具体型を要求するため例外にする。
+          # riverbind は River の型付き登録の一覧で、River の公開 AddWorker[T] が具体型を要求するため adapter を直接 import する。
+          # kind の増減で NewWorkers と同じ理由で変わるので、worker の隣（internal/worker/riverbind）に置く。
           # testutil はテスト DB の作成で riveradapter/migrate を使うため除外する。
           # cmd/ は構成の根として adapter を組み立てるので、そもそも対象にしない。
           list-mode: lax
           files:
             - "${config-path}/internal/**"
             - "!${config-path}/internal/jobq/riveradapter/**"
-            - "!${config-path}/internal/worker/worker.go"
+            - "!${config-path}/internal/worker/riverbind/**"
             - "!${config-path}/internal/testutil/**"
             - "!$test"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/jobq/riveradapter
-              desc: use the neutral jobq contracts; only cmd/ wires the River adapter
+              desc: use the neutral jobq contracts; only cmd/ and riverbind wire the River adapter
         riveradapter-allowlist:
           # adapter は契約（jobq）とエンジン（river / pgx）だけに依存する。製品の方針
           # （どのジョブを何分で）は jobq.WorkerSpec として cmd/rokuban から渡される。
