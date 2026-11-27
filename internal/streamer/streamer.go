@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -121,6 +122,9 @@ type serveAsset struct {
 	sidecar bool
 	// contentType は明示する（ServeContent の拡張子推測に頼らない）。
 	contentType string
+	// downloadName は保存名（rel_path の basename）。空なら Content-Disposition を付けない。
+	// 原本と encoded だけが持つ。サムネイル・シークタイル・字幕サイドカーは空のまま。
+	downloadName string
 }
 
 // RecordingFile は GET/HEAD /api/media/recordings/{id}/file を処理する。
@@ -164,6 +168,7 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 		asset.contentType = "text/vtt; charset=utf-8"
 		asset.sidecar = true
 		asset.derived = true
+		asset.downloadName = ""
 	}
 
 	s.serveAsset(w, r, id, asset)
@@ -286,6 +291,7 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 	// パス検証を通した後に返すのが要点（検証前に返すと任意ファイルを配らせられる）。
 	if s.cfg.AccelLocation != "" {
 		w.Header().Set("Content-Type", asset.contentType)
+		setDownloadName(w, asset)
 		w.Header().Set("X-Accel-Redirect", accelURI(s.cfg.AccelLocation, asset.store, asset.relPath))
 		return
 	}
@@ -338,6 +344,7 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 
 	// ServeContent は name から Content-Type を推測しようとするので明示する。
 	w.Header().Set("Content-Type", asset.contentType)
+	setDownloadName(w, asset)
 	// 録画は一度書いたら変わらないが、ごみ箱からの復元などで同じ URL の
 	// 中身が入れ替わりうるので immutable は付けない。
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
@@ -373,10 +380,12 @@ func (s *Streamer) serveLocalObjectAsset(w http.ResponseWriter, r *http.Request,
 		// Local が設定済みでも Store API で key の存在とサイズを確認してから、
 		// original と同じく nginx へ転送する。FS の Range は nginx が処理する。
 		w.Header().Set("Content-Type", asset.contentType)
+		setDownloadName(w, asset)
 		w.Header().Set("X-Accel-Redirect", accelURI(s.cfg.AccelLocation, asset.store, asset.relPath))
 		return
 	}
 	w.Header().Set("Content-Type", asset.contentType)
+	setDownloadName(w, asset)
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
 	http.ServeContent(w, r, "", object.LastModified, f)
 }
@@ -396,7 +405,7 @@ func (s *Streamer) serveSignedAsset(w http.ResponseWriter, r *http.Request, reco
 	if expires <= 0 {
 		expires = objstore.DefaultURLExpiry
 	}
-	target, err := signer.Presign(r.Context(), asset.relPath, r.Method, expires, asset.contentType, "")
+	target, err := signer.Presign(r.Context(), asset.relPath, r.Method, expires, asset.contentType, asset.downloadName)
 	if err != nil {
 		objstore.RecordError("presign", err)
 		slog.Error("streamer: creating signed object URL", "recording_id", recordingID, "store", asset.store,
@@ -417,6 +426,7 @@ func (s *Streamer) serveRangeAsset(w http.ResponseWriter, r *http.Request, recor
 	w.Header().Set("Content-Type", asset.contentType)
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
 	w.Header().Set("X-Accel-Buffering", "no")
+	setDownloadName(w, asset)
 	reader := &rangeReadSeeker{
 		ctx: r.Context(), rangeReader: rangeReader, key: asset.relPath,
 		size: object.Size, recordingID: recordingID, store: asset.store,
@@ -558,10 +568,11 @@ func (s *Streamer) lookupAsset(r *http.Request, recordingID int64, profile strin
 			return serveAsset{}, err
 		}
 		return serveAsset{
-			relPath:     row.RelPath,
-			store:       row.Store,
-			sizeBytes:   row.SizeBytes,
-			contentType: contentTypeOriginal,
+			relPath:      row.RelPath,
+			store:        row.Store,
+			sizeBytes:    row.SizeBytes,
+			contentType:  contentTypeOriginal,
+			downloadName: filepath.Base(row.RelPath),
 		}, nil
 	}
 
@@ -570,12 +581,25 @@ func (s *Streamer) lookupAsset(r *http.Request, recordingID int64, profile strin
 		return serveAsset{}, err
 	}
 	return serveAsset{
-		relPath:     row.RelPath,
-		store:       row.Store,
-		sizeBytes:   row.SizeBytes,
-		derived:     true,
-		contentType: contentTypeForPath(row.RelPath),
+		relPath:      row.RelPath,
+		store:        row.Store,
+		sizeBytes:    row.SizeBytes,
+		derived:      true,
+		contentType:  contentTypeForPath(row.RelPath),
+		downloadName: filepath.Base(row.RelPath),
 	}, nil
+}
+
+// setDownloadName は保存名を Content-Disposition で返す。
+//
+// attachment にするのは、別オリジンへの 302 では <a download> が効かず、inline だと
+// 保存されないため（docs/api/media/recording.md「保存名」）。attachment でも <video> の再生は妨げられない。
+// 署名 URL の経路では S3 が同じ値を応答に載せるので、ここでは設定しない。
+func setDownloadName(w http.ResponseWriter, asset serveAsset) {
+	if asset.downloadName == "" {
+		return
+	}
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": asset.downloadName}))
 }
 
 // contentTypeForPath は派生物の拡張子から Content-Type を決める。

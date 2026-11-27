@@ -125,7 +125,7 @@ paths:
         ルール / overrides の `encodeProfiles` を選ぶために使う（M3-6 / issue #68）。
 
         **機微情報は載せない。** ffmpeg のパスや extra_args は出さない。
-        名前（と表示用の container）だけを返す。
+        名前だけを返す。
       responses:
         "200":
           description: OK（設定順。未定義なら空配列）
@@ -2441,11 +2441,6 @@ components:
           description: |
             ルール / overrides の `encodeProfiles` が参照する名前。
             config.encode.profiles[].name と一致する。
-        container:
-          type: string
-          enum: [mp4, mkv]
-          description: |
-            出力コンテナ（表示用。未注入なら省略）。
 
     # --- Live (HLS) profiles (M4-21 / issue #869) ---
     #

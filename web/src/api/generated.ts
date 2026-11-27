@@ -54,25 +54,12 @@ export interface Capabilities {
   cmDetect: boolean;
 }
 
-/**
- * 出力コンテナ（表示用。未注入なら省略）。
- */
-export type EncodeProfileSummaryContainer = typeof EncodeProfileSummaryContainer[keyof typeof EncodeProfileSummaryContainer];
-
-
-export const EncodeProfileSummaryContainer = {
-  mp4: 'mp4',
-  mkv: 'mkv',
-} as const;
-
 export interface EncodeProfileSummary {
   /**
      * ルール / overrides の `encodeProfiles` が参照する名前。
      * config.encode.profiles[].name と一致する。
      */
   name: string;
-  /** 出力コンテナ（表示用。未注入なら省略）。 */
-  container?: EncodeProfileSummaryContainer;
 }
 
 export interface LiveProfileSummary {
@@ -2938,7 +2925,7 @@ export const getListEncodeProfilesUrl = () => {
  * ルール / overrides の `encodeProfiles` を選ぶために使う（M3-6 / issue #68）。
  *
  * **機微情報は載せない。** ffmpeg のパスや extra_args は出さない。
- * 名前（と表示用の container）だけを返す。
+ * 名前だけを返す。
  * @summary List configured encode profile names
  */
 export const listEncodeProfiles = async ( options?: Parameters<typeof customInstance>[1]): Promise<listEncodeProfilesResponse> => {
@@ -2990,7 +2977,7 @@ export type ListEncodeProfilesQueryError = unknown
  * ルール / overrides の `encodeProfiles` を選ぶために使う（M3-6 / issue #68）。
  *
  * **機微情報は載せない。** ffmpeg のパスや extra_args は出さない。
- * 名前（と表示用の container）だけを返す。
+ * 名前だけを返す。
  * @summary List configured encode profile names
  */
 export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEncodeProfiles>>, TError = unknown>(
@@ -3008,7 +2995,7 @@ export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEnco
  * ルール / overrides の `encodeProfiles` を選ぶために使う（M3-6 / issue #68）。
  *
  * **機微情報は載せない。** ffmpeg のパスや extra_args は出さない。
- * 名前（と表示用の container）だけを返す。
+ * 名前だけを返す。
  * @summary List configured encode profile names
  */
 export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEncodeProfiles>>, TError = unknown>(
@@ -3026,7 +3013,7 @@ export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEnco
  * ルール / overrides の `encodeProfiles` を選ぶために使う（M3-6 / issue #68）。
  *
  * **機微情報は載せない。** ffmpeg のパスや extra_args は出さない。
- * 名前（と表示用の container）だけを返す。
+ * 名前だけを返す。
  * @summary List configured encode profile names
  */
 export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEncodeProfiles>>, TError = unknown>(
@@ -3038,7 +3025,7 @@ export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEnco
  * ルール / overrides の `encodeProfiles` を選ぶために使う（M3-6 / issue #68）。
  *
  * **機微情報は載せない。** ffmpeg のパスや extra_args は出さない。
- * 名前（と表示用の container）だけを返す。
+ * 名前だけを返す。
  * @summary List configured encode profile names
  */
 export function useListEncodeProfiles<TData = Awaited<ReturnType<typeof listEncodeProfiles>>, TError = unknown>(

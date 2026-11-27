@@ -16,10 +16,6 @@ func TestListEncodeProfiles(t *testing.T) {
 	if body[0].Name != "h264" || body[1].Name != "hevc" {
 		t.Errorf("names = [%q, %q], want [h264, hevc]", body[0].Name, body[1].Name)
 	}
-	// 機微情報を載せない（container も未注入なら無い）。
-	if body[0].Container != nil {
-		t.Errorf("container should be omitted when only names are injected, got %v", *body[0].Container)
-	}
 }
 
 func TestListEncodeProfiles_EmptyWhenNotConfigured(t *testing.T) {

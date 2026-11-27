@@ -278,24 +278,6 @@ func (e EncodeJobStatusState) Valid() bool {
 	}
 }
 
-// Defines values for EncodeProfileSummaryContainer.
-const (
-	Mkv EncodeProfileSummaryContainer = "mkv"
-	Mp4 EncodeProfileSummaryContainer = "mp4"
-)
-
-// Valid indicates whether the value is a known member of the EncodeProfileSummaryContainer enum.
-func (e EncodeProfileSummaryContainer) Valid() bool {
-	switch e {
-	case Mkv:
-		return true
-	case Mp4:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for IngestProgressState.
 const (
 	Committed    IngestProgressState = "committed"
@@ -1490,16 +1472,10 @@ type EncodeJobStatusState string
 
 // EncodeProfileSummary defines model for EncodeProfileSummary.
 type EncodeProfileSummary struct {
-	// Container 出力コンテナ（表示用。未注入なら省略）。
-	Container *EncodeProfileSummaryContainer `json:"container,omitempty"`
-
 	// Name ルール / overrides の `encodeProfiles` が参照する名前。
 	// config.encode.profiles[].name と一致する。
 	Name string `json:"name"`
 }
-
-// EncodeProfileSummaryContainer 出力コンテナ（表示用。未注入なら省略）。
-type EncodeProfileSummaryContainer string
 
 // EncodeQueueSummary 待機中・実行中は録画 × プロファイル単位、確認待ちは録画単位の件数。
 type EncodeQueueSummary struct {

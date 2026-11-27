@@ -365,7 +365,7 @@ func (s *Store) Presign(ctx context.Context, key, method string, expires time.Du
 		input.ResponseContentType = aws.String(contentType)
 	}
 	if filename != "" {
-		value := mime.FormatMediaType("inline", map[string]string{"filename": filename})
+		value := mime.FormatMediaType("attachment", map[string]string{"filename": filename})
 		input.ResponseContentDisposition = aws.String(value)
 	}
 	var request *v4.PresignedHTTPRequest
