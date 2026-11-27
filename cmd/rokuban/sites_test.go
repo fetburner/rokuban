@@ -224,14 +224,14 @@ func TestNewBoundBacklogCollector(t *testing.T) {
 	}
 
 	t.Run("unbound (central) process registers nothing", func(t *testing.T) {
-		cs := newBoundBacklogCollectors(pool, nil)
+		cs := newBoundBacklogCollectors(&dbHandle{pg: pool}, nil)
 		if len(cs) != 0 {
 			t.Fatalf("collectors = %v, want none", cs)
 		}
 	})
 
 	t.Run("two bound sites registers one collector per site", func(t *testing.T) {
-		cs := newBoundBacklogCollectors(pool, []config.MirakcSite{tokyo, takamatsu})
+		cs := newBoundBacklogCollectors(&dbHandle{pg: pool}, []config.MirakcSite{tokyo, takamatsu})
 		if len(cs) != 2 {
 			t.Fatalf("collectors = %d, want 2", len(cs))
 		}
@@ -248,7 +248,7 @@ func TestNewBoundBacklogCollector(t *testing.T) {
 	})
 
 	t.Run("exactly one bound site registers a collector reporting under that site's series", func(t *testing.T) {
-		cs := newBoundBacklogCollectors(pool, []config.MirakcSite{tokyo})
+		cs := newBoundBacklogCollectors(&dbHandle{pg: pool}, []config.MirakcSite{tokyo})
 		if len(cs) != 1 {
 			t.Fatalf("collectors = %d, want 1", len(cs))
 		}
@@ -307,7 +307,7 @@ func TestNewBoundBacklogCollector_ThroughNewRegistry(t *testing.T) {
 	}
 
 	t.Run("unbound process: NewRegistry+Gather does not panic and has no backlog series", func(t *testing.T) {
-		backlog := newBoundBacklogCollectors(pool, nil)
+		backlog := newBoundBacklogCollectors(&dbHandle{pg: pool}, nil)
 		reg := metrics.NewRegistry(backlog...) // 具体型 nil が漏れていればここで panic する
 		if sites := sitesWithBacklogSeries(t, reg); len(sites) != 0 {
 			t.Errorf("unbound process should not expose rokuban_uningested_records, got sites %v", sites)
@@ -315,7 +315,7 @@ func TestNewBoundBacklogCollector_ThroughNewRegistry(t *testing.T) {
 	})
 
 	t.Run("two bound sites: NewRegistry+Gather exposes both sites' backlog series", func(t *testing.T) {
-		backlog := newBoundBacklogCollectors(pool, []config.MirakcSite{tokyo, takamatsu})
+		backlog := newBoundBacklogCollectors(&dbHandle{pg: pool}, []config.MirakcSite{tokyo, takamatsu})
 		reg := metrics.NewRegistry(backlog...) // 具体型 nil が漏れていればここで panic する
 		sites := sitesWithBacklogSeries(t, reg)
 		if !slices.Contains(sites, "tokyo") || !slices.Contains(sites, "takamatsu") {
@@ -324,7 +324,7 @@ func TestNewBoundBacklogCollector_ThroughNewRegistry(t *testing.T) {
 	})
 
 	t.Run("exactly one bound site: NewRegistry+Gather exposes the backlog series", func(t *testing.T) {
-		backlog := newBoundBacklogCollectors(pool, []config.MirakcSite{tokyo})
+		backlog := newBoundBacklogCollectors(&dbHandle{pg: pool}, []config.MirakcSite{tokyo})
 		reg := metrics.NewRegistry(backlog...)
 		if sites := sitesWithBacklogSeries(t, reg); len(sites) == 0 {
 			t.Error("single-site binding should expose rokuban_uningested_records")
@@ -337,7 +337,7 @@ func TestNewBoundBacklogCollector_ThroughNewRegistry(t *testing.T) {
 // reconciler 停止を見逃さないための配線を固定する（issue #680）。
 func TestNewConfiguredPresyncCollectors_ExposeAllConfiguredSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	cs := newConfiguredPresyncCollectors(pool, []config.MirakcSite{tokyo, takamatsu})
+	cs := newConfiguredPresyncCollectors(&dbHandle{pg: pool}, []config.MirakcSite{tokyo, takamatsu})
 	if len(cs) != 2 {
 		t.Fatalf("collectors = %d, want 2", len(cs))
 	}
@@ -371,7 +371,7 @@ func TestNewConfiguredPresyncCollectors_ExposeAllConfiguredSites(t *testing.T) {
 // scrape できることを配線で固定する。
 func TestNewConfiguredLoopPassCollectors_ExposeAllConfiguredSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	cs := newConfiguredLoopPassCollectors(pool, []config.MirakcSite{tokyo, takamatsu})
+	cs := newConfiguredLoopPassCollectors(&dbHandle{pg: pool}, []config.MirakcSite{tokyo, takamatsu})
 	if len(cs) != 2 {
 		t.Fatalf("collectors = %d, want 2", len(cs))
 	}
@@ -470,7 +470,7 @@ func TestNewReconcileMarkerCollectorS3Series(t *testing.T) {
 		t.Run(derived, func(t *testing.T) {
 			cfg := config.StorageConfig{Stores: map[string]config.StoreConfig{"fs-a": {Kind: "fs"}, "s3-a": {Kind: "s3"}}, Derived: derived}
 			reg := prometheus.NewPedanticRegistry()
-			reg.MustRegister(newReconcileMarkerCollector(pool, cfg))
+			reg.MustRegister(newReconcileMarkerCollector(&dbHandle{pg: pool}, cfg))
 			families, err := reg.Gather()
 			if err != nil {
 				t.Fatal(err)

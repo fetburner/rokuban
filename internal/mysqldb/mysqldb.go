@@ -24,6 +24,18 @@ const (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
+// DSN は接続先（host:port）・認証・DB 名から OpenPool に渡す DSN を組む。
+// 値のエスケープは go-sql-driver に任せ、呼び出し側は引用符を付けない。
+func DSN(addr, user, password, database string) string {
+	cfg := mysql.NewConfig()
+	cfg.Net = "tcp"
+	cfg.Addr = addr
+	cfg.User = user
+	cfg.Passwd = password
+	cfg.DBName = database
+	return cfg.FormatDSN()
+}
+
 // OpenPool は MySQL の接続プールを開き、設定を検査する。DSN の DB 名、接続先、
 // 認証情報は保ち、接続ごとの設定は store 契約の値へ置き換える。
 // TestOpenPoolEnforcesConnectionSettings が接続後の値を検査する。
@@ -116,6 +128,27 @@ func hasTraditionalSQLMode(raw string) bool {
 	return true
 }
 
+// CheckMigrationsCurrent は DB の適用済み最大バージョンが、埋め込みの最新と一致しなければエラーを返す。
+// PostgreSQL の db.CheckMigrationsCurrent と同じ判定（goose の GetVersions）である。
+func CheckMigrationsCurrent(ctx context.Context, db *sql.DB) error {
+	subFS, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		return fmt.Errorf("getting MySQL migrations sub-FS: %w", err)
+	}
+	provider, err := goose.NewProvider(goose.DialectMySQL, db, subFS)
+	if err != nil {
+		return fmt.Errorf("creating MySQL goose provider: %w", err)
+	}
+	current, target, err := provider.GetVersions(ctx)
+	if err != nil {
+		return fmt.Errorf("reading migration versions: %w", err)
+	}
+	if current != target {
+		return fmt.Errorf("database schema is at migration %d, but this binary embeds migration %d; run migrate up first", current, target)
+	}
+	return nil
+}
+
 // MigrateUp はこのパッケージに埋め込んだ MySQL 用 goose migration を適用する。
 // MySQL のスキーマは PostgreSQL から複製せず、独自の初期 migration から始める。
 func MigrateUp(ctx context.Context, db *sql.DB) error {
@@ -129,6 +162,22 @@ func MigrateUp(ctx context.Context, db *sql.DB) error {
 	}
 	if _, err := provider.Up(ctx); err != nil {
 		return fmt.Errorf("applying MySQL migrations: %w", err)
+	}
+	return nil
+}
+
+// MigrateDown は MySQL 用 goose migration を 1 ステップ戻す。PostgreSQL の db.MigrateDown と同じ操作である。
+func MigrateDown(ctx context.Context, db *sql.DB) error {
+	subFS, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		return fmt.Errorf("getting MySQL migrations sub-FS: %w", err)
+	}
+	provider, err := goose.NewProvider(goose.DialectMySQL, db, subFS)
+	if err != nil {
+		return fmt.Errorf("creating MySQL goose provider: %w", err)
+	}
+	if _, err := provider.Down(ctx); err != nil {
+		return fmt.Errorf("rolling back MySQL migration: %w", err)
 	}
 	return nil
 }

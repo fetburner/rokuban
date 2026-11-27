@@ -16,13 +16,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/encode"
 	"github.com/fetburner/rokuban/internal/ingest"
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -31,7 +29,6 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/notifier"
-	"github.com/fetburner/rokuban/internal/notifier/pgsource"
 	"github.com/fetburner/rokuban/internal/objstore"
 	"github.com/fetburner/rokuban/internal/objstore/cryptstore"
 	"github.com/fetburner/rokuban/internal/objstore/fsstore"
@@ -39,7 +36,6 @@ import (
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/ruler"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/storemarker"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/tsscan"
@@ -453,7 +449,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	ctx, stop := installSignalHandler(cmd.Context())
 	defer stop()
 
-	pool, err := db.NewPool(ctx, cfg.DB, roles, len(bound), len(mounted))
+	pool, err := openDB(ctx, cfg, roles, len(bound), len(mounted))
 	if err != nil {
 		return err
 	}
@@ -462,7 +458,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	defer pool.Close()
 
 	// 起動時の検査だけに使う。
-	mediaStore := pgstore.NewMediaUnbound(pool)
+	mediaStore := pool.MediaUnbound()
 	if slices.Contains(roles, "worker") {
 		if err := mediaStore.RequireAdoptedStoreRows(ctx); err != nil {
 			return fmt.Errorf("validating media store assignment: %w", err)
@@ -635,20 +631,20 @@ func liveProfileSummaries(profiles []config.LiveProfile) []api.LiveProfileSummar
 // 呼ばずに return する。登録済みの goroutine は誰にも回収されないまま、
 // `defer pool.Close()` が閉じた pool を使い続けることになる。現在の実装は
 // error return がすべて `eg.Go` より前にあるのでこの形にはならない。
-func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy store.StoragePolicy, roles []string, bound []config.MirakcSite, roots map[string]string, pool *pgxpool.Pool, eg *errgroup.Group, noRecordingHLS bool, enqueuer jobq.Enqueuer, counter jobq.DeliverableCounter) (*http.Server, error) {
+func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy store.StoragePolicy, roles []string, bound []config.MirakcSite, roots map[string]string, pool *dbHandle, eg *errgroup.Group, noRecordingHLS bool, enqueuer jobq.Enqueuer, counter jobq.DeliverableCounter) (*http.Server, error) {
 	// api と streamer は置き場に束ねない。置き場は URL（原本）か DB の行（派生物）が決める。
-	mediaStore := pgstore.NewMediaUnbound(pool)
+	mediaStore := pool.MediaUnbound()
 	metricCollectors := newBoundBacklogCollectors(pool, bound)
 	metricCollectors = append(metricCollectors, newConfiguredPresyncCollectors(pool, cfg.Registry())...)
 	metricCollectors = append(metricCollectors, newConfiguredLoopPassCollectors(pool, cfg.Registry())...)
 	metricCollectors = append(metricCollectors, newTransferBacklogCollector(pool, cfg.Storage))
 	metricCollectors = append(metricCollectors, newReconcileMarkerCollector(pool, cfg.Storage))
 	metricCollectors = append(metricCollectors, newSyncMarkerCollector(pool, cfg.Registry()))
-	tunerStore := pgstore.NewTuners(pool)
-	analysisStore := pgstore.NewAnalysis(pool, "")
-	recordingStore := pgstore.NewRecordings(pool, "")
+	tunerStore := pool.Tuners()
+	analysisStore := pool.CMStations("")
+	recordingStore := pool.RecordingWrites()
 	// API は storage の配置先を知らない。active なコピーがある全置き場を検索する。
-	recordingQuery := pgstore.NewRecordings(pool, "")
+	recordingQuery := pool.RecordingQueries("")
 	storageStoreNames := slices.Collect(maps.Keys(cfg.Storage.Stores))
 	routerCfg := api.RouterConfig{
 		AllowedHosts:       cfg.Server.AllowedHosts,
@@ -658,22 +654,22 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy st
 		// まで待って 503 になりうる（未測定。Acquire が待つことからの帰結）。DB 断と輻輳を
 		// この応答で区別することはできない。
 		Ready:               pool.Ping,
-		ChapterStore:        analysisStore,
-		PlaybackStateStore:  pgstore.NewPlayback(pool),
+		ChapterStore:        pool.ChapterEdits(),
+		PlaybackStateStore:  pool.Playback(),
 		RecordingTrashStore: recordingStore,
 		RecordingQuery:      recordingQuery,
 		TunerReader:         tunerStore,
 		CapacityStore:       tunerStore,
-		ReservationStore:    pgstore.NewReservations(pool),
-		RuleStore:           pgstore.NewRules(pool, registryNames(cfg.Registry())),
+		ReservationStore:    pool.Reservations(),
+		RuleStore:           pool.Rules(registryNames(cfg.Registry())),
 		CMStationStore:      analysisStore,
 		CMDetectionStore:    analysisStore,
-		LabelRules:          pgstore.NewLabelRules(pool),
-		BreakerAdmin:        pgstore.NewBreakers(pool),
-		EPGReader:           pgstore.NewEPG(pool),
-		ProgramSearch:       pgstore.NewEPG(pool),
+		LabelRules:          pool.LabelRules(),
+		BreakerAdmin:        pool.Breakers(),
+		EPGReader:           pool.EPG(),
+		ProgramSearch:       pool.EPG(),
 		EncodePolicyStore:   mediaStore,
-		Dedupe:              pgstore.NewReservations(pool),
+		Dedupe:              pool.Reservations(),
 		MediaReader:         mediaStore,
 		StorageObservation:  mediaStore,
 		// api は不変条件 1（mirakc にもファイルシステムにも依存しない）により
@@ -733,7 +729,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy st
 			readableStores = append(readableStores, name)
 		}
 		slices.Sort(readableStores)
-		streamerMedia := pgstore.NewMediaForStreamer(pool, storagePolicy, readableStores)
+		streamerMedia := pool.MediaForStreamer(storagePolicy, readableStores)
 		mounters = append(mounters, streamer.New(streamerMedia, streamer.Config{
 			MediaRoots:    roots,
 			AccelLocation: cfg.Storage.AccelLocation,
@@ -773,7 +769,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy st
 			if err := streamer.ValidateFFmpegDecoders(egCtx, cfg.Live.FFmpeg, cfg.Live.Captions); err != nil {
 				return nil, err
 			}
-			recordingHLS, err = streamer.NewRecordingHLS(pgstore.NewMediaInStoreWithoutPolicy(pool, hlsStore), streamer.RecordingHLSConfig{
+			recordingHLS, err = streamer.NewRecordingHLS(pool.MediaInStoreWithoutPolicy(hlsStore), streamer.RecordingHLSConfig{
 				StoreName:       hlsStore,
 				MediaDir:        roots[hlsStore],
 				SegmentDir:      cfg.RecordingHLS.SegmentDir,
@@ -804,7 +800,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy st
 	}
 	if slices.Contains(roles, "notifier") {
 		hub := notifier.NewEventHub()
-		source := pgsource.New(pool)
+		source := pool.NotificationSource()
 		mounters = append(mounters, hub)
 		eg.Go(func() error {
 			if err := hub.Run(egCtx, source); err != nil && !errors.Is(err, context.Canceled) {
@@ -830,9 +826,9 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, storagePolicy st
 
 // newWorkerDeps は worker ロール用の worker.Deps と、adapter を後から差し込む Enqueuer を組み立てる。
 // サイトごとの mirakc クライアントをここで作る。
-func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.StoragePolicy, bound []config.MirakcSite, mounted []string, roots map[string]string, queues []string, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*worker.Deps, *jobq.Deferred, error) {
+func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.StoragePolicy, bound []config.MirakcSite, mounted []string, roots map[string]string, queues []string, pool *dbHandle, webhookClient *webhook.Client, ingestStorageProbed bool) (*worker.Deps, *jobq.Deferred, error) {
 	// until_encoded の原本の削除判定は storage.derived を使う。
-	mediaStore := pgstore.NewMediaUnboundWithPolicy(pool, storagePolicy)
+	mediaStore := pool.MediaUnboundWithPolicy(storagePolicy)
 	storageObjects := make(map[string]objstore.Store)
 	for _, name := range sortedKeys(roots) {
 		objects, err := newObjectStore(ctx, name, cfg.Storage.Stores[name], roots[name], false)
@@ -850,10 +846,10 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 	if derivedObjects != nil {
 		storageObjects[cfg.Storage.Derived] = derivedObjects
 	}
-	reservationStore := pgstore.NewReservations(pool)
-	breakersStore := pgstore.NewBreakers(pool)
-	neverScheduledStore := pgstore.NewNeverScheduledEvents(pool)
-	scheduleSyncStore := pgstore.NewScheduleSync(pool)
+	reservationStore := pool.Reservations()
+	breakersStore := pool.Breakers()
+	neverScheduledStore := pool.NeverScheduled()
+	scheduleSyncStore := pool.ScheduleSync()
 	if jobs.RequiresEncodeTools(queues) {
 		if err := cfg.Encode.ValidateTools(); err != nil {
 			return nil, nil, err
@@ -883,15 +879,15 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 		rulerRetractGrace = *cfg.Ruler.RetractGrace
 	}
 	deferred := &jobq.Deferred{}
-	tunerStore := pgstore.NewTuners(pool)
-	analysisStore := pgstore.NewAnalysis(pool, "")
-	recordingStore := pgstore.NewRecordings(pool, "")
+	tunerStore := pool.Tuners()
+	analysisStore := pool.CMStations("")
+	recordingStore := pool.RecordingWrites()
 	base := &worker.Deps{
 		Enqueuer:                 deferred,
-		EPGSync:                  pgstore.NewEPG(pool),
-		RulerInputBumper:         pgstore.NewReservations(pool),
+		EPGSync:                  pool.EPG(),
+		RulerInputBumper:         pool.Reservations(),
 		MirakcClients:            mirakcClients,
-		LoopMarkers:              reservationStore,
+		LoopMarkers:              pool.LoopMarkers(),
 		Breakers:                 breakersStore,
 		NeverScheduled:           neverScheduledStore,
 		ScheduleSync:             scheduleSyncStore,
@@ -899,7 +895,8 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 		UnscopedCMDetectionStore: analysisStore,
 		TunerStore:               tunerStore,
 		CapacityStore:            tunerStore,
-		LabelRuleReevaluation:    pgstore.NewLabelRules(pool),
+		LabelRuleReevaluation:    pool.LabelRules(),
+		NotificationPruner:       pool.NotificationPruner(),
 		UnscopedMediaReconcile:   mediaStore,
 		DerivedObjectStoreName:   cfg.Storage.Derived,
 		StorageObjects:           storageObjects,
@@ -927,7 +924,7 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 		},
 		RulerStores: ruler.Stores{
 			RulerPass:     reservationStore,
-			ProgramSearch: pgstore.NewEPG(pool),
+			ProgramSearch: pool.EPG(),
 		},
 		ReconcileStartDelayGrace: cfg.Reconciler.StartDelayGrace,
 		Webhook:                  webhookClient,
@@ -941,7 +938,7 @@ func newWorkerDeps(ctx context.Context, cfg *config.Config, storagePolicy store.
 }
 
 // newPerStoreWorkerDeps は、サーバーがマウントした FS 置き場ごとに worker.StoreDeps を作る。
-func newPerStoreWorkerDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy store.StoragePolicy, roots map[string]string, storageObjects map[string]objstore.Store) (map[string]*worker.StoreDeps, error) {
+func newPerStoreWorkerDeps(pool *dbHandle, cfg *config.Config, storagePolicy store.StoragePolicy, roots map[string]string, storageObjects map[string]objstore.Store) (map[string]*worker.StoreDeps, error) {
 	perStore := make(map[string]*worker.StoreDeps, len(roots))
 	for _, name := range sortedKeys(roots) {
 		deps, err := newStoreScopedDeps(pool, cfg, storagePolicy, name, roots[name], storageObjects)
@@ -970,10 +967,10 @@ func newDerivedObjects(ctx context.Context, storage config.StorageConfig, mounte
 
 // newStoreScopedDeps は、置き場 name に束ねた worker.StoreDeps を新しく組み立てる。
 // 置き場で修飾するキューのワーカーと ingest がこの値を使う。
-func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy store.StoragePolicy, name, root string, storageObjects map[string]objstore.Store) (*worker.StoreDeps, error) {
-	mediaStore := pgstore.NewMediaInStore(pool, name, storagePolicy)
-	analysisStore := pgstore.NewAnalysis(pool, name)
-	recordingStore := pgstore.NewRecordings(pool, name)
+func newStoreScopedDeps(pool *dbHandle, cfg *config.Config, storagePolicy store.StoragePolicy, name, root string, storageObjects map[string]objstore.Store) (*worker.StoreDeps, error) {
+	mediaStore := pool.MediaInStore(name, storagePolicy)
+	analysisStore := pool.CMStations(name)
+	recordingStore := pool.RecordingWrites()
 	scoped := &worker.StoreDeps{
 		MediaDir:       root,
 		MediaStoreName: name,
@@ -997,7 +994,7 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy st
 			Precheck:     mediaStore,
 			RecordTarget: recordingStore,
 		},
-		Catalog: pgstore.NewCatalog(pool, registryNames(cfg.Registry()), name),
+		Catalog: pool.Catalog(registryNames(cfg.Registry()), name),
 	}
 	derivedName := cfg.Storage.Derived
 	derived, configured := cfg.Storage.Stores[derivedName]
@@ -1009,7 +1006,7 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy st
 		if objects := storageObjects[publishName]; objects != nil {
 			scoped.DerivedPublishStoreName = publishName
 			scoped.DerivedPublishObjects = objects
-			scoped.DerivedMediaPublish = pgstore.NewMediaForDerivedStore(pool, publishName, name, storagePolicy)
+			scoped.DerivedMediaPublish = pool.MediaForDerivedStore(publishName, name, storagePolicy)
 		}
 	}
 
@@ -1020,7 +1017,7 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy st
 	fsNames := cfg.Storage.FSStoreNames()
 	if storageObjects[derivedName] != nil && derivedName != name &&
 		!derived.IsFilesystem() && len(fsNames) > 0 && name == fsNames[0] {
-		derivedMedia := pgstore.NewMediaForDerivedStore(pool, derivedName, name, storagePolicy)
+		derivedMedia := pool.MediaForDerivedStore(derivedName, name, storagePolicy)
 		derivedDeleteStores, err := store.NewDerivedObjectDeleteStores(derivedMedia, derivedMedia, derivedMedia)
 		if err != nil {
 			return nil, fmt.Errorf("configuring derived object delete stores for %q: %w", name, err)
@@ -1032,7 +1029,7 @@ func newStoreScopedDeps(pool *pgxpool.Pool, cfg *config.Config, storagePolicy st
 
 // superviseSingletons はシングルトンロールをサイトごとの監督 goroutine に登録する。
 // 各サイトに独立した mirakc クライアントと advisory lock を割り当てる。
-func superviseSingletons(egCtx context.Context, roles []string, bound []config.MirakcSite, eg *errgroup.Group, pool *pgxpool.Pool, enqueuer jobq.Enqueuer, webhookClient *webhook.Client) {
+func superviseSingletons(egCtx context.Context, roles []string, bound []config.MirakcSite, eg *errgroup.Group, pool *dbHandle, enqueuer jobq.Enqueuer, webhookClient *webhook.Client) {
 	for _, roleName := range roles {
 		if !slices.Contains(singletonRoles, roleName) {
 			continue
@@ -1041,8 +1038,8 @@ func superviseSingletons(egCtx context.Context, roles []string, bound []config.M
 			site := site
 			eg.Go(func() error {
 				mc := mirakc.NewClient(site.URL, nil)
-				w := watcher.New(site.Site, mc, pgstore.NewRecordings(pool, ""), pgstore.NewReservations(pool), enqueuer, webhookClient)
-				return role.RunSingleton(egCtx, pool, watcherLockName(site.Site), w.Run, nil)
+				w := watcher.New(site.Site, mc, pool.RecordingWrites(), pool.LoopMarkers(), enqueuer, webhookClient)
+				return role.RunSingletonWith(egCtx, pool.Locker(), watcherLockName(site.Site), w.Run, nil)
 			})
 		}
 	}

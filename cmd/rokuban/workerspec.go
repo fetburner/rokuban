@@ -151,5 +151,14 @@ func workerPeriodicJobSpecs(cfg *config.Config, sites, stores []string) []jobq.P
 		specs = append(specs, jobq.PeriodicJobSpec{Interval: 15 * time.Minute, Args: jobs.CMDetectReconcileArgs{}})
 	}
 	specs = append(specs, jobq.PeriodicJobSpec{Interval: config.DeleteReconcileInterval, Args: jobs.StorageTransferReconcileArgs{}})
+	if cfg.DB.Dialect == config.DBDialectMySQL {
+		// 通知表の掃除は MySQL だけが持つ表の掃除。間隔は保持期間以下にして、行数の上限を
+		// 保持期間と間隔の和に抑える（TestNotifyPruneIntervalWithinRetention が検査する）。
+		specs = append(specs, jobq.PeriodicJobSpec{Interval: notifyPruneInterval, Args: jobs.NotifyPruneArgs{}})
+	}
 	return specs
 }
+
+// notifyPruneInterval は通知表の掃除を投入する間隔。保持期間（mysqlstore.NotificationRetention、5 分）以下に
+// する。1 分なら、通知表の行数は保持期間（5 分）に掃除の間隔（1 分）を足した分の書き込みを超えない。
+const notifyPruneInterval = time.Minute

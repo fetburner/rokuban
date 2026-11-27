@@ -105,6 +105,32 @@ func dsnForDatabase(dsn, name string) (string, error) {
 	return cfg.FormatDSN(), nil
 }
 
+// OpenSiblingPool は db と同じテスト DB に、別のプールを開く。2 つのプールは別プロセスの
+// 接続に相当する（リーダー選出のテストが、プロセスごとのプールを模すために使う）。
+// プールはテスト終了時に閉じる。
+func OpenSiblingPool(t *testing.T, db *sql.DB) *sql.DB {
+	t.Helper()
+	ctx := context.Background()
+	var name string
+	if err := db.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&name); err != nil {
+		t.Fatalf("reading test database name: %v", err)
+	}
+	dsn, err := dsnForDatabase(TestDSN(t), name)
+	if err != nil {
+		t.Fatalf("building sibling DSN: %v", err)
+	}
+	pool, err := mysqldb.OpenPool(ctx, dsn)
+	if err != nil {
+		t.Fatalf("opening sibling MySQL pool: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Errorf("closing sibling MySQL pool: %v", err)
+		}
+	})
+	return pool
+}
+
 func nextDatabaseName() string {
 	return "rokuban_test_" + strconv.Itoa(os.Getpid()) + "_" + strconv.FormatInt(time.Now().UnixNano(), 36) + "_" + strconv.FormatUint(databaseSequence.Add(1), 10)
 }

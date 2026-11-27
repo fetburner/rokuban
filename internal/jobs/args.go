@@ -180,6 +180,13 @@ type LabelRuleReconcileArgs struct{}
 // Kind はジョブ種別名を返す。
 func (LabelRuleReconcileArgs) Kind() string { return "label_rule_reconcile" }
 
+// NotifyPruneArgs は MySQL の通知表から保持期間を過ぎた行を削除するジョブの引数。
+// MySQL 構成だけが定期投入する（PostgreSQL は通知表を持たない）。
+type NotifyPruneArgs struct{}
+
+// Kind はジョブ種別名を返す。
+func (NotifyPruneArgs) Kind() string { return "notify_prune" }
+
 // EncodeReconcileArgs は encode の desired−observed reconcile ジョブの引数。
 // RecordingID が 0 なら全件パス、非 0 なら指定録画だけを確認する。
 // AfterRecordingID は全件パスの継続位置で、RecordingID と同時には指定しない。
@@ -322,6 +329,7 @@ var (
 	_ jobq.Args = CMLogoCandidateJobArgs{}
 	_ jobq.Args = EncodeReconcileArgs{}
 	_ jobq.Args = LabelRuleReconcileArgs{}
+	_ jobq.Args = NotifyPruneArgs{}
 	_ jobq.Args = DeleteReconcileArgs{}
 	_ jobq.Args = CatalogExportArgs{}
 	_ jobq.Args = StorageSyncArgs{}

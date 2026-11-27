@@ -46,7 +46,7 @@ func TestNewJobAdapterSelectsEngine(t *testing.T) {
 			cfg.Worker.PeriodicJobs = false
 			startup := newWorkerClientConfig(cfg, cfg.Registry(), cfg.Storage.FSStoreNames(), []string{"ruler"}, true, 5*time.Second)
 			deps := &worker.Deps{}
-			runner, closeRunner, err := newJobAdapter(t.Context(), cfg, pool, deps, startup)
+			runner, closeRunner, err := newJobAdapter(t.Context(), cfg, &dbHandle{pg: pool}, deps, startup)
 			if err != nil {
 				t.Fatalf("creating worker adapter: %v", err)
 			}
@@ -54,7 +54,7 @@ func TestNewJobAdapterSelectsEngine(t *testing.T) {
 			if got := deps.RecoveryGrace; got != tc.grace {
 				t.Errorf("worker recovery grace = %s, want %s", got, tc.grace)
 			}
-			producer, closeProducer, err := newInsertOnlyEnqueuer(t.Context(), cfg, pool)
+			producer, closeProducer, err := newInsertOnlyEnqueuer(t.Context(), cfg, &dbHandle{pg: pool})
 			if err != nil {
 				t.Fatalf("creating producer adapter: %v", err)
 			}
@@ -159,7 +159,7 @@ func TestBuildHTTPServer_QueueCountHostExemption(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel() // The listener handler is under test. Prevent the notifier from dialing Postgres.
 			group, ctx := errgroup.WithContext(ctx)
-			server, err := buildHTTPServer(ctx, cfg, policy, []string{tc.role}, nil, nil, pool, group, true, nil, tc.counter)
+			server, err := buildHTTPServer(ctx, cfg, policy, []string{tc.role}, nil, nil, &dbHandle{pg: pool}, group, true, nil, tc.counter)
 			if err != nil {
 				t.Fatal(err)
 			}

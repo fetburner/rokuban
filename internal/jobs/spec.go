@@ -202,6 +202,12 @@ func (a LabelRuleReconcileArgs) Spec() jobq.Spec {
 	return spec(CleanupQueue, fixedTimeout(defaultJobTimeout), 1, false, 1)
 }
 
+// Spec は通知表の掃除の cleanup キュー、既定の締切、合流ヒントを返す。
+// 定期投入が次の回で再試行になるので、失敗したパスは再試行しない。
+func (a NotifyPruneArgs) Spec() jobq.Spec {
+	return spec(CleanupQueue, fixedTimeout(defaultJobTimeout), 1, true, 1)
+}
+
 // Spec は encode reconcile の cleanup キュー、5 分締切、合流ヒントを返す。
 // 短時間・site 非依存で、ffmpeg を使わないため、長時間の encode と同じキューを占有させない。
 // 失敗したパスは再試行せず、次の定期投入が再試行になる。

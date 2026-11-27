@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // maxNotificationBytes は通知 payload の上限。Postgres の pg_notify の上限に合わせる。
@@ -45,4 +47,21 @@ func PruneNotifications(ctx context.Context, db *sql.DB) (int64, error) {
 		return 0, fmt.Errorf("counting pruned notifications: %w", err)
 	}
 	return deleted, nil
+}
+
+var _ store.NotificationPruner = (*Notifications)(nil)
+
+// Notifications は通知表の掃除を store 契約として提供する。
+type Notifications struct {
+	db *sql.DB
+}
+
+// NewNotifications は MySQL の通知表を掃除する Notifications を作る。
+func NewNotifications(db *sql.DB) *Notifications {
+	return &Notifications{db: db}
+}
+
+// PruneNotifications は保持期間を過ぎた通知を削除し、削除した行数を返す。判定は PruneNotifications に従う。
+func (s *Notifications) PruneNotifications(ctx context.Context) (int64, error) {
+	return PruneNotifications(ctx, s.db)
 }

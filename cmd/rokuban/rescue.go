@@ -8,9 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/catalog"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // newRescueCmd は `rokuban rescue` サブコマンドを作る（M3-9 / issue #71）。
@@ -44,14 +42,14 @@ MP4 / MKV / WebM を既存位置のまま素の asset として登録する。�
 			ctx := cmd.Context()
 			// 単発 CLI コマンドは特定のロールを担わないので roles は渡さない
 			// （pgxpool の既定の MaxConns がそのまま使われる。issue #90）。
-			pool, err := db.NewPool(ctx, cfg.DB, nil, 0, 0)
+			pool, err := openDB(ctx, cfg, nil, 0, 0)
 			if err != nil {
 				return err
 			}
 			defer pool.Close()
 
 			siteNames := registryNames(cfg.Registry())
-			return runRescue(ctx, pgstore.NewCatalog(pool, siteNames, storeName), pgstore.NewMediaInStoreWithoutPolicy(pool, storeName), root, storeName, siteNames, cmd.OutOrStdout())
+			return runRescue(ctx, pool.Catalog(siteNames, storeName), pool.MediaInStoreWithoutPolicy(storeName), root, storeName, siteNames, cmd.OutOrStdout())
 		},
 	}
 	addCommandStoreFlag(cmd)

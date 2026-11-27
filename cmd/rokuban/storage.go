@@ -9,10 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/storagename"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 func newStorageCmd() *cobra.Command {
@@ -70,17 +68,17 @@ func newStorageAdoptCmd() *cobra.Command {
 					return err
 				}
 			}
-			pool, err := db.NewPool(cmd.Context(), cfg.DB, nil, 0, 0)
+			pool, err := openDB(cmd.Context(), cfg, nil, 0, 0)
 			if err != nil {
 				return err
 			}
 			defer pool.Close()
 			// スキーマが埋め込みの最新 migration でなければ、目印も行も触らずに失敗する。
 			// Job はこの失敗で再試行され、マイグレーションの完了を待つ。
-			if err := db.CheckMigrationsCurrent(cmd.Context(), cfg.DB.DSN()); err != nil {
+			if err := pool.CheckMigrationsCurrent(cmd.Context(), cfg); err != nil {
 				return fmt.Errorf("storage adopt: %w", err)
 			}
-			media := pgstore.NewMediaInStoreWithoutPolicy(pool, name)
+			media := pool.MediaInStoreWithoutPolicy(name)
 			if !markerExists {
 				has, err := media.HasStoreCopies(cmd.Context())
 				if err != nil {

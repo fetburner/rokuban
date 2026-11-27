@@ -5,14 +5,12 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics/dbcollector"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // siteFlagName は `server` サブコマンドのプロセス束縛フラグ名。config キーには
@@ -166,10 +164,10 @@ func requireSingleSite(registry []config.MirakcSite, cmdName string) (config.Mir
 // の doc コメント参照。`--sites=` で起動した実バイナリが起動時 panic した実例）は
 // ここでは「0 個の要素を持つスライスを返す」ことで避ける --- 個々の要素を nil に
 // する分岐を一切持たない。
-func newBoundBacklogCollectors(pool *pgxpool.Pool, bound []config.MirakcSite) []prometheus.Collector {
+func newBoundBacklogCollectors(pool *dbHandle, bound []config.MirakcSite) []prometheus.Collector {
 	collectors := make([]prometheus.Collector, 0, len(bound))
 	for _, s := range bound {
-		collectors = append(collectors, dbcollector.NewBacklogCollector(pgstore.NewRecordings(pool, ""), s.Site))
+		collectors = append(collectors, dbcollector.NewBacklogCollector(pool.RecordingWrites(), s.Site))
 	}
 	return collectors
 }
@@ -178,10 +176,10 @@ func newBoundBacklogCollectors(pool *pgxpool.Pool, bound []config.MirakcSite) []
 // 1 site 1 collector で登録する。presync は mirakc へ問い合わせず DB の
 // schedule_sync / snapshot marker を読むため、プロセスの --sites 束縛とは独立して
 // 常駐プロセスの /metrics から全 site を観測できる必要がある（issue #680）。
-func newConfiguredPresyncCollectors(pool *pgxpool.Pool, registry []config.MirakcSite) []prometheus.Collector {
+func newConfiguredPresyncCollectors(pool *dbHandle, registry []config.MirakcSite) []prometheus.Collector {
 	collectors := make([]prometheus.Collector, 0, len(registry))
 	for _, s := range registry {
-		collectors = append(collectors, dbcollector.NewPresyncCollector(pgstore.NewScheduleSync(pool), s.Site))
+		collectors = append(collectors, dbcollector.NewPresyncCollector(pool.ScheduleSync(), s.Site))
 	}
 	return collectors
 }
@@ -189,9 +187,9 @@ func newConfiguredPresyncCollectors(pool *pgxpool.Pool, registry []config.Mirakc
 // newConfiguredLoopPassCollectors は設定された全 site の ruler / record_sweep
 // 成功 marker を 1 site 1 collector で登録する。marker は DB だけを読むため、
 // プロセスの --sites 束縛とは独立して常駐プロセスから全 site を観測できる。
-func newConfiguredLoopPassCollectors(pool *pgxpool.Pool, registry []config.MirakcSite) []prometheus.Collector {
+func newConfiguredLoopPassCollectors(pool *dbHandle, registry []config.MirakcSite) []prometheus.Collector {
 	collectors := make([]prometheus.Collector, 0, len(registry))
-	markers := pgstore.NewReservations(pool)
+	markers := pool.LoopMarkers()
 	for _, s := range registry {
 		collectors = append(collectors, dbcollector.NewLoopPassCollector(markers, s.Site))
 	}
@@ -201,33 +199,33 @@ func newConfiguredLoopPassCollectors(pool *pgxpool.Pool, registry []config.Mirak
 // newTransferBacklogCollector は storage.transfer.backlog_limit を設定した置き場の転送待ちを
 // 出す collector を作る。件数は DB から読むだけで、api を含むどのロールでも scrape できる
 // （設定だけを読み、mirakc にもファイルシステムにも触れない）。
-func newTransferBacklogCollector(pool *pgxpool.Pool, storage config.StorageConfig) prometheus.Collector {
+func newTransferBacklogCollector(pool *dbHandle, storage config.StorageConfig) prometheus.Collector {
 	limits := make(map[string]int)
 	for name := range storage.Transfer.BacklogLimit {
 		if limit := storage.TransferBacklogLimit(name); limit > 0 {
 			limits[name] = limit
 		}
 	}
-	return dbcollector.NewTransferBacklogCollector(pgstore.NewMediaUnbound(pool), limits)
+	return dbcollector.NewTransferBacklogCollector(pool.MediaUnbound(), limits)
 }
 
 // newSyncMarkerCollector は EPG 同期・チューナー同期・物理転送の確定時刻を出す collector を作る。
 // 設定された全 site を登録する（書き手は site 束縛の ScaledJob でも、読み手は常駐の全 site を見る）。
 // 読むのは DB の表だけなので、api を含むどのロールでも scrape できる。
-func newSyncMarkerCollector(pool *pgxpool.Pool, registry []config.MirakcSite) prometheus.Collector {
+func newSyncMarkerCollector(pool *dbHandle, registry []config.MirakcSite) prometheus.Collector {
 	sites := make([]string, 0, len(registry))
 	for _, s := range registry {
 		sites = append(sites, s.Site)
 	}
-	return dbcollector.NewSyncMarkerCollector(pgstore.NewReservations(pool), sites)
+	return dbcollector.NewSyncMarkerCollector(pool.LoopMarkers(), sites)
 }
 
 // newReconcileMarkerCollector は全件パスの完走時刻と FS の置き場の観測時刻を出す collector を作る。
 // 削除パスを書く worker がある置き場は全 FS と所有者が走らせる派生物用 S3 なので、削除の集合は TransferDestinationStoreNames と一致する。
 // 読むのは DB の表だけなので、api を含むどのロールでも scrape できる。
-func newReconcileMarkerCollector(pool *pgxpool.Pool, storage config.StorageConfig) prometheus.Collector {
-	markers := pgstore.NewReservations(pool)
-	return dbcollector.NewReconcileMarkerCollector(markers, pgstore.NewMediaUnbound(pool), storage.FSStoreNames(), storage.TransferDestinationStoreNames())
+func newReconcileMarkerCollector(pool *dbHandle, storage config.StorageConfig) prometheus.Collector {
+	markers := pool.LoopMarkers()
+	return dbcollector.NewReconcileMarkerCollector(markers, pool.MediaUnbound(), storage.FSStoreNames(), storage.TransferDestinationStoreNames())
 }
 
 // resolveSiteFlag は `--site` フラグとレジストリから対象サイト名を決める。

@@ -5,10 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/asynqadapter"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
@@ -43,14 +40,14 @@ func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, mounte
 }
 
 // newInsertOnlyEnqueuer は api / watcher / enqueue CLI の投入と notifier の件数取得に使う adapter を作る。
-func newInsertOnlyEnqueuer(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool) (jobq.Enqueuer, func() error, error) {
+func newInsertOnlyEnqueuer(ctx context.Context, cfg *config.Config, pool *dbHandle) (jobq.Enqueuer, func() error, error) {
 	return newJobAdapter(ctx, cfg, pool, nil, workerClientConfig{})
 }
 
 // newJobAdapter は設定に従って adapter を構築する。base が nil なら購読を持たない。
 // 投入先は jobs.PhysicalQueueFor で決める。購読側の物理名を展開する newWorkerSpec
 // とは別の経路であり、各 adapter は定期ジョブについて両者の一致を検査する。
-func newJobAdapter(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, base *worker.Deps, clientCfg workerClientConfig) (workerQueue, func() error, error) {
+func newJobAdapter(ctx context.Context, cfg *config.Config, pool *dbHandle, base *worker.Deps, clientCfg workerClientConfig) (workerQueue, func() error, error) {
 	if cfg.Worker.Engine == config.JobEngineAsynq {
 		registry := jobq.NewRegistry()
 		if base != nil {
@@ -75,7 +72,7 @@ func newJobAdapter(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, 
 		if pool == nil {
 			// 単発 CLI はロールを持たず、pgxpool の既定の上限を使う。
 			var err error
-			pool, err = db.NewPool(ctx, cfg.DB, nil, 0, 0)
+			pool, err = openDB(ctx, cfg, nil, 0, 0)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -84,7 +81,7 @@ func newJobAdapter(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, 
 				return nil
 			}
 		}
-		adapter, err := riveradapter.NewInsertOnlyEnqueuer(pool, jobs.PhysicalQueueFor)
+		adapter, err := riveradapter.NewInsertOnlyEnqueuer(pool.pgxPool(), jobs.PhysicalQueueFor)
 		if err != nil {
 			closeJobAdapter(closePool)
 			return nil, nil, err
@@ -102,7 +99,7 @@ func newJobAdapter(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, 
 		riverConfig.RescueStuckJobsAfter = *cfg.Worker.RescueStuckJobsAfter
 	}
 	base.RecoveryGrace = riverConfig.RecoveryGrace()
-	adapter, err := riveradapter.NewAdapter(pool, worker.NewWorkers(base), jobs.PhysicalQueueFor, riverConfig)
+	adapter, err := riveradapter.NewAdapter(pool.pgxPool(), worker.NewWorkers(base), jobs.PhysicalQueueFor, riverConfig)
 	if err != nil {
 		return nil, nil, err
 	}
