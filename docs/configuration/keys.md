@@ -23,7 +23,8 @@
 | `server.listen` | `":40773"` | HTTP 待ち受け（mirakc の 40772 の隣） |
 | `server.allowed_hosts` | `[]` | Host の許可リスト |
 | `server.trust_forwarded_host` | `false` | `X-Forwarded-Host` を検証するか |
-| `db.host` / `db.user` / `db.password` / `db.database` | —（必須） | PostgreSQL 接続情報 |
+| `db.dialect` | `postgres` | `postgres` か `mysql`（OCI 構成向け。方言の判断は下の節） |
+| `db.host` / `db.user` / `db.password` / `db.database` | —（必須） | 接続先・認証・DB 名（両方言で同じ意味） |
 | `db.port` | `5432` | |
 | `db.sslmode` | `disable` | |
 | `db.max_conns` | `0`（roles から自動算出） | プロセスが持つ唯一のプールの上限 |
@@ -205,6 +206,20 @@ worker が ingest か置き場で修飾するキューを引くときは、FS �
 接続プールの上限と api ロール向けの statement timeout の 2 つで、詳細は [operations.md](../operations.md) §3「DB 運用」に決まっている。
 
 `db.max_conns`: プロセスは常に 1 個のプールしか持たず、全ロールが共有する。未指定（0）なら起動時の roles からロール別 budget を合計して自動算出する。`db.api_statement_timeout` は api ロールを含むプロセスのプール全体に適用される（monolith では worker 側にもかかる）。既定は 30s である。
+
+### db.dialect（方言の選択）
+
+方言は 1 つのキーで選ぶ。既定は PostgreSQL で、キーを書かない設定は今と同じに読まれる。接続先などのキーは両方言で同じ意味を持つので、MySQL 用の節は作らない。
+
+MySQL を選ぶと、次の組み合わせだけを起動時に通す。
+
+- `worker.engine` は `asynq`。River は PostgreSQL 専用なので、既定の `river` のままでは拒む。
+- `db.sslmode` は `disable` だけ。TLS は未対応なので、別の値は黙って無視せず拒む。
+- `db.api_statement_timeout` は書かない。MySQL の `max_execution_time` は SELECT にだけ効くので、PostgreSQL の意味とは揃わない。
+
+ポートは方言の既定に従う（PostgreSQL は 5432、MySQL は 3306）。MySQL の接続数の予算は、配線と同時に決める。MySQL.Free の接続数の上限は未確認である（未検証）。
+
+未解決: `cmd/rokuban` はまだ MySQL を組み立てられない。MySQL 構成の store 契約には、ストレージ転送・encode の進捗・ingest の書き手の状態などが無い。そのため MySQL を指定した設定は、どのサブコマンドも読み込みの時点で拒む。
 
 ### ingest.stall_timeout
 

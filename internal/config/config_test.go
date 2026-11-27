@@ -935,7 +935,8 @@ func TestLoad_AllFieldsOverridden(t *testing.T) {
 			"db",
 			cfg.DB,
 			DBConfig{
-				Host: "db.example.com", Port: 5433, User: "admin", Password: "hunter2",
+				Dialect: DBDialectPostgres,
+				Host:    "db.example.com", Port: 5433, User: "admin", Password: "hunter2",
 				Database: "rokuban_prod", SSLMode: "require",
 				MaxConns: 20, APIStatementTimeout: 45 * time.Second,
 			},

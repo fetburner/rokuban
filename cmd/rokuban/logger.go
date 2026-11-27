@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -25,6 +26,12 @@ func loadConfig(cmd *cobra.Command) (*config.Config, error) {
 	cfg, err := config.Load(path)
 	if err != nil {
 		return nil, err
+	}
+	// MySQL の方言はまだ cmd/rokuban に配線していない。store の契約の一部（storage transfer・
+	// encode の進捗・ingest の書き手の状態など）が mysqlstore に無いため、組み立てられない。
+	// 配線の前に通すと DSN を読まず PostgreSQL の経路に入るので、ここで拒む。
+	if cfg.DB.Dialect == config.DBDialectMySQL {
+		return nil, fmt.Errorf("db.dialect: mysql is not wired into rokuban yet (missing MySQL store contracts; see docs/configuration/keys.md)")
 	}
 	configureLogging(cfg.Log)
 	return cfg, nil

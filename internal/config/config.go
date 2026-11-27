@@ -46,14 +46,36 @@ type ServerConfig struct {
 	TrustForwardedHost bool `yaml:"trust_forwarded_host"`
 }
 
-// DBConfig は PostgreSQL 接続設定。
+// DBDialect は DB の方言。既定は PostgreSQL（オンプレの既定）。MySQL は OCI 構成向けで、
+// ジョブエンジンは asynq に限る（worker.engine の検査を参照）。
+type DBDialect string
+
+const (
+	// DBDialectPostgres は PostgreSQL（既定）。
+	DBDialectPostgres DBDialect = "postgres"
+	// DBDialectMySQL は MySQL。OCI 構成向け。
+	DBDialectMySQL DBDialect = "mysql"
+)
+
+// DefaultPort は方言ごとの既定ポート。db.port が未指定のときに使う。
+func (d DBDialect) DefaultPort() int {
+	if d == DBDialectMySQL {
+		return 3306
+	}
+	return 5432
+}
+
+// DBConfig はデータベース接続設定。方言は dialect で選ぶ。host / port / user / password / database は
+// 両方言で同じ意味（接続先・認証・DB 名）を持つ。sslmode と api_statement_timeout は PostgreSQL の
+// 意味であり、MySQL では disable と未指定だけを許す（TLS と statement timeout は未対応）。
 type DBConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	User     string `yaml:"user"`
-	Password string `yaml:"password"`
-	Database string `yaml:"database"`
-	SSLMode  string `yaml:"sslmode"`
+	Dialect  DBDialect `yaml:"dialect"`
+	Host     string    `yaml:"host"`
+	Port     int       `yaml:"port"`
+	User     string    `yaml:"user"`
+	Password string    `yaml:"password"`
+	Database string    `yaml:"database"`
+	SSLMode  string    `yaml:"sslmode"`
 
 	// MaxConns はこのプロセスが持つ唯一のコネクションプールの上限（issue #90）。
 	// プロセスは常に 1 個のプールしか持たない（全ロールがそれを共有する。
@@ -82,7 +104,32 @@ func (c DBConfig) validate() error {
 	return nil
 }
 
-// DSN は libpq 形式の接続文字列を返す。
+// validateDB は方言の値を検査し、方言ごとの既定ポートを埋める。方言と他のキーの組み合わせ
+// （River は PostgreSQL 専用）もここで決め、起動時に拒む。
+func (c *Config) validateDB() error {
+	db := &c.DB
+	switch db.Dialect {
+	case DBDialectPostgres:
+	case DBDialectMySQL:
+		if c.Worker.Engine != JobEngineAsynq {
+			return fmt.Errorf("db.dialect: mysql requires worker.engine: asynq (River runs only on PostgreSQL)")
+		}
+		if db.SSLMode != "disable" {
+			return fmt.Errorf("db.sslmode must be disable with db.dialect: mysql (TLS is not supported yet), got %q", db.SSLMode)
+		}
+		if db.APIStatementTimeout != 0 {
+			return fmt.Errorf("db.api_statement_timeout is not supported with db.dialect: mysql")
+		}
+	default:
+		return fmt.Errorf("db.dialect must be postgres or mysql, got %q", db.Dialect)
+	}
+	if db.Port == 0 {
+		db.Port = db.Dialect.DefaultPort()
+	}
+	return nil
+}
+
+// DSN は libpq 形式の接続文字列を返す（PostgreSQL 用）。
 func (c DBConfig) DSN() string {
 	return fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
@@ -228,7 +275,7 @@ func defaults() Config {
 			Listen: ":40773",
 		},
 		DB: DBConfig{
-			Port:    5432,
+			Dialect: DBDialectPostgres,
 			SSLMode: "disable",
 		},
 		Storage: StorageConfig{
@@ -355,6 +402,9 @@ func loadFromString(raw string) (*Config, error) {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
 	if err := cfg.Worker.validate(); err != nil {
+		return nil, fmt.Errorf("validating config: %w", err)
+	}
+	if err := cfg.validateDB(); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
 
