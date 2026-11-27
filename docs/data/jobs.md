@@ -42,7 +42,7 @@
 
 API は、store の commit 後にヒントとして投入する。投入の失敗はログに残し、定期 reconcile に委ねる。watcher も、観測の commit の後にヒントとして投入する。CLI は単発で投入し、合流の有無を結果から表示する。
 
-River クライアントと投入オプションへの変換は、adapter に閉じ込める。worker の登録は中立なレジストリだけで済む。River の型付き登録は River の公開 API が型引数を要求するため、River 構成が一覧（`internal/worker/riverbind`）を呼び、登録済みの registry に後から預ける。asynq adapter は中立なレジストリに登録された worker を使う。
+River クライアントと投入オプションへの変換は、adapter に閉じ込める。worker の登録は中立なレジストリだけで済む。River は公開 API が型引数を要求するので、River 構成が型付きの登録の一覧（`internal/worker/riverbind`）を呼び、登録済みの registry に River の builder を後から預ける。asynq adapter は中立なレジストリに登録された worker を使う。
 
 import 境界の linter は、本番コードによる River adapter の直接 import を禁止する。例外は River の型付き登録の一覧（`internal/worker/riverbind`）とテスト DB 作成だけである。構成の根である起動コードは adapter を組み立てるので、対象外にする。テストも River の import を adapter に閉じる。asynq と go-redis の import も、テストを含め asynq adapter に閉じる。
 
