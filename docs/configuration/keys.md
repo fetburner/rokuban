@@ -25,7 +25,7 @@
 | `server.trust_forwarded_host` | `false` | `X-Forwarded-Host` を検証するか |
 | `db.dialect` | `postgres` | `postgres` か `mysql`（OCI 構成向け。方言の判断は下の節） |
 | `db.host` / `db.user` / `db.password` / `db.database` | —（必須） | 接続先・認証・DB 名（両方言で同じ意味） |
-| `db.port` | `5432` | |
+| `db.port` | `5432`（mysql は `3306`） | |
 | `db.sslmode` | `disable` | |
 | `db.max_conns` | `0`（roles から自動算出） | プロセスが持つ唯一のプールの上限 |
 | `db.api_statement_timeout` | `0`（= 30s） | api を含むプロセスの statement timeout |
@@ -217,9 +217,9 @@ MySQL を選ぶと、次の組み合わせだけを起動時に通す。
 - `db.sslmode` は `disable` だけ。TLS は未対応なので、別の値は黙って無視せず拒む。
 - `db.api_statement_timeout` は書かない。MySQL の `max_execution_time` は SELECT にだけ効くので、PostgreSQL の意味とは揃わない。
 
-ポートは方言の既定に従う（PostgreSQL は 5432、MySQL は 3306）。MySQL の接続数の予算は、配線と同時に決める。MySQL.Free の接続数の上限は未確認である（未検証）。
+ポートは方言の既定に従う（PostgreSQL は 5432、MySQL は 3306）。接続数の上限は両方言で同じ表から算出する。MySQL は空きの接続も上限まで保つ。database/sql の既定の 2 本のままだと、上限に達した後の再接続が続くからである。MySQL.Free の接続数の上限は未確認である（未検証）。既定値が上限を超えるかは、MySQL 側で実測してから `db.max_conns` で決める。
 
-未解決: `cmd/rokuban` はまだ MySQL を組み立てられない。MySQL 構成の store 契約には、ストレージ転送・encode の進捗・ingest の書き手の状態などが無い。そのため MySQL を指定した設定は、どのサブコマンドも読み込みの時点で拒む。
+MySQL 構成の導入手順と既知の差は [runbook/mysql.md](../runbook/mysql.md) にある。
 
 ### ingest.stall_timeout
 

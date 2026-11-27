@@ -10,6 +10,7 @@ mirakc に繋いだ Rokuban の導入・切り替え、移行作業、障害対�
 | [runbook/live.md](runbook/live.md) | ライブ視聴。idle GC・実再生の確認（実 mirakc 要）とブラウザ側配線の確認（`web/e2e/live.mjs`、mirakc 不要） |
 | [runbook/nginx.md](runbook/nginx.md) | nginx 前段。TLS・Basic 認証・SSE・SPA・X-Accel-Redirect の実機確認 |
 | [runbook/k8s.md](runbook/k8s.md) | k8s。kind で中央 1 式を上げて api に到達 / `/readyz` が DB 断で 503 になることの確認 / ロール分割デプロイの受け入れ判定ハーネス（kind + KEDA） / asynq 構成で Redis を失ったとき・回復の測り直し |
+| [runbook/mysql.md](runbook/mysql.md) | MySQL 構成（OCI 向け）の導入。設定、起動の手順、DB ごとの既知の差、撤退の条件 |
 | [runbook/managed-postgres.md](runbook/managed-postgres.md) | managed PostgreSQL で `btree_gist` の作成が通るかの確認手順 |
 | [runbook/cm-detection.md](runbook/cm-detection.md) | CM ロゴの実機確認。フルイメージ・専用 DB・原本録画を使い、候補採用後の再検出と採用待ちを確かめる |
 | [runbook/testing.md](runbook/testing.md) | 開発時のテスト |
