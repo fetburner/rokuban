@@ -217,7 +217,7 @@ MySQL を選ぶと、次の組み合わせだけを起動時に通す。
 - `db.sslmode` は `disable` だけ。TLS は未対応なので、別の値は黙って無視せず拒む。
 - `db.api_statement_timeout` は書かない。MySQL の `max_execution_time` は SELECT にだけ効くので、PostgreSQL の意味とは揃わない。
 
-ポートは方言の既定に従う（PostgreSQL は 5432、MySQL は 3306）。接続数の上限は両方言で同じ表から算出する。MySQL は空きの接続も上限まで保つ。database/sql の既定の 2 本のままだと、上限に達した後の再接続が続くからである。MySQL.Free の接続数の上限は未確認である（未検証）。既定値が上限を超えるかは、MySQL 側で実測してから `db.max_conns` で決める。
+ポートは方言の既定に従う（PostgreSQL は 5432、MySQL は 3306）。接続数の上限は両方言で同じ表から算出する。MySQL では空きの接続も上限まで保つ（`(*sql.DB).SetMaxIdleConns`）。既定の 2 本のままだと、2 本を超えて同時に使うたびに、解放された接続が閉じられて開き直されるからである。MySQL.Free の接続数の上限は未確認である（未検証）。既定値が上限を超えるかは、MySQL 側で実測してから `db.max_conns` で決める。
 
 MySQL 構成の導入手順と既知の差は [runbook/mysql.md](../runbook/mysql.md) にある。
 

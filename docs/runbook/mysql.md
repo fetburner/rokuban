@@ -4,7 +4,7 @@ MySQL 構成は OCI 向けの選択肢である。PostgreSQL が既定で、オ�
 
 ## 前提
 
-MySQL 9.x と Redis が要る。接続の分離レベル・sql_mode・照合順序・時刻帯は、起動時に接続ごとに強制し、違えば起動を止める。データベースは利用者が作る。migration は表だけを作る。
+MySQL 9.7（CI が回すバージョン）と Redis が要る。9.7 より新しい版への自動の引き上げを使えるかは未検証である。接続の分離レベル・sql_mode・照合順序・時刻帯は、起動時に接続ごとに強制し、違えば起動を止める。データベースは利用者が作る。migration は表だけを作る。
 
 ## 設定
 
@@ -33,11 +33,13 @@ port は、書かなければ 3306 になる。engine を river のままにす�
 
 ## DB ごとの既知の差
 
-MySQL には LISTEN と NOTIFY が無い。通知は通知表に書かれ、notifier が約 1 秒ごとに読み直す。掃除は定期ジョブが 1 分ごとに行い、5 分より古い行を消す。
+PostgreSQL 構成との差は、利用者が見る挙動と運用の挙動に分けて、次に挙げる。判断の根拠は、それぞれの節にある。
 
-ジョブは asynq が実行する。River の回収に当たる仕組みは、MySQL 構成には無い。api ロール向けの statement timeout は未対応である。TLS も未対応で、接続は平文の TCP になる。
+利用者が見る差は、次のとおり。正規表現は、PostgreSQL が POSIX ARE、MySQL が ICU を使う（[store-contracts.md](../data/store-contracts.md)「正規表現の構文」）。部分一致検索には、MySQL に pg_trgm 相当の索引が無い。性能は未計測である（未検証）。チャプターの区間の重なりは、排他制約ではなく書き手のコードで確かめる（[store-contracts.md](../data/store-contracts.md)「CM 検出（試行と結果）とチャプター編集」）。
 
-リーダー選出は GET_LOCK を使い、名前は固定長のハッシュにする。`db.max_conns` の意味は PostgreSQL と同じで、未指定なら roles から同じ表で算出する。MySQL.Free の接続数の上限は未確認である（未検証）。
+運用の差は、次のとおり。通知は通知表への書き込みで届け、notifier が約 1 秒ごとに読み直す。掃除は定期ジョブが 1 分ごとに行い、5 分より古い行を消す。転送帯域のリースとリーダー選出は GET_LOCK を使い、ロック名に DB 名を含める（[store-contracts.md](../data/store-contracts.md)「直列化」）。
+
+接続の設定は、次のとおり。api ロール向けの statement timeout は未対応である。TLS も未対応で、接続は平文の TCP になる。`db.max_conns` の意味は PostgreSQL と同じで、未指定なら roles から同じ表で算出する。MySQL.Free の接続数の上限は未確認である（未検証）。
 
 ## 撤退の条件
 
