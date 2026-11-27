@@ -1,10 +1,57 @@
 # Rokuban 開発ガイド
 
-## プロジェクト概要
+このファイルに置くのは、すべてのタスクに効く常駐ルールだけである。手順の詳細は [docs/workflow.md](docs/workflow.md)、不変条件の失敗の形は [docs/invariants.md](docs/invariants.md) にある。迷ったら、まずこのファイルの該当する節だけを読む。
 
-Rokuban は EPGStation をゼロベースで再設計するクラウドネイティブ録画サーバー。録画実行は mirakc に全面委譲し、Go 単一バイナリでオーケストレーションと I/O に徹する。
+## このプロジェクトについて
 
-## ビルド・テスト
+Rokuban は EPGStation をゼロベースで再設計するクラウドネイティブ録画サーバーである。録画実行は mirakc に全面委譲し、Go 単一バイナリでオーケストレーションと I/O に徹する。
+
+設計判断を変えたくなったら、実装せず issue にコメントで提起する。設計の権威は docs/ にある。
+
+### 権威の所在
+
+形と判断は、置き場が分かれている。
+
+| 対象 | 権威 |
+|---|---|
+| REST のパス・パラメータ | `openapi.yaml` |
+| 設定キー | `config.example.yml` |
+| DB スキーマ | `internal/db/migrations/` |
+| 判断（なぜそうするか） | docs/ |
+| タスク分解・受け入れ基準 | GitHub issue |
+
+docs に形を書き写さない。片方だけ直って、気付かないうちにずれる。
+
+### 資料マップ
+
+タスクに関係する doc だけ読む。大きい doc は索引 + 分割本文になっているので、索引で節を特定してから該当ファイルだけ開く。
+
+| doc | 内容 | 形 |
+|---|---|---|
+| [docs/overview.md](docs/overview.md) | 全体アーキテクチャ（ロール分類/nginx/認証/イメージ配布/サーバーレス/B-CAS） | 単一 |
+| [docs/recording.md](docs/recording.md) | 録画エンジン（ruler/reconciler/watcher/予約モデル/ingest/B-CAS）。用語表とデータフロー図はここ | 索引 → `docs/recording/` |
+| [docs/schema.md](docs/schema.md) | DB スキーマ v1（設計原則/全テーブル/ER 図） | 索引 → `docs/schema/` |
+| [docs/data.md](docs/data.md) | データ層（River/NOTIFY/検索・ルール評価/EPG 射影/チューナー射影/輻輳隔離） | 索引 → `docs/data/` |
+| [docs/api.md](docs/api.md) | API 設計（REST の判断/SSE/メディア配信/認証/プロキシ） | 索引 → `docs/api/` |
+| [docs/storage.md](docs/storage.md) | ストレージ契約（2 階層/削除エンジン/catalog・rescue） | 索引 → `docs/storage/` |
+| [docs/frontend.md](docs/frontend.md) | フロントエンド | 索引 → `docs/frontend/` |
+| [docs/configuration.md](docs/configuration.md) | 設定の判断（キーの網羅は `config.example.yml`） | 索引 → `docs/configuration/` |
+| [docs/operations.md](docs/operations.md) | 運用（監視/アラート/DB/ストレージ/k8s・ロール分割） | 索引 → `docs/operations/` |
+| [docs/runbook.md](docs/runbook.md) | 導入・移行・運用手順 | 索引 → `docs/runbook/` |
+| [docs/invariants.md](docs/invariants.md) | 不変条件 9〜14 の失敗の形。ルールの根拠を辿るときだけ | 単一 |
+| [docs/workflow.md](docs/workflow.md) | タスク分解・docs 保守・並行作業の規律。該当作業のときだけ | 単一 |
+
+### タスクの進め方
+
+- 親 issue には一覧しか置かない。`gh issue view <親>` でタスク表を見て、担当タスクのサブ issue だけ読む
+- open のエピックは `gh issue list --label epic --state open` で引く。一覧はここに写さない（写すと close・新設のたびに気付かないうちにずれる）
+- タスク分解を頼まれたら [docs/workflow.md](docs/workflow.md) §タスク分解と issue に従う。要点は、マイルストーンごとにエピック 1 本 + 自己完結したサブ issue
+- streamer のスケールとライブ視聴の資源同定は [docs/operations.md](docs/operations.md) §5「streamer のスケール」と [docs/api.md](docs/api.md) §ライブ視聴の HLS で決まっている。sticky は使わない / ライブの URL にセッション ID を置かない / 既定 replicas=1 は可逆にする、の 3 点
+- 共有の過不足を正す作業は、[該当する open epic](https://github.com/fetburner/rokuban/issues?q=is%3Aopen+is%3Aissue+label%3Aepic+%22%E5%85%B1%E6%9C%89%E3%81%AE%E9%81%8E%E4%B8%8D%E8%B6%B3%E3%82%92%E6%AD%A3%E3%81%99%22) を入口にする
+
+## 開発環境
+
+### コマンド
 
 ```bash
 go tool sqlc generate         # SQL → Go コード生成（マイグレーションからスキーマを読む）
@@ -18,12 +65,6 @@ npm run third-party-notices  # Go/Web 本番依存の notice を生成
 npm run third-party-notices -- --check  # 生成済み notice が最新か検査
 ```
 
-**Node のバージョンは `.node-version`（パッチ版まで固定）に固定してある**。nodenv などでその Node に pnpm の shim が無ければ `corepack pnpm ...`（`packageManager` に従う）で呼べる。oxlint の native binding は optional dependency の engines 判定でインストール時にだけ絞り込まれる。そのため古い Node で `pnpm install --frozen-lockfile` すると、警告なしにバインディングが欠落する。
-
-Node 版・Go 版（`Dockerfile` との一致）と pnpm overrides の上限は `go test ./scripts/versioncheck/`（DB 不要）が検査する。ずれたときのメッセージに揃え方が書いてある。
-
-`golangci-lint` は自分をビルドした Go より新しい `go.mod` では起動を拒む。Go を上げるときは `.tool-versions` の `golangci-lint` も同じ PR で上げる（ずれれば `lint` ジョブが自分で落ちる）。
-
 ```bash
 cd web
 pnpm install
@@ -33,94 +74,72 @@ pnpm build     # tsc -b && vite build。型エラーはここで出る
 pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 ```
 
-**`pnpm lint` の warning 件数は `--max-warnings` で固定してある**。素の `oxlint` は warning でも終了コード 0 を返すので、固定しなければ warning が増えても CI は緑のままになる。実際に oxlint 1.75.0 → 1.80.0 で react 規則 4 つが既定有効になり、2 件から 33 件へ増えたことに誰も気付かなかった。
+### Node とフロントエンド
 
-閾値を超えると `pnpm lint` が落ちるので、**規則が増えたバージョンに上げる PR では、警告を消すか閾値を上げるかをその PR で決める**。現在の閾値は 2。残るのは Fast Refresh の既知の `react/only-export-components` だけで、対象は `ToastProvider` / `useToast` とアプリ起動ファイルの `App`。その他の warning は理由付きの局所抑制または render-time 導出で 0 件にしている。
+Node とツールの版は、リポジトリで固定したものを使う。
 
-**`node_modules` が lockfile より古いと、手元と CI で規則集合がずれる**。上記の見落としは実際にこれで起きた（手元は 1.75.0 のまま 2 件、CI は lockfile の 1.80.0 で 33 件を見ていた）。lockfile が動く PR の後は `pnpm install` をやり直す。
+- Node は `.node-version`（パッチ版まで固定）に固定してある。nodenv などでその Node に pnpm の shim が無ければ `corepack pnpm ...`（`packageManager` に従う）で呼ぶ
+- 古い Node で `pnpm install --frozen-lockfile` すると、oxlint の native binding が警告なしに欠落する。binding は optional dependency の engines 判定で、インストール時にだけ絞り込まれるためである
+- Node 版・Go 版（`Dockerfile` との一致）と pnpm overrides の上限は `go test ./scripts/versioncheck/`（DB 不要）が検査する。ずれたときのメッセージに揃え方が書いてある
+- `golangci-lint` は自分をビルドした Go より新しい `go.mod` では起動を拒む。Go を上げるときは `.tool-versions` の `golangci-lint` も同じ PR で上げる
+- `golangci-lint` が PATH に無いときは `$(go env GOPATH)/bin/golangci-lint` にある
 
-**`go test ./...` は Postgres と Redis を要求する**。`ROKUBAN_TEST_DATABASE_URL` を設定していないと DB を使うテストが落ちる（`internal/testutil` がパッケージごとにテンプレート DB を作り、テストごとにそこから専用の DB を複製する）。ローカルなら `postgres://localhost:5432/postgres?sslmode=disable` で足りる。
+`pnpm lint` の warning 件数は `--max-warnings` で固定してある。
 
-`ROKUBAN_TEST_REDIS_URL` を設定していないと asynq adapter のテストが落ちる。ローカルなら `redis://localhost:6379/0` で足りる。
+- 理由: 素の `oxlint` は warning でも終了コード 0 を返す。固定しなければ、warning が増えても CI は緑のままになる（実際に 1.75.0 → 1.80.0 で 2 件から 33 件へ増えたことに誰も気付かなかった）
+- 現在の閾値は 2。残るのは Fast Refresh の既知の `react/only-export-components` だけで、対象は `ToastProvider` / `useToast` とアプリ起動ファイルの `App`。その他の warning は理由付きの局所抑制または render-time 導出で 0 件にしている
+- 規則が増えたバージョンに上げる PR では、警告を消すか閾値を上げるかをその PR で決める
+- `node_modules` が lockfile より古いと、手元と CI で規則集合がずれる。lockfile が動く PR の後は `pnpm install` をやり直す
 
-MySQL を使うテストは、`ROKUBAN_TEST_MYSQL_DSN` が無いと skip する。`ROKUBAN_REQUIRE_MYSQL=1` なら skip せずに落ちる。CI では MySQL のジョブだけがこの 2 つを設定する。
+### テストの前提
 
-**docs を触ったら `npm run docs:lint` を回す**（textlint。CI の `docs-lint` ジョブと同じ。対象は `package.json` の `docs:lint` が権威）。文の長さと読点の数は違反 0 件で gate する。段落長・表のセル・節の冒頭・節の大きさ・節の太字・根拠の置き場は `scripts/textlint-rules/` のローカルルールが、ファイルごとの許容件数と実測の一致で gate する。
+`go test ./...` には Postgres と Redis が要る。
 
-**ファイルの大きさは許容を持たず、上限を超えたら割る**。他の規則の許容を増やすと、doc を割って移す分を除き CI（`scripts/check-allow-total.mjs`）が落ちる。規則を新設して許容を持たせる PR は、検査を通るので理由を書く。**Go のテストや `deploy/k8s/` の検査を全部回しても、この 1 つだけは別に落ちる**。
-
-**sqlc は式の型を推論しきれないことがある。** `program_start_at + interval '...'` のような式に `::timestamptz` を明示しないと `int32` として生成され、`Scan` で必ず落ちる。式を SELECT に置くときは明示キャストを付ける。
-
-**`golangci-lint` は PATH に無いことがある。**
-
-- `golangci-lint`: `$(go env GOPATH)/bin/golangci-lint`
-
-**sqlc / oapi-codegen の版は go.mod の tool ディレクティブが固定し、手元と CI は `go tool` で同じ版を使う**。生成物のヘッダにはツールの版が入る（`sqlc v1.31.1` / `version v2.8.0`）ので、版を上げたら生成物を再生成してコミットする。
-
-**orval は 8.27.0 でヘッダからバージョンを落とした**（`Generated by orval 🍺`）ので、ヘッダ由来の偽陽性は出ない。ただし出力自体はバージョンで変わるので（8.22.0 → 8.27.0 で zod に `.int()` が付いた）、**orval を上げる PR では `web/src/api/` の 2 生成物を再生成してコミットする**。
-
-### build tag の付いたテスト
-
-タグ付きのテストは、タグを付けた検査でしか見えない。型検査は lint が、実行は CI の専用ジョブが担う。
-
-`//go:build s3conformance` と `//go:build conformance` のファイルは、タグを付けたときだけコンパイルされる。`go build ./...`・`go vet ./...`・`go test ./...` はこれらを見ない。lint を使わずに確かめるなら `go vet -tags s3conformance,conformance ./...` を回す。
-
-`golangci-lint run` はこれらも見る。`.golangci.yml` の `run.build-tags` で両方のタグを入れてあるので、タグ付きファイルの参照切れはここで落ち、タグ付きだけが使う関数を `unused` と誤報することもない。s3-conformance の規約（テスト名の接頭辞と対象パッケージ）に反すると、`go test ./scripts/s3conformance/`（DB 不要）が落とす。`conformance` タグのテストは mirakc-conformance ジョブがパッケージごと実行するので、この検査の対象外。
-
-手元で s3-conformance を回すには、同じジョブの `services`（RustFS と Postgres）を同じイメージ・環境変数・ポートでローカルに起動し、ジョブの `env` を export する。そのうえで、そのジョブの `Create the conformance bucket` と `Run S3 conformance tests` の step を実行する。イメージ名や版は `.github/workflows/ci.yml` を読む。Colima では、テストの `TMPDIR`（既定は `/var/folders/...`）が VM に共有されず rclone の検査が `directory not found` で落ちるので、`TMPDIR` を `/Users` 配下にする。
-
-## 設計ドキュメント
-
-**設計の権威は docs/ にある。** 実装中に設計判断を変えたくなったら実装せず issue にコメントで提起する。
-
-### 資料マップ
-
-**タスクに関係する doc だけ読む。** 大きい doc は索引 + 分割本文になっているので、索引で節を特定してから該当ファイルだけ開く。**形（REST のパス・パラメータ / 設定キー / マイグレーション）の権威は `openapi.yaml` / `config.example.yml` / `internal/db/migrations/` にある**。**docs は判断（なぜ）だけを持つ。**
-
-| doc | 内容 | 形 |
+| 対象 | 必要なもの | ローカルでの値 |
 |---|---|---|
-| [docs/overview.md](docs/overview.md) | 全体アーキテクチャ（ロール分類/nginx/認証/イメージ配布/サーバーレス/B-CAS） | 単一 |
-| [docs/recording.md](docs/recording.md) | 録画エンジン（ruler/reconciler/watcher/予約モデル/ingest/B-CAS）。用語表とデータフロー図はここ | **索引** → `docs/recording/` |
-| [docs/schema.md](docs/schema.md) | DB スキーマ v1（設計原則/全テーブル/ER 図） | **索引** → `docs/schema/` |
-| [docs/data.md](docs/data.md) | データ層（River/NOTIFY/検索・ルール評価/EPG 射影/チューナー射影/輻輳隔離） | **索引** → `docs/data/` |
-| [docs/api.md](docs/api.md) | API 設計（REST の判断/SSE/メディア配信/認証/プロキシ） | **索引** → `docs/api/` |
-| [docs/storage.md](docs/storage.md) | ストレージ契約（2 階層/削除エンジン/catalog・rescue） | **索引** → `docs/storage/` |
-| [docs/frontend.md](docs/frontend.md) | フロントエンド | **索引** → `docs/frontend/` |
-| [docs/configuration.md](docs/configuration.md) | 設定の判断（キーの網羅は `config.example.yml`） | **索引** → `docs/configuration/` |
-| [docs/operations.md](docs/operations.md) | 運用（監視/アラート/DB/ストレージ/k8s・ロール分割） | **索引** → `docs/operations/` |
-| [docs/runbook.md](docs/runbook.md) | 導入・移行・運用手順 | **索引** → `docs/runbook/` |
-| [docs/invariants.md](docs/invariants.md) | 不変条件 9〜14 の失敗の形（いま先に浮かぶ案が引き起こす失敗）。ルールの根拠を辿るときだけ | 単一 |
-| [docs/workflow.md](docs/workflow.md) | タスク分解・docs 保守・並行作業の規律。該当作業のときだけ | 単一 |
+| DB を使うテスト | `ROKUBAN_TEST_DATABASE_URL`（無いと落ちる） | `postgres://localhost:5432/postgres?sslmode=disable` |
+| asynq adapter のテスト | `ROKUBAN_TEST_REDIS_URL`（無いと落ちる） | `redis://localhost:6379/0` |
+| MySQL を使うテスト | `ROKUBAN_TEST_MYSQL_DSN`（無いと skip。`ROKUBAN_REQUIRE_MYSQL=1` で skip せず落ちる） | CI では MySQL のジョブだけが両方を設定する |
 
-### タスクマップ
+`internal/testutil` はパッケージごとにテンプレート DB を作り、テストごとにそこから専用の DB を複製する。
 
-タスクの分解・受け入れ基準は GitHub issue 側にある。**親 issue には一覧しか置かない**ので、`gh issue view <親>` でタスク表を見て、**担当タスクのサブ issue だけ読む**。
+### ドキュメントの検査
 
-open のエピックは `gh issue list --label epic --state open` で引く。一覧はここに写さない（写すと close・新設のたびに気付かないうちにずれる）。
+docs を触ったら `npm run docs:lint` を回す。CI の `docs-lint` ジョブと同じで、対象は `package.json` の `docs:lint` が権威である。
 
-- **streamer のスケールとライブ視聴の資源同定は [docs/operations.md](docs/operations.md) §5「streamer のスケール」と [docs/api.md](docs/api.md) §ライブ視聴の HLS に決まっている**。sticky は使わない / ライブの URL にセッション ID を置かない / 既定 replicas=1 は可逆にする、の 3 点
-- **共有の過不足を正す作業**は、[該当する open epic](https://github.com/fetburner/rokuban/issues?q=is%3Aopen+is%3Aissue+label%3Aepic+%22%E5%85%B1%E6%9C%89%E3%81%AE%E9%81%8E%E4%B8%8D%E8%B6%B3%E3%82%92%E6%AD%A3%E3%81%99%22) を入口にする。
+- 文の長さと読点の数は、違反 0 件で gate する
+- 段落長・表のセル・節の冒頭・節の大きさ・節の太字・根拠の置き場は `scripts/textlint-rules/` のローカルルールが、ファイルごとの許容件数と実測の一致で gate する
+- ファイルの大きさは許容を持たない。上限を超えたら割る
+- 他の規則の許容を増やすと、doc を割って移す分を除き CI（`scripts/check-allow-total.mjs`）が落ちる
+- 規則を新設して許容を持たせる PR は、検査を通るので理由を書く
+- Go のテストや `deploy/k8s/` の検査を全部回しても、この 1 つだけは別に落ちる
 
-### タスク分解と issue
+### 生成ツール
 
-**タスク分解を頼まれたら [docs/workflow.md](docs/workflow.md) §タスク分解と issue に従う**。要点: マイルストーンごとにエピック 1 本 + 自己完結したサブ issue（`.github/ISSUE_TEMPLATE/` の `epic` / `sub-issue` テンプレート準拠）。
+生成物の版は、ツールごとに決められた方法で固定する。
 
-### ドキュメントと issue の保守
+- sqlc: 式を SELECT に置くときは `::timestamptz` のような明示キャストを付ける。sqlc は式の型を推論しきれず、付けないと `int32` として生成されて `Scan` で必ず落ちる
+- sqlc / oapi-codegen: 版は go.mod の tool ディレクティブが固定し、手元と CI は `go tool` で同じ版を使う。生成物のヘッダに版が入るので、版を上げたら生成物を再生成してコミットする
+- orval: 出力はバージョンで変わるので、上げる PR では `web/src/api/` の 2 生成物を再生成してコミットする。8.27.0 でヘッダからバージョンを落としたので、ヘッダ由来の偽陽性は出ない
 
-詳細は [docs/workflow.md](docs/workflow.md) §ドキュメントと issue の保守。全タスクに適用される要点だけここに置く:
+## タグ付きテスト
 
-- **実装と同時に docs を更新する。** 実装が docs を追い越したらその PR で直す（別タスクにしない）。古い記述は無いより悪い
-- **終わったタスクはその場で close し、close したものへのポインタを索引に残さない**
-- **docs に issue 番号・タスク番号・マイグレーション番号を書かない。** 出自は git と GitHub が持っている。番号を読まないと意味が通らない文は、番号ではなく理由そのものを書く。未解決の穴は本文に「未解決: …」とだけ書き、追跡番号は open issue 側に置く
-- **権威のある件数・一覧・状態を docs に写さない。** 集合に入る判定基準と、集合を引く場所（`--help`・ファイル・コマンド）だけを書く（[docs/workflow.md](docs/workflow.md) §残す文章の種類）
-- **末尾に「経緯と失敗事例」節を作らない。** 人間は飛ばせるが、ファイルを丸ごと読む LLM は飛ばせない
-- **同じ主張は 1 か所だけに書く。** 節の冒頭の結論を、本文で言い換えて繰り返さない
-- **ルールは卒業させる。** 失敗が lint・型・テストで機械的に落ちるようになったら、散文のルールは消す。このファイルにルールを足すときは、同じ PR で移す・消すものが無いかも決める
-- **残すのは「今でも先に浮かぶ案が引き起こす失敗」を、判断の直後に 1〜2 文。** 長い経緯（当時の列名・遷移の再現・却下案の比較表）と、もう先に浮かばない却下案は消す。繰り返し出てくる種類だけ [docs/invariants.md](docs/invariants.md) に集める。ただし**短くするために、まだやりがちな失敗の形まで落とさない**
+タグ付きのテストは、タグを付けた検査でしか見えない。
 
-### 不変条件
+- 対象は `//go:build s3conformance` と `//go:build conformance` のファイル。タグを付けたときだけコンパイルされ、`go build ./...`・`go vet ./...`・`go test ./...` は見ない
+- lint を使わずに確かめるなら `go vet -tags s3conformance,conformance ./...` を回す
+- `golangci-lint run` は両タグを見る（`.golangci.yml` の `run.build-tags`）。タグ付きファイルの参照切れはここで落ちる
+- s3-conformance の規約（テスト名の接頭辞と対象パッケージ）に反すると `go test ./scripts/s3conformance/`（DB 不要）が落とす。`conformance` タグのテストは mirakc-conformance ジョブがパッケージごと実行するので、この検査の対象外
 
-すべての実装タスクで遵守する。
+手元で s3-conformance を回す手順は、CI ジョブの再現である。
+
+- 同じジョブの `services`（RustFS と Postgres）を、同じイメージ・環境変数・ポートでローカルに起動する。イメージ名や版は `.github/workflows/ci.yml` を読む
+- ジョブの `env` を export し、`Create the conformance bucket` と `Run S3 conformance tests` の step を実行する
+- Colima では、テストの `TMPDIR`（既定は `/var/folders/...`）が VM に共有されず rclone の検査が `directory not found` で落ちる。`TMPDIR` を `/Users` 配下にする
+
+## 不変条件
+
+すべての実装タスクで遵守する。番号は追加のみで振り直さない（既存の 1〜8 は docs が番号で参照している）。9〜14 は、この節にチェックだけを置き、失敗の形は [docs/invariants.md](docs/invariants.md) にある。ルールの根拠を辿るときや、間違えそうになったときだけ invariants.md を開く。
 
 1. **api ロールは mirakc に問い合わせない**。ファイルシステムにも依存しない（go:embed は可）。直接の import 境界は `.golangci.yml` の `depguard` の `api-role` が判定する。推移的な import は `go test ./scripts/apideps/` が `go list -deps` で判定する（禁止先の一覧は `api-role` の deny から読む）
 2. **mirakc とのやりとりは常に API**、自身のストレージでは、原本は常にファイル I/O、派生物は置き場のインターフェース越し（FS 実装か S3 API 実装）で扱う
@@ -137,86 +156,97 @@ open のエピックは `gh issue list --label epic --state open` で引く。�
 13. **永続表に列を足すとき、書くループが脊椎の書き手でなければ衛星表にする**（下記）
 14. **ライブラリの契約に無い挙動を前提にしない**（下記）
 
-> 番号は追加のみ（既存の 1〜8 は docs が番号で参照しているので振り直さない）。9〜14 の**失敗の形（そのチェックが何を止めているか）は [docs/invariants.md](docs/invariants.md) にある。** ここには各条件の「チェック」だけ置く。ルールの根拠を辿るときや、間違えそうになったときだけ docs を開く。
+### 9. 導出値と不可逆な事実を同じ列に載せない
 
-#### 9. 導出値と不可逆な事実を同じ列に載せない
-
-毎パス再計算される値と、二度と再取得できない事実を 1 つの列に同居させると、**導出側が事実を上書きする**（実例 3 件は invariants.md §9）。混同は列だけでなく identity・式・適用の瞬間にも起きる。
+毎パス再計算される値と、二度と再取得できない事実を 1 つの列に同居させると、導出側が事実を上書きする。混同は列だけでなく identity・式・適用の瞬間にも起きる（実例 3 件は invariants.md §9）。
 
 チェック:
-- 新しい列を足すとき「この値は毎パス作り直せるか」を問う。作り直せるなら**列にせず導出する**。作り直せない事実と混ぜてはならない。
-- 新しいエンドポイントを足すとき「**宛先のキーは誰が作るか**」を問う。導出器が作るキーは API の宛先に置かない（`base.skip` を覆す意図を書けなくなる）。
-- `WHERE a.x_id = b.id` を書くとき「**この id は誰が作り、いつ変わるか**」を問う。導出器が作るなら放送イベント `(site, network_id, service_id, event_id)` や `(site, program_id)` のように**外から与えられたキー**で引く。導出器が作るキーを保存する列は、読者を移設し終えたら DROP する（失敗の仕方 3 種は invariants.md §9「identity」）。
-- 導出を列に焼くなら**両方向のテストを書く**。導出の判定をメモリに持って後で適用するなら、適用の側で判定条件を再評価する（読み書きの割り込み窓）。
 
-#### 10. 意味を持たない行を作らない
+- 新しい列を足すとき「この値は毎パス作り直せるか」を問う。作り直せるなら列にせず導出する。作り直せない事実と混ぜてはならない
+- 新しいエンドポイントを足すとき「宛先のキーは誰が作るか」を問う。導出器が作るキーは API の宛先に置かない（`base.skip` を覆す意図を書けなくなる）
+- `WHERE a.x_id = b.id` を書くとき「この id は誰が作り、いつ変わるか」を問う。導出器が作るなら放送イベント `(site, network_id, service_id, event_id)` や `(site, program_id)` のように外から与えられたキーで引く。導出器が作るキーを保存する列は、読者を移設し終えたら DROP する（失敗の仕方 3 種は invariants.md §9「identity」）
+- 導出を列に焼くなら両方向のテストを書く。導出の判定をメモリに持って後で適用するなら、適用の側で判定条件を再評価する（読み書きの割り込み窓）
 
-**行の存在そのものを主張として使う。** 「何も主張していない行」を作ると、それを掃除する規則が必要になり、その規則が判断材料を別表に求めて正しく動かなくなる。
+### 10. 意味を持たない行を作らない
+
+行の存在そのものを主張として使う。何も主張していない行を作ると、それを掃除する規則が必要になり、その規則が判断材料を別表に求めて正しく動かなくなる。
 
 - `program_overrides`: 空の上書き = 行が無い（`{}` の行を作らない）
 - `circuit_breakers`: 行の存在 = 発動中（「停止していない」を表す行は無い）。再開は DELETE
 
-「あってはいけない組み合わせ」は **CHECK で禁止するより表現不可能にする**方が強い。CHECK は覚えておくべき規則だが、表現不可能なら忘れようがない。
+あってはいけない組み合わせは、CHECK で禁止するより表現不可能にする方が強い。CHECK は覚えておくべき規則だが、表現不可能なら忘れようがない。
 
-#### 11. 形を固定する前に、その形を決める判定基準を書く
+### 11. 形を固定する前に、その形を決める判定基準を書く
 
-**分類（ロール）や形（スキーマ・API）を先に固定して判定基準を後から書くと、基準が来た時点でやり直しになる**（M2 で 3 回。代償は [docs/invariants.md](docs/invariants.md)）。
+分類（ロール）や形（スキーマ・API）を先に固定して判定基準を後から書くと、基準が来た時点でやり直しになる（M2 で 3 回。代償は invariants.md）。
 
-- **「最終形で切る」の対象は永続資産（`recordings` / `media_assets` / `drop_stats` / `rules`）と外から見える資源同定（API のパスと識別子）に限る**。導出テーブル（`reservations` / `*_sync` / 射影）の列は、**それを書くコードと同じ PR で決める**（churn のコストが非対称）。
-- **将来への先払いは高い方（API の資源同定・キャッシュキー）から。** 安い方（DB 列）だけ先に払っても利益は出ない。
+- 「最終形で切る」の対象は永続資産（`recordings` / `media_assets` / `drop_stats` / `rules`）と外から見える資源同定（API のパスと識別子）に限る
+- 導出テーブル（`reservations` / `*_sync` / 射影）の列は、それを書くコードと同じ PR で決める（churn のコストが非対称）
+- 将来への先払いは高い方（API の資源同定・キャッシュキー）から。安い方（DB 列）だけ先に払っても利益は出ない
 
-チェック: 新しいテーブル・列・ロール・エンドポイントを足すとき「**これを書く / 使うコードは今あるか**」を問う。無ければ形を決めず、書き手と同じ PR に回す。
+チェック: 新しいテーブル・列・ロール・エンドポイントを足すとき「これを書く / 使うコードは今あるか」を問う。無ければ形を決めず、書き手と同じ PR に回す。
 
-#### 12. 表は行の寿命で割る
+### 12. 表は行の寿命で割る
 
-**1 表 = 1 つの寿命**。不変条件 9 は**列**の粒度なので、行に寿命が混ざっているケースを網に掛けられない（`reservations` に導出出力・番組スナップショット・不可逆な観測の 3 寿命が同居していた。経緯は invariants.md）。分割の軸を「予約という概念」に取ったので解消が 2 回に分かれた —— 軸を寿命に取れば 1 回で済む。
+1 表 = 1 つの寿命である。不変条件 9 は列の粒度なので、行に寿命が混ざっているケースを網に掛けられない（`reservations` に導出出力・番組スナップショット・不可逆な観測の 3 寿命が同居していた。経緯は invariants.md）。分割の軸を「予約という概念」に取ると解消が複数回に分かれる。軸は寿命に取る。
 
 チェック:
 
-- 新しい列を足すとき「**この値はこの行と同時に生まれて同時に死ぬか**」を問う。違えば `(site, program_id)` を主キーにした別表にする
+- 新しい列を足すとき「この値はこの行と同時に生まれて同時に死ぬか」を問う。違えば `(site, program_id)` を主キーにした別表にする
 - 既存の表に、行を作り直す・消す・上書きするクエリを足すときは、その操作の後に、前の値を前提に読む者（上書き後の値や行が無い状態では用を果たせない読者）がいるかを問う。各操作と操作後の読者をコードで追い、いれば別表に分ける
-- 新しい表を作る前に、同じ寿命・同じ形・同じ読み手の表が既にあるかを問い、あればその表に行を足す。別プロセスや再起動後に読まない値は、表にしない
+- 新しい表を作る前に、同じ寿命・同じ形・同じ読み手の表が既にあるかを問い、あればその表に行を足す
+- 別プロセスや再起動後に読まない値は、表にしない
 
-#### 13. 永続表に列を足すとき、書くループが脊椎の書き手でなければ衛星表にする
+### 13. 永続表に列を足すとき、書くループが脊椎の書き手でなければ衛星表にする
 
-不変条件 12 の寿命チェックは**永続表では何も検出しない**。表自体が永続なので列も永続で、自明に真が返るためである（`recordings` が書き手 5 人になっても 12 では止まらなかった。経緯は invariants.md）。
+不変条件 12 の寿命チェックは、永続表では何も検出しない。表自体が永続なので列も永続で、自明に真が返るためである（`recordings` が書き手 5 人になっても 12 では止まらなかった。経緯は invariants.md）。
 
-**recordings 本体は「試行の帰結の観測」だけを持つ脊椎。別のループが書く状態は `recording_id` を FK に持つ衛星表に置く**（`media_assets` が実例）。
+recordings 本体は「試行の帰結の観測」だけを持つ脊椎である。別のループが書く状態は `recording_id` を FK に持つ衛星表に置く（`media_assets` が実例）。
 
-チェック: 永続表に列を足すとき「**この列を書くループは脊椎の書き手か**」を問う（`recordings` なら試行を観測する watcher / reconciler。既にその表に書いている＝根拠にならない）。脊椎の書き手でないなら `recording_id` を持つ衛星表にする。
+チェック: 永続表に列を足すとき「この列を書くループは脊椎の書き手か」を問う（`recordings` なら試行を観測する watcher / reconciler。既にその表に書いていることは根拠にならない）。脊椎の書き手でないなら `recording_id` を持つ衛星表にする。
 
-境界（絶対視すると成り立たなくなる。詳細は [docs/invariants.md](docs/invariants.md)）: `deleted_at` / `superseded_at` は部分一意索引の述語が参照するので本体に置く。番組スナップショット列群は watcher が一度だけ書くので脊椎に属する。
+境界（絶対視すると成り立たなくなる。詳細は invariants.md）:
 
-#### 14. ライブラリの契約に無い挙動を前提にしない
+- `deleted_at` / `superseded_at` は部分一意索引の述語が参照するので本体に置く
+- 番組スナップショット列群は watcher が一度だけ書くので脊椎に属する
+
+### 14. ライブラリの契約に無い挙動を前提にしない
 
 契約は公開 API とドキュメントだけである。内部表（`river_*` など）・非公開の状態・ソースを読んで知った挙動・エラー文言は契約ではない（テストも同じ。ただし回収が River の生 SQL に頼る間の回収テストの状態作りは例外。詳細は invariants.md）。
 
-チェック: 「**その前提はライブラリのドキュメントのどこに書いてあるか**」を問う。答えられなければ迂回せず提起する。
+チェック: 「その前提はライブラリのドキュメントのどこに書いてあるか」を問う。答えられなければ迂回せず提起する。
 
-### コーディング規約
+## 実装の規約
+
+### コード
 
 - Go 標準プロジェクトレイアウト（`cmd/` + `internal/`）
 - ログは `log/slog`
 - エラーは握り潰さず `fmt.Errorf("...: %w", err)` で文脈付き wrap
-- 各タスクは 1 PR 粒度。着手前に**担当タスクのサブ issue**（本文とコメント）と、そこが参照している doc の節だけを読む。親 issue や他タスクのサブ issue は読まなくてよい（上記「タスクマップ」）
-- **doc コメント**: エクスポートされた関数・型・メソッド・定数には [Go Doc Comments](https://go.dev/doc/comment) 規約に従った doc コメントを書く。`// FuncName は〜` の形式で主語を識別子名にする。非公開でも他パッケージから呼ばれうる重要な関数には書く
-- **切り出しは、今ある 2 つ以上の呼び出し元が同じ理由で変わる場合だけにする。** 将来の呼び出し元として数えるのは、open issue にあるものだけ。呼び出し元が mode を渡して分岐する汎用部品は、同じ理由で変わらないものを一つにまとめてしまう。同じ理由で変わる判定を別々に書くと、片方だけが直る。問うのは「片方を変えたら、もう片方も必ず変えるべきか」。
-- **測っていない挙動を断言しない。** コメント・docs で実行時の挙動を書くなら、テスト名か測定値を併記する。書けないなら「未検証」と書く。**古い記述より悪いのは、一度も真でなかった記述**。実例: 「`<video>` の error イベントに落ちる」（誰も error を聴いていない）。「動的ビルダなら常に具体的なプランになる」（prepared statement 経由で 6 回目に generic plan、0.7ms → 290ms）。「cleanup を掴む経路を塞ぐために独立させた」（塞いでいない）
+- 各タスクは 1 PR 粒度。着手前に担当タスクのサブ issue（本文とコメント）と、そこが参照している doc の節だけを読む。親 issue や他タスクのサブ issue は読まなくてよい（上記「タスクの進め方」）
+- doc コメント: エクスポートされた関数・型・メソッド・定数には [Go Doc Comments](https://go.dev/doc/comment) 規約に従った doc コメントを書く。`// FuncName は〜` の形式で主語を識別子名にする。非公開でも他パッケージから呼ばれうる重要な関数には書く
+- 切り出しは、今ある 2 つ以上の呼び出し元が同じ理由で変わる場合だけにする。将来の呼び出し元として数えるのは、open issue にあるものだけ。問うのは「片方を変えたら、もう片方も必ず変えるべきか」。呼び出し元が mode を渡して分岐する汎用部品は、同じ理由で変わらないものを一つにまとめてしまう。同じ理由で変わる判定を別々に書くと、片方だけが直る
+- 測っていない挙動を断言しない。コメント・docs で実行時の挙動を書くなら、テスト名か測定値を併記する。書けないなら「未検証」と書く。古い記述より悪いのは、一度も真でなかった記述である。実例: 誰も聴いていない `<video>` の error イベント。prepared statement 経由で 6 回目に generic plan になり 0.7ms → 290ms。塞いでいない経路を「塞ぐために独立させた」と書く
 
-### テスト規律
+### テスト
 
-**「テストのないタスク完了はない」（不変条件 8）は「通るテストを書く」ではない。**
+「テストのないタスク完了はない」（不変条件 8）は、「通るテストを書く」ではない。
 
-- **書いたテストは意図的に実装を壊して落ちることを確認する。** 通るだけのテストは何も保証しない。実際に、生成 SQL を文字列一致で見るだけのテストがタイムゾーンのバグを通してしまった
-- **落ち方を確認する。** ビルドエラーで落ちたのはアサーションの検証になっていない（未使用変数で壊すとこれが起きる）。壊し方はコンパイルが通る形にする
-- **壊す場所を、実際に壊れる経路の上に置く。** 1 段下の関数を壊して落ちても、実物が通る経路を通っていなければ検証になっていない。`newBoundBacklogCollector` の戻り値を `nil` と比較するテストは通り続けた。しかし、それを `prometheus.Collector` に渡す 1 段上で型付き nil になり、**CI 3 ジョブ緑のまま実バイナリが起動時 panic した**
-- **実装の定数と比較するテストは何も主張していない。** `opts.Queue != cleanupQueue` は定数を変えても通る。期待値はリテラルで書く
-- **CI が緑でも実バイナリ・実ブラウザを起動して確かめる。** テストが通っても起動しない／実クライアントから使えない類は、これでしか出ない。実例: 上記の起動時 panic。プレイリストのセグメント URI が basename で、実 HLS クライアントから 404。実 Chrome が HLS の MIME に `'maybe'` を返すため、全 Chrome ユーザーが再生できない
-- **非同期の空虚な成功に注意する。** 「何も表示されない」系のテストは、クエリが解決する前にアサーションが走って通ることがある。読み込み完了を待つ手段を入れてから、壊して落ちることを確認する
-- 分岐を直したら**両方向**で確認する（片側だけ見ると反転しても気付かない）
-- **jsdom が測れないもの（レイアウト・スクロール位置・要素の可視性）は、ユニットテストが全部通っても何の保証にもならない**。この領域の機能は**実装より先に判定手段を作る** —— 実ブラウザで機械的に合否が出る形にしてから着手する（`web/e2e/`）。番組リストの遡行では、これを怠って「`pnpm test` が通った」を根拠に 3 回リリースし、3 回とも実機で正しく動いていなかった。いずれも jsdom では原理的に検出できない失敗だった（詳細は `web/e2e/README.md`）。足した判定が**直す前の実装で実際に落ちること**も確認する
-- **テストを足す前に、同じ対象・同じ主張の既存テストを探す。** あれば表に行を足す。store の主張は `internal/store/contracttest` で検査し、worker のテストは配線と状態遷移を検査して同じ主張を繰り返さない
-- **テストで実行ファイルを書くときは `testexec.WriteExecutable` を使う。** `os.WriteFile` の直後の exec は ETXTBSY で落ちることがある
+書くとき:
+
+- 書いたテストは、意図的に実装を壊して落ちることを確認する。通るだけのテストは何も保証しない（生成 SQL を文字列一致で見るだけのテストが、タイムゾーンのバグを通した）
+- 落ち方を確認する。ビルドエラーで落ちたのはアサーションの検証になっていない。壊し方はコンパイルが通る形にする
+- 壊す場所を、実際に壊れる経路の上に置く。1 段下の関数を壊して落ちても、実物が通る経路を通っていなければ検証にならない（型付き nil が 1 段上で生まれ、CI 緑のまま実バイナリが起動時 panic した）
+- 実装の定数と比較するテストは何も主張していない。期待値はリテラルで書く
+- テストを足す前に、同じ対象・同じ主張の既存テストを探す。あれば表に行を足す。store の主張は `internal/store/contracttest` で検査し、worker のテストは配線と状態遷移を検査して同じ主張を繰り返さない
+- テストで実行ファイルを書くときは `testexec.WriteExecutable` を使う。`os.WriteFile` の直後の exec は ETXTBSY で落ちることがある
+
+通っても信用しない:
+
+- CI が緑でも、実バイナリ・実ブラウザを起動して確かめる。テストが通っても起動しない類はこれでしか出ない。実例: 起動時 panic。セグメント URI が basename で、実 HLS クライアントから 404。実 Chrome が HLS の MIME に `'maybe'` を返し、全 Chrome ユーザーが再生できない
+- 非同期の空虚な成功に注意する。「何も表示されない」系のテストは、クエリが解決する前にアサーションが走って通ることがある。読み込み完了を待つ手段を入れてから、壊して落ちることを確認する
+- 分岐を直したら両方向で確認する。片側だけ見ると反転しても気付かない
+- jsdom が測れないもの（レイアウト・スクロール位置・要素の可視性）は、ユニットテストが全部通っても何の保証にもならない。この領域の機能は実装より先に判定手段を作る。実ブラウザで機械的に合否が出る形にしてから着手する（`web/e2e/`）。これを怠って 3 回リリースし、3 回とも実機で正しく動いていなかった。足した判定が直す前の実装で実際に落ちることも確認する
 
 <details><summary>根拠</summary>
 
@@ -224,16 +254,34 @@ open のエピックは `gh issue list --label epic --state open` で引く。�
 
 </details>
 
+### ドキュメントと issue の保守
+
+詳細は [docs/workflow.md](docs/workflow.md) §ドキュメントと issue の保守。全タスクに適用される要点だけここに置く。
+
+- 実装と同時に docs を更新する。実装が docs を追い越したらその PR で直す（別タスクにしない）。古い記述は無いより悪い
+- 終わったタスクはその場で close し、close したものへのポインタを索引に残さない
+- docs に issue 番号・タスク番号・マイグレーション番号を書かない。出自は git と GitHub が持っている。番号を読まないと意味が通らない文は、番号ではなく理由そのものを書く。未解決の穴は本文に「未解決: …」とだけ書き、追跡番号は open issue 側に置く
+- 権威のある件数・一覧・状態を docs に写さない。集合に入る判定基準と、集合を引く場所（`--help`・ファイル・コマンド）だけを書く
+- 末尾に「経緯と失敗事例」節を作らない。人間は飛ばせるが、ファイルを丸ごと読む LLM は飛ばせない
+- 同じ主張は 1 か所だけに書く。節の冒頭の結論を、本文で言い換えて繰り返さない
+- ルールは卒業させる。失敗が lint・型・テストで機械的に落ちるようになったら、散文のルールは消す。このファイルにルールを足すときは、同じ PR で移す・消すものが無いかも決める
+- 残すのは「今でも先に浮かぶ案が引き起こす失敗」を、判断の直後に 1〜2 文。長い経緯（当時の列名・遷移の再現・却下案の比較表）と、もう先に浮かばない却下案は消す。繰り返し出てくる種類だけ [docs/invariants.md](docs/invariants.md) に集める。ただし短くするために、まだやりがちな失敗の形まで落とさない
+
 ### 並行作業（複数エージェント）
 
-複数エージェントで並行させるときは [docs/workflow.md](docs/workflow.md) §並行作業を読む。要点: 契約を先に書いてコミットしてから並列に投げる / `openapi.yaml` を触るのは 1 本に限定 / マージ後は生成物を再生成してフルテスト（マージが通ったことは何の保証にもならない）。
+複数エージェントで並行させるときは [docs/workflow.md](docs/workflow.md) §並行作業を読む。
+
+- 契約を先に書いてコミットしてから、並列に投げる
+- `openapi.yaml` を触るのは 1 本に限定する
+- マージ後は生成物を再生成してフルテストを回す。マージが通ったことは何の保証にもならない
 
 ### トークン消費と検証コスト
 
-**正しさを落とさず、同じ問いを読み直す回数を減らす。** 詳細な sub issue はそのまま spec / 実装計画として使い、判断や手順が欠けている場合だけ補う。同じ内容を別の設計書・長い一時計画・task list に重ねて転記しない。
+正しさを落とさず、同じ問いを読み直す回数を減らす。
 
-- **隔離 worktree のレビューへ未コミット差分を渡す前に patch を作る。** 隔離側からは元の working tree の未コミット差分が見えない。新規ファイルへ先に `git add -N <file>` を行い、`git diff <base>` を一時ファイルへ出して渡す。`git diff <base> --name-status` で新規ファイルを含む対象一覧も確認する
-- **測定前に母集団を確認する。** 実環境の値が 0 件でも、受信方式・site・ロール等の一部だけを測った結果を製品全体へ一般化しない。規格や外部契約が形を決める問いは、ローカル測定より先にその一意性・許容範囲を確認する
-- **実装中は targeted test、最後に full test とする。** red / green と変異確認は対象テストだけで回す。`go test ./...` / `pnpm test` / lint / build は完成差分に対して 1 回実行する。レビュー修正後は変更箇所の targeted test を回し、実行時コード・契約・生成元を変えた場合だけ最後の full test を再実行する
-- **生成は入力をまとめてから 1 回。** `openapi.yaml` / SQL の変更を確定してから oapi-codegen / orval / sqlc を再生成する。個々の編集ごとに生成しない
-- **成功ログは要約する。** build のアセット一覧等は一時ファイルへ送り、成功時は終了状態と件数だけを残す。失敗時だけ診断に必要な箇所を読む。ただし失敗内容や既存 warning を隠して「成功」と報告してはならない
+- 詳細な sub issue はそのまま spec / 実装計画として使い、判断や手順が欠けている場合だけ補う。同じ内容を別の設計書・長い一時計画・task list に重ねて転記しない
+- 隔離 worktree のレビューへ未コミット差分を渡す前に patch を作る。隔離側からは元の working tree の未コミット差分が見えない。新規ファイルへ先に `git add -N <file>` を行い、`git diff <base>` を一時ファイルへ出して渡す。`git diff <base> --name-status` で新規ファイルを含む対象一覧も確認する
+- 測定前に母集団を確認する。実環境の値が 0 件でも、受信方式・site・ロール等の一部だけを測った結果を製品全体へ一般化しない。規格や外部契約が形を決める問いは、ローカル測定より先にその一意性・許容範囲を確認する
+- 実装中は targeted test、最後に full test とする。red / green と変異確認は対象テストだけで回す。`go test ./...` / `pnpm test` / lint / build は完成差分に対して 1 回実行する。レビュー修正後は変更箇所の targeted test を回し、実行時コード・契約・生成元を変えた場合だけ最後の full test を再実行する
+- 生成は入力をまとめてから 1 回。`openapi.yaml` / SQL の変更を確定してから oapi-codegen / orval / sqlc を再生成する。個々の編集ごとに生成しない
+- 成功ログは要約する。build のアセット一覧等は一時ファイルへ送り、成功時は終了状態と件数だけを残す。失敗時だけ診断に必要な箇所を読む。ただし失敗内容や既存 warning を隠して「成功」と報告してはならない
