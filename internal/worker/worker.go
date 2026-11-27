@@ -73,6 +73,8 @@ type Deps struct {
 	CapacityStore store.Capacity
 	// LabelRuleReevaluation は分類ルールの全件再評価を永続化する。
 	LabelRuleReevaluation store.LabelRuleReevaluation
+	// NotificationPruner は MySQL の通知表の掃除。PostgreSQL 構成では nil で、notify_prune を登録しない。
+	NotificationPruner store.NotificationPruner
 	// UnscopedMediaReconcile は置き場に束ねない reconcile の永続化契約。
 	// thumbnail / encode の周期 reconcile が使う値は意図的に未束縛である。StoreDeps.MediaReconcile と
 	// build 内で取り違えないよう、置き場に束ねないことを名前で示す。
@@ -232,6 +234,9 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		LoopMarkers:    deps.LoopMarkers,
 	})
 	riveradapter.Register(workers, &LabelRuleReconcileWorker{Store: deps.LabelRuleReevaluation})
+	if deps.NotificationPruner != nil {
+		riveradapter.Register(workers, &NotifyPruneWorker{Store: deps.NotificationPruner})
+	}
 	riveradapter.Register(workers, &reconciler.PassWorker{
 		MirakcClients:   deps.MirakcClients,
 		ScheduleSync:    deps.ScheduleSync,
