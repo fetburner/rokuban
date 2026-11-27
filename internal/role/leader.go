@@ -19,6 +19,8 @@ package role
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -28,37 +30,147 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func lockKey(name string) int64 {
+// Locker は方言ごとの排他ロックの実装を表す。Checkout が返す Session は、リーダーである間
+// ずっと専有する。ロックは接続（セッション）に結びつき、接続が切れると解放される。
+// PostgreSQL は pg_try_advisory_lock（NewPgLocker）、MySQL は GET_LOCK（NewMySQLLocker）。
+type Locker interface {
+	// Checkout は、ロックに使う接続を 1 本専有して返す。
+	Checkout(ctx context.Context) (Session, error)
+}
+
+// Session は専有した 1 本の接続上のロック操作。Release は、ロックを解放した後に 1 度だけ呼ぶ。
+type Session interface {
+	// TryLock は role のロックを待たずに取り、取れたかを返す。
+	TryLock(ctx context.Context, role string) (bool, error)
+	// Unlock は role のロックを解放する。失敗したら接続を捨て、セッションごとロックを手放す。
+	Unlock(ctx context.Context, role string) error
+	// Ping は、ロックを保持している接続そのものに疎通確認を送る（heartbeat）。
+	Ping(ctx context.Context) error
+	// Release は専有した接続を返す。ロックを保持したまま返してはならない。
+	Release()
+}
+
+// NewPgLocker は pgxpool からロック専用の接続を専有する Locker を返す。
+func NewPgLocker(pool *pgxpool.Pool) Locker {
+	return pgLocker{pool: pool}
+}
+
+type pgLocker struct{ pool *pgxpool.Pool }
+
+func (l pgLocker) Checkout(ctx context.Context) (Session, error) {
+	conn, err := l.pool.Acquire(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquiring connection for leader lock: %w", err)
+	}
+	return pgSession{conn: conn}, nil
+}
+
+type pgSession struct{ conn *pgxpool.Conn }
+
+func pgLockKey(role string) int64 {
 	h := fnv.New64a()
-	h.Write([]byte("rokuban:" + name))
+	h.Write([]byte("rokuban:" + role))
 	return int64(h.Sum64())
 }
+
+func (s pgSession) TryLock(ctx context.Context, role string) (bool, error) {
+	var acquired bool
+	if err := s.conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", pgLockKey(role)).Scan(&acquired); err != nil {
+		return false, fmt.Errorf("trying advisory lock for %s: %w", role, err)
+	}
+	return acquired, nil
+}
+
+func (s pgSession) Unlock(ctx context.Context, role string) error {
+	if _, err := s.conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", pgLockKey(role)); err != nil {
+		return fmt.Errorf("releasing advisory lock for %s: %w", role, err)
+	}
+	return nil
+}
+
+func (s pgSession) Ping(ctx context.Context) error {
+	var n int
+	return s.conn.QueryRow(ctx, "SELECT 1").Scan(&n)
+}
+
+func (s pgSession) Release() { s.conn.Release() }
+
+// NewMySQLLocker は MySQL の接続プールからロック専用の接続を専有する Locker を返す。
+// GET_LOCK はセッション単位で、同じ接続で 2 回取ると解放も 2 回要る。接続をプールに戻すと、
+// 他の処理がその接続で同じ名前のロックを取り、ロックを保持したまま成功しうる。そのため
+// リーダーである間は接続を返さない。
+func NewMySQLLocker(db *sql.DB) Locker {
+	return mysqlLocker{db: db}
+}
+
+type mysqlLocker struct{ db *sql.DB }
+
+func (l mysqlLocker) Checkout(ctx context.Context) (Session, error) {
+	conn, err := l.db.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquiring connection for leader lock: %w", err)
+	}
+	return mysqlSession{conn: conn}, nil
+}
+
+type mysqlSession struct{ conn *sql.Conn }
+
+// mysqlLockName は GET_LOCK の名前（64 文字以内）を返す。
+func mysqlLockName(role string) string { return "rokuban:" + role }
+
+func (s mysqlSession) TryLock(ctx context.Context, role string) (bool, error) {
+	var got sql.NullInt64
+	if err := s.conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, 0)", mysqlLockName(role)).Scan(&got); err != nil {
+		return false, fmt.Errorf("trying GET_LOCK for %s: %w", role, err)
+	}
+	// 1 は取得、0 は他者が保持、NULL はエラー。
+	return got.Valid && got.Int64 == 1, nil
+}
+
+func (s mysqlSession) Unlock(ctx context.Context, role string) error {
+	var got sql.NullInt64
+	err := s.conn.QueryRowContext(ctx, "SELECT RELEASE_LOCK(?)", mysqlLockName(role)).Scan(&got)
+	if err == nil && got.Valid && got.Int64 == 1 {
+		return nil
+	}
+	// 解放できなかったら、ロックを持つセッションを残さない。driver.ErrBadConn を返すと
+	// database/sql は接続を閉じ、サーバー側のセッションが終わって GET_LOCK が解放される。
+	_ = s.conn.Raw(func(any) error { return driver.ErrBadConn })
+	if err != nil {
+		return fmt.Errorf("releasing GET_LOCK for %s: %w", role, err)
+	}
+	return fmt.Errorf("releasing GET_LOCK for %s: lock was not held by this session", role)
+}
+
+func (s mysqlSession) Ping(ctx context.Context) error { return s.conn.PingContext(ctx) }
+
+func (s mysqlSession) Release() { _ = s.conn.Close() }
 
 // TryAcquire は pg_try_advisory_lock でシングルトンロールのリーダー選出を行う。
 // advisory lock はセッションレベルなので、Acquire したコネクションを保持し続ける限り
 // ロックが維持される。プロセス死亡時はコネクション切断で自動解放される。
 func TryAcquire(ctx context.Context, pool *pgxpool.Pool, role string) (acquired bool, release func(), err error) {
-	conn, err := pool.Acquire(ctx)
+	sess, err := NewPgLocker(pool).Checkout(ctx)
 	if err != nil {
-		return false, nil, fmt.Errorf("acquiring connection for leader lock: %w", err)
+		return false, nil, err
 	}
 
-	key := lockKey(role)
-	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
-		conn.Release()
-		return false, nil, fmt.Errorf("trying advisory lock for %s: %w", role, err)
+	acquired, err = sess.TryLock(ctx, role)
+	if err != nil {
+		sess.Release()
+		return false, nil, err
 	}
 
 	if !acquired {
-		conn.Release()
+		sess.Release()
 		slog.Info("role already held by another process", "role", role)
 		return false, nil, nil
 	}
 
 	slog.Info("acquired leader lock", "role", role)
 	release = func() {
-		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", key)
-		conn.Release()
+		_ = sess.Unlock(context.Background(), role)
+		sess.Release()
 	}
 	return true, release, nil
 }
@@ -78,19 +190,23 @@ func defaultSingletonConfig() SingletonConfig {
 
 const heartbeatTimeout = 5 * time.Second
 
-// RunSingleton はシングルトンロールの監督ループを実行する。
-// pg_try_advisory_lock を定期試行し、取得したら roleFunc を child context で起動する。
-// リーダー中はロック専用コネクションに定期 heartbeat を送り、失敗したらロールを停止して
-// 取得ループに戻る。ctx がキャンセルされるまでブロックする。
+// RunSingleton は PostgreSQL のロックで RunSingletonWith を呼ぶ。
 func RunSingleton(ctx context.Context, pool *pgxpool.Pool, role string, roleFunc func(ctx context.Context) error, cfg *SingletonConfig) error {
+	return RunSingletonWith(ctx, NewPgLocker(pool), role, roleFunc, cfg)
+}
+
+// RunSingletonWith はシングルトンロールの監督ループを実行する。
+// locker のロックを定期試行し、取得したら roleFunc を child context で起動する。
+// リーダー中はロックを保持する接続に定期 heartbeat を送り、失敗したらロールを停止して
+// 取得ループに戻る。ctx がキャンセルされるまでブロックする。
+func RunSingletonWith(ctx context.Context, locker Locker, role string, roleFunc func(ctx context.Context) error, cfg *SingletonConfig) error {
 	if cfg == nil {
 		d := defaultSingletonConfig()
 		cfg = &d
 	}
-	key := lockKey(role)
 
 	for {
-		conn, err := pool.Acquire(ctx)
+		sess, err := locker.Checkout(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -100,9 +216,9 @@ func RunSingleton(ctx context.Context, pool *pgxpool.Pool, role string, roleFunc
 			continue
 		}
 
-		var acquired bool
-		if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&acquired); err != nil {
-			conn.Release()
+		acquired, err := sess.TryLock(ctx, role)
+		if err != nil {
+			sess.Release()
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -112,17 +228,17 @@ func RunSingleton(ctx context.Context, pool *pgxpool.Pool, role string, roleFunc
 		}
 
 		if !acquired {
-			conn.Release()
+			sess.Release()
 			sleepWithJitter(ctx, cfg.PollInterval)
 			continue
 		}
 
 		slog.Info("acquired leader lock", "role", role)
 
-		runErr := runWithHeartbeat(ctx, conn, role, cfg.HeartbeatInterval, roleFunc)
+		runErr := runWithHeartbeat(ctx, sess, role, cfg.HeartbeatInterval, roleFunc)
 
-		_, _ = conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", key)
-		conn.Release()
+		_ = sess.Unlock(context.Background(), role)
+		sess.Release()
 		slog.Info("released leader lock", "role", role)
 
 		if ctx.Err() != nil {
@@ -135,7 +251,7 @@ func RunSingleton(ctx context.Context, pool *pgxpool.Pool, role string, roleFunc
 	}
 }
 
-func runWithHeartbeat(ctx context.Context, conn *pgxpool.Conn, role string, heartbeatInterval time.Duration, roleFunc func(ctx context.Context) error) error {
+func runWithHeartbeat(ctx context.Context, sess Session, role string, heartbeatInterval time.Duration, roleFunc func(ctx context.Context) error) error {
 	roleCtx, roleCancel := context.WithCancel(ctx)
 	defer roleCancel()
 
@@ -154,8 +270,7 @@ func runWithHeartbeat(ctx context.Context, conn *pgxpool.Conn, role string, hear
 
 		case <-ticker.C:
 			hbCtx, hbCancel := context.WithTimeout(context.Background(), heartbeatTimeout)
-			var n int
-			err := conn.QueryRow(hbCtx, "SELECT 1").Scan(&n)
+			err := sess.Ping(hbCtx)
 			hbCancel()
 			if err != nil {
 				if ctx.Err() != nil {
