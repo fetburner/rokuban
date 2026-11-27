@@ -18,7 +18,7 @@ npm run third-party-notices  # Go/Web 本番依存の notice を生成
 npm run third-party-notices -- --check  # 生成済み notice が最新か検査
 ```
 
-**Node のバージョンは `.node-version`（パッチ版まで固定）に固定してある**。nodenv などでその Node に pnpm の shim が無ければ `corepack pnpm ...`（`packageManager` に従う）で呼べる。oxlint の native binding は optional dependency の engines 判定でインストール時にだけ絞り込まれる。そのため古い Node で `pnpm install --frozen-lockfile` すると警告なしにバインディングが欠落する。
+**Node のバージョンは `.node-version`（パッチ版まで固定）に固定してある**。nodenv などでその Node に pnpm の shim が無ければ `corepack pnpm ...`（`packageManager` に従う）で呼べる。oxlint の native binding は optional dependency の engines 判定でインストール時にだけ絞り込まれる。そのため古い Node で `pnpm install --frozen-lockfile` すると、警告なしにバインディングが欠落する。
 
 Node 版・Go 版（`Dockerfile` との一致）と pnpm overrides の上限は `go test ./scripts/versioncheck/`（DB 不要）が検査する。ずれたときのメッセージに揃え方が書いてある。
 
@@ -33,17 +33,21 @@ pnpm build     # tsc -b && vite build。型エラーはここで出る
 pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 ```
 
-**`pnpm lint` の warning 件数は `--max-warnings` で固定してある**。素の `oxlint` は warning でも終了コード 0 を返すので、CI は warning が増えても緑のままだった。実際に oxlint 1.75.0 → 1.80.0 で 4 つの react 規則が既定有効になり、2 件から 33 件へ増えたことに誰も気付かなかった。増えたのは `react/purity` / `react/set-state-in-effect` / `react/immutability` / `react/refs`。
+**`pnpm lint` の warning 件数は `--max-warnings` で固定してある**。素の `oxlint` は warning でも終了コード 0 を返すので、固定しなければ warning が増えても CI は緑のままになる。実際に oxlint 1.75.0 → 1.80.0 で react 規則 4 つが既定有効になり、2 件から 33 件へ増えたことに誰も気付かなかった。
 
-閾値を超えると `pnpm lint` が落ちるので、**規則が増えたバージョンに上げる PR では、警告を消すか閾値を上げるかをその PR で決める**。現在の閾値は 2。Fast Refresh の既知の `react/only-export-components` だけが残る。対象は `ToastProvider` / `useToast` とアプリ起動ファイルの `App`。その他の warning は理由付きの局所抑制または render-time 導出で 0 件にしている。
+閾値を超えると `pnpm lint` が落ちるので、**規則が増えたバージョンに上げる PR では、警告を消すか閾値を上げるかをその PR で決める**。現在の閾値は 2。残るのは Fast Refresh の既知の `react/only-export-components` だけで、対象は `ToastProvider` / `useToast` とアプリ起動ファイルの `App`。その他の warning は理由付きの局所抑制または render-time 導出で 0 件にしている。
 
-**`node_modules` が lockfile より古いと、手元と CI で規則集合がずれる**。上記の見落としは実際にこれで起きた --- 手元は 1.75.0 のまま 2 件を表示し、CI は lockfile の 1.80.0 で 33 件を見ていた。lockfile が動く PR の後は `pnpm install` をやり直す。
+**`node_modules` が lockfile より古いと、手元と CI で規則集合がずれる**。上記の見落としは実際にこれで起きた（手元は 1.75.0 のまま 2 件、CI は lockfile の 1.80.0 で 33 件を見ていた）。lockfile が動く PR の後は `pnpm install` をやり直す。
 
-**`go test ./...` は Postgres と Redis を要求する**。`ROKUBAN_TEST_DATABASE_URL` を設定していないと DB を使うテストが落ちる（`internal/testutil` がパッケージごとにテンプレート DB を作り、テストごとにそこから専用の DB を複製する）。ローカルなら `postgres://localhost:5432/postgres?sslmode=disable` で足りる。`ROKUBAN_TEST_REDIS_URL` を設定していないと asynq adapter のテストが落ちる。ローカルなら `redis://localhost:6379/0` で足りる。
+**`go test ./...` は Postgres と Redis を要求する**。`ROKUBAN_TEST_DATABASE_URL` を設定していないと DB を使うテストが落ちる（`internal/testutil` がパッケージごとにテンプレート DB を作り、テストごとにそこから専用の DB を複製する）。ローカルなら `postgres://localhost:5432/postgres?sslmode=disable` で足りる。
+
+`ROKUBAN_TEST_REDIS_URL` を設定していないと asynq adapter のテストが落ちる。ローカルなら `redis://localhost:6379/0` で足りる。
 
 MySQL を使うテストは、`ROKUBAN_TEST_MYSQL_DSN` が無いと skip する。`ROKUBAN_REQUIRE_MYSQL=1` なら skip せずに落ちる。CI では MySQL のジョブだけがこの 2 つを設定する。
 
-**docs を触ったら `npm run docs:lint` を回す**（textlint。CI の `docs-lint` ジョブと同じ。対象は `package.json` の `docs:lint` が権威）。文の長さと読点の数は違反 0 件で gate する。段落長・表のセル・節の冒頭・節の大きさ・節の太字・根拠の置き場は `scripts/textlint-rules/` のローカルルールが、ファイルごとの許容件数と実測の一致で gate する。**ファイルの大きさは許容を持たず、上限を超えたら割る**。他の規則の許容を増やすと、doc を割って移す分を除き CI（`scripts/check-allow-total.mjs`）が落ちる。規則を新設して許容を持たせる PR は、検査を通るので理由を書く。**Go のテストや `deploy/k8s/` の検査を全部回しても、この 1 つだけは別に落ちる**。
+**docs を触ったら `npm run docs:lint` を回す**（textlint。CI の `docs-lint` ジョブと同じ。対象は `package.json` の `docs:lint` が権威）。文の長さと読点の数は違反 0 件で gate する。段落長・表のセル・節の冒頭・節の大きさ・節の太字・根拠の置き場は `scripts/textlint-rules/` のローカルルールが、ファイルごとの許容件数と実測の一致で gate する。
+
+**ファイルの大きさは許容を持たず、上限を超えたら割る**。他の規則の許容を増やすと、doc を割って移す分を除き CI（`scripts/check-allow-total.mjs`）が落ちる。規則を新設して許容を持たせる PR は、検査を通るので理由を書く。**Go のテストや `deploy/k8s/` の検査を全部回しても、この 1 つだけは別に落ちる**。
 
 **sqlc は式の型を推論しきれないことがある。** `program_start_at + interval '...'` のような式に `::timestamptz` を明示しないと `int32` として生成され、`Scan` で必ず落ちる。式を SELECT に置くときは明示キャストを付ける。
 
@@ -167,11 +171,17 @@ open のエピックは `gh issue list --label epic --state open` で引く。�
 
 **1 表 = 1 つの寿命**。不変条件 9 は**列**の粒度なので、行に寿命が混ざっているケースを網に掛けられない（`reservations` に導出出力・番組スナップショット・不可逆な観測の 3 寿命が同居していた。経緯は invariants.md）。分割の軸を「予約という概念」に取ったので解消が 2 回に分かれた —— 軸を寿命に取れば 1 回で済む。
 
-チェック: 新しい列を足すとき「**この値はこの行と同時に生まれて同時に死ぬか**」を問う。違えば `(site, program_id)` を主キーにした別表にする。既存の表に、行を作り直す・消す・上書きするクエリを足すときは、その操作の後に、前の値を前提に読む者（上書き後の値や行が無い状態では用を果たせない読者）がいるかを問う。各操作と操作後の読者をコードで追い、いれば別表に分ける。新しい表を作る前に、同じ寿命・同じ形・同じ読み手の表が既にあるかを問い、あればその表に行を足す。別プロセスや再起動後に読まない値は、表にしない。
+チェック:
+
+- 新しい列を足すとき「**この値はこの行と同時に生まれて同時に死ぬか**」を問う。違えば `(site, program_id)` を主キーにした別表にする
+- 既存の表に、行を作り直す・消す・上書きするクエリを足すときは、その操作の後に、前の値を前提に読む者（上書き後の値や行が無い状態では用を果たせない読者）がいるかを問う。各操作と操作後の読者をコードで追い、いれば別表に分ける
+- 新しい表を作る前に、同じ寿命・同じ形・同じ読み手の表が既にあるかを問い、あればその表に行を足す。別プロセスや再起動後に読まない値は、表にしない
 
 #### 13. 永続表に列を足すとき、書くループが脊椎の書き手でなければ衛星表にする
 
-不変条件 12 の寿命チェックは**永続表では何も検出しない**（表自体が永続なので列も永続で自明に真が返る。`recordings` が書き手 5 人になっても 12 では止まらなかった。経緯は invariants.md）。**recordings 本体は「試行の帰結の観測」だけを持つ脊椎。別のループが書く状態は `recording_id` を FK に持つ衛星表に置く**（`media_assets` が実例）。
+不変条件 12 の寿命チェックは**永続表では何も検出しない**。表自体が永続なので列も永続で、自明に真が返るためである（`recordings` が書き手 5 人になっても 12 では止まらなかった。経緯は invariants.md）。
+
+**recordings 本体は「試行の帰結の観測」だけを持つ脊椎。別のループが書く状態は `recording_id` を FK に持つ衛星表に置く**（`media_assets` が実例）。
 
 チェック: 永続表に列を足すとき「**この列を書くループは脊椎の書き手か**」を問う（`recordings` なら試行を観測する watcher / reconciler。既にその表に書いている＝根拠にならない）。脊椎の書き手でないなら `recording_id` を持つ衛星表にする。
 
@@ -204,7 +214,7 @@ open のエピックは `gh issue list --label epic --state open` で引く。�
 - **CI が緑でも実バイナリ・実ブラウザを起動して確かめる。** テストが通っても起動しない／実クライアントから使えない類は、これでしか出ない。実例: 上記の起動時 panic。プレイリストのセグメント URI が basename で、実 HLS クライアントから 404。実 Chrome が HLS の MIME に `'maybe'` を返すため、全 Chrome ユーザーが再生できない
 - **非同期の空虚な成功に注意する。** 「何も表示されない」系のテストは、クエリが解決する前にアサーションが走って通ることがある。読み込み完了を待つ手段を入れてから、壊して落ちることを確認する
 - 分岐を直したら**両方向**で確認する（片側だけ見ると反転しても気付かない）
-- **jsdom が測れないもの（レイアウト・スクロール位置・要素の可視性）は、ユニットテストが全部通っても何の保証にもならない**。この領域の機能は**実装より先に判定手段を作る** —— 実ブラウザで機械的に合否が出る形にしてから着手する（`web/e2e/`）。番組リストの遡行では、これを怠って「`pnpm test` が通った」を根拠に 3 回リリースし、3 回とも実機で正しく動いていなかった。失敗の仕方は毎回違ったが、いずれも jsdom では原理的に検出できないものだった（詳細は `web/e2e/README.md`）。足した判定が**直す前の実装で実際に落ちること**も確認する
+- **jsdom が測れないもの（レイアウト・スクロール位置・要素の可視性）は、ユニットテストが全部通っても何の保証にもならない**。この領域の機能は**実装より先に判定手段を作る** —— 実ブラウザで機械的に合否が出る形にしてから着手する（`web/e2e/`）。番組リストの遡行では、これを怠って「`pnpm test` が通った」を根拠に 3 回リリースし、3 回とも実機で正しく動いていなかった。いずれも jsdom では原理的に検出できない失敗だった（詳細は `web/e2e/README.md`）。足した判定が**直す前の実装で実際に落ちること**も確認する
 - **テストを足す前に、同じ対象・同じ主張の既存テストを探す。** あれば表に行を足す。store の主張は `internal/store/contracttest` で検査し、worker のテストは配線と状態遷移を検査して同じ主張を繰り返さない
 - **テストで実行ファイルを書くときは `testexec.WriteExecutable` を使う。** `os.WriteFile` の直後の exec は ETXTBSY で落ちることがある
 
