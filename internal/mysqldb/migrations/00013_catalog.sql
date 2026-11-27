@@ -86,7 +86,8 @@ CREATE TABLE recording_chapter_ownership (
     FOREIGN KEY (recording_id) REFERENCES recordings(id)
 ) ENGINE=InnoDB DEFAULT CHARACTER SET=utf8mb4 COLLATE=utf8mb4_0900_as_cs;
 
--- 区間は [start_ms, end_ms)。Postgres の区間の重なりの EXCLUDE は、このタスクでは写さない（チャプターのタスクが書く）。
+-- 区間は [start_ms, end_ms)。Postgres の区間の重なりの EXCLUDE は写さず、書き手が重なりを確かめる。
+-- 開始位置が同じ区間は、この索引を主キーに上げた後の migration が拒む。
 CREATE TABLE recording_chapter_spans (
     recording_id BIGINT NOT NULL,
     start_ms BIGINT NOT NULL,

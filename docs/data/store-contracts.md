@@ -96,7 +96,6 @@ MySQL の `NOW()` は文ごとに評価される。同じ tx の複数文で同�
 
 MySQL の時刻列は `TIMESTAMP` でなく `DATETIME(6)` を使う。`TIMESTAMP` は 2038-01-19 より後を表せない。接続の time_zone を UTC に固定しているので、`DATETIME` も UTC として読み書きされる。
 
-未解決: `circuit_breakers.tripped_at` は `TIMESTAMP(6)` のまま。
 
 <details><summary>根拠</summary>
 
@@ -264,7 +263,7 @@ ingest の転送前確認は `IngestPrecheck` に分ける。転送前確認が 
 
 MySQL の `media_assets` は NULL のプロファイルを生成列で空文字に写し、録画・種類・プロファイルの組の一意性を通常の一意索引で守る。
 
-MySQL の `orphan_files` は `rel_path` を `LONGTEXT` で持つので、主キーには SHA-256 の生成列 `rel_path_key` を使う。エンコード進捗は通知表に 1 行書き、読み手は通知表を一定間隔で読み直す。MySQL には、Postgres の LISTEN/NOTIFY のように接続へ通知を届ける仕組みが無いためである。
+MySQL の `orphan_files` と `media_asset_transfer_objects` は `rel_path` を `LONGTEXT` で持つので、主キーには SHA-256 の生成列 `rel_path_key` を使う。比較もこの列で行い、接続の照合順序（`utf8mb4_0900_as_cs`）には頼らない。エンコード進捗は通知表に 1 行書き、読み手は通知表を一定間隔で読み直す。MySQL には、Postgres の LISTEN/NOTIFY のように接続へ通知を届ける仕組みが無いためである。
 
 <details><summary>根拠</summary>
 
@@ -473,7 +472,7 @@ MySQL では、試行の開始を 1 文の upsert で判定しない。`ON DUPLI
 
 録画の行で待つのは、録画の行を `FOR UPDATE` で取る文だけではない。録画を親に持つ表への挿入も、外部キーの検査で録画の行を共有ロックして待つ。そのため契約テストでは、録画の行を `FOR UPDATE` で取る文が待っていることで、録画の行の待ちを確かめる。
 
-MySQL には区間の排他制約が無く、表は重なった区間を拒まない。重なりの禁止は、表現不可能にする形から、コードの検査に弱まる。そのため `recording_chapter_spans` の書き手は、それぞれ自分で重なりを確かめる。確かめない書き手を足すと、重なった区間がそのまま残る。
+MySQL には区間の排他制約が無い。主キー `(recording_id, start_ms)` は開始位置が同じ区間だけを拒み、部分的に重なる区間は表が拒まない。重なりの禁止は、表現不可能にする形から、コードの検査に弱まる。そのため `recording_chapter_spans` の書き手は、それぞれ自分で重なりを確かめる。確かめない書き手を足すと、重なった区間がそのまま残る。
 
 再試行 API は結果と試行を消し、commit してからジョブを投入する。ingest と reconcile の投入も含め、どれも commit 後のヒントである。投入に失敗しても、定期 reconcile が desired な集合を取り直して投入する。
 

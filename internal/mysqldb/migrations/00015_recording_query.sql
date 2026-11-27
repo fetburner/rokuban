@@ -1,6 +1,6 @@
 -- +goose Up
 -- 録画の検索・一覧・棚が読む表と view。列は Postgres の最終形（internal/db/schema.sql）に揃える。
--- このタスクは読むだけで、書き手は後のタスク（ingest・CM 検出・視聴状態・エンコード・チャプター）。
+-- この表の書き手は ingest・CM 検出・視聴状態・エンコード・チャプターで、録画の一覧・検索はここから読む。
 -- 表の寿命は録画の観測や試行と同じく、書き手ごとに分けてある。
 
 CREATE TABLE recording_playback_positions (

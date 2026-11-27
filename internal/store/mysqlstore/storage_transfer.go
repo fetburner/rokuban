@@ -774,6 +774,11 @@ ON DUPLICATE KEY UPDATE attempt_count = media_asset_transfer_attempts.attempt_co
 }
 
 // MarkMediaAssetTransferObjectOwned は pending copy のために作成した key の所有を記録する。
+// 同じ key の記録が既にあれば何もしない。主キーは (copy_id, rel_path_key) なので、INSERT を
+// 素直に書くと 2 回目が一意違反になる。その違反を ErrConflict に写すと、「既に所有している」を
+// 呼び出し側の再試行で扱う形になるため、INSERT ... WHERE NOT EXISTS で重複を黙って飛ばす。
+// 比較は主キーと同じ rel_path_key（バイト単位）で行い、接続の照合順序には頼らない。
+// 主キーは、この手順が守られなかったときの最後の防衛線である。
 func (s *Media) MarkMediaAssetTransferObjectOwned(ctx context.Context, copyID int64, storeName, relPath string) (store.TransferObjectOwnership, error) {
 	var ownership store.TransferObjectOwnership
 	err := runTx(ctx, s.db, func(tx *sql.Tx) error {
@@ -801,7 +806,7 @@ FOR UPDATE`, copyID, storeName).Scan(&locked)
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO media_asset_transfer_objects (copy_id, rel_path)
 SELECT ?, ? FROM DUAL WHERE NOT EXISTS (
-    SELECT 1 FROM media_asset_transfer_objects WHERE copy_id = ? AND rel_path = ?
+    SELECT 1 FROM media_asset_transfer_objects WHERE copy_id = ? AND rel_path_key = UNHEX(SHA2(?, 256))
 )`, copyID, relPath, copyID, relPath); err != nil {
 			return fmt.Errorf("recording ownership of transfer object %q: %w", relPath, err)
 		}
@@ -809,7 +814,7 @@ SELECT ?, ? FROM DUAL WHERE NOT EXISTS (
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
 SELECT 1 FROM media_asset_transfer_objects object
 JOIN media_asset_copies copy ON copy.id = object.copy_id
-WHERE object.copy_id = ? AND copy.store = ? AND copy.state = 'pending' AND object.rel_path = ?
+WHERE object.copy_id = ? AND copy.store = ? AND copy.state = 'pending' AND object.rel_path_key = UNHEX(SHA2(?, 256))
 )`, copyID, storeName, relPath).Scan(&found); err != nil {
 			return fmt.Errorf("checking ownership of transfer object %q: %w", relPath, err)
 		}
@@ -848,7 +853,7 @@ func (s *Media) DeleteMediaAssetTransferObjectOwned(ctx context.Context, copyID 
 	if err := runTx(ctx, s.db, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE object FROM media_asset_transfer_objects object
 JOIN media_asset_copies copy ON copy.id = object.copy_id
-WHERE object.copy_id = ? AND copy.store = ? AND object.rel_path = ?`, copyID, storeName, relPath); err != nil {
+WHERE object.copy_id = ? AND copy.store = ? AND object.rel_path_key = UNHEX(SHA2(?, 256))`, copyID, storeName, relPath); err != nil {
 			return fmt.Errorf("clearing ownership of transfer object %q: %w", relPath, err)
 		}
 		return nil
