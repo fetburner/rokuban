@@ -242,9 +242,6 @@ function ProfileMultiSelect({
                 onChange={() => onToggle(p.name)}
               />
               <span className="min-w-0 flex-1 truncate">{p.name}</span>
-              {p.container !== undefined && (
-                <span className="shrink-0 text-xs text-muted-foreground">{p.container}</span>
-              )}
             </label>
           </li>
         )

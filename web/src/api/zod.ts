@@ -92,12 +92,11 @@ export const ListSitesResponse = zod.array(ListSitesResponseItem)
  * ルール / overrides の `encodeProfiles` を選ぶために使う（M3-6 / issue #68）。
  *
  * **機微情報は載せない。** ffmpeg のパスや extra_args は出さない。
- * 名前（と表示用の container）だけを返す。
+ * 名前だけを返す。
  * @summary List configured encode profile names
  */
 export const ListEncodeProfilesResponseItem = zod.object({
-  "name": zod.string().describe('ルール / overrides の `encodeProfiles` が参照する名前。\nconfig.encode.profiles[].name と一致する。\n'),
-  "container": zod.enum(['mp4', 'mkv']).optional().describe('出力コンテナ（表示用。未注入なら省略）。\n')
+  "name": zod.string().describe('ルール / overrides の `encodeProfiles` が参照する名前。\nconfig.encode.profiles[].name と一致する。\n')
 })
 export const ListEncodeProfilesResponse = zod.array(ListEncodeProfilesResponseItem)
 

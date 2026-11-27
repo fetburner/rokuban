@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -350,7 +349,9 @@ func (s *Store) List(ctx context.Context, prefix string) ([]objstore.Object, err
 }
 
 // Presign creates a GET or HEAD URL whose lifetime is bounded by SigV4's seven-day limit.
-func (s *Store) Presign(ctx context.Context, key, method string, expires time.Duration, contentType, filename string) (string, error) {
+// contentType と contentDisposition は response-content-disposition などとして応答に載せる。空なら載せない。
+// contentDisposition は渡された文字列をそのまま使う（組み立ては呼び出し側）。
+func (s *Store) Presign(ctx context.Context, key, method string, expires time.Duration, contentType, contentDisposition string) (string, error) {
 	if err := validateKey(key); err != nil {
 		return "", fmt.Errorf("invalid S3 object key %q: %w", key, err)
 	}
@@ -364,9 +365,8 @@ func (s *Store) Presign(ctx context.Context, key, method string, expires time.Du
 	if contentType != "" {
 		input.ResponseContentType = aws.String(contentType)
 	}
-	if filename != "" {
-		value := mime.FormatMediaType("inline", map[string]string{"filename": filename})
-		input.ResponseContentDisposition = aws.String(value)
+	if contentDisposition != "" {
+		input.ResponseContentDisposition = aws.String(contentDisposition)
 	}
 	var request *v4.PresignedHTTPRequest
 	var err error

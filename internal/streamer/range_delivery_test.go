@@ -123,6 +123,9 @@ func TestRangeReaderDeliveryHTTPContract(t *testing.T) {
 	if response.Header.Get("X-Accel-Buffering") != "no" {
 		t.Fatalf("X-Accel-Buffering = %q, want no", response.Header.Get("X-Accel-Buffering"))
 	}
+	if cd := response.Header.Get("Content-Disposition"); cd != "attachment; filename=proxy.mp4" {
+		t.Fatalf("Content-Disposition = %q, want the basename as attachment on the proxied GET", cd)
+	}
 
 	response, body = request(http.MethodGet, map[string]string{"Range": "bytes=100-199"})
 	if response.StatusCode != 206 || response.Header.Get("Content-Range") != fmt.Sprintf("bytes 100-199/%d", len(payload)) || !bytes.Equal(body, payload[100:200]) {

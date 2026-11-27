@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -25,6 +26,44 @@ func TestS3StoreContract(t *testing.T) {
 		}
 		return objects
 	})
+}
+
+// TestS3PresignedGetReturnsDownloadName は、保存名を付けた署名 URL への GET に対し、
+// 実 S3 互換サーバーが同じ Content-Disposition を返すことを確かめる。
+// streamer は保存名を S3 の応答に載せさせるので、ここが崩れると保存名が消える。
+func TestS3PresignedGetReturnsDownloadName(t *testing.T) {
+	store, err := New(t.Context(), conformanceConfig(t))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := t.Context()
+	key := fmt.Sprintf("conformance/download-name/%d.mkv", time.Now().UnixNano())
+	t.Cleanup(func() { _ = store.Delete(context.WithoutCancel(ctx), key) })
+	data := []byte("download name round trip")
+	digest := sha256.Sum256(data)
+	if err := store.Put(ctx, key, bytes.NewReader(data), int64(len(data)), digest, "video/x-matroska"); err != nil {
+		t.Fatalf("Put(%q): %v", key, err)
+	}
+	target, err := store.Presign(ctx, key, http.MethodGet, time.Minute, "video/x-matroska", "attachment; filename*=utf-8''120000_%E7%95%AA%E7%B5%84%E5%90%8D_1024_h264.g2.mkv")
+	if err != nil {
+		t.Fatalf("Presign: %v", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatalf("building GET: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET signed URL: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET signed URL status = %d, want 200", resp.StatusCode)
+	}
+	want := "attachment; filename*=utf-8''120000_%E7%95%AA%E7%B5%84%E5%90%8D_1024_h264.g2.mkv"
+	if got := resp.Header.Get("Content-Disposition"); got != want {
+		t.Fatalf("Content-Disposition = %q, want %q", got, want)
+	}
 }
 
 // TestS3PutStoresUploadToken は、実 S3 API が Put の upload token を metadata として返すことを確かめる。

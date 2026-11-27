@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -177,6 +178,10 @@ func TestRecordingThumbnail_ServesJPEG(t *testing.T) {
 	if ct := resp.Header.Get("Content-Type"); ct != thumbnailContentType {
 		t.Errorf("Content-Type = %q, want %q", ct, thumbnailContentType)
 	}
+	// サムネイルは保存導線が無いので、保存名を付けない。
+	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+		t.Errorf("thumbnail Content-Disposition = %q, want none", cd)
+	}
 
 	// 旧 URL は alias を残さず 404 にする。ロール分割時に前段が正しい backend
 	// へ振り分けられないため、単一プロセス構成だけの互換を持たせない。
@@ -212,6 +217,9 @@ func TestRecordingFile_FullContent(t *testing.T) {
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != contentTypeOriginal {
 		t.Errorf("Content-Type = %q, want %q", ct, contentTypeOriginal)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); cd != "attachment; filename=recording.m2ts" {
+		t.Errorf("Content-Disposition = %q, want the basename as attachment", cd)
 	}
 	// VLC がシークするために必須
 	if ar := resp.Header.Get("Accept-Ranges"); ar != "bytes" {
@@ -487,6 +495,9 @@ func TestRecordingFile_AccelRedirect(t *testing.T) {
 	if strings.ContainsAny(got, " （）") {
 		t.Errorf("X-Accel-Redirect = %q, want URL-escaped path", got)
 	}
+	if cd := resp.Header.Get("Content-Disposition"); cd != "attachment; filename*=utf-8''160000_%EF%BC%93%E3%81%8B%E6%9C%88%E3%81%A7%E3%83%9E%E3%82%B9%E3%82%BF%E3%83%BC%E3%81%99%E3%82%8B%E3%82%AE%E3%82%BF%E3%83%BC%EF%BC%88%EF%BC%94%EF%BC%89_53256.m2ts" {
+		t.Errorf("Content-Disposition = %q, want the non-ASCII basename as RFC 2231 attachment", cd)
+	}
 	if !strings.HasPrefix(got, "/_media/stores/"+dbtest.StoreName+"/20260725/") {
 		t.Errorf("X-Accel-Redirect = %q, want store-scoped /_media/stores/ prefix", got)
 	}
@@ -529,6 +540,9 @@ func TestRecordingFile_DerivedAccelRedirect(t *testing.T) {
 	}
 	if got := resp.Header.Get("Content-Type"); got != contentTypeMP4 {
 		t.Errorf("Content-Type = %q, want %q", got, contentTypeMP4)
+	}
+	if got := resp.Header.Get("Content-Disposition"); got != "attachment; filename=recording_h264.mp4" {
+		t.Errorf("Content-Disposition = %q, want the encoded basename as attachment", got)
 	}
 }
 
@@ -595,6 +609,9 @@ func TestRecordingFile_EncodedProfile(t *testing.T) {
 	if ar := resp.Header.Get("Accept-Ranges"); ar != "bytes" {
 		t.Errorf("Accept-Ranges = %q, want bytes", ar)
 	}
+	if cd := resp.Header.Get("Content-Disposition"); cd != "attachment; filename=recording_h264.mp4" {
+		t.Errorf("Content-Disposition = %q, want the encoded basename as attachment", cd)
+	}
 
 	// Range も効く
 	resp, body = get(t, url, map[string]string{"Range": "bytes=0-9"})
@@ -644,6 +661,10 @@ func TestRecordingFile_Subtitles_Served(t *testing.T) {
 	}
 	if !bytes.Equal(body, vtt) {
 		t.Errorf("body = %q, want %q", body, vtt)
+	}
+	// 字幕サイドカーは保存導線が無いので、保存名を付けない。
+	if cd := resp.Header.Get("Content-Disposition"); cd != "" {
+		t.Errorf("sidecar Content-Disposition = %q, want none", cd)
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "text/vtt; charset=utf-8" {
 		t.Errorf("Content-Type = %q, want text/vtt; charset=utf-8", ct)
@@ -952,5 +973,111 @@ func TestRecordingSeekTiles_NotFound(t *testing.T) {
 				t.Fatalf("status = %d, want 404", resp.StatusCode)
 			}
 		})
+	}
+}
+
+// 保存名は rel_path の basename だけで、ディレクトリ部分を含めない。
+// 番組名由来の非 ASCII は RFC 2231 で符号化する（ローカル置き場の encoded 配信）。
+func TestRecordingFile_DownloadNameIsBasename(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	content := []byte("encoded mkv payload")
+	relPath := "2026/07/120000_番組名_1024_h264.g2.mkv"
+	digest := sha256.Sum256(content)
+	if err := testObjectStores(t, mediaDir)[dbtest.StoreName].Put(t.Context(), relPath, bytes.NewReader(content), int64(len(content)), digest, "video/x-matroska"); err != nil {
+		t.Fatalf("putting encoded object: %v", err)
+	}
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
+	profile := "h264"
+	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.Kind, p.Profile, p.RelPath, p.SizeBytes = store.AssetKindEncoded, &profile, relPath, int64(len(content))
+	})
+
+	r := chi.NewRouter()
+	New(pgstoretest.Media(pool), testStreamerConfig(t, mediaDir)).Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	resp, _ := get(t, fmt.Sprintf("%s/api/media/recordings/%d/file?profile=h264", srv.URL, recordingID), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	want := "attachment; filename*=utf-8''120000_%E7%95%AA%E7%B5%84%E5%90%8D_1024_h264.g2.mkv"
+	if cd := resp.Header.Get("Content-Disposition"); cd != want {
+		t.Errorf("Content-Disposition = %q, want %q", cd, want)
+	}
+}
+
+// signedURLTestStore は署名 URL の経路だけを持つ置き場。Local と RangeReader は持たない。
+type signedURLTestStore struct {
+	objstore.Store
+	calls []presignCall
+}
+
+type presignCall struct{ key, contentType, contentDisposition string }
+
+func (s *signedURLTestStore) Presign(_ context.Context, key, _ string, _ time.Duration, contentType, contentDisposition string) (string, error) {
+	s.calls = append(s.calls, presignCall{key: key, contentType: contentType, contentDisposition: contentDisposition})
+	return "https://objects.example.test/signed/" + key, nil
+}
+
+// 署名 URL の経路は保存名の値を Presign に渡し、S3 の応答に載せさせる。
+// サムネイルには保存名を渡さない。
+func TestRecordingFile_SignedURLPassesDownloadName(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	base, err := fsstore.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const encodedKey = "2026/07/120000_番組名_1024_h264.g2.mkv"
+	const thumbKey = "2026/07/120000_番組名.jpg"
+	for _, key := range []string{encodedKey, thumbKey} {
+		content := []byte("payload for " + key)
+		digest := sha256.Sum256(content)
+		if err := base.Put(t.Context(), key, bytes.NewReader(content), int64(len(content)), digest, "application/octet-stream"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
+	profile := "h264"
+	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.Kind, p.Profile, p.RelPath, p.SizeBytes = store.AssetKindEncoded, &profile, encodedKey, 1
+	})
+	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.Kind, p.RelPath, p.SizeBytes = store.AssetKindThumbnail, thumbKey, 1
+	})
+
+	objects := &signedURLTestStore{Store: base}
+	r := chi.NewRouter()
+	New(pgstoretest.Media(pool), Config{ObjectStores: map[string]objstore.Store{dbtest.StoreName: objects}}).Mount(r)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	for _, endpoint := range []string{
+		fmt.Sprintf("/api/media/recordings/%d/file?profile=h264", recordingID),
+		fmt.Sprintf("/api/media/recordings/%d/thumbnail", recordingID),
+	} {
+		resp, err := noRedirect.Get(srv.URL + endpoint)
+		if err != nil {
+			t.Fatalf("GET %s: %v", endpoint, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusFound {
+			t.Fatalf("GET %s status = %d, want 302", endpoint, resp.StatusCode)
+		}
+	}
+
+	want := []presignCall{
+		{key: encodedKey, contentType: "video/x-matroska", contentDisposition: "attachment; filename*=utf-8''120000_%E7%95%AA%E7%B5%84%E5%90%8D_1024_h264.g2.mkv"},
+		{key: thumbKey, contentType: "image/jpeg", contentDisposition: ""},
+	}
+	if len(objects.calls) != len(want) {
+		t.Fatalf("Presign calls = %+v, want %+v", objects.calls, want)
+	}
+	for i := range want {
+		if objects.calls[i] != want[i] {
+			t.Errorf("Presign call %d = %+v, want %+v", i, objects.calls[i], want[i])
+		}
 	}
 }

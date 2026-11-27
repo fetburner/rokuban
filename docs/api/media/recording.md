@@ -117,6 +117,34 @@ streamer は、読める置き場にある active コピーから派生物を 1 
 
 </details>
 
+##### 保存名
+
+原本と encoded は、保存名（rel_path の basename）を attachment の Content-Disposition で返す。保存名を決めるのは streamer であり、ブラウザに任せない。
+
+ブラウザに任せると、保存名は URL 末尾の `file` と Content-Type から決まる。Chromium と WebKit で測ったところ、`video/mp4` にだけ拡張子 `.mp4` が補われ、MKV と原本は拡張子なしの `file` になった。
+
+コンテナは rel_path の拡張子だけが持つ。列も応答のフィールドも持たない。`encode` は出力パスの拡張子と ffmpeg の `-f` を同じ `profile.Container` から決めるので、拡張子と中身はずれない。
+
+`inline` ではなく `attachment` にするのは、別オリジンの署名付き URL への 302 では `download` 属性が無視されるからである。`inline` だと保存されずにオブジェクトへ遷移する。`attachment` でも `<video>` の再生は妨げられない。macOS の headless Chromium（WebM）と WebKit（MP4）で、同一オリジンと 302 の両方について `loadeddata` まで到達することを測った。Firefox は未計測である。
+
+サムネイル・シークタイル・字幕サイドカーには付けない。保存導線が無いからである。
+
+署名付き URL の経路では、streamer が同じ値を `Presign` に渡す。S3 はそれを `response-content-disposition` として応答に載せる。値は `lookupAsset` で 1 回だけ組み立てる。
+
+X-Accel-Redirect の経路では、upstream の `Content-Disposition` を nginx 1.29.8 が保つことを確かめた。他の版は未検証である。
+
+<details><summary>根拠</summary>
+
+- 直配信と X-Accel の付与: `TestRecordingFile_FullContent`、`TestRecordingFile_AccelRedirect`
+- ローカル object の付与（accel の有無）: `TestRecordingFile_DerivedAccelRedirect`、`TestRecordingFile_EncodedProfile`
+- 保存名の basename 化と非 ASCII の符号化: `TestRecordingFile_DownloadNameIsBasename`
+- Range 中継の付与: `TestRangeReaderDeliveryHTTPContract`
+- 付けないもの: `TestRecordingThumbnail_ServesJPEG`、`TestRecordingFile_Subtitles_Served`
+- 署名付き URL に渡す値: `TestRecordingFile_SignedURLPassesDownloadName`
+- 値を変形せず応答に載せる（s3store）: `TestPresignGetPassesContentDispositionThrough`、実 S3 互換サーバーでの `TestS3PresignedGetReturnsDownloadName`
+
+</details>
+
 ##### 字幕サイドカー
 
 字幕を出すプロファイルでは、字幕を MP4 / MKV に内蔵せず、WebVTT のサイドカーとして別に配る。字幕が無い番組ではサイドカーは作られず、映像エンコードは成功する。一覧 API は字幕の有無を返さず、再生側が無条件に要求して、欠損なら 404 になる。
