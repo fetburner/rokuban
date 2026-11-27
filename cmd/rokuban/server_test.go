@@ -34,7 +34,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/objstore"
-	"github.com/fetburner/rokuban/internal/role"
+	"github.com/fetburner/rokuban/internal/role/pglocker"
 	"github.com/fetburner/rokuban/internal/testexec"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -2027,7 +2027,7 @@ func TestWatcherLockName_DiffersPerSite(t *testing.T) {
 // mirakc の SSE を購読する」）。
 //
 // 対になる確認（同一サイトで 2 プロセス立てると片方だけが動く）は
-// internal/role.TestTryAcquire_Exclusive がキー文字列一般で固定済みなので、
+// internal/role/pglocker.TestTryAcquire_Exclusive がキー文字列一般で固定済みなので、
 // ここでは「site を変えると独立したロックになる」ことだけを固定する。
 func TestWatcherLockName_MultiSiteIndependence(t *testing.T) {
 	dbURL := testutil.DatabaseURL(t)
@@ -2045,24 +2045,34 @@ func TestWatcherLockName_MultiSiteIndependence(t *testing.T) {
 	}
 	defer poolTakamatsu.Close()
 
-	acquiredTokyo, releaseTokyo, err := role.TryAcquire(ctx, poolTokyo, watcherLockName("tokyo"))
+	sessTokyo, err := pglocker.New(poolTokyo).Checkout(ctx)
 	if err != nil {
-		t.Fatalf("TryAcquire(tokyo): %v", err)
+		t.Fatalf("Checkout(tokyo): %v", err)
+	}
+	defer sessTokyo.Release()
+	acquiredTokyo, err := sessTokyo.TryLock(ctx, watcherLockName("tokyo"))
+	if err != nil {
+		t.Fatalf("TryLock(tokyo): %v", err)
 	}
 	if !acquiredTokyo {
 		t.Fatal("expected tokyo watcher to acquire its lock")
 	}
-	defer releaseTokyo()
+	defer func() { _ = sessTokyo.Unlock(ctx, watcherLockName("tokyo")) }()
 
-	acquiredTakamatsu, releaseTakamatsu, err := role.TryAcquire(ctx, poolTakamatsu, watcherLockName("takamatsu"))
+	sessTakamatsu, err := pglocker.New(poolTakamatsu).Checkout(ctx)
 	if err != nil {
-		t.Fatalf("TryAcquire(takamatsu): %v", err)
+		t.Fatalf("Checkout(takamatsu): %v", err)
+	}
+	defer sessTakamatsu.Release()
+	acquiredTakamatsu, err := sessTakamatsu.TryLock(ctx, watcherLockName("takamatsu"))
+	if err != nil {
+		t.Fatalf("TryLock(takamatsu): %v", err)
 	}
 	if !acquiredTakamatsu {
 		t.Fatal("expected takamatsu watcher to also acquire its own lock while tokyo holds its lock " +
-			"(site 修飾が無いと両者は同じキーを取り合い、この 2 番目の TryAcquire が失敗する)")
+			"(site 修飾が無いと両者は同じキーを取り合い、この 2 番目の TryLock が失敗する)")
 	}
-	defer releaseTakamatsu()
+	defer func() { _ = sessTakamatsu.Unlock(ctx, watcherLockName("takamatsu")) }()
 
 	// 同一サイトの 2 プロセス目は従来どおり排他される（片方だけが動く）。
 	poolTokyo2, err := pgxpool.New(ctx, dbURL)
@@ -2070,9 +2080,14 @@ func TestWatcherLockName_MultiSiteIndependence(t *testing.T) {
 		t.Fatalf("creating poolTokyo2: %v", err)
 	}
 	defer poolTokyo2.Close()
-	acquiredTokyo2, _, err := role.TryAcquire(ctx, poolTokyo2, watcherLockName("tokyo"))
+	sessTokyo2, err := pglocker.New(poolTokyo2).Checkout(ctx)
 	if err != nil {
-		t.Fatalf("TryAcquire(tokyo) second process: %v", err)
+		t.Fatalf("Checkout(tokyo) second process: %v", err)
+	}
+	defer sessTokyo2.Release()
+	acquiredTokyo2, err := sessTokyo2.TryLock(ctx, watcherLockName("tokyo"))
+	if err != nil {
+		t.Fatalf("TryLock(tokyo) second process: %v", err)
 	}
 	if acquiredTokyo2 {
 		t.Fatal("expected the second tokyo watcher to NOT acquire the lock (already held)")

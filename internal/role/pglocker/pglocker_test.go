@@ -1,4 +1,4 @@
-package role
+package pglocker
 
 import (
 	"context"
@@ -10,10 +10,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-var fastConfig = &SingletonConfig{
+var fastConfig = &role.SingletonConfig{
 	PollInterval:      100 * time.Millisecond,
 	HeartbeatInterval: 100 * time.Millisecond,
 }
@@ -34,18 +35,28 @@ func TestTryAcquire_Exclusive(t *testing.T) {
 	}
 	defer pool2.Close()
 
-	acquired1, release1, err := TryAcquire(ctx, pool1, "ruler")
+	sess1, err := New(pool1).Checkout(ctx)
 	if err != nil {
-		t.Fatalf("TryAcquire on pool1: %v", err)
+		t.Fatalf("Checkout on pool1: %v", err)
+	}
+	defer sess1.Release()
+	acquired1, err := sess1.TryLock(ctx, "ruler")
+	if err != nil {
+		t.Fatalf("TryLock on pool1: %v", err)
 	}
 	if !acquired1 {
 		t.Fatal("expected pool1 to acquire lock")
 	}
-	defer release1()
+	defer func() { _ = sess1.Unlock(ctx, "ruler") }()
 
-	acquired2, _, err := TryAcquire(ctx, pool2, "ruler")
+	sess2, err := New(pool2).Checkout(ctx)
 	if err != nil {
-		t.Fatalf("TryAcquire on pool2: %v", err)
+		t.Fatalf("Checkout on pool2: %v", err)
+	}
+	defer sess2.Release()
+	acquired2, err := sess2.TryLock(ctx, "ruler")
+	if err != nil {
+		t.Fatalf("TryLock on pool2: %v", err)
 	}
 	if acquired2 {
 		t.Fatal("expected pool2 to NOT acquire lock (already held by pool1)")
@@ -68,24 +79,36 @@ func TestTryAcquire_ReleaseAndReacquire(t *testing.T) {
 	}
 	defer pool2.Close()
 
-	acquired, release, err := TryAcquire(ctx, pool1, "reconciler")
+	sess1, err := New(pool1).Checkout(ctx)
 	if err != nil {
-		t.Fatalf("TryAcquire on pool1: %v", err)
+		t.Fatalf("Checkout on pool1: %v", err)
+	}
+	acquired, err := sess1.TryLock(ctx, "reconciler")
+	if err != nil {
+		t.Fatalf("TryLock on pool1: %v", err)
 	}
 	if !acquired {
 		t.Fatal("expected pool1 to acquire lock")
 	}
 
-	release()
+	if err := sess1.Unlock(ctx, "reconciler"); err != nil {
+		t.Fatalf("Unlock on pool1: %v", err)
+	}
+	sess1.Release()
 
-	acquired2, release2, err := TryAcquire(ctx, pool2, "reconciler")
+	sess2, err := New(pool2).Checkout(ctx)
 	if err != nil {
-		t.Fatalf("TryAcquire on pool2 after release: %v", err)
+		t.Fatalf("Checkout on pool2: %v", err)
+	}
+	defer sess2.Release()
+	acquired2, err := sess2.TryLock(ctx, "reconciler")
+	if err != nil {
+		t.Fatalf("TryLock on pool2 after release: %v", err)
 	}
 	if !acquired2 {
 		t.Fatal("expected pool2 to acquire lock after pool1 released")
 	}
-	defer release2()
+	defer func() { _ = sess2.Unlock(ctx, "reconciler") }()
 }
 
 func TestTryAcquire_DifferentRoles(t *testing.T) {
@@ -98,23 +121,33 @@ func TestTryAcquire_DifferentRoles(t *testing.T) {
 	}
 	defer pool.Close()
 
-	acquired1, release1, err := TryAcquire(ctx, pool, "ruler")
+	sess1, err := New(pool).Checkout(ctx)
 	if err != nil {
-		t.Fatalf("TryAcquire ruler: %v", err)
+		t.Fatalf("Checkout ruler: %v", err)
+	}
+	defer sess1.Release()
+	acquired1, err := sess1.TryLock(ctx, "ruler")
+	if err != nil {
+		t.Fatalf("TryLock ruler: %v", err)
 	}
 	if !acquired1 {
 		t.Fatal("expected to acquire ruler lock")
 	}
-	defer release1()
+	defer func() { _ = sess1.Unlock(ctx, "ruler") }()
 
-	acquired2, release2, err := TryAcquire(ctx, pool, "reconciler")
+	sess2, err := New(pool).Checkout(ctx)
 	if err != nil {
-		t.Fatalf("TryAcquire reconciler: %v", err)
+		t.Fatalf("Checkout reconciler: %v", err)
+	}
+	defer sess2.Release()
+	acquired2, err := sess2.TryLock(ctx, "reconciler")
+	if err != nil {
+		t.Fatalf("TryLock reconciler: %v", err)
 	}
 	if !acquired2 {
 		t.Fatal("expected to acquire reconciler lock (different role)")
 	}
-	defer release2()
+	defer func() { _ = sess2.Unlock(ctx, "reconciler") }()
 }
 
 func TestRunSingleton_ContextCancel(t *testing.T) {
@@ -135,7 +168,7 @@ func TestRunSingleton_ContextCancel(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = RunSingleton(ctx, pool, "test-cancel", func(ctx context.Context) error {
+		_ = role.RunSingletonWith(ctx, New(pool), "test-cancel", func(ctx context.Context) error {
 			started.Store(true)
 			close(roleStarted)
 			<-ctx.Done()
@@ -183,7 +216,7 @@ func TestRunSingleton_Failover(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = RunSingleton(leader1Ctx, pool1, "test-failover", func(ctx context.Context) error {
+		_ = role.RunSingletonWith(leader1Ctx, New(pool1), "test-failover", func(ctx context.Context) error {
 			close(leader1Started)
 			<-ctx.Done()
 			return ctx.Err()
@@ -201,7 +234,7 @@ func TestRunSingleton_Failover(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = RunSingleton(ctx, pool2, "test-failover", func(ctx context.Context) error {
+		_ = role.RunSingletonWith(ctx, New(pool2), "test-failover", func(ctx context.Context) error {
 			select {
 			case leader2Started <- struct{}{}:
 			default:
@@ -253,7 +286,7 @@ func TestRunSingleton_RoleRestart(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_ = RunSingleton(ctx, pool, "test-restart", func(ctx context.Context) error {
+		_ = role.RunSingletonWith(ctx, New(pool), "test-restart", func(ctx context.Context) error {
 			n := runCount.Add(1)
 			if n == 1 {
 				return fmt.Errorf("simulated crash")
@@ -277,4 +310,15 @@ func TestRunSingleton_RoleRestart(t *testing.T) {
 
 	cancel()
 	wg.Wait()
+}
+
+// TestPgLockKey_Literal は PostgreSQL の鍵が固定の値であることを確かめる。鍵はプロセス間で共有されるので、
+// 値が変わると新旧のプロセスが別の鍵を取る。期待値はリテラルで書く（実装の関数から作らない）。
+func TestPgLockKey_Literal(t *testing.T) {
+	if got := pgLockKey("ruler"); got != -7623009511659812475 {
+		t.Errorf("pgLockKey(ruler) = %d, want -7623009511659812475", got)
+	}
+	if got := pgLockKey("watcher:tokyo"); got != -7779555942240376231 {
+		t.Errorf("pgLockKey(watcher:tokyo) = %d, want -7779555942240376231", got)
+	}
 }

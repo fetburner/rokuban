@@ -62,7 +62,7 @@ const (
 	// watcherPerSiteConns は、2 site 目以降の束縛サイトごとに watcher ロールへ
 	// 追加で見込むコネクション数（perSiteConnBudget / minRequiredConns が使う）。
 	// site ごとに 1 つの advisory lock 用コネクションが追加で専有される
-	// （cmd/rokuban/server.go の watcher ループが site ごとに role.RunSingleton を
+	// （cmd/rokuban/server.go の watcher ループが site ごとに role.RunSingletonWith を
 	// 呼ぶ。issue #532）。
 	watcherPerSiteConns = 1
 )
@@ -304,8 +304,8 @@ func uniqueRoles(roles []string) map[string]struct{} {
 // （1 site 束縛の場合の値。watcher は 2 site 目以降 1 site につき 1 本ずつ
 // 追加で専有する。下記 minRequiredConns 参照）。roleConnBudget の doc コメントで
 // 裏を取った専有元:
-//   - watcher: リーダー選出の advisory lock（internal/role.RunSingleton が
-//     pool.Acquire したコネクションをリーダーである間保持し続ける）。issue #532
+//   - watcher: リーダー選出の排他ロック（PostgreSQL は advisory lock。internal/role.RunSingletonWith
+//     が Checkout した接続をリーダーである間保持し続ける）。issue #532
 //     で site ごとに goroutine を持つようになったため、束縛サイトの数だけ
 //     この専有が増える（cmd/rokuban/server.go の watcher ループ）
 //   - worker: River の内部機構の LISTEN（elector と notifier で共有される 1 本。

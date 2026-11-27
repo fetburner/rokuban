@@ -9,7 +9,7 @@
 # 変えただけで判定が黙って通らなくなる。
 #
 # この判定は kind でしか出ない --- 単体テストは advisory lock 単体
-# （internal/role の TestTryAcquire_Exclusive）までで、**2 つの Pod が同じ DB を
+# （internal/role/pglocker の TestTryAcquire_Exclusive）までで、**2 つの Pod が同じ DB を
 # 見ている**状況は作れない。
 set -uo pipefail
 

@@ -188,7 +188,7 @@ linters:
             - "!${config-path}/internal/db/**"
             - "!${config-path}/internal/jobq/riveradapter/**"
             - "!${config-path}/internal/notifier/pgsource/**"
-            - "!${config-path}/internal/role/leader.go"
+            - "!${config-path}/internal/role/pglocker/**"
             - "!${config-path}/internal/testutil/**"
             - "!${config-path}/cmd/rokuban/**"
             # s3conformance タグの単独バイナリ。PostgreSQL 実装と DB 基盤を組み立てる根（cmd/rokuban と同じ役目）。
@@ -206,7 +206,7 @@ linters:
           files:
             - "${config-path}/internal/jobq/riveradapter/**"
             - "${config-path}/internal/notifier/pgsource/**"
-            - "${config-path}/internal/role/leader.go"
+            - "${config-path}/internal/role/pglocker/**"
             - "${config-path}/internal/testutil/**"
             - "${config-path}/cmd/rokuban/**"
             - "!$test"
@@ -302,6 +302,22 @@ linters:
               desc: notifier reaches the database only through a Source subpackage
             - pkg: database/sql
               desc: notifier reaches the database only through a Source subpackage
+        role-db-source:
+          # role の監督ループは DB を知らない。排他ロックの方言の実装は、サブパッケージ（pglocker / mysqllocker）に閉じ込める。
+          # テストは実 DB を使うので対象外。
+          list-mode: lax
+          files:
+            - "${config-path}/internal/role/**"
+            - "!${config-path}/internal/role/pglocker/**"
+            - "!${config-path}/internal/role/mysqllocker/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/jackc/pgx
+              desc: role reaches the database only through a locker subpackage
+            - pkg: github.com/fetburner/rokuban/internal/db
+              desc: role reaches the database only through a locker subpackage
+            - pkg: database/sql
+              desc: role reaches the database only through a locker subpackage
         exec-role:
           # os/exec は worker・cmdetect・encode・streamer と共用補助の mediaexec が実行に使う。
           # config は LookPath でツールの存在だけを検証する。テストの子プロセス起動は対象外。

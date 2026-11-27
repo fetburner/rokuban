@@ -563,7 +563,7 @@ func (s *Media) MarkMediaAssetCopyDeleted(ctx context.Context, candidate store.M
 }
 
 // transferBacklogLockKey は transfer_backlog_snapshots の読み書きを直列にする advisory lock のキー。
-// internal/role の lockKey と同じ fnv64a を、"rokuban:" を前置した用途名に掛けて作る。
+// internal/role/pglocker の pgLockKey と同じ fnv64a を、"rokuban:" を前置した用途名に掛けて作る。
 // PostgreSQL の内部ハッシュ関数に頼らず、版をまたいで同じ値になる。
 var transferBacklogLockKey = func() int64 {
 	h := fnv.New64a()

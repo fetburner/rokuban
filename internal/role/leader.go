@@ -1,4 +1,6 @@
-// Package role はシングルトンロールのリーダー選出を提供する。
+// Package role はシングルトンロールのリーダー選出の監督ループ（RunSingletonWith）を提供する。
+// 排他ロックの方言の実装（PostgreSQL の advisory lock・MySQL の GET_LOCK）は、サブパッケージ
+// pglocker と mysqllocker にある。このパッケージは pgx にも database/sql にも依存しない。
 //
 // 「ソケットを connect し続ける」形のロール、すなわち watcher（mirakc の SSE を購読し続ける）
 // のためにある。listen する側のロール（api / notifier / streamer）は水平にスケールするので
@@ -6,7 +8,7 @@
 // ジョブとして走る。共通契約（jobq）は排他を保証せず、現行の重複抑止はジョブエンジン adapter の
 // UniqueOpts による。ruler の並走による上書きは未解決（docs/data.md §2）。
 //
-// したがって RunSingleton の呼び出し元は cmd/rokuban/server.go の 1 箇所（watcher）だけだが、
+// したがって RunSingletonWith の呼び出し元は cmd/rokuban/server.go の 1 箇所（watcher）だけだが、
 // これは削除の根拠ではない（issue #24 M2-20、docs/operations.md §5）。呼び出し元が 1 つに
 // 減ったのは機構が 1 つに減ったという成果であり、リーダー選出の失敗モード（heartbeat 喪失 /
 // split-brain / フェイルオーバー遅延）を単独でテストできる価値は残る。
@@ -19,22 +21,14 @@ package role
 
 import (
 	"context"
-	"crypto/sha256"
-	"database/sql"
-	"database/sql/driver"
-	"encoding/hex"
-	"fmt"
-	"hash/fnv"
 	"log/slog"
 	"math/rand/v2"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Locker は方言ごとの排他ロックの実装を表す。Checkout が返す Session は、リーダーである間
 // ずっと専有する。ロックは接続（セッション）に結びつき、接続が切れると解放される。
-// PostgreSQL は pg_try_advisory_lock（NewPgLocker）、MySQL は GET_LOCK（NewMySQLLocker）。
+// 実装は pglocker.New（PostgreSQL）と mysqllocker.New（MySQL）。
 type Locker interface {
 	// Checkout は、ロックに使う接続を 1 本専有して返す。
 	Checkout(ctx context.Context) (Session, error)
@@ -52,161 +46,7 @@ type Session interface {
 	Release()
 }
 
-// NewPgLocker は pgxpool からロック専用の接続を専有する Locker を返す。
-func NewPgLocker(pool *pgxpool.Pool) Locker {
-	return pgLocker{pool: pool}
-}
-
-type pgLocker struct{ pool *pgxpool.Pool }
-
-func (l pgLocker) Checkout(ctx context.Context) (Session, error) {
-	conn, err := l.pool.Acquire(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("acquiring connection for leader lock: %w", err)
-	}
-	return pgSession{conn: conn}, nil
-}
-
-type pgSession struct{ conn *pgxpool.Conn }
-
-func pgLockKey(role string) int64 {
-	h := fnv.New64a()
-	h.Write([]byte("rokuban:" + role))
-	return int64(h.Sum64())
-}
-
-func (s pgSession) TryLock(ctx context.Context, role string) (bool, error) {
-	var acquired bool
-	if err := s.conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", pgLockKey(role)).Scan(&acquired); err != nil {
-		return false, fmt.Errorf("trying advisory lock for %s: %w", role, err)
-	}
-	return acquired, nil
-}
-
-func (s pgSession) Unlock(ctx context.Context, role string) error {
-	if _, err := s.conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", pgLockKey(role)); err != nil {
-		return fmt.Errorf("releasing advisory lock for %s: %w", role, err)
-	}
-	return nil
-}
-
-func (s pgSession) Ping(ctx context.Context) error {
-	var n int
-	return s.conn.QueryRow(ctx, "SELECT 1").Scan(&n)
-}
-
-func (s pgSession) Release() { s.conn.Release() }
-
-// NewMySQLLocker は MySQL の接続プールからロック専用の接続を専有する Locker を返す。
-// GET_LOCK はセッション単位で、同じ接続で 2 回取ると解放も 2 回要る。接続をプールに戻すと、
-// 他の処理がその接続で同じ名前のロックを取り、ロックを保持したまま成功しうる。そのため
-// リーダーである間は接続を返さない。
-func NewMySQLLocker(db *sql.DB) Locker {
-	return mysqlLocker{db: db}
-}
-
-type mysqlLocker struct{ db *sql.DB }
-
-func (l mysqlLocker) Checkout(ctx context.Context) (Session, error) {
-	conn, err := l.db.Conn(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("acquiring connection for leader lock: %w", err)
-	}
-	return &mysqlSession{conn: conn}, nil
-}
-
-// mysqlSession は専有した接続と、TryLock で決まった GET_LOCK の名前を持つ。
-type mysqlSession struct {
-	conn     *sql.Conn
-	lockName string
-}
-
-// mysqlLockName は GET_LOCK の名前を返す。GET_LOCK の名前はサーバー全体で共有され、PostgreSQL の
-// advisory lock と違って DB ごとに分かれない。そこで現在の DB 名とロール名を SHA-256 に含める。
-// 同じ MySQL サーバーの別 DB のリーダーが互いを妨げないようにするためである。名前は 64 文字以内で
-// なければ拒まれるので、先頭 8 文字の接頭辞と 52 桁の hex で 60 文字に収める（watcher のロール名は
-// サイト名（最長 53 文字）を含み、そのままでは長すぎる）。
-func mysqlLockName(database, role string) string {
-	sum := sha256.Sum256([]byte("rokuban-leader\x00" + database + "\x00" + role))
-	return "rokuban:" + hex.EncodeToString(sum[:26])
-}
-
-// TryLock は現在の DB 名を読み、その名前で GET_LOCK を取る。名前は後の Unlock のために保持する。
-func (s *mysqlSession) TryLock(ctx context.Context, role string) (bool, error) {
-	var database sql.NullString
-	if err := s.conn.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&database); err != nil {
-		return false, fmt.Errorf("reading current database for leader lock %s: %w", role, err)
-	}
-	if !database.Valid || database.String == "" {
-		return false, fmt.Errorf("current database is empty for leader lock %s", role)
-	}
-	name := mysqlLockName(database.String, role)
-	var got sql.NullInt64
-	if err := s.conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, 0)", name).Scan(&got); err != nil {
-		return false, fmt.Errorf("trying GET_LOCK for %s: %w", role, err)
-	}
-	// 1 は取得、0 は他者が保持、NULL はエラー。
-	if got.Valid && got.Int64 == 1 {
-		s.lockName = name
-		return true, nil
-	}
-	return false, nil
-}
-
-// Unlock は TryLock で取った名前を解放する。
-func (s *mysqlSession) Unlock(ctx context.Context, role string) error {
-	if s.lockName == "" {
-		return fmt.Errorf("releasing GET_LOCK for %s: lock was not taken by this session", role)
-	}
-	var got sql.NullInt64
-	err := s.conn.QueryRowContext(ctx, "SELECT RELEASE_LOCK(?)", s.lockName).Scan(&got)
-	if err == nil && got.Valid && got.Int64 == 1 {
-		return nil
-	}
-	// 解放できなかったら、ロックを持つセッションを残さない。(*sql.Conn).Raw の doc comment が定める
-	// とおり、f が driver.ErrBadConn を返すと、それ以降 Conn は使えず Close で接続を捨てる。
-	// サーバー側のセッションが終わって GET_LOCK が解放される（自分で RELEASE_LOCK を重ねない）。
-	_ = s.conn.Raw(func(any) error { return driver.ErrBadConn })
-	if err != nil {
-		return fmt.Errorf("releasing GET_LOCK for %s: %w", role, err)
-	}
-	return fmt.Errorf("releasing GET_LOCK for %s: lock was not held by this session", role)
-}
-
-func (s *mysqlSession) Ping(ctx context.Context) error { return s.conn.PingContext(ctx) }
-
-func (s *mysqlSession) Release() { _ = s.conn.Close() }
-
-// TryAcquire は pg_try_advisory_lock でシングルトンロールのリーダー選出を行う。
-// advisory lock はセッションレベルなので、Acquire したコネクションを保持し続ける限り
-// ロックが維持される。プロセス死亡時はコネクション切断で自動解放される。
-func TryAcquire(ctx context.Context, pool *pgxpool.Pool, role string) (acquired bool, release func(), err error) {
-	sess, err := NewPgLocker(pool).Checkout(ctx)
-	if err != nil {
-		return false, nil, err
-	}
-
-	acquired, err = sess.TryLock(ctx, role)
-	if err != nil {
-		sess.Release()
-		return false, nil, err
-	}
-
-	if !acquired {
-		sess.Release()
-		slog.Info("role already held by another process", "role", role)
-		return false, nil, nil
-	}
-
-	slog.Info("acquired leader lock", "role", role)
-	release = func() {
-		_ = sess.Unlock(context.Background(), role)
-		sess.Release()
-	}
-	return true, release, nil
-}
-
-// SingletonConfig は RunSingleton の設定。
+// SingletonConfig は RunSingletonWith の設定。
 type SingletonConfig struct {
 	PollInterval      time.Duration
 	HeartbeatInterval time.Duration
@@ -220,11 +60,6 @@ func defaultSingletonConfig() SingletonConfig {
 }
 
 const heartbeatTimeout = 5 * time.Second
-
-// RunSingleton は PostgreSQL のロックで RunSingletonWith を呼ぶ。
-func RunSingleton(ctx context.Context, pool *pgxpool.Pool, role string, roleFunc func(ctx context.Context) error, cfg *SingletonConfig) error {
-	return RunSingletonWith(ctx, NewPgLocker(pool), role, roleFunc, cfg)
-}
 
 // RunSingletonWith はシングルトンロールの監督ループを実行する。
 // locker のロックを定期試行し、取得したら roleFunc を child context で起動する。

@@ -495,22 +495,22 @@ flowchart LR
 
 1 件消化モードの graceful stop にも同じ猶予が掛かる（`--once` の Job もノード退避やローリング更新で SIGTERM を受ける）。1 件消化後の正常終了も同じで、取りこぼしのジョブ（上記「既知の窓」）を取っていた場合、その完走を待つのは猶予までである。ctx を見ないワーカーはそれでも止まらないので、最終的な上限が SIGKILL であることは変わらない。
 
-### シングルトンロール: pg_advisory_lock リーダー選出
+### シングルトンロール: 排他ロックのリーダー選出
 
-watcher はシングルトンロールで、DB のアドバイザリロックでリーダーを選出する。レプリカ数 1 は既定であって要件ではない。2 レプリカにしても問題ない。
+watcher はシングルトンロールで、DB の排他ロックでリーダーを選出する（PostgreSQL は advisory lock、MySQL は GET_LOCK）。レプリカ数 1 は既定であって要件ではない。2 レプリカにしても問題ない。
 
 ruler / reconciler / record_sweep はジョブなので対象外である。watcher の singleton 性はもはや「正しさ」の要件ではない。watcher Deployment の worker ロールは、リーダー選出の対象外として両レプリカで動く（§スケーラの件数と回収）。「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。リーダーは監督ループで選出する（[データ層](../data.md) §2）。イベント処理は冪等化済みである（[データ層](../data.md) §2、[録画エンジン](../recording.md) §3.3）。
 
 2 レプリカでも、負けた側は待機したまま mirakc に繋がない（既定は `deploy/k8s/site/watcher.yaml` の `replicas: 1`）。これは推測でなく kind での実測である。受け入れ判定ハーネスの判定 4 が、2 レプリカのあいだ mirakc モックの `/events` の同時接続数を数えている（`deploy/k8s/e2e/checks/04-watcher-singleton.sh`）。最大値は 1 だった。
 
-watcher はサイトごとに 1 つ動く。advisory lock のキーにはロール名だけでなく束縛サイトも含み、`watcher:<site>` の形である。多サイト構成で 2 サイトの watcher プロセスを立てると、両方が自分のサイトのロックを取得して両方の mirakc の SSE を購読する。同じロックキーだと片方が「role already held by another process」で待機に入り、負けた側の mirakc の SSE を誰も購読しなくなる（ログ上は正常に見えるので気付きにくい）。同一サイトで 2 プロセス立てた場合は従来どおり片方だけが動く。
+watcher はサイトごとに 1 つ動く。ロックの名前にはロール名だけでなく束縛サイトも含み、`watcher:<site>` の形である。多サイト構成で 2 サイトの watcher プロセスを立てると、両方が自分のサイトのロックを取得して両方の mirakc の SSE を購読する。同じロックキーだと片方が「role already held by another process」で待機に入り、負けた側の mirakc の SSE を誰も購読しなくなる（ログ上は正常に見えるので気付きにくい）。同一サイトで 2 プロセス立てた場合は従来どおり片方だけが動く。
 
 ロックを取れたプロセスだけがロールを動かし、ロックを失ったら止まって取得ループに戻る。
 
-1. ロールごとに goroutine を立て、`pg_try_advisory_lock` を定期試行（15s + jitter）
+1. ロールごとに goroutine を立て、排他ロックを定期試行（15s + jitter）
 2. 取得したら child context でロール本体を起動
 3. リーダー中はロック専用コネクションに定期 heartbeat（`SELECT 1`、10s 間隔）。失敗 = リーダーシップ喪失とみなし、ロールを停止して取得ループに戻る
-4. セッション断で PG 側ロックが自動解放されるため、待機プロセスが次の poll で取得しフェイルオーバー成立
+4. セッション断で DB 側ロックが自動解放されるため、待機プロセスが次の poll で取得しフェイルオーバー成立
 
 ```mermaid
 stateDiagram-v2
@@ -523,12 +523,12 @@ k8s の Lease API に依存しないため monolithic mode でも同じコード
 
 <details><summary>根拠</summary>
 
-- 監督ループがリーダーを選出する: `pg_try_advisory_lock`
+- 監督ループがリーダーを選出する: `internal/role.RunSingletonWith`（ロックの取得は `internal/role/pglocker` と `internal/role/mysqllocker`）
 - イベント処理が冪等: `processRecord`
 
 </details>
 
-#### `internal/role`（`RunSingleton`）は watcher 専用だが畳まない
+#### `internal/role`（`RunSingletonWith`）は watcher 専用だが畳まない
 
 リーダー選出のパッケージは、呼び出し元が 1 つでも畳まない。ソケットを接続し続ける形のロールが存在する限り必要な機構だからである（[overview.md](../overview.md) §ロール分類の基準）。
 
