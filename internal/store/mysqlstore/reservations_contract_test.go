@@ -49,7 +49,10 @@ func seedReservationProgram(t *testing.T, db *sql.DB, title string, opts contrac
 	if startAt.IsZero() {
 		startAt = time.Now().UTC().Truncate(time.Second).Add(24 * time.Hour)
 	}
-	const site = store.DefaultSite
+	site := opts.Site
+	if site == "" {
+		site = store.DefaultSite
+	}
 	if opts.Projection {
 		execFixture(t, db, `
   INSERT INTO epg_services (site, network_id, service_id, type, logo_id, remote_control_key_id, name, channel_type, channel)
@@ -69,6 +72,21 @@ func seedReservationProgram(t *testing.T, db *sql.DB, title string, opts contrac
 	}
 	if opts.Reservation {
 		execFixture(t, db, `INSERT INTO reservations (site, program_id) VALUES (?, ?)`, site, programID)
+	}
+	if opts.Base != nil {
+		if !opts.Reservation {
+			t.Fatal("base fixture requires a reservation")
+		}
+		execFixture(t, db, `UPDATE reservations SET base = CAST(? AS JSON) WHERE site = ? AND program_id = ?`, string(opts.Base), site, programID)
+	}
+	if opts.NeverScheduled {
+		if !opts.Snapshot {
+			t.Fatal("never-scheduled fixture requires a program snapshot")
+		}
+		execFixture(t, db, `
+  INSERT INTO never_scheduled_events (site, network_id, service_id, event_id, program_start_at)
+  VALUES (?, ?, ?, ?, ?)
+  `, site, fixtureNetworkID, fixtureServiceID, eventID, startAt)
 	}
 	if opts.Overrides != nil {
 		execFixture(t, db, `INSERT INTO program_overrides (site, program_id, overrides) VALUES (?, ?, ?)`, site, programID, string(opts.Overrides))

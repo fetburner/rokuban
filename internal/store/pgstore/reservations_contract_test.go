@@ -82,7 +82,10 @@ WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE 
 func seedReservationProgram(t *testing.T, pool *pgxpool.Pool, options contracttest.ReservationProgramOptions) (string, int64) {
 	t.Helper()
 	ctx := context.Background()
-	const site = store.DefaultSite
+	site := options.Site
+	if site == "" {
+		site = store.DefaultSite
+	}
 	programID := int64(700000000000000) + reservationProgramID.Add(1)
 	eventID := int32(reservationProgramID.Load())
 	startAt := options.StartAt
@@ -122,6 +125,25 @@ VALUES ($1, $2, 32678, 5168, $3, $4, 1800000, $5, true, 'store contract program'
 		}
 		if _, err := q.CreateManualReservation(ctx, sqlcgen.CreateManualReservationParams{Site: site, ProgramID: programID}); err != nil {
 			t.Fatalf("seeding reservation: %v", err)
+		}
+	}
+	if options.Base != nil {
+		if !options.Reservation {
+			t.Fatal("base fixture requires a reservation")
+		}
+		if _, err := pool.Exec(ctx, `UPDATE reservations SET base = $3 WHERE site = $1 AND program_id = $2`,
+			site, programID, options.Base); err != nil {
+			t.Fatalf("seeding reservation base: %v", err)
+		}
+	}
+	if options.NeverScheduled {
+		if !options.Snapshot {
+			t.Fatal("never-scheduled fixture requires a program snapshot")
+		}
+		if _, err := pool.Exec(ctx, `
+INSERT INTO never_scheduled_events (site, network_id, service_id, event_id, program_start_at)
+VALUES ($1, 32678, 5168, $2, $3)`, site, eventID, startAt); err != nil {
+			t.Fatalf("seeding never-scheduled event: %v", err)
 		}
 	}
 	if options.Overrides != nil {
