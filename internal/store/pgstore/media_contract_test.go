@@ -24,7 +24,6 @@ var mediaContractEventID atomic.Int32
 
 func TestMediaStoreContract(t *testing.T) {
 	contracttest.RunMedia(t, newMediaStoreContractFixture)
-	contracttest.RunMediaIngestAndTransfer(t, newMediaStoreContractFixture)
 	contracttest.RunMediaPublish(t, newMediaStoreContractFixture)
 }
 

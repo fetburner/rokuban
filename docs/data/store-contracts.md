@@ -302,10 +302,15 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 
 MySQL には引数を取る view が無いので、置き場や方針を引数に取る until_encoded と配置の述語は SQL 断片の定数に置く。引数を取らない旧世代の判定は view にする。MySQL の UPDATE は、副問い合わせで更新対象の表を読むとエラー 1093 になる。そのため遷移では、対象のコピー行を `FOR UPDATE` で取った後に削除条件を SELECT で判定し、UPDATE は id で行う。
 
+MySQL の転送進捗の表は外部キーを CASCADE にせず RESTRICT にする。進捗の行は明示の DELETE でだけ消え、その表の `BEFORE DELETE` トリガーが送信状態を掃除待ちに移す。外部キーの CASCADE で消えた行ではトリガーが動かないので、CASCADE にすると送信状態が掃除待ちに記録されず、置き場に残った送信途中の状態を片付ける手がかりが失われる。
+
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.MediaDelete`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
+- MySQL 実装（転送）: `internal/store/mysqlstore.Media`
+- 放棄の記録: `TransferUploadRowDeletionAbandonsState`
+- 外部キーの CASCADE とトリガー: [MySQL Reference Manual「15.1.25.5 FOREIGN KEY Constraints」](https://dev.mysql.com/doc/refman/9.7/en/create-table-foreign-keys.html)
 - マウント集合の固定: `TestPrepareMediaAssetTransferKeepsDerivedSourcesMounted`
 - 配置削除が無効なとき: `TestStorageTransferDeletionSkipsWhenPlacementArmIsDisabled`
 - 配置削除が有効なとき: `TestStorageTransferDeletionWiresOverlapCutoff`
@@ -387,6 +392,17 @@ Dex の updater 関数（`UpdateClient(id, func(old) (new, error))`）も同じ�
 録画の行ロックは各方言の共通ヘルパだけで取り、録画の行に触れる最初の文にする。対応する関数は、pgstore の `lockRecordingState` / `lockRecording`、mysqlstore の `lockRecordingState` / `lockRecordingShared` である。ロックを取る前に読んだ古い値で判断すると、書き手どうしが互いの書き込みを観測できなくなるからである。
 
 それより先に取るロック（局の advisory lock など）があれば、その順序をメソッドの doc コメントに書く。書き手ごとに取る順序が違うと、デッドロックしうるからである。
+
+MySQL では転送元の帯域のリースを、リースごとに借りた専用の接続の `GET_LOCK` で取る。`GET_LOCK` は同じ接続で取り直すと成功するので、pool の接続で取ると、同じ転送元を 2 つのリースが持ちうる。ロック名は DB 名と置き場の名前のハッシュにする。`GET_LOCK` の名前はサーバー全体で共有されるので、置き場の名前だけでは同じサーバーにある別の DB のリースと衝突する。バックログの更新の直列化は tx 単位なので、`named_locks` の固定行を `FOR UPDATE` で取る。
+
+<details><summary>根拠</summary>
+
+- MySQL 実装: `internal/store/mysqlstore.Media`
+- 帯域のリース: `TransferBandwidthLease`、`TestTransferBandwidthLeaseHijacksOnUnlockFailure`
+- `GET_LOCK` の接続単位の動作と名前の共有: [MySQL Reference Manual「14.14 Locking Functions」](https://dev.mysql.com/doc/refman/9.7/en/locking-functions.html)
+- MySQL 9.7.4 での実測: 同じ接続で同じ名前の `GET_LOCK` を 2 回呼ぶとどちらも 1 を返し、1 回の `RELEASE_LOCK` 後も `IS_FREE_LOCK` は 0 を返す。別の DB の接続から同じ名前を取得すると 0 を返す。
+
+</details>
 
 ### エンコード方針と試行
 
