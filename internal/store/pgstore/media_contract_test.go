@@ -237,6 +237,10 @@ WHERE media_asset_id = $2`, state, id); err != nil {
 	configureMediaObservationFixture(t, pool, &fixture)
 	configureMediaStorageFixture(t, pool, &fixture)
 	configureMediaRoutingFixture(pool, &fixture)
+	fixture.NewInterleavedReconcile = func(t *testing.T, interleave func()) store.MediaReconcile {
+		t.Helper()
+		return testMedia(newFirstSelectPool(t, pool, interleave), "tokyo", "")
+	}
 	return fixture
 }
 
@@ -553,6 +557,10 @@ func configureMediaStorageFixture(t *testing.T, pool *pgxpool.Pool, fixture *con
 		param, err := KeepRangesParam(keep)
 		if err != nil {
 			t.Fatalf("encoding frozen keep ranges: %v", err)
+		}
+		// 凍結 keep は 1 件だけ持つので、書き直しは一度消してから入れる（MySQL の fixture は INSERT ... ON DUPLICATE KEY UPDATE で上書きする）。
+		if _, err := pool.Exec(context.Background(), `DELETE FROM media_asset_cuts WHERE media_asset_id = $1`, assetID); err != nil {
+			t.Fatalf("clearing frozen keep ranges: %v", err)
 		}
 		if err := sqlcgen.New(pool).InsertMediaAssetCuts(context.Background(), sqlcgen.InsertMediaAssetCutsParams{
 			MediaAssetID: assetID,
