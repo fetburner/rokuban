@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// InPlaceCopyObservation は、登録するアセットの rel_path で置き場を引いて見つかったコピーの行を表す。
+// InPlaceCopyObservation は登録するアセットの rel_path で置き場を引いて見つかったコピーの行を表す。
 // 方言は同じ tx の中で読んだ値をそのまま詰める。行が無いアセットには nil を渡す。
 type InPlaceCopyObservation struct {
 	// AssetID は行が属する論理資産の ID。
@@ -21,7 +21,7 @@ type InPlaceCopyObservation struct {
 	RecordingRemoved bool
 }
 
-// InPlaceRegistrationPlan は PlanInPlaceRegistration が決めた、in-place 登録の判断である。
+// InPlaceRegistrationPlan は PlanInPlaceRegistration が決めた in-place 登録の判断である。
 type InPlaceRegistrationPlan struct {
 	// RecordingID は既存の行が指す録画の ID。0 なら録画を新しく upsert する。
 	RecordingID int64
