@@ -182,6 +182,23 @@ func MigrateDown(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+// MigrateDownTo は埋め込みの migration を版 version まで戻す。後続の migration が増えても、
+// 検査したい版を確実に戻すための操作である。PostgreSQL の db.MigrateDownTo に当たる。
+func MigrateDownTo(ctx context.Context, db *sql.DB, version int64) error {
+	subFS, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		return fmt.Errorf("getting MySQL migrations sub-FS: %w", err)
+	}
+	provider, err := goose.NewProvider(goose.DialectMySQL, db, subFS)
+	if err != nil {
+		return fmt.Errorf("creating MySQL goose provider: %w", err)
+	}
+	if _, err := provider.DownTo(ctx, version); err != nil {
+		return fmt.Errorf("rolling back MySQL migrations to %d: %w", version, err)
+	}
+	return nil
+}
+
 // IsUniqueViolation は err が MySQL の一意キー違反かを返す。
 // TestRunTxMapsUniqueViolationToConflict が store.ErrConflict への変換を検査する。
 func IsUniqueViolation(err error) bool {

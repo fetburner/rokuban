@@ -339,12 +339,21 @@ func runConflictRollback(t *testing.T, newStore NewStore) {
 	if err != nil {
 		t.Fatalf("reading initial state: %v", err)
 	}
-	overlapping := []chapters.Span{
-		{StartMs: 0, EndMs: 2002, Label: "CM", Cut: true},
-		{StartMs: 1001, EndMs: 3003, Label: "OP", Cut: true},
-	}
-	if err := s.Replace(ctx, id, initial.Version, overlapping, false); !errors.Is(err, store.ErrConflict) {
-		t.Fatalf("Replace(overlapping) error = %v, want ErrConflict", err)
+	// 開始位置が違う重なりは、Postgres では排他制約、MySQL では書いた後の重なりの検査が拒む。
+	// 開始位置が同じ重なりは、MySQL では主キーの一意違反が先に拒む。どちらも ErrConflict になり、ロールバックされる。
+	for name, overlapping := range map[string][]chapters.Span{
+		"partial overlap": {
+			{StartMs: 0, EndMs: 2002, Label: "CM", Cut: true},
+			{StartMs: 1001, EndMs: 3003, Label: "OP", Cut: true},
+		},
+		"same start": {
+			{StartMs: 0, EndMs: 2002, Label: "CM", Cut: true},
+			{StartMs: 0, EndMs: 3003, Label: "OP", Cut: true},
+		},
+	} {
+		if err := s.Replace(ctx, id, initial.Version, overlapping, false); !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("Replace(%s) error = %v, want ErrConflict", name, err)
+		}
 	}
 	after, err := s.Read(ctx, id)
 	if err != nil {

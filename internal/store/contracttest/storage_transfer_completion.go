@@ -123,4 +123,12 @@ func runOwnedKeysCompareByBytes(t *testing.T, newStore NewStorageTransferStore) 
 	if err != nil || len(paths) != 2 {
 		t.Fatalf("owned keys = (%q, %v), want both spellings", paths, err)
 	}
+	// 削除も同じバイト比較で行う。composed を消しても decomposed の記録は残る。
+	if err := f.Store.DeleteMediaAssetTransferObjectOwned(ctx, copyID, "archive", composed); err != nil {
+		t.Fatalf("DeleteMediaAssetTransferObjectOwned(%q): %v", composed, err)
+	}
+	paths, err = f.Store.ListMediaAssetTransferObjectsOwned(ctx, copyID, "archive")
+	if err != nil || !slices.Equal(paths, []string{decomposed}) {
+		t.Fatalf("owned keys after deleting composed = (%q, %v), want only decomposed", paths, err)
+	}
 }

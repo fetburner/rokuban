@@ -16,7 +16,7 @@ ALTER TABLE recording_chapter_spans DROP INDEX recording_chapter_spans_recording
 ALTER TABLE circuit_breakers MODIFY tripped_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6);
 
 -- 録画の一覧（program_start_at・id の並び）と、局単位の CM 検出の問い合わせに索引を足す。
--- 契約テストの規模（録画 5000 件）の EXPLAIN で、並べ替えの filesort と全件走査が消えたものだけを入れた。
+-- 録画 5000 件を入れた MySQL 9.7 の EXPLAIN で、並べ替えの filesort と全件走査が消えたものだけを入れた。
 -- 「続きから」の並び（playback の updated_at）は、EXPLAIN で計画が変わらなかったので足さない。
 ALTER TABLE recordings
     ADD INDEX recordings_program_start_at_id_idx (program_start_at DESC, id DESC),

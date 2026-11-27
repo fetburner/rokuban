@@ -96,7 +96,6 @@ MySQL の `NOW()` は文ごとに評価される。同じ tx の複数文で同�
 
 MySQL の時刻列は `TIMESTAMP` でなく `DATETIME(6)` を使う。`TIMESTAMP` は 2038-01-19 より後を表せない。接続の time_zone を UTC に固定しているので、`DATETIME` も UTC として読み書きされる。
 
-
 <details><summary>根拠</summary>
 
 - DB の時計で比べる前例（GC）: `internal/db/queries/reservations.sql` の `DeleteStaleNeverScheduledEvents`。`observed_at < now() - horizon` で比べ、`PruneNeverScheduled` が呼ぶ

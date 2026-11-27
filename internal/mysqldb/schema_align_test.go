@@ -108,26 +108,27 @@ VALUES ('test', 'breaker', ?, 1, 1, JSON_OBJECT())`, want); err != nil {
 	}
 }
 
-// TestLatestMigrationRoundTrip は最新の migration の Down が 1 段戻し、Up で元に戻ることを固定する。
-// Down 後は主キーが無いので、同じ行の重複 INSERT が通る。
-func TestLatestMigrationRoundTrip(t *testing.T) {
+// TestMigration00021RoundTrip は 00021 を版 20 まで戻して重複 INSERT が通り、Up で主キーが戻ることを固定する。
+// 1 段だけ戻すと、後続の migration が増えたときに 00021 ではない版を戻すので、版を名指しする。
+// 00020 までの表には主キーが無く、Up 後の重複検査は落ちる。
+func TestMigration00021RoundTrip(t *testing.T) {
 	db := mysqltest.SetupDB(t)
 	ctx := context.Background()
 	copyID := seedAlignTransferCopy(t, db)
 	if err := insertAlignTransferObject(db, copyID); err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
-	if err := mysqldb.MigrateDown(ctx, db); err != nil {
-		t.Fatalf("MigrateDown: %v", err)
+	if err := mysqldb.MigrateDownTo(ctx, db, 20); err != nil {
+		t.Fatalf("MigrateDownTo(20): %v", err)
 	}
 	if err := insertAlignTransferObject(db, copyID); err != nil {
-		t.Fatalf("duplicate insert after Down should succeed (no primary key at 00020): %v", err)
+		t.Fatalf("duplicate insert at version 20 should succeed (no primary key): %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `DELETE FROM media_asset_transfer_objects WHERE copy_id = ?`, copyID); err != nil {
 		t.Fatalf("clearing duplicates before Up: %v", err)
 	}
 	if err := mysqldb.MigrateUp(ctx, db); err != nil {
-		t.Fatalf("MigrateUp after Down: %v", err)
+		t.Fatalf("MigrateUp after DownTo(20): %v", err)
 	}
 	if err := mysqldb.CheckMigrationsCurrent(ctx, db); err != nil {
 		t.Fatalf("CheckMigrationsCurrent: %v", err)
