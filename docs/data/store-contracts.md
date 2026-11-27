@@ -240,6 +240,8 @@ MySQL はスナップショットの行ロックを `FOR UPDATE` で取り、同
 - MySQL の番組行ロック: `TestReservationsContract` の `concurrent field patches preserve both values`
 - マージの設定と reset: `TestMergeOverrides_SetsOnlyGivenFields` / `TestMergeOverrides_ResetClearsEachField`
 - reset の対象が Options と一致すること: `TestOverrideFieldsMatchOptions`
+- 上書きの適用: `internal/store.PlanOverridesPatch`
+- 既存値の保存・空の判定・実効値の検証: `TestPlanOverridesPatch`
 - PostgreSQL 実装: `internal/store/pgstore.Rules`
 
 </details>
@@ -375,7 +377,7 @@ MySQL の外部キーの CASCADE は子の表のトリガーを発火させな�
 
 store は tx の中で、その関数をロック後の値に対して 1 回だけ呼ぶ。関数は DB に触れない。store は `config` を import しない。
 
-設定に依存しない純粋な判定（`internal/chapters`・`internal/reservation` の関数など）は、pgstore が直接呼ぶ。
+設定に依存しない純粋な判定（`internal/chapters`・`internal/reservation` の関数など）は、各方言の実装が直接呼ぶ。
 
 方言に依らない判定は方言の実装の中に書かず `internal/store` に置き、各方言の実装が呼ぶ。方言ごとに写しを持つと、片方だけが直るからである。
 
