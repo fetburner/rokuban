@@ -36,10 +36,32 @@ func DSN(addr, user, password, database string) string {
 	return cfg.FormatDSN()
 }
 
-// OpenPool は MySQL の接続プールを開き、設定を検査する。DSN の DB 名、接続先、
-// 認証情報は保ち、接続ごとの設定は store 契約の値へ置き換える。
+// OpenPool は MySQL の接続プールを開き、設定を検査する。接続の設定は PoolConfig が組み立てる。
 // TestOpenPoolEnforcesConnectionSettings が接続後の値を検査する。
 func OpenPool(ctx context.Context, dsn string) (*sql.DB, error) {
+	cfg, err := PoolConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("mysql", cfg.FormatDSN())
+	if err != nil {
+		return nil, fmt.Errorf("opening MySQL pool: %w", err)
+	}
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("connecting to MySQL: %w", err)
+	}
+	if err := CheckConnectionSettings(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("validating MySQL connection settings: %w", err)
+	}
+	return db, nil
+}
+
+// PoolConfig は OpenPool が接続に使う設定を返す。DSN の DB 名・接続先・認証情報は保ち、
+// 接続ごとの設定（文字コード・照合順序・分離レベル・SQL モード・時刻帯）は store 契約の値へ置き換える。
+// テストが同じ設定で別の接続を開くために使う（internal/mysqltest.OpenHookedPool）。
+func PoolConfig(dsn string) (*mysql.Config, error) {
 	cfg, err := mysql.ParseDSN(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("parsing MySQL DSN: %w", err)
@@ -58,20 +80,7 @@ func OpenPool(ctx context.Context, dsn string) (*sql.DB, error) {
 	cfg.Params["transaction_isolation"] = "'" + connectionIsolation + "'"
 	cfg.Params["sql_mode"] = "'TRADITIONAL'"
 	cfg.Params["time_zone"] = "'+00:00'"
-
-	db, err := sql.Open("mysql", cfg.FormatDSN())
-	if err != nil {
-		return nil, fmt.Errorf("opening MySQL pool: %w", err)
-	}
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("connecting to MySQL: %w", err)
-	}
-	if err := CheckConnectionSettings(ctx, db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("validating MySQL connection settings: %w", err)
-	}
-	return db, nil
+	return cfg, nil
 }
 
 // CheckConnectionSettings は接続プールから取得した接続の設定を検査する。

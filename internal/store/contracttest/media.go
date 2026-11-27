@@ -36,6 +36,10 @@ type MediaFixture struct {
 	AddCopy               func(t *testing.T, assetID int64, storeName, relPath string) int64
 	// ServingIn は storeName の置き場に束縛した配信の読み手を返す。storeName が "" なら置き場で絞らない読み手。
 	ServingIn func(storeName string) store.MediaServing
+	// NewInterleavedReconcile は Reconcile と同じ契約の読み手を返す。その読み手の読み取りは、
+	// 最初の SELECT の結果を読み終えた直後に interleave を 1 回だけ同期的に呼んでから、続きを読む。
+	// interleave の書き込みは、読み手とは別の接続で行う。
+	NewInterleavedReconcile func(t *testing.T, interleave func()) store.MediaReconcile
 	// SetCopyState はコピー行の状態だけを書く（active・deleting など。公開や削除の遷移は通さない）。
 	SetCopyState         func(t *testing.T, copyID int64, state string)
 	SetIngestCheckpoint  func(t *testing.T, recordingID, writerGeneration int64)
@@ -130,6 +134,9 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("serving returns only active assets", func(t *testing.T) { runMediaServingActiveOnly(t, newFixture) })
 	t.Run("serving copy selection prefers the first store in name order", func(t *testing.T) { runServingCopySelection(t, newFixture) })
 	t.Run("serving covers thumbnails and seek tiles", func(t *testing.T) { runMediaServingDerived(t, newFixture) })
+	t.Run("serving excludes trashed originals and encoded", func(t *testing.T) { runServingExcludesTrashed(t, newFixture) })
+	t.Run("current cut keep reads ownership and spans from one snapshot", func(t *testing.T) { runCurrentCutKeepSnapshot(t, newFixture) })
+	t.Run("encoded publish state reads every field from one snapshot", func(t *testing.T) { runEncodedPublishStateSnapshot(t, newFixture) })
 	t.Run("recording HLS target shares the committed-original visibility predicate", func(t *testing.T) { runMediaRecordingHLSTarget(t, newFixture) })
 	t.Run("recording removal state reports deleted, purged and superseded times", func(t *testing.T) { runMediaRecordingRemovalState(t, newFixture) })
 	t.Run("namespace guard accepts site paths and rejects malformed ones", func(t *testing.T) { runMediaNamespaceMalformed(t, newFixture) })

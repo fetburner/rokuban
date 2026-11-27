@@ -82,6 +82,10 @@ VALUES (?, 32678, 5168, ?, 'media contract service', 'GR', 'media contract chann
 				store.DefaultSite, mediaContractEventSeq.Add(1), genres, start, genreLv1))
 		},
 	}
+	fixture.NewInterleavedReconcile = func(t *testing.T, interleave func()) store.MediaReconcile {
+		t.Helper()
+		return NewMediaInStore(mysqltest.OpenHookedPool(t, db, interleave), "tokyo", zero)
+	}
 	fixture.SetIngestCheckpoint = func(t *testing.T, recordingID, writerGeneration int64) {
 		t.Helper()
 		owner := make([]byte, 16)

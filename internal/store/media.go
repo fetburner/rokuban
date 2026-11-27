@@ -47,7 +47,7 @@ type RecordingRemovalState struct {
 // 「配信可能」と書いたメソッドは、active なコピーがあり（deleting と deleted のアセットは返さない）、録画がごみ箱に無いものを返す。
 // 検査: contracttest.RunMedia の「serving returns only active assets」（original と encoded の deleting・deleted）、「serving covers thumbnails and seek tiles」（thumbnail と seek_tiles の deleting・deleted、ごみ箱の録画）。
 // 検査: contracttest.RunMedia の「original serving requires a visible copy in the requested store」（置き場ごとの原本取得で deleting・pending・deleted とごみ箱の録画を除外）。
-// 原本と encoded のごみ箱の除外は契約テストでは未検証。
+// 検査: contracttest.RunMedia の「serving excludes trashed originals and encoded」（原本と encoded を、置き場を指定しない読み手と置き場束縛の読み手で引き、ごみ箱の録画を除外）。
 type MediaServing interface {
 	// GetOriginalMediaAssetForServing は配信可能な原本を返す。無ければ ErrNotFound を返す。
 	GetOriginalMediaAssetForServing(ctx context.Context, recordingID int64) (MediaAsset, error)
@@ -55,7 +55,7 @@ type MediaServing interface {
 	// 置き場ごとの URL（/api/media/stores/{store}/recordings/{id}/file）が使う。無ければ ErrNotFound を返す。
 	GetOriginalMediaAssetForServingInStore(ctx context.Context, recordingID int64, storeName string) (MediaAsset, error)
 	// GetEncodedMediaAssetForServing は指定プロファイルの配信可能な encoded を返す。対象が無ければ ErrNotFound を返す。
-	// 検査: contracttest.RunMedia の「serving returns only active assets」。
+	// 検査: contracttest.RunMedia の「serving returns only active assets」（deleting・deleted）と「serving excludes trashed originals and encoded」（ごみ箱）。
 	GetEncodedMediaAssetForServing(ctx context.Context, recordingID int64, profile string) (MediaAsset, error)
 	// GetThumbnailMediaAssetForServing は配信可能なサムネイルを返す。対象が無ければ ErrNotFound を返す。
 	// 検査: contracttest.RunMedia の「serving covers thumbnails and seek tiles」。
@@ -212,9 +212,9 @@ type MediaReconcile interface {
 	// OriginalLocator は reconcile が読み取りジョブを積む置き場を選ぶのに使う。
 	OriginalLocator
 	// GetCurrentCutKeep は確認済みチャプターから現在の keep 区間を導出する。
-	// 所有状態と区間は同じ時点の 1 回の読み取りで返す（契約テストでは未検証）。
+	// 所有状態と区間は同じ時点の 1 回の読み取りで返す。
 	// 確認されていなければ owned=false、purged の録画なら ErrNotFound を返す。
-	// 検査: contracttest.RunMedia の「current cut keep is derived from owned chapters」。
+	// 検査: contracttest.RunMedia の「current cut keep is derived from owned chapters」（導出）と「current cut keep reads ownership and spans from one snapshot」（同じ時点）。
 	GetCurrentCutKeep(ctx context.Context, recordingID int64) (keep []chapters.Range, owned bool, err error)
 	// GetRecordingEncodeTimes はエンコード締切の計算に使う録画時刻を返す。
 	// 録画が無ければ ErrNotFound を返す。
@@ -230,9 +230,10 @@ type MediaReconcile interface {
 	// HasActiveSeekTilesMediaAsset は active なシークタイルがあれば true を返す。
 	HasActiveSeekTilesMediaAsset(ctx context.Context, recordingID int64) (bool, error)
 	// GetEncodedPublishState は desired、作り直し要求、encoded 行と必要なカット版の状態を、
-	// ロックを取らずに同じ時点の値として返す（エンコード前の判定用。同じ時点の読み取りは契約テストでは未検証）。
+	// ロックを取らずに同じ時点の値として返す（エンコード前の判定用）。
 	// cut=true なら encoded 行の凍結 keep も読む。includeCurrentCut=true かつ profile が
 	// desired のときだけ、現在の章所有と keep 区間も読む（要求に由来しないカット版ジョブ用）。
+	// 検査: contracttest.RunMedia の「encoded publish state reads every field from one snapshot」（同じ時点であることと、途中で行う書き込みを待たせないこと）。
 	GetEncodedPublishState(ctx context.Context, recordingID int64, profile string, cut, includeCurrentCut bool) (EncodedPublishState, error)
 	// ListMissingEncodeProfiles は不足と満たされていない作り直しを合わせた候補をページ単位で返す。
 	ListMissingEncodeProfiles(ctx context.Context, params MissingEncodeProfilesParams) ([]MissingEncodeProfile, error)

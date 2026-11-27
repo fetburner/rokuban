@@ -278,7 +278,9 @@ MySQL の `orphan_files` と `media_asset_transfer_objects` は `rel_path` を `
 - 送ったエンコード進捗が、同じ値のまま通知で届くこと: `TestMediaStoreContract` の `encode progress reaches the listener`
 - 録画 HLS の対象: `TestRecordingHLSTargetPreservesCommittedGeneration` と `TestRecordingHLSTargetUsesIngestTempUntilCommit`
 - エンコード計画の観測と作り直し要求の照合: `TestMediaStoreContract` の `encode planning reads asset and request state through its contract`
-- 所有状態と区間が同じ時点の読み取りであること: `pgstore` の `TestGetCurrentCutKeepReadsOwnershipAndSpansFromOneSnapshot`
+- 所有状態と区間が同じ時点の読み取りであること: `TestMediaStoreContract` の `current cut keep reads ownership and spans from one snapshot`
+- エンコード公開の状態の全項目が同じ時点の読み取りであること: `TestMediaStoreContract` の `encoded publish state reads every field from one snapshot`
+- ごみ箱の録画の原本と encoded を配信しないこと: `TestMediaStoreContract` の `serving excludes trashed originals and encoded`
 - encode 締切用の nullable 時刻: `TestMediaStoreContract` の `recording encode times preserve nullable timestamps`
 - サムネイル再選択の候補の型付き値: `TestMediaStoreContract` の `thumbnail reselection candidates carry typed timeline and inputs`
 - 孤児を報告し回収する仕組みと、実体無しを検出する仕組み: [storage contract](../storage/contract.md) §5「残量の観測」 / [retention contract](../storage/retention.md) §7「孤児の報告と回収」 / [missing-assets](../storage/missing-assets.md)
