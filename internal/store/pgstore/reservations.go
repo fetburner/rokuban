@@ -92,24 +92,15 @@ func (s *Reservations) PatchOverrides(ctx context.Context, site string, programI
 		return err
 	}
 
+	// 既存の上書きと base は、ロックの後に方言のまま読む。base はルール由来の予約があればそこから、
+	// 無ければ nil（手動予約相当）になる。判断は store.PlanOverridesPatch が行う。
+	var existingJSON json.RawMessage
 	existing, err := q.GetProgramOverrides(ctx, sqlcgen.GetProgramOverridesParams{Site: site, ProgramID: programID})
-	var existingOptions reservation.Options
 	if err == nil {
-		if err := json.Unmarshal(existing.Overrides, &existingOptions); err != nil {
-			return fmt.Errorf("unmarshalling existing overrides for program %d at site %s: %w", programID, site, err)
-		}
+		existingJSON = existing.Overrides
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("getting overrides for program %d at site %s: %w", programID, site, err)
 	}
-	merged, err := reservation.MergeOverrides(existingOptions, patch)
-	if err != nil {
-		return fmt.Errorf("merging overrides for program %d at site %s: %w", programID, site, err)
-	}
-
-	// このパッチを適用した後の実効値（既存の上書き + パッチ + ルールの base）で
-	// keepOriginal / encodeProfiles の組み合わせを検証する。リクエスト単体では
-	// 組み合わせが見えないので、必ずマージ後の実効値を見る。base はルール由来の予約が
-	// あればそこから、無ければ nil（手動予約相当）として扱う。
 	var baseJSON json.RawMessage
 	base, err := q.GetReservationBySiteAndProgramID(ctx, sqlcgen.GetReservationBySiteAndProgramIDParams{
 		Site: site, ProgramID: programID,
@@ -120,19 +111,19 @@ func (s *Reservations) PatchOverrides(ctx context.Context, site string, programI
 		return fmt.Errorf("getting reservation base for program %d at site %s: %w", programID, site, err)
 	}
 
-	mergedJSON, err := json.Marshal(merged)
+	overrides, empty, err := store.PlanOverridesPatch(baseJSON, existingJSON, patch)
 	if err != nil {
-		return fmt.Errorf("marshalling merged overrides for program %d at site %s: %w", programID, site, err)
+		return fmt.Errorf("planning overrides for program %d at site %s: %w", programID, site, err)
 	}
-	effective, err := reservation.EffectiveOptions(baseJSON, mergedJSON, nil)
-	if err != nil {
-		return fmt.Errorf("computing effective options for program %d at site %s: %w", programID, site, err)
-	}
-	if err := reservation.ValidateEffectiveKeepOriginal(effective); err != nil {
-		return fmt.Errorf("validating effective options for program %d at site %s: %w", programID, site, err)
-	}
-	if err := persistOverrides(ctx, q, site, programID, mergedJSON); err != nil {
-		return fmt.Errorf("persisting overrides for program %d at site %s: %w", programID, site, err)
+	if empty {
+		// 不変条件 10: 空の上書き = 行が無い。
+		if _, err := q.DeleteProgramOverrides(ctx, sqlcgen.DeleteProgramOverridesParams{Site: site, ProgramID: programID}); err != nil {
+			return fmt.Errorf("deleting emptied overrides for program %d at site %s: %w", programID, site, mapDatabaseError(err))
+		}
+	} else if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
+		Site: site, ProgramID: programID, Overrides: overrides,
+	}); err != nil {
+		return fmt.Errorf("persisting overrides for program %d at site %s: %w", programID, site, mapDatabaseError(err))
 	}
 	if err := bumpRulerInputRevision(ctx, q, site); err != nil {
 		return fmt.Errorf("bumping ruler input revision after overrides patch: %w", err)
@@ -265,23 +256,6 @@ func reservationDetails(r sqlcgen.Reservation, snapshot sqlcgen.ProgramSnapshot,
 		},
 		Overrides: overrides, IntentAction: intentAction, NeverRecorded: neverRecorded, Series: series,
 	}
-}
-
-// persistOverrides はマージ結果（marshal 済み）を書き戻す。結果が空（{}）なら行そのものを
-// 消す（不変条件 10: 空の上書き = 行が無い）。空でなければ upsert する。
-func persistOverrides(ctx context.Context, q *sqlcgen.Queries, site string, programID int64, finalJSON json.RawMessage) error {
-	if store.IsEmptyOverridesJSON(finalJSON) {
-		if _, err := q.DeleteProgramOverrides(ctx, sqlcgen.DeleteProgramOverridesParams{Site: site, ProgramID: programID}); err != nil {
-			return fmt.Errorf("deleting emptied overrides: %w", mapDatabaseError(err))
-		}
-		return nil
-	}
-	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: site, ProgramID: programID, Overrides: finalJSON,
-	}); err != nil {
-		return fmt.Errorf("upserting overrides: %w", mapDatabaseError(err))
-	}
-	return nil
 }
 
 var _ store.Reservations = (*Reservations)(nil)

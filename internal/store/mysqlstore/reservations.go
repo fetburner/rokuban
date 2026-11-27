@@ -3,7 +3,6 @@ package mysqlstore
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -123,6 +122,7 @@ func (s *Reservations) PatchOverrides(ctx context.Context, site string, programI
 		if err := ensureProgramSnapshot(ctx, tx, site, programID, now); err != nil {
 			return err
 		}
+		// 既存の上書きと base は、ロックの後に方言のまま読む。判断は store.PlanOverridesPatch が行う。
 		var base, overrides []byte
 		if err := tx.QueryRowContext(ctx, `
   SELECT r.base, o.overrides
@@ -133,28 +133,12 @@ func (s *Reservations) PatchOverrides(ctx context.Context, site string, programI
   `, site, programID).Scan(&base, &overrides); err != nil {
 			return fmt.Errorf("reading reservation base and overrides: %w", err)
 		}
-		var existing reservation.Options
-		if overrides != nil {
-			if err := json.Unmarshal(overrides, &existing); err != nil {
-				return fmt.Errorf("decoding program overrides: %w", err)
-			}
-		}
-		merged, err := reservation.MergeOverrides(existing, patch)
+		payload, empty, err := store.PlanOverridesPatch(base, overrides, patch)
 		if err != nil {
-			return fmt.Errorf("merging program overrides: %w", err)
+			return fmt.Errorf("planning program overrides: %w", err)
 		}
-		payload, err := json.Marshal(merged)
-		if err != nil {
-			return fmt.Errorf("encoding program overrides: %w", err)
-		}
-		effective, err := reservation.EffectiveOptions(base, payload, nil)
-		if err != nil {
-			return fmt.Errorf("computing effective options: %w", err)
-		}
-		if err := reservation.ValidateEffectiveKeepOriginal(effective); err != nil {
-			return fmt.Errorf("validating effective options: %w", err)
-		}
-		if store.IsEmptyOverridesJSON(payload) {
+		if empty {
+			// 不変条件 10: 空の上書き = 行が無い。
 			if err := deleteProgramOverrides(ctx, tx, site, programID); err != nil {
 				return err
 			}
