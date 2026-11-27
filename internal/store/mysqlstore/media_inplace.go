@@ -10,18 +10,9 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// inPlaceExisting は rel_path で既に登録されている行。
-type inPlaceExisting struct {
-	id          int64
-	recordingID int64
-	kind        string
-	profile     *string
-	state       string
-	trashed     bool
-}
-
 // RegisterInPlace は既存ファイルを指す録画とアセットの行を一つの tx で登録する。
-// 同じパスの active な再登録は何も変えずに通す。拒否する場合は ErrConflict を返す（pgstore の同名の関数と同じ規則）。
+// 同じパスの active な再登録は何も変えずに通す。既存の行の検査は store.PlanInPlaceRegistration が行い、
+// 拒否する場合は ErrConflict を返す（pgstore の同名の関数と同じ規則）。
 func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (store.InPlaceResult, error) {
 	if len(in.Assets) == 0 {
 		return store.InPlaceResult{}, errors.New("in-place registration requires at least one asset")
@@ -32,39 +23,20 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 		if err != nil {
 			return err
 		}
-		existing := make([]*inPlaceExisting, len(in.Assets))
-		var recordingID int64
+		observed := make([]*store.InPlaceCopyObservation, len(in.Assets))
 		for i, asset := range in.Assets {
-			row, found, err := lookupInPlaceAsset(ctx, tx, s.storeName, asset.RelPath)
+			row, err := lookupInPlaceAsset(ctx, tx, s.storeName, asset.RelPath)
 			if err != nil {
 				return err
 			}
-			if !found {
-				continue
-			}
-			if recordingID != 0 && recordingID != row.recordingID {
-				return fmt.Errorf("in-place assets belong to different recordings: %d and %d: %w", recordingID, row.recordingID, store.ErrConflict)
-			}
-			recordingID = row.recordingID
-			// 同じ置き場・パスの行は全体で 1 つなので、deleted 行は墓石である。
-			if row.state == "deleted" {
-				return fmt.Errorf(
-					"in-place asset %q is tombstoned in store %q; move or rename the file before registering it again: %w",
-					asset.RelPath, s.storeName, errors.Join(store.ErrConflict, store.ErrInPlacePathTombstoned),
-				)
-			}
-			if row.trashed {
-				return fmt.Errorf("in-place asset %q belongs to trashed recording %d: %w", asset.RelPath, row.recordingID, store.ErrConflict)
-			}
-			if row.state != "active" {
-				return fmt.Errorf("in-place asset %q is %s and will be unlinked: %w", asset.RelPath, row.state, store.ErrConflict)
-			}
-			if row.kind != asset.Kind || !sameStringPointer(row.profile, asset.Profile) {
-				return fmt.Errorf("published asset %q is %s/%v, requested %s/%v: %w", asset.RelPath, row.kind, row.profile, asset.Kind, asset.Profile, store.ErrConflict)
-			}
-			existing[i] = &row
+			observed[i] = row
+		}
+		plan, err := store.PlanInPlaceRegistration(s.storeName, in.Assets, observed)
+		if err != nil {
+			return err
 		}
 
+		recordingID := plan.RecordingID
 		if recordingID == 0 {
 			recordingID, err = upsertInPlaceRecording(ctx, tx, in.Recording)
 			if err != nil {
@@ -74,8 +46,8 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 
 		result = store.InPlaceResult{RecordingID: recordingID, AssetIDs: make([]int64, len(in.Assets))}
 		for i, asset := range in.Assets {
-			if existing[i] != nil {
-				result.AssetIDs[i] = existing[i].id
+			if reused := plan.ReusedAssetIDs[i]; reused != 0 {
+				result.AssetIDs[i] = reused
 				continue
 			}
 			id, generation, err := upsertInPlaceMediaAsset(ctx, tx, now, recordingID, asset, s.storeName)
@@ -95,9 +67,9 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 	return result, nil
 }
 
-// lookupInPlaceAsset は置き場の rel_path を使う行を 1 つ読む（墓石を含む）。
-func lookupInPlaceAsset(ctx context.Context, tx *sql.Tx, storeName, relPath string) (inPlaceExisting, bool, error) {
-	var row inPlaceExisting
+// lookupInPlaceAsset は置き場の rel_path を使う行を 1 つ読む（墓石を含む）。無ければ nil を返す。
+func lookupInPlaceAsset(ctx context.Context, tx *sql.Tx, storeName, relPath string) (*store.InPlaceCopyObservation, error) {
+	var row store.InPlaceCopyObservation
 	var profile sql.NullString
 	err := tx.QueryRowContext(ctx, `
 SELECT a.id, a.recording_id, a.kind, a.profile, c.state,
@@ -106,18 +78,18 @@ FROM media_asset_copies c
 JOIN media_assets a ON a.id = c.media_asset_id
 JOIN recordings r ON r.id = a.recording_id
 WHERE c.rel_path_key = UNHEX(SHA2(?, 256)) AND c.store = ?
-LIMIT 1`, relPath, storeName).Scan(&row.id, &row.recordingID, &row.kind, &profile, &row.state, &row.trashed)
+LIMIT 1`, relPath, storeName).Scan(&row.AssetID, &row.RecordingID, &row.Kind, &profile, &row.CopyState, &row.RecordingRemoved)
 	if errors.Is(err, sql.ErrNoRows) {
-		return inPlaceExisting{}, false, nil
+		return nil, nil
 	}
 	if err != nil {
-		return inPlaceExisting{}, false, fmt.Errorf("looking up in-place asset %q: %w", relPath, err)
+		return nil, fmt.Errorf("looking up in-place asset %q: %w", relPath, err)
 	}
 	if profile.Valid {
 		p := profile.String
-		row.profile = &p
+		row.Profile = &p
 	}
-	return row, true, nil
+	return &row, nil
 }
 
 // upsertInPlaceRecording は録画の行を、同じ放送イベントの生きた行があれば更新し、無ければ作る。
@@ -217,12 +189,4 @@ WHERE id = ?`, asset.SizeBytes, now, id); err != nil {
 		}
 	}
 	return id, generation, nil
-}
-
-// sameStringPointer は 2 つの *string が同じ値（両方 nil を含む）かを返す。
-func sameStringPointer(a, b *string) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return *a == *b
 }

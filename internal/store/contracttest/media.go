@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +100,24 @@ type MediaFixture struct {
 	SetOrphanFirstSeenAgo func(t *testing.T, relPath string, ago time.Duration)
 	// SetMissingFirstSeenAgo は実体無し候補の first_seen を DB の now() から ago 前へずらす。
 	SetMissingFirstSeenAgo func(t *testing.T, copyID int64, ago time.Duration)
+	// ReadMediaAsset は論理資産と、fixture の置き場（"tokyo"）にあるそのコピーの状態を読む。
+	// 契約の検査が結果を観測するためだけに使い、状態を書かない。
+	ReadMediaAsset func(t *testing.T, assetID int64) MediaAssetSnapshot
+	// AddActiveCopyAtGeneration は論理資産に、指定の世代で active なコピーを置き場 storeName に作る。
+	// 論理資産の現行の世代とは違う世代の生きたコピーを作るために使う。
+	AddActiveCopyAtGeneration func(t *testing.T, assetID int64, storeName, relPath string, generation int64) int64
+}
+
+// MediaAssetSnapshot は ReadMediaAsset が読んだ、論理資産と fixture の置き場のコピーの状態を表す。
+type MediaAssetSnapshot struct {
+	// DerivedGeneration は論理資産の derived_generation。
+	DerivedGeneration int64
+	// CopyStates は fixture の置き場のコピーの state を rel_path ごとに表す。
+	CopyStates map[string]string
+	// ActiveCopies は fixture の置き場で state が active のコピーの数。
+	ActiveCopies int
+	// TotalCopies は fixture の置き場のコピーの行数（削除済みを含む）。
+	TotalCopies int
 }
 
 // NewMediaFixture は実在の契約実装とフィクスチャを作る。
@@ -181,6 +200,12 @@ func RunMediaPublish(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("thumbnail and seek tile callback failures roll back assets", func(t *testing.T) { runDerivedPublicationRollback(t, newFixture) })
 	t.Run("in-place registration is idempotent and reuses its active path", func(t *testing.T) { runInPlacePublication(t, newFixture) })
 	t.Run("in-place recordings take their series from the title on insert and update", func(t *testing.T) { runInPlaceSeries(t, newFixture) })
+	t.Run("in-place registration rejects assets of different recordings", func(t *testing.T) { runInPlaceRecordingConflict(t, newFixture) })
+	t.Run("in-place registration rejects a tombstoned path until it is renamed", func(t *testing.T) { runInPlaceTombstone(t, newFixture) })
+	t.Run("in-place registration rejects a path of a trashed or purged recording", func(t *testing.T) { runInPlaceRemovedRecording(t, newFixture) })
+	t.Run("in-place registration rejects a deleting or pending copy", func(t *testing.T) { runInPlaceCopyState(t, newFixture) })
+	t.Run("in-place registration rejects a kind or profile mismatch", func(t *testing.T) { runInPlaceKindProfile(t, newFixture) })
+	t.Run("in-place registration rejects an existing asset unless all conditions hold", func(t *testing.T) { runInPlaceAssetConditions(t, newFixture) })
 	t.Run("commit failure after publish returns an error and leaves no rows", func(t *testing.T) { runPublishCommitFailure(t, newFixture) })
 	t.Run("original publication rejects an occupied rel_path without publishing", func(t *testing.T) { runOriginalRelPathConflict(t, newFixture) })
 	t.Run("thumbnail and seek tiles skip trashed recordings and existing assets", func(t *testing.T) { runDerivedPublicationSkips(t, newFixture) })
@@ -485,6 +510,254 @@ func runInPlaceSeries(t *testing.T, newFixture NewMediaFixture) {
 	if row.Series != nil {
 		t.Errorf("series after keyless in-place update = %q, want nil", *row.Series)
 	}
+}
+
+// requireConflict は登録が store.ErrConflict で拒否されたことを確かめる。
+func requireConflict(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("RegisterInPlace error = %v, want store.ErrConflict", err)
+	}
+}
+
+// requireInPlaceRejection は登録が拒否され、文言に fragment が入ることを確かめる。
+// 文言の断片は、どの規則が拒否したかの証拠になる。断片を置かないと、別の規則で落ちても通ってしまう。
+func requireInPlaceRejection(t *testing.T, err error, fragment string) {
+	t.Helper()
+	requireConflict(t, err)
+	if !strings.Contains(err.Error(), fragment) {
+		t.Fatalf("RegisterInPlace error = %q, want it to contain %q", err, fragment)
+	}
+}
+
+// runInPlaceRecordingConflict は、登録する 2 つのアセットがそれぞれ別の録画の生きた行に当たるとき、登録を拒否することを確かめる。
+func runInPlaceRecordingConflict(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	now := time.Now().UnixNano()
+	pathA := fmt.Sprintf("sites/%s/conflict/a-%d.m2ts", f.Site, now)
+	pathB := fmt.Sprintf("sites/%s/conflict/b-%d.m2ts", f.Site, now)
+	firstA, err := f.Publisher.RegisterInPlace(ctx, f.NewInPlaceInput(t, pathA))
+	if err != nil {
+		t.Fatalf("registering the first path: %v", err)
+	}
+	if _, err := f.Publisher.RegisterInPlace(ctx, f.NewInPlaceInput(t, pathB)); err != nil {
+		t.Fatalf("registering the second path in another recording: %v", err)
+	}
+	input := f.NewInPlaceInput(t, pathA)
+	input.Assets = append(input.Assets, store.InPlaceAsset{Kind: store.AssetKindOriginal, RelPath: pathB, SizeBytes: 1})
+	_, err = f.Publisher.RegisterInPlace(ctx, input)
+	requireInPlaceRejection(t, err, "belong to different recordings")
+	if got := f.ReadMediaAsset(t, firstA.AssetIDs[0]).CopyStates[pathA]; got != "active" {
+		t.Fatalf("copy state at %q after the rejected registration = %q, want active", pathA, got)
+	}
+}
+
+// runInPlaceTombstone は、墓石だけが残るパスへの登録を墓石として拒否し、改名したパスへの登録は同じ論理資産で通ることを確かめる。
+func runInPlaceTombstone(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	now := time.Now().UnixNano()
+	originalPath := fmt.Sprintf("sites/%s/tombstone/original-%d.m2ts", f.Site, now)
+	renamedPath := fmt.Sprintf("sites/%s/tombstone/renamed-%d.m2ts", f.Site, now)
+	input := f.NewInPlaceInput(t, originalPath)
+	first, err := f.Publisher.RegisterInPlace(ctx, input)
+	if err != nil {
+		t.Fatalf("registering before the tombstone: %v", err)
+	}
+	assetID := first.AssetIDs[0]
+	// 生きた行を消してから、同じ置き場・パスの墓石を作る。一意索引は墓石も覆う。
+	f.DeleteCopy(t, f.CopyID(t, assetID))
+	f.AddTombstoneCopy(t, assetID, "tokyo", originalPath, 0)
+
+	_, err = f.Publisher.RegisterInPlace(ctx, input)
+	requireInPlaceRejection(t, err, "move or rename")
+	if !errors.Is(err, store.ErrInPlacePathTombstoned) {
+		t.Fatalf("RegisterInPlace over a tombstone error = %v, want store.ErrInPlacePathTombstoned", err)
+	}
+	if got := f.ReadMediaAsset(t, assetID).CopyStates[originalPath]; got != "deleted" {
+		t.Fatalf("tombstone state after the rejection = %q, want deleted", got)
+	}
+
+	input.Assets = []store.InPlaceAsset{{Kind: store.AssetKindOriginal, RelPath: renamedPath, SizeBytes: 1}}
+	second, err := f.Publisher.RegisterInPlace(ctx, input)
+	if err != nil {
+		t.Fatalf("RegisterInPlace after renaming the tombstoned path: %v", err)
+	}
+	if second.AssetIDs[0] != assetID {
+		t.Fatalf("renamed path asset = %d, want the existing logical asset %d", second.AssetIDs[0], assetID)
+	}
+	snap := f.ReadMediaAsset(t, assetID)
+	if snap.CopyStates[renamedPath] != "active" || snap.CopyStates[originalPath] != "deleted" {
+		t.Fatalf("copy states after the rename = %v, want the renamed path active and the tombstone deleted", snap.CopyStates)
+	}
+}
+
+// runInPlaceRemovedRecording は、生きた行の録画がごみ箱か消去済みのとき、同じパスの再登録を拒否することを確かめる。
+// 規則 3 に届くよう、先に生きた行で登録してから録画を外す。
+func runInPlaceRemovedRecording(t *testing.T, newFixture NewMediaFixture) {
+	removals := []struct {
+		name   string
+		remove func(t *testing.T, f MediaFixture, recordingID int64)
+	}{
+		{"trashed", func(t *testing.T, f MediaFixture, recordingID int64) { f.SetRecordingTrashed(t, recordingID) }},
+		{"purged", func(t *testing.T, f MediaFixture, recordingID int64) { f.SetRecordingPurged(t, recordingID) }},
+	}
+	for _, tc := range removals {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := context.Background()
+			path := fmt.Sprintf("sites/%s/removed/%s-%d.m2ts", f.Site, tc.name, time.Now().UnixNano())
+			input := f.NewInPlaceInput(t, path)
+			first, err := f.Publisher.RegisterInPlace(ctx, input)
+			if err != nil {
+				t.Fatalf("registering before the recording was removed: %v", err)
+			}
+			tc.remove(t, f, first.RecordingID)
+
+			_, err = f.Publisher.RegisterInPlace(ctx, input)
+			requireInPlaceRejection(t, err, "belongs to trashed recording")
+			if got := f.ReadMediaAsset(t, first.AssetIDs[0]).CopyStates[path]; got != "active" {
+				t.Fatalf("copy state at %q after the rejection = %q, want active", path, got)
+			}
+		})
+	}
+}
+
+// runInPlaceCopyState は、同じパスに deleting・pending のコピーがあるとき登録を拒否し、そのコピーを変えないことを確かめる。
+func runInPlaceCopyState(t *testing.T, newFixture NewMediaFixture) {
+	for _, state := range []string{"deleting", "pending"} {
+		t.Run(state, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := context.Background()
+			path := fmt.Sprintf("sites/%s/copy-state/%s-%d.m2ts", f.Site, state, time.Now().UnixNano())
+			assetID := f.NewAsset(t, f.NewRecording(t), store.AssetKindOriginal, nil, path, state)
+
+			_, err := f.Publisher.RegisterInPlace(ctx, f.NewInPlaceInput(t, path))
+			requireInPlaceRejection(t, err, "is "+state+" and will be unlinked")
+			if got := f.ReadMediaAsset(t, assetID).CopyStates[path]; got != state {
+				t.Fatalf("copy state at %q after the rejection = %q, want %q", path, got, state)
+			}
+		})
+	}
+}
+
+// runInPlaceKindProfile は、同じパスの生きた行と kind または profile が違う登録を拒否することを確かめる。
+func runInPlaceKindProfile(t *testing.T, newFixture NewMediaFixture) {
+	h264 := "h264"
+	mobile := "mobile"
+	tests := []struct {
+		name  string
+		asset store.InPlaceAsset
+	}{
+		{"profile", store.InPlaceAsset{Kind: store.AssetKindEncoded, Profile: &mobile, SizeBytes: 1}},
+		{"kind", store.InPlaceAsset{Kind: store.AssetKindOriginal, SizeBytes: 1}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := context.Background()
+			path := fmt.Sprintf("sites/%s/kind-profile/%s-%d.mp4", f.Site, tc.name, time.Now().UnixNano())
+			assetID := f.NewAsset(t, f.NewRecording(t), store.AssetKindEncoded, &h264, path, "active")
+
+			asset := tc.asset
+			asset.RelPath = path
+			input := f.NewInPlaceInput(t, path)
+			input.Assets = []store.InPlaceAsset{asset}
+			_, err := f.Publisher.RegisterInPlace(ctx, input)
+			requireInPlaceRejection(t, err, "published asset")
+			if got := f.ReadMediaAsset(t, assetID).CopyStates[path]; got != "active" {
+				t.Fatalf("copy state at %q after the rejection = %q, want active", path, got)
+			}
+		})
+	}
+}
+
+// runInPlaceAssetConditions は、既存の論理資産に登録を通す条件を 1 つずつ破って拒否されることと、
+// 全部を満たすときだけ通ることを確かめる。条件は、この置き場に生きたコピーが無いこと、パスの世代が現行と等しいこと。
+// 録画がごみ箱か消去済みのときの upsert の条件は、並行するごみ箱移動への備えで、ここでは検査しない。
+func runInPlaceAssetConditions(t *testing.T, newFixture NewMediaFixture) {
+	const storeName = "tokyo"
+	h264 := "h264"
+	encodedAsset := func(relPath string) store.InPlaceAsset {
+		return store.InPlaceAsset{Kind: store.AssetKindEncoded, Profile: &h264, RelPath: relPath, SizeBytes: 100}
+	}
+	// setup は世代 8 の生きたコピーを 1 つ登録し、以降の登録に同じ録画を使うための入力を返す。
+	setup := func(t *testing.T) (MediaFixture, store.InPlaceInput, int64) {
+		t.Helper()
+		f := newFixture(t)
+		input := f.NewInPlaceInput(t, "encoded/show.g8.mp4")
+		input.Assets = []store.InPlaceAsset{encodedAsset("encoded/show.g8.mp4")}
+		first, err := f.Publisher.RegisterInPlace(context.Background(), input)
+		if err != nil {
+			t.Fatalf("registering generation 8: %v", err)
+		}
+		return f, input, first.AssetIDs[0]
+	}
+	// retire は生きたコピーを消し、同じ置き場・パスの墓石に置き換える。
+	retire := func(t *testing.T, f MediaFixture, assetID int64, relPath string, generation int64) {
+		t.Helper()
+		f.DeleteCopy(t, f.CopyID(t, assetID))
+		f.AddTombstoneCopy(t, assetID, storeName, relPath, generation)
+	}
+	register := func(f MediaFixture, input store.InPlaceInput, relPath string) (store.InPlaceResult, error) {
+		input.Assets = []store.InPlaceAsset{encodedAsset(relPath)}
+		return f.Publisher.RegisterInPlace(context.Background(), input)
+	}
+
+	t.Run("live copy in this store", func(t *testing.T) {
+		f, input, assetID := setup(t)
+		// 世代は現行（8）と等しいが、この置き場に生きたコピーがある。
+		_, err := register(f, input, "encoded/other.g8.mp4")
+		requireConflict(t, err)
+		snap := f.ReadMediaAsset(t, assetID)
+		if snap.TotalCopies != 1 || snap.CopyStates["encoded/show.g8.mp4"] != "active" {
+			t.Fatalf("copies after the rejection = %+v, want only the original active copy", snap)
+		}
+	})
+	t.Run("live copy of another generation in this store", func(t *testing.T) {
+		f, input, assetID := setup(t)
+		f.DeleteCopy(t, f.CopyID(t, assetID))
+		// 旧世代（7）の生きたコピーがまだこの置き場にある。現行の世代（8）の新しいパスを足すと、同じ置き場に 2 つ目の生きたコピーになる。
+		f.AddActiveCopyAtGeneration(t, assetID, storeName, "encoded/show.g7.mp4", 7)
+		_, err := register(f, input, "encoded/renamed-show.g8.mp4")
+		requireConflict(t, err)
+	})
+	t.Run("older generation", func(t *testing.T) {
+		f, input, assetID := setup(t)
+		retire(t, f, assetID, "encoded/show.g8.mp4", 8)
+		_, err := register(f, input, "encoded/show.g7.mp4")
+		requireConflict(t, err)
+		snap := f.ReadMediaAsset(t, assetID)
+		if snap.DerivedGeneration != 8 {
+			t.Fatalf("logical generation = %d after a rejected older generation, want 8", snap.DerivedGeneration)
+		}
+		if snap.TotalCopies != 1 {
+			t.Fatalf("copy rows after the rejection = %d, want only the tombstone", snap.TotalCopies)
+		}
+	})
+	t.Run("newer generation", func(t *testing.T) {
+		f, input, assetID := setup(t)
+		retire(t, f, assetID, "encoded/show.g8.mp4", 8)
+		_, err := register(f, input, "encoded/show.g9.mp4")
+		requireConflict(t, err)
+	})
+	t.Run("all conditions hold", func(t *testing.T) {
+		f, input, assetID := setup(t)
+		retire(t, f, assetID, "encoded/show.g8.mp4", 8)
+		second, err := register(f, input, "encoded/renamed-show.g8.mp4")
+		if err != nil {
+			t.Fatalf("registering a renamed file at the current generation: %v", err)
+		}
+		if second.AssetIDs[0] != assetID {
+			t.Fatalf("asset id = %d, want %d", second.AssetIDs[0], assetID)
+		}
+		// 削除済みの行は残り、生きたコピーが新しく 1 行できる。
+		snap := f.ReadMediaAsset(t, assetID)
+		if snap.DerivedGeneration != 8 || snap.ActiveCopies != 1 || snap.TotalCopies != 2 {
+			t.Fatalf("snapshot = %+v, want generation 8, 1 active copy of 2", snap)
+		}
+	})
 }
 
 func runCurrentCutKeep(t *testing.T, newFixture NewMediaFixture) {

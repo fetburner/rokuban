@@ -233,6 +233,7 @@ WHERE media_asset_id = $2`, state, id); err != nil {
 		},
 	}
 	configureMediaPublishFixture(t, pool, &fixture)
+	configureMediaSnapshotFixture(t, pool, &fixture)
 	configureMediaReaderFixture(t, pool, &fixture)
 	configureMediaObservationFixture(t, pool, &fixture)
 	configureMediaStorageFixture(t, pool, &fixture)
@@ -394,6 +395,49 @@ VALUES ($1, $2, $3, $4, 'deleted', now()) RETURNING id`, assetID, storeName, rel
 			},
 			Assets: []store.InPlaceAsset{{Kind: store.AssetKindOriginal, RelPath: relPath, SizeBytes: 1}},
 		}
+	}
+}
+
+// configureMediaSnapshotFixture は論理資産と置き場のコピーを観測するフックと、生きたコピーを世代を指定して作るフックを実装する。
+func configureMediaSnapshotFixture(t *testing.T, pool *pgxpool.Pool, fixture *contracttest.MediaFixture) {
+	t.Helper()
+	fixture.AddActiveCopyAtGeneration = func(t *testing.T, assetID int64, storeName, relPath string, generation int64) int64 {
+		t.Helper()
+		var id int64
+		if err := pool.QueryRow(t.Context(), `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+VALUES ($1, $2, $3, $4, 'active') RETURNING id`, assetID, storeName, relPath, generation).Scan(&id); err != nil {
+			t.Fatalf("adding active copy of asset %d at generation %d: %v", assetID, generation, err)
+		}
+		return id
+	}
+	fixture.ReadMediaAsset = func(t *testing.T, assetID int64) contracttest.MediaAssetSnapshot {
+		t.Helper()
+		ctx := t.Context()
+		snap := contracttest.MediaAssetSnapshot{CopyStates: map[string]string{}}
+		if err := pool.QueryRow(ctx, `SELECT derived_generation FROM media_assets WHERE id = $1`, assetID).Scan(&snap.DerivedGeneration); err != nil {
+			t.Fatalf("reading derived generation of asset %d: %v", assetID, err)
+		}
+		rows, err := pool.Query(ctx, `SELECT rel_path, state FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'tokyo'`, assetID)
+		if err != nil {
+			t.Fatalf("reading copies of asset %d: %v", assetID, err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var relPath, state string
+			if err := rows.Scan(&relPath, &state); err != nil {
+				t.Fatalf("scanning copy of asset %d: %v", assetID, err)
+			}
+			snap.CopyStates[relPath] = state
+			snap.TotalCopies++
+			if state == "active" {
+				snap.ActiveCopies++
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("reading copies of asset %d: %v", assetID, err)
+		}
+		return snap
 	}
 }
 

@@ -572,8 +572,7 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
-	assets := make([]*sqlcgen.GetInPlaceAssetByRelPathRow, len(in.Assets))
-	var recordingID int64
+	observed := make([]*store.InPlaceCopyObservation, len(in.Assets))
 	for i, asset := range in.Assets {
 		row, err := q.GetInPlaceAssetByRelPath(ctx, sqlcgen.GetInPlaceAssetByRelPathParams{
 			RelPath: asset.RelPath, StoreName: s.storeName,
@@ -584,31 +583,17 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 		if err != nil {
 			return store.InPlaceResult{}, fmt.Errorf("looking up in-place asset %q: %w", asset.RelPath, err)
 		}
-		if recordingID != 0 && recordingID != row.RecordingID {
-			return store.InPlaceResult{}, fmt.Errorf("in-place assets belong to different recordings: %d and %d: %w", recordingID, row.RecordingID, store.ErrConflict)
+		observed[i] = &store.InPlaceCopyObservation{
+			AssetID: row.ID, RecordingID: row.RecordingID, Kind: row.Kind, Profile: row.Profile,
+			CopyState: row.State, RecordingRemoved: row.RecordingTrashed,
 		}
-		recordingID = row.RecordingID
-		// 全体一意索引により、この path を持つ行は 1 つだけなので、deleted 行は tombstone である。
-		if row.State == "deleted" {
-			return store.InPlaceResult{}, fmt.Errorf(
-				"in-place asset %q is tombstoned in store %q; move or rename the file before registering it again: %w",
-				asset.RelPath, s.storeName, errors.Join(store.ErrConflict, store.ErrInPlacePathTombstoned),
-			)
-		}
-		// 同じパスの active な再登録は UpsertInPlaceMediaAsset を通らないので、ごみ箱の録画はここで拒否する。
-		if row.RecordingTrashed {
-			return store.InPlaceResult{}, fmt.Errorf("in-place asset %q belongs to trashed recording %d: %w", asset.RelPath, row.RecordingID, store.ErrConflict)
-		}
-		if row.State != "active" {
-			return store.InPlaceResult{}, fmt.Errorf("in-place asset %q is %s and will be unlinked: %w", asset.RelPath, row.State, store.ErrConflict)
-		}
-		if row.Kind != asset.Kind || !sameStringPointer(row.Profile, asset.Profile) {
-			return store.InPlaceResult{}, fmt.Errorf("published asset %q is %s/%v, requested %s/%v: %w", asset.RelPath, row.Kind, row.Profile, asset.Kind, asset.Profile, store.ErrConflict)
-		}
-		published := row
-		assets[i] = &published
+	}
+	plan, err := store.PlanInPlaceRegistration(s.storeName, in.Assets, observed)
+	if err != nil {
+		return store.InPlaceResult{}, err
 	}
 
+	recordingID := plan.RecordingID
 	r := in.Recording
 	if recordingID == 0 {
 		recordingID, err = q.UpsertInPlaceRecording(ctx, sqlcgen.UpsertInPlaceRecordingParams{
@@ -624,8 +609,8 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 
 	result := store.InPlaceResult{RecordingID: recordingID, AssetIDs: make([]int64, len(in.Assets))}
 	for i, asset := range in.Assets {
-		if assets[i] != nil {
-			result.AssetIDs[i] = assets[i].ID
+		if reused := plan.ReusedAssetIDs[i]; reused != 0 {
+			result.AssetIDs[i] = reused
 			continue
 		}
 		publishedAsset, err := q.UpsertInPlaceMediaAsset(ctx, sqlcgen.UpsertInPlaceMediaAssetParams{
@@ -732,11 +717,4 @@ func (s *Media) ReportEncodeProgress(ctx context.Context, progress store.EncodeP
 		return fmt.Errorf("notifying encode progress for recording %d profile %q: %w", progress.RecordingID, progress.Profile, err)
 	}
 	return nil
-}
-
-func sameStringPointer(a, b *string) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return *a == *b
 }
