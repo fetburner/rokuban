@@ -2,7 +2,7 @@
 -- 名前で引くロック用の行の表。tx 単位の直列化（Postgres の pg_advisory_xact_lock）を、
 -- この表の行の SELECT ... FOR UPDATE で代える。GET_LOCK は commit をまたいで保持され、
 -- 接続が切れるまで解放されないので使わない。
--- 1 表にするのは、後のタスク（catalog・CM 検出の局・転送のバックログ）が行を足すだけで
+-- 1 表にするのは、catalog・CM 検出の局・転送のバックログが行を足すだけで
 -- 同じ機構を使えるようにするため。固定の名前の行は migration で置き、局のように名前が動的なロックは
 -- 必要になったときにアプリが INSERT ... ON DUPLICATE KEY UPDATE で作る。
 CREATE TABLE named_locks (

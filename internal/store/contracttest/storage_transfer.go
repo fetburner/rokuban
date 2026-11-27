@@ -65,6 +65,7 @@ func RunStorageTransfer(t *testing.T, newStore NewStorageTransferStore) {
 		{"TransferBandwidthLease", runTransferBandwidthLease},
 		{"TransferProgressRelease", runTransferProgressRelease},
 		{"TransferCompletionAndOwnership", runTransferCompletionAndOwnership},
+		{"OwnedKeysCompareByBytes", runOwnedKeysCompareByBytes},
 		{"TransferFailureAndObsoleteAttempts", runTransferFailureAndObsoleteAttempts},
 		{"ReclaimObsoletePendingTransferCopy", runReclaimObsoletePendingTransferCopy},
 		{"DeleteStaleTransferCopy", runDeleteStaleTransferCopy},

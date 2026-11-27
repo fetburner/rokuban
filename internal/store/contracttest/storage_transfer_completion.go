@@ -104,3 +104,31 @@ func runTransferCompletionAndOwnership(t *testing.T, newStore NewStorageTransfer
 		t.Fatalf("marking ownership after discard = (%v, %v), want retired", got, err)
 	}
 }
+
+// runOwnedKeysCompareByBytes は、見た目が同じで UTF-8 のバイトが違う key を別々に所有することを確かめる。
+// MySQL の rel_path は接続の照合順序で比べると同じ扱いになりうるので、比較はバイト単位（SHA-256）で行う。
+func runOwnedKeysCompareByBytes(t *testing.T, newStore NewStorageTransferStore) {
+	f := newStore(t)
+	ctx := t.Context()
+	copyID, _ := f.NewPendingCopy(t)
+	acquireLive(t, f.Store, copyID, uuid.New())
+	composed := "publish/caf\u00e9.vtt"
+	decomposed := "publish/cafe\u0301.vtt"
+	for _, path := range []string{composed, decomposed} {
+		if got, err := f.Store.MarkMediaAssetTransferObjectOwned(ctx, copyID, "archive", path); err != nil || got != store.TransferObjectOwned {
+			t.Fatalf("MarkMediaAssetTransferObjectOwned(%q) = (%v, %v), want owned", path, got, err)
+		}
+	}
+	paths, err := f.Store.ListMediaAssetTransferObjectsOwned(ctx, copyID, "archive")
+	if err != nil || len(paths) != 2 {
+		t.Fatalf("owned keys = (%q, %v), want both spellings", paths, err)
+	}
+	// 削除も同じバイト比較で行う。composed を消しても decomposed の記録は残る。
+	if err := f.Store.DeleteMediaAssetTransferObjectOwned(ctx, copyID, "archive", composed); err != nil {
+		t.Fatalf("DeleteMediaAssetTransferObjectOwned(%q): %v", composed, err)
+	}
+	paths, err = f.Store.ListMediaAssetTransferObjectsOwned(ctx, copyID, "archive")
+	if err != nil || !slices.Equal(paths, []string{decomposed}) {
+		t.Fatalf("owned keys after deleting composed = (%q, %v), want only decomposed", paths, err)
+	}
+}

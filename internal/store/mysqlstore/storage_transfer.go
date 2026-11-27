@@ -774,6 +774,8 @@ ON DUPLICATE KEY UPDATE attempt_count = media_asset_transfer_attempts.attempt_co
 }
 
 // MarkMediaAssetTransferObjectOwned は pending copy のために作成した key の所有を記録する。
+// 同じ key の記録が既にあれば何もしない。Postgres の ON CONFLICT DO NOTHING に当たる。
+// 主キー以外の一意キーを足すと、その衝突も no-op になるので、この形は使えなくなる。
 func (s *Media) MarkMediaAssetTransferObjectOwned(ctx context.Context, copyID int64, storeName, relPath string) (store.TransferObjectOwnership, error) {
 	var ownership store.TransferObjectOwnership
 	err := runTx(ctx, s.db, func(tx *sql.Tx) error {
@@ -800,16 +802,14 @@ FOR UPDATE`, copyID, storeName).Scan(&locked)
 			return fmt.Errorf("locking pending transfer copy %d to record object ownership: %w", copyID, err)
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO media_asset_transfer_objects (copy_id, rel_path)
-SELECT ?, ? FROM DUAL WHERE NOT EXISTS (
-    SELECT 1 FROM media_asset_transfer_objects WHERE copy_id = ? AND rel_path = ?
-)`, copyID, relPath, copyID, relPath); err != nil {
+VALUES (?, ?) ON DUPLICATE KEY UPDATE copy_id = copy_id`, copyID, relPath); err != nil {
 			return fmt.Errorf("recording ownership of transfer object %q: %w", relPath, err)
 		}
 		var found bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
 SELECT 1 FROM media_asset_transfer_objects object
 JOIN media_asset_copies copy ON copy.id = object.copy_id
-WHERE object.copy_id = ? AND copy.store = ? AND copy.state = 'pending' AND object.rel_path = ?
+WHERE object.copy_id = ? AND copy.store = ? AND copy.state = 'pending' AND object.rel_path_key = UNHEX(SHA2(?, 256))
 )`, copyID, storeName, relPath).Scan(&found); err != nil {
 			return fmt.Errorf("checking ownership of transfer object %q: %w", relPath, err)
 		}
@@ -848,7 +848,7 @@ func (s *Media) DeleteMediaAssetTransferObjectOwned(ctx context.Context, copyID 
 	if err := runTx(ctx, s.db, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE object FROM media_asset_transfer_objects object
 JOIN media_asset_copies copy ON copy.id = object.copy_id
-WHERE object.copy_id = ? AND copy.store = ? AND object.rel_path = ?`, copyID, storeName, relPath); err != nil {
+WHERE object.copy_id = ? AND copy.store = ? AND object.rel_path_key = UNHEX(SHA2(?, 256))`, copyID, storeName, relPath); err != nil {
 			return fmt.Errorf("clearing ownership of transfer object %q: %w", relPath, err)
 		}
 		return nil

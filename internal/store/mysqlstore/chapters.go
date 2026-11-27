@@ -108,8 +108,8 @@ func (s *ChapterEdits) ReadReview(ctx context.Context, recordingID int64) (store
 }
 
 // Replace はユーザー層の全体を 1 つの tx で引き取る、または置き換える。
-// 区間の重なりは、録画の行ロックの下で書いた後に SELECT で確かめる。主キーが無いので、
-// 同じ行を区別する制約は使えない（Postgres の排他制約の代わり）。
+// 区間の重なりは、録画の行ロックの下で書いた後に SELECT で確かめる。主キーの (recording_id, start_ms)
+// は開始位置が同じ重なりだけを拒む。重なり全体を拒む排他制約（Postgres）は MySQL に無い。
 func (s *ChapterEdits) Replace(ctx context.Context, recordingID int64, expectedVersion string, spans []chapters.Span, requireDetectionComplete bool) error {
 	return runTx(ctx, s.db, func(tx *sql.Tx) error {
 		if err := lockChapterRecording(ctx, tx, recordingID); err != nil {
