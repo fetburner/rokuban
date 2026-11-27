@@ -553,15 +553,9 @@ func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishI
 
 // RegisterInPlace は既存ファイルを指す録画とアセットの行を一つの tx で登録する。
 // rel_path が最も強い identity なので、再利用可能な行があれば既存の recording_id を使う。
-// 拒否する場合は ErrConflict を返す。
-//   - 同じ置き場・同じ path に deleted copy がある（path を再利用せず、ファイルを移動または改名する。
-//     TestRegisterInPlaceRejectsTombstonedPathButAllowsRenamedPath）。
-//   - 同じパスの行が active でない（deleting / pending のファイルは unlink される）。
-//   - 録画がごみ箱にある。
-//   - 論理資産が既にあり、この置き場に生きたコピーがあるか、パスの世代が現行の世代と違う
-//     （規則は UpsertInPlaceMediaAsset の 1 文にあり、0 行を ErrConflict に写す）。
-//
-// 同じパスの active な再登録は何も変えずに通す。
+// パスの行の検査は store.PlanInPlaceRegistration が行う。
+// 論理資産が既にあるときは、UpsertInPlaceMediaAsset の 1 文が、この置き場に生きたコピーが無く、
+// パスの世代が現行の世代と等しいときだけ書き換える。0 行になったものは ErrConflict に写す。
 func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (store.InPlaceResult, error) {
 	if len(in.Assets) == 0 {
 		return store.InPlaceResult{}, errors.New("in-place registration requires at least one asset")

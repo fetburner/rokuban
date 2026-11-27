@@ -120,7 +120,7 @@ in-place 登録は、パスの状態と世代、録画の状態を確かめて�
 
 同じパスの `active` な行が既にあれば、何も変えずに通す。`deleting` / `pending` / tombstone は拒否する。削除済みのファイルを戻すときは、移動または改名すると新しいパスで登録できる。全体一意索引が状態を問わず 1 パス 1 行に保つ。
 
-規則は 1 文の SQL に置き、並行する 2 本の登録は前述の一意索引が止める。
+パスの行の検査は方言に依らないので、各方言が同じ関数を呼ぶ。理由は [ロック後の判断](../../data/store-contracts.md#ロック後の判断)にある。論理資産の 3 条件は、各方言の upsert が持つ。並行する 2 本の登録は前述の一意索引が止める。
 
 #### 公開時に書く世代と sha256
 
@@ -157,7 +157,8 @@ ingest が公開する原本には、同じトランザクションで進捗行�
 - 列削除の拒否: `TestDropMediaAssetCopyColumnsRefusesUnadoptedAssets`
 - 巻き戻しの代表コピー: `TestDropMediaAssetCopyColumnsDownRestoresRepresentativeCopy`
 - 巻き戻しの拒否: `TestDropMediaAssetCopyColumnsDownRefusesUnrepresentableState`
-- in-place の tombstone パス拒否: `TestRegisterInPlaceRejectsTombstonedPathButAllowsRenamedPath`
+- in-place の tombstone パス拒否: `RunMediaPublish` の `in-place registration rejects a tombstoned path until it is renamed`
+- in-place のパスの行の検査（方言に依らない）: `store.PlanInPlaceRegistration`（表テストは `TestPlanInPlaceRegistrationRejectsEachRule`）
 - tombstone パスへの insert 拒否: `TestMediaAssetCopiesRejectNewRowAtTombstonedPath`
 
 </details>

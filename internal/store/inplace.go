@@ -6,7 +6,7 @@ import (
 )
 
 // InPlaceCopyObservation は、登録するアセットの rel_path で置き場を引いて見つかったコピーの行を表す。
-// 方言はロック後に読んだ値をそのまま詰める。行が無いアセットには nil を渡す。
+// 方言は同じ tx の中で読んだ値をそのまま詰める。行が無いアセットには nil を渡す。
 type InPlaceCopyObservation struct {
 	// AssetID は行が属する論理資産の ID。
 	AssetID int64
