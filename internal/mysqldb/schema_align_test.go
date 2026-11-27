@@ -3,8 +3,11 @@ package mysqldb_test
 import (
 	"context"
 	"database/sql"
+	"os"
 	"testing"
 	"time"
+
+	"github.com/pressly/goose/v3"
 
 	"github.com/fetburner/rokuban/internal/mysqldb"
 	"github.com/fetburner/rokuban/internal/mysqltest"
@@ -118,8 +121,13 @@ func TestMigration00021RoundTrip(t *testing.T) {
 	if err := insertAlignTransferObject(db, copyID); err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
-	if err := mysqldb.MigrateDownTo(ctx, db, 20); err != nil {
-		t.Fatalf("MigrateDownTo(20): %v", err)
+	// 埋め込みと同じ migrations を、テストのパッケージディレクトリ（go test の作業dir）から読んで版 20 まで戻す。
+	provider, err := goose.NewProvider(goose.DialectMySQL, db, os.DirFS("migrations"))
+	if err != nil {
+		t.Fatalf("creating goose provider: %v", err)
+	}
+	if _, err := provider.DownTo(ctx, 20); err != nil {
+		t.Fatalf("DownTo(20): %v", err)
 	}
 	if err := insertAlignTransferObject(db, copyID); err != nil {
 		t.Fatalf("duplicate insert at version 20 should succeed (no primary key): %v", err)
