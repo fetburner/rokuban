@@ -10,10 +10,10 @@ func dialectConfig(dbExtra, workerExtra string) string {
 	return strings.Replace(minimalConfig, "db:\n", "db:\n"+dbExtra, 1) + workerExtra
 }
 
-// TestLoad_DialectDefaultsToPostgres は、方言を書かない設定が PostgreSQL として読まれ、
-// ポートが PostgreSQL の既定（5432）になることを確かめる（既存の Postgres 構成を変えない）。
+// TestLoad_DialectDefaultsToPostgres は、方言を書かない設定（asynq と組む）が PostgreSQL として読まれ、
+// ポートが PostgreSQL の既定（5432）になることを確かめる。既定を mysql に変えると、この値の検査が落ちる。
 func TestLoad_DialectDefaultsToPostgres(t *testing.T) {
-	cfg, err := Load(writeConfig(t, minimalConfig))
+	cfg, err := Load(writeConfig(t, dialectConfig("", "worker:\n  engine: asynq\n  redis_url: redis://localhost:6379/0\n")))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

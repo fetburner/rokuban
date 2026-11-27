@@ -19,8 +19,10 @@ package role
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/hex"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -110,32 +112,54 @@ func (l mysqlLocker) Checkout(ctx context.Context) (Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("acquiring connection for leader lock: %w", err)
 	}
-	return mysqlSession{conn: conn}, nil
+	return &mysqlSession{conn: conn}, nil
 }
 
-type mysqlSession struct{ conn *sql.Conn }
-
-// mysqlLockName は GET_LOCK の名前を返す。名前は 64 文字以内でなければ拒まれ、watcher のロール名は
-// サイト名（最長 53 文字）を含むので、ロール名をそのまま使うと長いサイト名で失敗する。そこで PostgreSQL の
-// 鍵と同じ 64 ビットのハッシュを固定長で使う（長さは 8 + 16 文字で、入力に依らない）。
-func mysqlLockName(role string) string {
-	h := fnv.New64a()
-	h.Write([]byte("rokuban:" + role))
-	return fmt.Sprintf("rokuban:%016x", h.Sum64())
+// mysqlSession は専有した接続と、TryLock で決まった GET_LOCK の名前を持つ。
+type mysqlSession struct {
+	conn     *sql.Conn
+	lockName string
 }
 
-func (s mysqlSession) TryLock(ctx context.Context, role string) (bool, error) {
+// mysqlLockName は GET_LOCK の名前を返す。GET_LOCK の名前はサーバー全体で共有され、PostgreSQL の
+// advisory lock と違って DB ごとに分かれない。そこで現在の DB 名とロール名を SHA-256 に含める。
+// 同じ MySQL サーバーの別 DB のリーダーが互いを妨げないようにするためである。名前は 64 文字以内で
+// なければ拒まれるので、先頭 8 文字の接頭辞と 52 桁の hex で 60 文字に収める（watcher のロール名は
+// サイト名（最長 53 文字）を含み、そのままでは長すぎる）。
+func mysqlLockName(database, role string) string {
+	sum := sha256.Sum256([]byte("rokuban-leader\x00" + database + "\x00" + role))
+	return "rokuban:" + hex.EncodeToString(sum[:26])
+}
+
+// TryLock は現在の DB 名を読み、その名前で GET_LOCK を取る。名前は後の Unlock のために保持する。
+func (s *mysqlSession) TryLock(ctx context.Context, role string) (bool, error) {
+	var database sql.NullString
+	if err := s.conn.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&database); err != nil {
+		return false, fmt.Errorf("reading current database for leader lock %s: %w", role, err)
+	}
+	if !database.Valid || database.String == "" {
+		return false, fmt.Errorf("current database is empty for leader lock %s", role)
+	}
+	name := mysqlLockName(database.String, role)
 	var got sql.NullInt64
-	if err := s.conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, 0)", mysqlLockName(role)).Scan(&got); err != nil {
+	if err := s.conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, 0)", name).Scan(&got); err != nil {
 		return false, fmt.Errorf("trying GET_LOCK for %s: %w", role, err)
 	}
 	// 1 は取得、0 は他者が保持、NULL はエラー。
-	return got.Valid && got.Int64 == 1, nil
+	if got.Valid && got.Int64 == 1 {
+		s.lockName = name
+		return true, nil
+	}
+	return false, nil
 }
 
-func (s mysqlSession) Unlock(ctx context.Context, role string) error {
+// Unlock は TryLock で取った名前を解放する。
+func (s *mysqlSession) Unlock(ctx context.Context, role string) error {
+	if s.lockName == "" {
+		return fmt.Errorf("releasing GET_LOCK for %s: lock was not taken by this session", role)
+	}
 	var got sql.NullInt64
-	err := s.conn.QueryRowContext(ctx, "SELECT RELEASE_LOCK(?)", mysqlLockName(role)).Scan(&got)
+	err := s.conn.QueryRowContext(ctx, "SELECT RELEASE_LOCK(?)", s.lockName).Scan(&got)
 	if err == nil && got.Valid && got.Int64 == 1 {
 		return nil
 	}
@@ -149,9 +173,9 @@ func (s mysqlSession) Unlock(ctx context.Context, role string) error {
 	return fmt.Errorf("releasing GET_LOCK for %s: lock was not held by this session", role)
 }
 
-func (s mysqlSession) Ping(ctx context.Context) error { return s.conn.PingContext(ctx) }
+func (s *mysqlSession) Ping(ctx context.Context) error { return s.conn.PingContext(ctx) }
 
-func (s mysqlSession) Release() { _ = s.conn.Close() }
+func (s *mysqlSession) Release() { _ = s.conn.Close() }
 
 // TryAcquire は pg_try_advisory_lock でシングルトンロールのリーダー選出を行う。
 // advisory lock はセッションレベルなので、Acquire したコネクションを保持し続ける限り

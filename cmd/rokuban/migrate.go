@@ -32,7 +32,7 @@ func newMigrateUpCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if stackDialect(cfg) == config.DBDialectMySQL {
+			if cfg.DB.Dialect == config.DBDialectMySQL {
 				return migrateMySQLUp(cmd.Context(), cfg)
 			}
 			dsn := cfg.DB.DSN()
@@ -56,7 +56,7 @@ func newMigrateDownCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if stackDialect(cfg) == config.DBDialectMySQL {
+			if cfg.DB.Dialect == config.DBDialectMySQL {
 				return migrateMySQLDown(cmd.Context(), cfg)
 			}
 			return db.MigrateDown(cmd.Context(), cfg.DB.DSN())

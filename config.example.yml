@@ -11,8 +11,13 @@ server:
   # （DNS rebinding 対策）を迂回できてしまう。信頼できるプロキシが必ず前段に居り、かつ
   # プロキシが外来の X-Forwarded-Host を上書きする構成でのみ true にする
 
-# PostgreSQL 接続情報（必須）
+# 接続情報（必須）。方言は dialect で選ぶ。
 db:
+  # dialect: postgres            # postgres（既定）または mysql（OCI 向け）。
+                                 # mysql は worker.engine: asynq と組むときだけ起動できる（river は拒む）。
+                                 # mysql では sslmode を disable のまま、api_statement_timeout は書かない
+                                 # （どちらも起動時に拒む）。port の既定は postgres が 5432、mysql が 3306。
+                                 # 手順と既知の差は docs/runbook/mysql.md。
   host: postgres
   port: 5432
   user: ${POSTGRES_USER}

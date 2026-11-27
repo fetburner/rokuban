@@ -72,13 +72,17 @@ func waitUntil(cond func() bool) bool {
 // leaderLockOwnerID は GET_LOCK を保持しているサーバー側のセッション（接続 ID）を返す。
 // performance_schema の metadata_locks が、ユーザー定義ロックの保持スレッドを示す。
 func leaderLockOwnerID(ctx context.Context, admin *sql.DB, role string) (int64, error) {
+	var database string
+	if err := admin.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&database); err != nil {
+		return 0, fmt.Errorf("reading database name: %w", err)
+	}
 	var ids []int64
 	rows, err := admin.QueryContext(ctx, `
 		SELECT t.PROCESSLIST_ID
 		FROM performance_schema.metadata_locks m
 		JOIN performance_schema.threads t ON t.THREAD_ID = m.OWNER_THREAD_ID
 		WHERE m.OBJECT_TYPE = 'USER LEVEL LOCK' AND m.OBJECT_NAME = ? AND m.LOCK_STATUS = 'GRANTED'`,
-		mysqlLockName(role))
+		mysqlLockName(database, role))
 	if err != nil {
 		return 0, fmt.Errorf("querying lock owner: %w", err)
 	}
@@ -110,8 +114,7 @@ func TestMySQLLeaderElectionIsExclusive(t *testing.T) {
 	cfg := &SingletonConfig{PollInterval: 50 * time.Millisecond, HeartbeatInterval: 50 * time.Millisecond}
 	a := startElector(ctx, "a", NewMySQLLocker(poolA), role, cfg)
 	b := startElector(ctx, "b", NewMySQLLocker(poolB), role, cfg)
-	// 終了を待ってからプールを閉じる。GET_LOCK の名前はサーバー全体で共有されるので、
-	// 前のテストのセッションが残ったまま次のテストが同じ名前を取らないようにする。
+	// 終了を待ってからプールを閉じる。リーダーのロックを閉じる前に解放させ、次の処理へ残さないため。
 	t.Cleanup(func() {
 		cancel()
 		<-a.done
@@ -243,5 +246,29 @@ func TestMySQLLockNameAcceptsLongRole(t *testing.T) {
 	}
 	if !acquired {
 		t.Fatalf("TryLock(%d-char role) = false, want the lock to be free", len(role))
+	}
+}
+
+// TestMySQLLeadersOnDifferentDatabasesBothLead は、同じ MySQL サーバーの別の DB で同じロール名を
+// 使う 2 つの elector が、どちらもリーダーになることを確かめる。GET_LOCK の名前はサーバー全体で
+// 共有されるため、名前に DB 名が入っていないと、2 つ目の deployment のリーダーが永遠に立たない。
+func TestMySQLLeadersOnDifferentDatabasesBothLead(t *testing.T) {
+	dbA := mysqltest.SetupDB(t)
+	dbB := mysqltest.SetupDB(t)
+	const role = "watcher:default"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cfg := &SingletonConfig{PollInterval: 50 * time.Millisecond, HeartbeatInterval: 50 * time.Millisecond}
+	a := startElector(ctx, "a", NewMySQLLocker(dbA), role, cfg)
+	b := startElector(ctx, "b", NewMySQLLocker(dbB), role, cfg)
+	t.Cleanup(func() {
+		cancel()
+		<-a.done
+		<-b.done
+	})
+
+	if !waitUntil(func() bool { return a.leader.Load() && b.leader.Load() }) {
+		t.Fatalf("leaders on different databases: a=%v b=%v, want both true (the lock name must include the database)",
+			a.leader.Load(), b.leader.Load())
 	}
 }

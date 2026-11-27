@@ -35,7 +35,7 @@ type dbHandle struct {
 // openDB は cfg.DB の方言で接続を開く。roles・numSites・numStores は db.ConnBudget と同じ意味で、
 // 0 と nil を渡すと単発 CLI と同じ既定のプールになる。
 func openDB(ctx context.Context, cfg *config.Config, roles []string, numSites, numStores int) (*dbHandle, error) {
-	if stackDialect(cfg) == config.DBDialectPostgres {
+	if cfg.DB.Dialect != config.DBDialectMySQL {
 		pool, err := db.NewPool(ctx, cfg.DB, roles, numSites, numStores)
 		if err != nil {
 			return nil, err
@@ -353,15 +353,6 @@ func (h *dbHandle) NotificationPruner() store.NotificationPruner {
 		return mysqlstore.NewNotifications(h.my)
 	}
 	return nil
-}
-
-// stackDialect は cfg から組み立てる store の方言を返す。db.dialect を書かない設定は PostgreSQL の
-// 組み立てになる（既存の設定をそのまま読むための既定）。openDB と組み立ての検査（dbstores_test）が使う。
-func stackDialect(cfg *config.Config) config.DBDialect {
-	if cfg.DB.Dialect == config.DBDialectMySQL {
-		return config.DBDialectMySQL
-	}
-	return config.DBDialectPostgres
 }
 
 // Locker はリーダー選出の排他ロックの方言の実装を返す。

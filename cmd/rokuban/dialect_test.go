@@ -24,6 +24,13 @@ storage:
   media_dir: /mnt/media
 `
 
+// asynqDialectBaseConfig は、方言を書かない設定。engine は asynq にして、既定の方言の値だけを検査できるようにする。
+var asynqDialectBaseConfig = dialectBaseConfig + `
+worker:
+  engine: asynq
+  redis_url: redis://localhost:6379/7
+`
+
 // mysqlDialectConfig は db.dialect: mysql と asynq の設定（MySQL 構成が起動を許される唯一の組み合わせ）。
 var mysqlDialectConfig = strings.Replace(dialectBaseConfig, "db:\n", "db:\n  dialect: mysql\n", 1) + `
 worker:
@@ -31,29 +38,29 @@ worker:
   redis_url: redis://localhost:6379/7
 `
 
-// TestDefaultDialectAssemblesPostgresStack は、db.dialect を書かない設定が PostgreSQL の組み立てに
-// なることを確かめる。既存の設定を変えないための既定である。config の既定を MySQL にすると、この値の検査が落ちる。
-func TestDefaultDialectAssemblesPostgresStack(t *testing.T) {
-	cfg, err := config.Load(writeServerTestConfig(t, dialectBaseConfig))
+// TestDefaultDialectIsPostgres は、db.dialect を書かない設定（asynq と組む）が PostgreSQL として読まれ、
+// MySQL 専用の掃除ジョブを定期投入しないことを確かめる。config の既定を mysql に変えると、この値の検査が落ちる。
+func TestDefaultDialectIsPostgres(t *testing.T) {
+	cfg, err := config.Load(writeServerTestConfig(t, asynqDialectBaseConfig))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := stackDialect(cfg); got != config.DBDialectPostgres {
-		t.Fatalf("stackDialect() = %q for a config without db.dialect, want %q", got, config.DBDialectPostgres)
+	if cfg.DB.Dialect != config.DBDialectPostgres {
+		t.Fatalf("db.dialect = %q for a config without the key, want %q", cfg.DB.Dialect, config.DBDialectPostgres)
 	}
 	if hasNotifyPruneSpec(cfg) {
 		t.Fatal("PostgreSQL worker specs must not schedule notify_prune")
 	}
 }
 
-// TestMySQLDialectAssemblesMySQLStack は、db.dialect: mysql（asynq）の設定が MySQL の組み立てになることを確かめる。
-func TestMySQLDialectAssemblesMySQLStack(t *testing.T) {
+// TestMySQLDialectIsSelected は、db.dialect: mysql の設定が MySQL として読まれることを確かめる。
+func TestMySQLDialectIsSelected(t *testing.T) {
 	cfg, err := config.Load(writeServerTestConfig(t, mysqlDialectConfig))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := stackDialect(cfg); got != config.DBDialectMySQL {
-		t.Fatalf("stackDialect() = %q, want %q", got, config.DBDialectMySQL)
+	if cfg.DB.Dialect != config.DBDialectMySQL {
+		t.Fatalf("db.dialect = %q, want %q", cfg.DB.Dialect, config.DBDialectMySQL)
 	}
 }
 
