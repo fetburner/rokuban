@@ -7,13 +7,10 @@ import (
 	"io"
 	"os"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/epgimport"
 	"github.com/fetburner/rokuban/internal/epgstation"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // newImportCmd は `rokuban import` サブコマンドを作る（issue #72 / M3-10）。
@@ -100,7 +97,7 @@ ARE（Postgres 正規表現）非互換の正規表現、%CHNAME% 等の未対�
 			}
 
 			ctx := cmd.Context()
-			pool, err := db.NewPool(ctx, cfg.DB, nil, 0, 0)
+			pool, err := openDB(ctx, cfg, nil, 0, 0)
 			if err != nil {
 				return err
 			}
@@ -122,7 +119,7 @@ ARE（Postgres 正規表現）非互換の正規表現、%CHNAME% 等の未対�
 				if err != nil {
 					return fmt.Errorf("reading --library-json: %w", err)
 				}
-				result, err := epgimport.ImportLibrary(ctx, pgstore.NewMediaInStoreWithoutPolicy(pool, storeName), root, storeName, site.Site, items)
+				result, err := epgimport.ImportLibrary(ctx, pool.MediaInStoreWithoutPolicy(storeName), root, storeName, site.Site, items)
 				if err != nil {
 					return fmt.Errorf("importing library: %w", err)
 				}
@@ -143,12 +140,12 @@ ARE（Postgres 正規表現）非互換の正規表現、%CHNAME% 等の未対�
 
 // runImportRules は EPGStation から /api/rules を取得して ImportRules に渡す。
 // cobra の RunE は配線に留める既存の流儀（runRescue）に倣う。
-func runImportRules(ctx context.Context, pool *pgxpool.Pool, client *epgstation.Client, site string) (epgimport.RuleImportResult, error) {
+func runImportRules(ctx context.Context, pool *dbHandle, client *epgstation.Client, site string) (epgimport.RuleImportResult, error) {
 	rules, err := client.ListRules(ctx)
 	if err != nil {
 		return epgimport.RuleImportResult{}, fmt.Errorf("listing EPGStation rules: %w", err)
 	}
-	return epgimport.ImportRules(ctx, pgstore.NewRules(pool, []string{site}), pgstore.NewEPG(pool), site, rules)
+	return epgimport.ImportRules(ctx, pool.Rules([]string{site}), pool.EPG(), site, rules)
 }
 
 // readJSONFile はトップレベルが配列の JSON ファイルを読む小さなヘルパー。

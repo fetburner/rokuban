@@ -19,7 +19,7 @@ import (
 func newRiverEnqueuer(t *testing.T, pool *pgxpool.Pool) jobq.Enqueuer {
 	t.Helper()
 	cfg := &config.Config{Worker: config.WorkerConfig{Engine: "river"}}
-	enqueuer, closeAdapter, err := newInsertOnlyEnqueuer(t.Context(), cfg, pool)
+	enqueuer, closeAdapter, err := newInsertOnlyEnqueuer(t.Context(), cfg, &dbHandle{pg: pool})
 	if err != nil {
 		t.Fatal(err)
 	}

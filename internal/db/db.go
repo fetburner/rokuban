@@ -217,18 +217,15 @@ func checkLocaleSupport(ctx context.Context, db pgxQueryRower) error {
 	return nil
 }
 
-// buildPoolConfig は NewPool のロジック本体（MaxConns の算出と
-// statement_timeout の設定）を、実接続を伴わずにテストできる形で切り出す。
-func buildPoolConfig(cfg config.DBConfig, roles []string, numSites, numStores int) (*pgxpool.Config, error) {
-	poolCfg, err := pgxpool.ParseConfig(cfg.DSN())
-	if err != nil {
-		return nil, fmt.Errorf("parsing connection string: %w", err)
-	}
-
+// ConnBudget は、プロセスが持つ唯一のプールの上限（接続数）を返す。方言に依らない。
+// db.max_conns が正なら、それを roles の最小要件と照合して返す。未指定でも roles があれば
+// roles から算出する。どちらも無ければ 0 を返し、呼び出し側のドライバ既定に任せる
+// （roles を持たない単発 CLI）。
+func ConnBudget(cfg config.DBConfig, roles []string, numSites, numStores int) (int32, error) {
 	switch {
 	case cfg.MaxConns > 0:
 		if min := minRequiredConns(roles, numSites, numStores); int32(cfg.MaxConns) < min {
-			return nil, fmt.Errorf(
+			return 0, fmt.Errorf(
 				"db.max_conns=%d is too small for roles %v bound to %d site(s): at least %d connections are required so that roles holding a "+
 					"connection whose release depends on acquiring another one don't starve the "+
 					"rest of the process's work out of the single shared pool -- watcher's "+
@@ -237,9 +234,27 @@ func buildPoolConfig(cfg config.DBConfig, roles []string, numSites, numStores in
 					"(docs/operations.md §3)",
 				cfg.MaxConns, roles, numSites, min)
 		}
-		poolCfg.MaxConns = int32(cfg.MaxConns)
+		return int32(cfg.MaxConns), nil
 	case len(roles) > 0:
-		poolCfg.MaxConns = maxConnsForRoles(roles, numSites, numStores)
+		return maxConnsForRoles(roles, numSites, numStores), nil
+	}
+	return 0, nil
+}
+
+// buildPoolConfig は NewPool のロジック本体（MaxConns の算出と
+// statement_timeout の設定）を、実接続を伴わずにテストできる形で切り出す。
+func buildPoolConfig(cfg config.DBConfig, roles []string, numSites, numStores int) (*pgxpool.Config, error) {
+	poolCfg, err := pgxpool.ParseConfig(cfg.DSN())
+	if err != nil {
+		return nil, fmt.Errorf("parsing connection string: %w", err)
+	}
+
+	max, err := ConnBudget(cfg, roles, numSites, numStores)
+	if err != nil {
+		return nil, err
+	}
+	if max > 0 {
+		poolCfg.MaxConns = max
 	}
 
 	if slices.Contains(roles, "api") {

@@ -98,7 +98,7 @@ func TestGeneratedMediaPublishesToFilesystem(t *testing.T) {
 			}
 			policy, err := cfg.Storage.BuildStorePolicy()
 			testutil.RequireNoError(t, err, "building storage policy")
-			scoped, err := newStoreScopedDeps(nil, cfg, policy, dbtest.StoreName, root, objects)
+			scoped, err := newStoreScopedDeps(&dbHandle{}, cfg, policy, dbtest.StoreName, root, objects)
 			testutil.RequireNoError(t, err, "building store-scoped dependencies")
 			publisher := &derivedPublishStub{}
 			scoped.MediaReconcile = publisher
@@ -213,7 +213,7 @@ func TestFailedDerivedTransferDoesNotReencode(t *testing.T) {
 	policy, err := cfg.Storage.BuildStorePolicy()
 	testutil.RequireNoError(t, err, "building storage policy")
 	deps, _, err := newWorkerDeps(ctx, cfg, policy, nil, []string{dbtest.StoreName},
-		map[string]string{dbtest.StoreName: root}, []string{"encode"}, pool, nil, false)
+		map[string]string{dbtest.StoreName: root}, []string{"encode"}, &dbHandle{pg: pool}, nil, false)
 	testutil.RequireNoError(t, err, "building worker dependencies")
 	remoteRoot := t.TempDir()
 	remote, err := fsstore.New(remoteRoot)

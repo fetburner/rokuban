@@ -39,6 +39,37 @@ func NewMediaInStore(db *sql.DB, storeName string, policy store.StoragePolicy) *
 	return &Media{db: db, storeName: storeName, originalStore: storeName, policy: policy}
 }
 
+// NewMediaForDerivedStore は派生物を derivedStore に書き、原本は originalStore から読む Media を作る。
+// 置き場が二つ要るのは、派生物の公開だけが原本の置き場と派生物の置き場を分けるから。
+func NewMediaForDerivedStore(db *sql.DB, derivedStore, originalStore string, policy store.StoragePolicy) *Media {
+	return &Media{db: db, storeName: derivedStore, originalStore: originalStore, policy: policy}
+}
+
+// NewMediaForStreamer は配置方針から derived store を選び、読める置き場だけを配信候補にする Media を作る。
+// streamer は置き場に書かず読むだけなので、束縛する置き場を持たない。
+func NewMediaForStreamer(db *sql.DB, policy store.StoragePolicy, readableStores []string) *Media {
+	stores := make([]string, len(readableStores))
+	copy(stores, readableStores)
+	return &Media{db: db, policy: policy, servingStores: stores}
+}
+
+// RequireAdoptedStoreRows は割り当て前の行（範囲が空の delete_reconcile ブレーカーを含む）や
+// コピー欠落が残っていないことを確認する。PostgreSQL の pgstore と同じ判定（CountUnassignedStorageRows）。
+func (s *Media) RequireAdoptedStoreRows(ctx context.Context) error {
+	var count int64
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT (SELECT COUNT(*) FROM media_assets a WHERE NOT EXISTS (
+			SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
+		)) + (SELECT COUNT(*) FROM circuit_breakers WHERE scope = '' AND name = 'delete_reconcile')
+	`).Scan(&count); err != nil {
+		return fmt.Errorf("checking for unassigned media store rows: %w", err)
+	}
+	if count != 0 {
+		return fmt.Errorf("%d media store row(s) have no store or media asset copy (including delete_reconcile circuit breaker rows with an empty scope); run `rokuban storage adopt <store-name>` before starting workers", count)
+	}
+	return nil
+}
+
 // derivedStoreName は派生物の書き込み先の置き場を返す。方針に無ければ束縛された置き場。
 func (s *Media) derivedStoreName() string {
 	if s.policy.DerivedStore() != "" {

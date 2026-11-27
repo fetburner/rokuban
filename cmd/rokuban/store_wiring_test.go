@@ -51,7 +51,7 @@ func mustNewStoreScopedDeps(t *testing.T, pool *pgxpool.Pool, cfg *config.Config
 	if derivedObjects != nil {
 		storageObjects[cfg.Storage.Derived] = derivedObjects
 	}
-	deps, err := newStoreScopedDeps(pool, cfg, policy, name, root, storageObjects)
+	deps, err := newStoreScopedDeps(&dbHandle{pg: pool}, cfg, policy, name, root, storageObjects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ FROM media_assets a WHERE a.id = $1`, assetID, relPath); err != nil {
 		TransferOverlap:         cfg.Storage.Transfer.Overlap,
 		Cleanup:                 config.CleanupConfig{MaxDeletesPerPass: 100},
 	}
-	scoped, err := newStoreScopedDeps(pool, cfg, policy, "test-store", roots["test-store"], objects)
+	scoped, err := newStoreScopedDeps(&dbHandle{pg: pool}, cfg, policy, "test-store", roots["test-store"], objects)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ FROM media_assets a WHERE a.id = $1`, assetID, copy.name, copy.relPath); err != 
 		TransferOverlap:         cfg.Storage.Transfer.Overlap,
 		Cleanup:                 config.CleanupConfig{MaxDeletesPerPass: 100},
 	}
-	perStore, err := newPerStoreWorkerDeps(pool, cfg, newPolicy, base.StorageRoots, base.StorageObjects)
+	perStore, err := newPerStoreWorkerDeps(&dbHandle{pg: pool}, cfg, newPolicy, base.StorageRoots, base.StorageObjects)
 	if err != nil {
 		t.Fatal(err)
 	}

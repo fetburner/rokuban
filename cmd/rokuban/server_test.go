@@ -758,7 +758,7 @@ storage:
 		t.Fatalf("building storage policy: %v", err)
 	}
 	var eg errgroup.Group
-	server, err := buildHTTPServer(ctx, cfg, storagePolicy, []string{"api"}, nil, nil, pool, &eg, true, newRiverEnqueuer(t, pool), nil)
+	server, err := buildHTTPServer(ctx, cfg, storagePolicy, []string{"api"}, nil, nil, &dbHandle{pg: pool}, &eg, true, newRiverEnqueuer(t, pool), nil)
 	if err != nil {
 		t.Fatalf("building API HTTP server: %v", err)
 	}
@@ -816,7 +816,7 @@ storage:
 	}
 	var eg errgroup.Group
 	httpServer, err := buildHTTPServer(ctx, cfg, storagePolicy, []string{"streamer"}, nil,
-		map[string]string{dbtest.StoreName: mediaDir}, pool, &eg, true, nil, nil)
+		map[string]string{dbtest.StoreName: mediaDir}, &dbHandle{pg: pool}, &eg, true, nil, nil)
 	if err != nil {
 		t.Fatalf("building streamer HTTP server: %v", err)
 	}
