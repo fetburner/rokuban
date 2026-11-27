@@ -12,8 +12,8 @@ import (
 	"github.com/fetburner/rokuban/internal/role"
 )
 
-// New は pgxpool からロック専用の接続を専有する role.Locker を返す。戻り値を role.Locker にして
-// 具象型を隠すのは、呼び出し元（cmd/rokuban の方言の分岐）が方言ごとの型に依存しないようにするため。
+// New は pgxpool からロック専用の接続を専有する role.Locker を返す。具象型は role.Locker 以外の
+// メソッドを持たないので、型を公開しても使い道が無い。
 func New(pool *pgxpool.Pool) role.Locker {
 	return pgLocker{pool: pool}
 }
