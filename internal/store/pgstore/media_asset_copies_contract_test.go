@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -297,75 +296,6 @@ func TestMediaAssetCopiesAcceptLeadingHyphenStoreName(t *testing.T) {
 	}
 }
 
-func TestRegisterInPlaceRejectsDeletingCopyPath(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	recordingID := dbtest.Recording(t, pool)
-	assetID := dbtest.MediaAsset(t, pool, recordingID)
-	media := testMedia(pool, dbtest.StoreName, "")
-	copyID := dbtest.MediaAssetCopyID(t, pool, assetID, dbtest.StoreName)
-	if marked, err := media.MarkDeleting(ctx, copyID, "active"); err != nil || !marked {
-		t.Fatalf("MarkDeleting: %v", err)
-	}
-
-	var relPath string
-	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_asset_copies WHERE media_asset_id = $1 AND store = $2`, assetID, dbtest.StoreName).Scan(&relPath); err != nil {
-		t.Fatalf("reading deleting asset path: %v", err)
-	}
-	// deleting のファイルは unlink される。同じパスの登録を通すと、消えるファイルを公開してしまう。
-	_, err := media.RegisterInPlace(ctx, store.InPlaceInput{
-		Assets: []store.InPlaceAsset{{Kind: store.AssetKindOriginal, RelPath: relPath, SizeBytes: 1}},
-	})
-	if !errors.Is(err, store.ErrConflict) {
-		t.Fatalf("RegisterInPlace over a deleting copy error = %v, want store.ErrConflict", err)
-	}
-	assertCopyState(t, pool, assetID, dbtest.StoreName, "deleting")
-}
-
-func TestRegisterInPlaceRejectsTombstonedPathButAllowsRenamedPath(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	media := testMedia(pool, dbtest.StoreName, "")
-	originalPath := "sites/default/library/original.mp4"
-	input := inPlaceEncodedInput(originalPath, 100)
-	first, err := media.RegisterInPlace(ctx, input)
-	if err != nil {
-		t.Fatalf("RegisterInPlace without a tombstone: %v", err)
-	}
-	assertCopyState(t, pool, first.AssetIDs[0], dbtest.StoreName, "active")
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1 AND store = $2`, first.AssetIDs[0], dbtest.StoreName); err != nil {
-		t.Fatalf("creating path tombstone: %v", err)
-	}
-	// 同じ path に生きた行が無いので、tombstone だけで拒否される。
-	_, err = media.RegisterInPlace(ctx, input)
-	if !errors.Is(err, store.ErrConflict) || !errors.Is(err, store.ErrInPlacePathTombstoned) {
-		t.Fatalf("RegisterInPlace over tombstoned path error = %v, want conflict and tombstone errors", err)
-	}
-	if !strings.Contains(err.Error(), "move or rename") {
-		t.Fatalf("tombstone error = %q, want move or rename guidance", err)
-	}
-	assertCopyState(t, pool, first.AssetIDs[0], dbtest.StoreName, "deleted")
-
-	input.Assets[0].RelPath = "sites/default/library/renamed-original.mp4"
-	second, err := media.RegisterInPlace(ctx, input)
-	if err != nil {
-		t.Fatalf("RegisterInPlace after renaming tombstoned path: %v", err)
-	}
-	if second.AssetIDs[0] != first.AssetIDs[0] {
-		t.Errorf("renamed path asset ID = %d, want existing logical asset %d", second.AssetIDs[0], first.AssetIDs[0])
-	}
-	var renamedPathState string
-	if err := pool.QueryRow(ctx, `SELECT state FROM media_asset_copies
-		WHERE media_asset_id = $1 AND store = $2 AND rel_path = $3`, first.AssetIDs[0], dbtest.StoreName,
-		input.Assets[0].RelPath).Scan(&renamedPathState); err != nil {
-		t.Fatalf("reading renamed copy state: %v", err)
-	}
-	if renamedPathState != "active" {
-		t.Fatalf("renamed copy state = %q, want active", renamedPathState)
-	}
-	assertCopyStateAtPath(t, pool, first.AssetIDs[0], dbtest.StoreName, originalPath, "deleted")
-}
-
 func inPlaceEncodedInput(relPath string, size int64) store.InPlaceInput {
 	profile := "h264"
 	return store.InPlaceInput{
@@ -423,105 +353,6 @@ func TestRegisterInPlaceSamePathActiveReregistrationChangesNothing(t *testing.T)
 	if size != 100 {
 		t.Fatalf("size_bytes = %d after a same-path re-registration, want unchanged 100", size)
 	}
-}
-
-// 既存の論理資産に通すのは、この置き場に生きたコピーが無く・パスの世代が現行の世代と等しく・
-// 録画がごみ箱にないときだけ。3 条件を 1 つずつ破って、それぞれ ErrConflict になることを固定する。
-func TestRegisterInPlaceRejectsExistingAssetUnlessAllConditionsHold(t *testing.T) {
-	ctx := context.Background()
-	setup := func(t *testing.T) (*Media, *pgxpool.Pool, store.InPlaceResult) {
-		t.Helper()
-		pool := testutil.SetupDB(t)
-		media := testMedia(pool, dbtest.StoreName, "")
-		first, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g8.mp4", 100))
-		if err != nil {
-			t.Fatalf("registering generation 8: %v", err)
-		}
-		return media, pool, first
-	}
-	deleteCopies := func(t *testing.T, pool *pgxpool.Pool, assetID int64) {
-		t.Helper()
-		if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, assetID); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	t.Run("live copy in this store", func(t *testing.T) {
-		media, _, first := setup(t)
-		// 世代は現行（8）と等しいが、この置き場に生きたコピーがある。
-		_, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/other.g8.mp4", 80))
-		if !errors.Is(err, store.ErrConflict) {
-			t.Fatalf("error = %v, want store.ErrConflict (asset %d)", err, first.AssetIDs[0])
-		}
-	})
-	t.Run("live copy of another generation in this store", func(t *testing.T) {
-		media, pool, first := setup(t)
-		deleteCopies(t, pool, first.AssetIDs[0])
-		// 旧世代のコピーがまだ生きている（overlap 中）。現行世代のパスでも、同じ置き場に 2 つ目の
-		// 生きたコピーを足すことになるので拒否する。一意索引は世代が違えば止めないので、この条件は別に要る。
-		if _, err := pool.Exec(ctx, `INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state) VALUES ($1, $2, 'encoded/show.g7.mp4', 7, 'active')`, first.AssetIDs[0], dbtest.StoreName); err != nil {
-			t.Fatal(err)
-		}
-		_, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g8.mp4", 80))
-		if !errors.Is(err, store.ErrConflict) {
-			t.Fatalf("error = %v, want store.ErrConflict", err)
-		}
-	})
-	t.Run("older generation", func(t *testing.T) {
-		media, pool, first := setup(t)
-		deleteCopies(t, pool, first.AssetIDs[0])
-		_, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g7.mp4", 80))
-		if !errors.Is(err, store.ErrConflict) {
-			t.Fatalf("older generation error = %v, want store.ErrConflict", err)
-		}
-		var derived int64
-		if err := pool.QueryRow(ctx, `SELECT derived_generation FROM media_assets WHERE id = $1`, first.AssetIDs[0]).Scan(&derived); err != nil {
-			t.Fatal(err)
-		}
-		if derived != 8 {
-			t.Fatalf("logical generation = %d after a rejected older generation, want 8", derived)
-		}
-	})
-	t.Run("newer generation", func(t *testing.T) {
-		media, pool, first := setup(t)
-		deleteCopies(t, pool, first.AssetIDs[0])
-		_, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g9.mp4", 80))
-		if !errors.Is(err, store.ErrConflict) {
-			t.Fatalf("newer generation error = %v, want store.ErrConflict", err)
-		}
-	})
-	t.Run("trashed recording", func(t *testing.T) {
-		media, pool, first := setup(t)
-		deleteCopies(t, pool, first.AssetIDs[0])
-		if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, first.RecordingID); err != nil {
-			t.Fatal(err)
-		}
-		_, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/show.g8.mp4", 80))
-		if !errors.Is(err, store.ErrConflict) {
-			t.Fatalf("trashed recording error = %v, want store.ErrConflict", err)
-		}
-	})
-	t.Run("all conditions hold", func(t *testing.T) {
-		media, pool, first := setup(t)
-		deleteCopies(t, pool, first.AssetIDs[0])
-		second, err := media.RegisterInPlace(ctx, inPlaceEncodedInput("encoded/renamed-show.g8.mp4", 80))
-		if err != nil {
-			t.Fatalf("registering a renamed file at the current generation: %v", err)
-		}
-		if second.AssetIDs[0] != first.AssetIDs[0] {
-			t.Fatalf("asset id = %d, want %d", second.AssetIDs[0], first.AssetIDs[0])
-		}
-		// 削除済みの行は残り、生きたコピーが新しく 1 行できる。
-		var live, total int
-		if err := pool.QueryRow(ctx, `
-SELECT (SELECT count(*) FROM active_media_asset_copies($1, NULL)),
-       (SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1)`, first.AssetIDs[0]).Scan(&live, &total); err != nil {
-			t.Fatal(err)
-		}
-		if live != 1 || total != 2 {
-			t.Fatalf("current live copies/all copies = %d/%d, want 1/2", live, total)
-		}
-	})
 }
 
 // 同じ置き場・同じ世代の生きたコピーは 1 行だけ。規則の SQL を通らない書き手（並行する 2 本の登録の
@@ -866,18 +697,6 @@ func assertCopyState(t *testing.T, pool *pgxpool.Pool, assetID int64, storeName,
 	}
 	if copyState != want {
 		t.Fatalf("copy state = %q, want %q", copyState, want)
-	}
-}
-
-func assertCopyStateAtPath(t *testing.T, pool *pgxpool.Pool, assetID int64, storeName, relPath, want string) {
-	t.Helper()
-	var copyState string
-	if err := pool.QueryRow(context.Background(), `SELECT state FROM media_asset_copies
-		WHERE media_asset_id = $1 AND store = $2 AND rel_path = $3`, assetID, storeName, relPath).Scan(&copyState); err != nil {
-		t.Fatalf("reading copy state at %q: %v", relPath, err)
-	}
-	if copyState != want {
-		t.Fatalf("copy state at %q = %q, want %q", relPath, copyState, want)
 	}
 }
 

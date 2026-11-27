@@ -96,6 +96,7 @@ VALUES (?, 32678, 5168, ?, 'media contract service', 'GR', 'media contract chann
 		execFixture(t, db, `INSERT INTO recording_ingest_progress (recording_id, written_bytes, temp_rel_path, temp_generation, temp_store) VALUES (?, 1, ?, 1, 'tokyo')`, recordingID, relPath)
 	}
 	configureMediaPublishFixtureMySQL(db, &fixture)
+	configureMediaSnapshotFixtureMySQL(db, &fixture)
 	configureMediaObservationFixtureMySQL(db, &fixture)
 	return fixture
 }
@@ -230,6 +231,43 @@ ON DUPLICATE KEY UPDATE media_asset_copy_id = incoming.media_asset_copy_id`, cop
 		execFixture(t, db, `UPDATE recording_ingest_checkpoints SET lease_expires_at = CURRENT_TIMESTAMP(6) - INTERVAL 1 SECOND WHERE recording_id = ?`, recordingID)
 	}
 	configureChapterFixtureMySQL(db, f)
+}
+
+// configureMediaSnapshotFixtureMySQL は論理資産と置き場のコピーを観測するフックと、生きたコピーを世代を指定して作るフックを SQL で実装する。
+func configureMediaSnapshotFixtureMySQL(db *sql.DB, f *contracttest.MediaFixture) {
+	f.AddActiveCopyAtGeneration = func(t *testing.T, assetID int64, storeName, relPath string, generation int64) int64 {
+		t.Helper()
+		return fixtureID(t, execFixture(t, db, `
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, generation, state)
+VALUES (?, ?, ?, ?, 'active')`, assetID, storeName, relPath, generation))
+	}
+	f.ReadMediaAsset = func(t *testing.T, assetID int64) contracttest.MediaAssetSnapshot {
+		t.Helper()
+		snap := contracttest.MediaAssetSnapshot{CopyStates: map[string]string{}}
+		if err := db.QueryRow(`SELECT derived_generation FROM media_assets WHERE id = ?`, assetID).Scan(&snap.DerivedGeneration); err != nil {
+			t.Fatalf("reading derived generation of asset %d: %v", assetID, err)
+		}
+		rows, err := db.Query(`SELECT rel_path, state FROM media_asset_copies WHERE media_asset_id = ? AND store = 'tokyo'`, assetID)
+		if err != nil {
+			t.Fatalf("reading copies of asset %d: %v", assetID, err)
+		}
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			var relPath, state string
+			if err := rows.Scan(&relPath, &state); err != nil {
+				t.Fatalf("scanning copy of asset %d: %v", assetID, err)
+			}
+			snap.CopyStates[relPath] = state
+			snap.TotalCopies++
+			if state == "active" {
+				snap.ActiveCopies++
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("reading copies of asset %d: %v", assetID, err)
+		}
+		return snap
+	}
 }
 
 // configureChapterFixtureMySQL はチャプターの区間・版の削除・作り直し要求の状態作りを SQL で実装する。

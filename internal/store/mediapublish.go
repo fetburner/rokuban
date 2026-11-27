@@ -309,8 +309,13 @@ type MediaPublish interface {
 	PublishSeekTiles(ctx context.Context, input SeekTilesPublishInput, publish func() error) (published bool, err error)
 	// RegisterInPlace は既存ファイルを指す録画とアセットの行を一つの tx で登録する。
 	// 同じ rel_path の行が既にあれば、その録画を再利用して冪等に登録し、active な行があればその行の録画とアセットを返す。
-	// 同じパスに deleted の行が並んでいても、active な行を優先する（契約テストでは未検証）。tombstone しか無いパスは ErrInPlacePathTombstoned で拒否する（契約テストでは未検証）。
-	// 検査: contracttest.RunMediaPublish の「in-place registration is idempotent and reuses its active path」。
+	// 既存の行の検査は PlanInPlaceRegistration が行う。拒否するときは ErrConflict を返し、墓石のパスでは ErrInPlacePathTombstoned も併せて返す。
+	// 既存の論理資産は、この置き場に生きたコピーが無く、パスの世代が現行と等しいときだけ書き換え、それ以外は ErrConflict で拒否する。論理資産が無ければ条件なしで新しく作る。
+	// upsert は、録画がごみ箱か消去済みなら論理資産を作りも書き換えもしない。この条件は並行するごみ箱移動への備えで、契約テストでは未検証。
+	// 検査: contracttest.RunMediaPublish の「in-place registration is idempotent and reuses its active path」、
+	// 「in-place registration rejects assets of different recordings」、「in-place registration rejects a tombstoned path until it is renamed」、
+	// 「in-place registration rejects a path of a trashed or purged recording」、「in-place registration rejects a deleting or pending copy」、
+	// 「in-place registration rejects a kind or profile mismatch」、「in-place registration rejects an existing asset unless all conditions hold」。
 	RegisterInPlace(ctx context.Context, input InPlaceInput) (InPlaceResult, error)
 	// UpsertIngestProgress は転送中の進捗を記録する。tx を持たず、失敗は ingest を止めない。
 	UpsertIngestProgress(ctx context.Context, progress IngestProgress) error
