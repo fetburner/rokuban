@@ -472,11 +472,11 @@ func runInPlaceSeries(t *testing.T, newFixture NewMediaFixture) {
 	if err != nil {
 		t.Fatalf("RecordingQuery.Get(%d) after keyless update: %v", third.RecordingID, err)
 	}
-	if got := ptrText(row.SeriesKey); got != "nil" {
-		t.Errorf("series_key after keyless in-place update = %s, want nil", got)
+	if row.SeriesKey != nil {
+		t.Errorf("series_key after keyless in-place update = %q, want nil", *row.SeriesKey)
 	}
-	if got := ptrText(row.Series); got != "nil" {
-		t.Errorf("series after keyless in-place update = %s, want nil", got)
+	if row.Series != nil {
+		t.Errorf("series after keyless in-place update = %q, want nil", *row.Series)
 	}
 }
 

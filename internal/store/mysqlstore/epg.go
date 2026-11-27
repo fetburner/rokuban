@@ -74,10 +74,9 @@ AS incoming ON DUPLICATE KEY UPDATE
 func (s *EPG) UpsertPrograms(ctx context.Context, programs []store.EPGProgramUpsert) error {
 	return upsertEPGBatch(ctx, s.db, "programs", programs, 18, upsertEPGPrograms, updateEPGPrograms,
 		func(args []any, p store.EPGProgramUpsert, mark time.Time) ([]any, error) {
-			series := seriesKeyValue(p.Name)
 			return append(args, p.Site, p.ProgramID, p.NetworkID, p.ServiceID, p.EventID, p.StartAt,
 				p.DurationMs, p.EndAt, p.IsFree, p.Name, p.Description, nullableJSON(p.Extended),
-				nullableJSON(p.Genres), nullableJSON(p.Video), nullableJSON(p.Audios), epgGenreLevels(p.Genres), series, mark), nil
+				nullableJSON(p.Genres), nullableJSON(p.Video), nullableJSON(p.Audios), epgGenreLevels(p.Genres), seriesKeyValue(p.Name), mark), nil
 		})
 }
 

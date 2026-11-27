@@ -363,12 +363,11 @@ var insertRecordingSQL = `INSERT INTO recordings (
 // args は insertRecordingSQL の値を列の順に返す。series_key は題名から、genre_lv1 は genres から、アプリが書く。
 func (d recordingDraft) args(now time.Time, ruleID *int64, source string) []any {
 	snap := d.snapshot
-	seriesKey := seriesKeyValue(snap.Title)
 	return []any{
 		ruleID, source, d.site, snap.NetworkID, snap.ServiceID, snap.EventID, snap.ServiceName,
 		snap.ChannelType, snap.Channel, snap.Title, snap.Description, nullableJSON(snap.Extended), nullableJSON(snap.Genres), snap.IsFree,
 		snap.ProgramStartAt, snap.ProgramDurationMs, d.status, d.startedAt, d.endedAt,
-		seriesKey, epgGenreLevels(snap.Genres), d.events, d.reported, now, now,
+		seriesKeyValue(snap.Title), epgGenreLevels(snap.Genres), d.events, d.reported, now, now,
 	}
 }
 
