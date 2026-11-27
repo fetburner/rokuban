@@ -50,7 +50,7 @@
       ]
     },
     {
-      "heading": "シングルトンロール: pg_advisory_lock リーダー選出",
+      "heading": "シングルトンロール: 排他ロックによるリーダー選出",
       "question": "watcher のレプリカ数 1 は要件か。2 にするとどうなるか。",
       "points": [
         "要件ではなく既定である",
@@ -180,7 +180,7 @@
       ]
     },
     {
-      "heading": "`internal/role`（`RunSingleton`）は watcher 専用だが畳まない",
+      "heading": "`internal/role`（`RunSingletonWith`）は watcher 専用だが畳まない",
       "question": "リーダー選出のパッケージは、呼び出し元が 1 つだけでも残すか。なぜか。",
       "points": [
         "呼び出し元が 1 つでも残し、畳まない",

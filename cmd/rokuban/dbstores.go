@@ -17,6 +17,8 @@ import (
 	"github.com/fetburner/rokuban/internal/notifier/mysqlsource"
 	"github.com/fetburner/rokuban/internal/notifier/pgsource"
 	"github.com/fetburner/rokuban/internal/role"
+	"github.com/fetburner/rokuban/internal/role/mysqllocker"
+	"github.com/fetburner/rokuban/internal/role/pglocker"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/mysqlstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
@@ -358,9 +360,9 @@ func (h *dbHandle) NotificationPruner() store.NotificationPruner {
 // Locker はリーダー選出の排他ロックの方言の実装を返す。
 func (h *dbHandle) Locker() role.Locker {
 	if h.my != nil {
-		return role.NewMySQLLocker(h.my)
+		return mysqllocker.New(h.my)
 	}
-	return role.NewPgLocker(h.pg)
+	return pglocker.New(h.pg)
 }
 
 // CheckMigrationsCurrent はスキーマが埋め込みの最新 migration であることを確かめる。

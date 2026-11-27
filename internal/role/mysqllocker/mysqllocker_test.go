@@ -1,4 +1,4 @@
-package role
+package mysqllocker
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/mysqltest"
+	"github.com/fetburner/rokuban/internal/role"
 )
 
 // electorState は 1 つのプロセスに相当する elector の、リーダー状態を表す。
@@ -24,10 +25,10 @@ type electorState struct {
 
 // startElector は locker を持つ elector を 1 つ起動する。roleFunc は、リーダーになったら
 // leader を立て、ctx が切れるまで待つ。
-func startElector(ctx context.Context, name string, locker Locker, role string, cfg *SingletonConfig) *electorState {
+func startElector(ctx context.Context, name string, locker role.Locker, roleName string, cfg *role.SingletonConfig) *electorState {
 	e := &electorState{name: name, done: make(chan error, 1)}
 	go func() {
-		e.done <- RunSingletonWith(ctx, locker, role, func(ctx context.Context) error {
+		e.done <- role.RunSingletonWith(ctx, locker, roleName, func(ctx context.Context) error {
 			e.leader.Store(true)
 			defer func() {
 				e.leader.Store(false)
@@ -43,11 +44,11 @@ func startElector(ctx context.Context, name string, locker Locker, role string, 
 // gatedLocker は Checkout を止められる Locker。リーダーのプロセスが死んだ、または
 // ネットワークから切れた状態を、テストの中で再現する（死んだプロセスは再取得しない）。
 type gatedLocker struct {
-	inner Locker
+	inner role.Locker
 	down  atomic.Bool
 }
 
-func (g *gatedLocker) Checkout(ctx context.Context) (Session, error) {
+func (g *gatedLocker) Checkout(ctx context.Context) (role.Session, error) {
 	if g.down.Load() {
 		return nil, errors.New("process is down (test gate)")
 	}
@@ -71,7 +72,7 @@ func waitUntil(cond func() bool) bool {
 
 // leaderLockOwnerID は GET_LOCK を保持しているサーバー側のセッション（接続 ID）を返す。
 // performance_schema の metadata_locks が、ユーザー定義ロックの保持スレッドを示す。
-func leaderLockOwnerID(ctx context.Context, admin *sql.DB, role string) (int64, error) {
+func leaderLockOwnerID(ctx context.Context, admin *sql.DB, roleName string) (int64, error) {
 	var database string
 	if err := admin.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&database); err != nil {
 		return 0, fmt.Errorf("reading database name: %w", err)
@@ -82,7 +83,7 @@ func leaderLockOwnerID(ctx context.Context, admin *sql.DB, role string) (int64, 
 		FROM performance_schema.metadata_locks m
 		JOIN performance_schema.threads t ON t.THREAD_ID = m.OWNER_THREAD_ID
 		WHERE m.OBJECT_TYPE = 'USER LEVEL LOCK' AND m.OBJECT_NAME = ? AND m.LOCK_STATUS = 'GRANTED'`,
-		mysqlLockName(database, role))
+		mysqlLockName(database, roleName))
 	if err != nil {
 		return 0, fmt.Errorf("querying lock owner: %w", err)
 	}
@@ -108,12 +109,12 @@ func TestMySQLLeaderElectionIsExclusive(t *testing.T) {
 	db := mysqltest.SetupDB(t)
 	poolA := mysqltest.OpenSiblingPool(t, db)
 	poolB := mysqltest.OpenSiblingPool(t, db)
-	role := t.Name()
+	roleName := t.Name()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cfg := &SingletonConfig{PollInterval: 50 * time.Millisecond, HeartbeatInterval: 50 * time.Millisecond}
-	a := startElector(ctx, "a", NewMySQLLocker(poolA), role, cfg)
-	b := startElector(ctx, "b", NewMySQLLocker(poolB), role, cfg)
+	cfg := &role.SingletonConfig{PollInterval: 50 * time.Millisecond, HeartbeatInterval: 50 * time.Millisecond}
+	a := startElector(ctx, "a", New(poolA), roleName, cfg)
+	b := startElector(ctx, "b", New(poolB), roleName, cfg)
 	// 終了を待ってからプールを閉じる。リーダーのロックを閉じる前に解放させ、次の処理へ残さないため。
 	t.Cleanup(func() {
 		cancel()
@@ -145,14 +146,14 @@ func TestMySQLLeaderTakeoverAfterConnectionKill(t *testing.T) {
 	db := mysqltest.SetupDB(t)
 	poolA := mysqltest.OpenSiblingPool(t, db)
 	poolB := mysqltest.OpenSiblingPool(t, db)
-	role := t.Name()
+	roleName := t.Name()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cfg := &SingletonConfig{PollInterval: 50 * time.Millisecond, HeartbeatInterval: 50 * time.Millisecond}
-	gateA := &gatedLocker{inner: NewMySQLLocker(poolA)}
-	gateB := &gatedLocker{inner: NewMySQLLocker(poolB)}
-	a := startElector(ctx, "a", gateA, role, cfg)
-	b := startElector(ctx, "b", gateB, role, cfg)
+	cfg := &role.SingletonConfig{PollInterval: 50 * time.Millisecond, HeartbeatInterval: 50 * time.Millisecond}
+	gateA := &gatedLocker{inner: New(poolA)}
+	gateB := &gatedLocker{inner: New(poolB)}
+	a := startElector(ctx, "a", gateA, roleName, cfg)
+	b := startElector(ctx, "b", gateB, roleName, cfg)
 	t.Cleanup(func() {
 		cancel()
 		<-a.done
@@ -194,7 +195,7 @@ func TestMySQLLeaderTakeoverAfterConnectionKill(t *testing.T) {
 		}
 	}()
 
-	ownerID, err := leaderLockOwnerID(ctx, db, role)
+	ownerID, err := leaderLockOwnerID(ctx, db, roleName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,20 +233,20 @@ func countLeaders(electors ...*electorState) int {
 // GET_LOCK が名前を拒まず、ロックを取れることを確かめる。GET_LOCK の名前は 64 文字以内である。
 func TestMySQLLockNameAcceptsLongRole(t *testing.T) {
 	db := mysqltest.SetupDB(t)
-	role := "watcher:" + strings.Repeat("s", 53)
+	roleName := "watcher:" + strings.Repeat("s", 53)
 
-	sess, err := NewMySQLLocker(db).Checkout(context.Background())
+	sess, err := New(db).Checkout(context.Background())
 	if err != nil {
 		t.Fatalf("Checkout: %v", err)
 	}
 	defer sess.Release()
 
-	acquired, err := sess.TryLock(context.Background(), role)
+	acquired, err := sess.TryLock(context.Background(), roleName)
 	if err != nil {
-		t.Fatalf("TryLock(%d-char role): %v", len(role), err)
+		t.Fatalf("TryLock(%d-char role): %v", len(roleName), err)
 	}
 	if !acquired {
-		t.Fatalf("TryLock(%d-char role) = false, want the lock to be free", len(role))
+		t.Fatalf("TryLock(%d-char role) = false, want the lock to be free", len(roleName))
 	}
 }
 
@@ -255,12 +256,12 @@ func TestMySQLLockNameAcceptsLongRole(t *testing.T) {
 func TestMySQLLeadersOnDifferentDatabasesBothLead(t *testing.T) {
 	dbA := mysqltest.SetupDB(t)
 	dbB := mysqltest.SetupDB(t)
-	const role = "watcher:default"
+	const roleName = "watcher:default"
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cfg := &SingletonConfig{PollInterval: 50 * time.Millisecond, HeartbeatInterval: 50 * time.Millisecond}
-	a := startElector(ctx, "a", NewMySQLLocker(dbA), role, cfg)
-	b := startElector(ctx, "b", NewMySQLLocker(dbB), role, cfg)
+	cfg := &role.SingletonConfig{PollInterval: 50 * time.Millisecond, HeartbeatInterval: 50 * time.Millisecond}
+	a := startElector(ctx, "a", New(dbA), roleName, cfg)
+	b := startElector(ctx, "b", New(dbB), roleName, cfg)
 	t.Cleanup(func() {
 		cancel()
 		<-a.done
@@ -270,5 +271,16 @@ func TestMySQLLeadersOnDifferentDatabasesBothLead(t *testing.T) {
 	if !waitUntil(func() bool { return a.leader.Load() && b.leader.Load() }) {
 		t.Fatalf("leaders on different databases: a=%v b=%v, want both true (the lock name must include the database)",
 			a.leader.Load(), b.leader.Load())
+	}
+}
+
+// TestMySQLLockName_Literal は MySQL の GET_LOCK の名前が固定の値であることを確かめる。名前は
+// ローリング更新中の新旧のプロセスが一致して取る必要がある。期待値はリテラルで書く。
+func TestMySQLLockName_Literal(t *testing.T) {
+	if got := mysqlLockName("rokuban_test", "watcher:default"); got != "rokuban:c96dc4d6b55b3bc323679e16baff0bb2aa34645a1257bd4bf863" {
+		t.Errorf("mysqlLockName(watcher:default) = %q", got)
+	}
+	if got := mysqlLockName("rokuban_test", "watcher:"+strings.Repeat("s", 53)); got != "rokuban:dffef0e00e35bdfa7c3829d61935562c38855dd55b6b83b40de3" {
+		t.Errorf("mysqlLockName(53-char role) = %q", got)
 	}
 }

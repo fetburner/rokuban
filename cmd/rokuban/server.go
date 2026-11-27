@@ -47,7 +47,7 @@ import (
 
 var (
 	allRoles = []string{"api", "worker", "watcher", "streamer", "notifier"}
-	// シングルトンロールは pg_advisory_lock でリーダー選出し、1 プロセスだけが実行する。
+	// シングルトンロールは排他ロックでリーダー選出し、1 プロセスだけが実行する。
 	// ruler / reconciler はここに含まれない — シングルトンではなく worker が引く River
 	// ジョブ（ruler_pass / reconcile_pass）になったため（docs/data.md §2、
 	// docs/overview.md「ロールは『プロセスの形』を表し、『どの仕事をするか』は
@@ -1092,7 +1092,7 @@ func resolveRoles(cmd *cobra.Command) ([]string, error) {
 	return resolved, nil
 }
 
-// watcherLockName は watcher ロールの pg_advisory_lock キー（role.RunSingleton
+// watcherLockName は watcher ロールのリーダー選出のロック名（role.RunSingletonWith
 // の第 3 引数）を site で修飾した名前を返す（issue #185 M4-13「含むもの」8）。
 //
 // site を含めないと、多サイト構成で 2 つの watcher プロセスが同じロックを

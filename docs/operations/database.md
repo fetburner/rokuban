@@ -100,7 +100,7 @@ ingest が `epg.retention_grace` を跨ぐと、既定値で凍結される。�
 - ロール budget の合算と worker の下限: `internal/db.roleConnBudget`
 - 束縛サイトごとの追加 budget: `internal/db.perSiteConnBudget`
 - マウントした FS 置き場ごとの追加 budget: `internal/db.perStoreConnBudget`
-- watcher の advisory lock 専用接続: `role.RunSingleton`
+- watcher のリーダー選出の排他ロック専用接続: `role.RunSingletonWith`（方言ごとの実装は `role/pglocker` と `role/mysqllocker`）
 
 </details>
 
