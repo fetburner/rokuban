@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/serieskey"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -122,7 +123,14 @@ LIMIT 1`, relPath, storeName).Scan(&row.id, &row.recordingID, &row.kind, &profil
 
 // upsertInPlaceRecording は録画の行を、同じ放送イベントの生きた行があれば更新し、無ければ作る。
 // 生きた行の同一性は active_program_start_at（ごみ箱・superseded で NULL になる生成列）で決める。
+// series_key は題名から、INSERT と UPDATE の両方でアプリが書く（MySQL では生成列でない）。
+// 計算は録画行を書く他の経路（観測・restore）と同じ serieskey.SeriesKey 1 か所に任せ、
+// ここでは NULL への変換だけを持つ。3 経路は行の寿命も書き手も違うので、変換を共通の関数にはしない。
 func upsertInPlaceRecording(ctx context.Context, tx *sql.Tx, r store.InPlaceRecording) (int64, error) {
+	var seriesKey any
+	if key, ok := serieskey.SeriesKey(r.Title); ok {
+		seriesKey = key
+	}
 	var id int64
 	err := tx.QueryRowContext(ctx, `
 SELECT id FROM recordings
@@ -132,9 +140,9 @@ FOR UPDATE`, r.Site, r.NetworkID, r.ServiceID, r.EventID, r.ProgramStartAt).Scan
 		if _, err := tx.ExecContext(ctx, `
 UPDATE recordings
 SET source = ?, service_name = ?, channel_type = ?, channel = ?, title = ?, program_duration_ms = ?, status = ?,
-    started_at = COALESCE(started_at, ?), ended_at = COALESCE(ended_at, ?), updated_at = CURRENT_TIMESTAMP(6)
+    started_at = COALESCE(started_at, ?), ended_at = COALESCE(ended_at, ?), series_key = ?, updated_at = CURRENT_TIMESTAMP(6)
 WHERE id = ?`, r.Source, r.ServiceName, r.ChannelType, r.Channel, r.Title, r.ProgramDurationMs, r.Status,
-			r.StartedAt, r.EndedAt, id); err != nil {
+			r.StartedAt, r.EndedAt, seriesKey, id); err != nil {
 			return 0, fmt.Errorf("updating in-place recording: %w", translateError(err))
 		}
 		return id, nil
@@ -144,10 +152,10 @@ WHERE id = ?`, r.Source, r.ServiceName, r.ChannelType, r.Channel, r.Title, r.Pro
 	}
 	res, err := tx.ExecContext(ctx, `
 INSERT INTO recordings (source, site, network_id, service_id, event_id, service_name, channel_type, channel,
-    title, program_start_at, program_duration_ms, status, started_at, ended_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    title, program_start_at, program_duration_ms, status, started_at, ended_at, series_key)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Source, r.Site, r.NetworkID, r.ServiceID, r.EventID, r.ServiceName, r.ChannelType, r.Channel,
-		r.Title, r.ProgramStartAt, r.ProgramDurationMs, r.Status, r.StartedAt, r.EndedAt)
+		r.Title, r.ProgramStartAt, r.ProgramDurationMs, r.Status, r.StartedAt, r.EndedAt, seriesKey)
 	if err != nil {
 		return 0, fmt.Errorf("upserting in-place recording: %w", translateError(err))
 	}

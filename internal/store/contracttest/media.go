@@ -173,6 +173,7 @@ func RunMediaPublish(t *testing.T, newFixture NewMediaFixture) {
 	})
 	t.Run("thumbnail and seek tile callback failures roll back assets", func(t *testing.T) { runDerivedPublicationRollback(t, newFixture) })
 	t.Run("in-place registration is idempotent and reuses its active path", func(t *testing.T) { runInPlacePublication(t, newFixture) })
+	t.Run("in-place recordings take their series from the title on insert and update", func(t *testing.T) { runInPlaceSeries(t, newFixture) })
 	t.Run("commit failure after publish returns an error and leaves no rows", func(t *testing.T) { runPublishCommitFailure(t, newFixture) })
 	t.Run("original publication rejects an occupied rel_path without publishing", func(t *testing.T) { runOriginalRelPathConflict(t, newFixture) })
 	t.Run("thumbnail and seek tiles skip trashed recordings and existing assets", func(t *testing.T) { runDerivedPublicationSkips(t, newFixture) })
@@ -406,6 +407,62 @@ func runInPlacePublication(t *testing.T, newFixture NewMediaFixture) {
 		t.Fatalf("in-place result = %+v, want active row recording %d/asset %d", got, liveRecording, liveAsset)
 	}
 }
+
+// runInPlaceSeries は in-place 登録した録画のシリーズが題名から決まることを、store の読み取りで確かめる。
+// 2 回目は同じ放送イベントを別の題名と別のパスで登録し直し、UPDATE の経路でシリーズが追随することを確かめる。
+func runInPlaceSeries(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	input := f.NewInPlaceInput(t, fmt.Sprintf("sites/%s/imported/series-%d.m2ts", f.Site, time.Now().UnixNano()))
+	input.Recording.Title = "probe series #1"
+	first, err := f.Publisher.RegisterInPlace(ctx, input)
+	if err != nil {
+		t.Fatalf("first RegisterInPlace: %v", err)
+	}
+	row, err := f.Query.Get(ctx, first.RecordingID)
+	if err != nil {
+		t.Fatalf("RecordingQuery.Get(%d) after insert: %v", first.RecordingID, err)
+	}
+	if got := seriesText(row.SeriesKey); got != "probe" {
+		t.Fatalf("series_key after in-place insert = %s, want %q", got, "probe")
+	}
+	if got := seriesText(row.Series); got != "probe" {
+		t.Fatalf("series after in-place insert = %s, want %q", got, "probe")
+	}
+
+	input.Recording.Title = "renamed show #2"
+	input.Assets = []store.InPlaceAsset{{
+		Kind: store.AssetKindEncoded, Profile: ptrString("h264"),
+		RelPath: fmt.Sprintf("sites/%s/imported/renamed-%d.mp4", f.Site, time.Now().UnixNano()), SizeBytes: 1,
+	}}
+	second, err := f.Publisher.RegisterInPlace(ctx, input)
+	if err != nil {
+		t.Fatalf("second RegisterInPlace with a new title: %v", err)
+	}
+	if second.RecordingID != first.RecordingID {
+		t.Fatalf("second RecordingID = %d, want the same recording %d", second.RecordingID, first.RecordingID)
+	}
+	row, err = f.Query.Get(ctx, second.RecordingID)
+	if err != nil {
+		t.Fatalf("RecordingQuery.Get(%d) after update: %v", second.RecordingID, err)
+	}
+	if got := seriesText(row.SeriesKey); got != "renamed" {
+		t.Fatalf("series_key after in-place update = %s, want %q", got, "renamed")
+	}
+	if got := seriesText(row.Series); got != "renamed" {
+		t.Fatalf("series after in-place update = %s, want %q", got, "renamed")
+	}
+}
+
+// seriesText はシリーズの値を返す。NULL は "<NULL>" と表す。
+func seriesText(v *string) string {
+	if v == nil {
+		return "<NULL>"
+	}
+	return *v
+}
+
+func ptrString(s string) *string { return &s }
 
 func runCurrentCutKeep(t *testing.T, newFixture NewMediaFixture) {
 	f := newFixture(t)
