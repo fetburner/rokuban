@@ -39,23 +39,33 @@ func newMediaContractFixtureOn(db *sql.DB) contracttest.MediaFixture {
 	routing := store.NewStoragePolicy(nil, []string{"tokyo", "osaka"}, "remote")
 	tokyo := NewMediaInStore(db, "tokyo", zero)
 	fixture := contracttest.MediaFixture{
-		Serving:   tokyo,
-		Reconcile: tokyo,
-		Precheck:  tokyo,
-		Storage:   tokyo,
-		Reader:    tokyo,
-		Progress:  tokyo,
-		Publisher: tokyo,
-		Query:     NewRecordingQueries(db, "tokyo"),
-		Catalog:   NewCatalog(db, []string{store.DefaultSite}, "tokyo"),
-		Chapters:  NewChapterEdits(db),
-		Site:      store.DefaultSite,
+		Serving:     tokyo,
+		Reconcile:   tokyo,
+		Precheck:    tokyo,
+		Storage:     tokyo,
+		Reader:      tokyo,
+		WriterState: tokyo,
+		Progress:    tokyo,
+		Publisher:   tokyo,
+		Query:       NewRecordingQueries(db, "tokyo"),
+		Catalog:     NewCatalog(db, []string{store.DefaultSite}, "tokyo"),
+		Chapters:    NewChapterEdits(db),
+		Site:        store.DefaultSite,
 		OpenStore: func(name string) contracttest.MediaStoreScope {
 			scoped := NewMediaUnboundWithPolicy(db, routing)
 			if name != "" {
 				scoped = NewMediaInStore(db, name, routing)
 			}
 			return contracttest.MediaStoreScope{Locator: scoped, Storage: scoped, StorageSync: scoped, Publisher: scoped, Reclaim: scoped}
+		},
+		OpenTransfer: func(name string, policy store.StoragePolicy) store.StorageTransfer {
+			if name == "" {
+				return NewMediaUnboundWithPolicy(db, policy)
+			}
+			return NewMediaInStore(db, name, policy)
+		},
+		NewIngestStoreChooser: func(policy store.StoragePolicy) store.IngestStoreChooser {
+			return NewMediaUnboundWithPolicy(db, policy)
 		},
 		NewRecording: func(t *testing.T) int64 {
 			t.Helper()
@@ -71,6 +81,15 @@ VALUES (?, 32678, 5168, ?, 'media contract service', 'GR', 'media contract chann
     'store media contract fixture', ?, TRUE, ?, 60000, 'finished', 'manual', ?)`,
 				store.DefaultSite, mediaContractEventSeq.Add(1), genres, start, genreLv1))
 		},
+	}
+	fixture.SetIngestCheckpoint = func(t *testing.T, recordingID, writerGeneration int64) {
+		t.Helper()
+		owner := make([]byte, 16)
+		execFixture(t, db, `INSERT INTO recording_ingest_checkpoints (recording_id, lease_owner, lease_expires_at, writer_generation) VALUES (?, ?, CURRENT_TIMESTAMP(6) + INTERVAL 1 HOUR, ?)`, recordingID, owner, writerGeneration)
+	}
+	fixture.SetIngestDisplayPath = func(t *testing.T, recordingID int64, relPath string) {
+		t.Helper()
+		execFixture(t, db, `INSERT INTO recording_ingest_progress (recording_id, written_bytes, temp_rel_path, temp_generation, temp_store) VALUES (?, 1, ?, 1, 'tokyo')`, recordingID, relPath)
 	}
 	configureMediaPublishFixtureMySQL(db, &fixture)
 	configureMediaObservationFixtureMySQL(db, &fixture)

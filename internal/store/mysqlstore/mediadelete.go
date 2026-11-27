@@ -82,21 +82,11 @@ const oldGenerationCopySQL = `EXISTS (
 // desired は a の種別と方針から決まる置き場（原本は規則を先勝ちで評価し、派生物は派生の置き場）。
 // 規則の site と older_than_us（放送終了が now() より古い）で判定する。
 // 引数は rules（JSON 配列の文字列）、derived、overlap の順。
-const prunableCopySQL = `EXISTS (
+var prunableCopySQL = `EXISTS (
   SELECT 1
   FROM recordings r
   JOIN LATERAL (
-    SELECT CASE WHEN a.kind = 'original' THEN (
-      SELECT JSON_UNQUOTE(JSON_EXTRACT(rule_row.rule, '$.store'))
-      FROM JSON_TABLE(?, '$[*]' COLUMNS (ord FOR ORDINALITY, rule JSON PATH '$')) AS rule_row
-      WHERE (JSON_UNQUOTE(JSON_EXTRACT(rule_row.rule, '$.match.site')) IS NULL
-             OR JSON_UNQUOTE(JSON_EXTRACT(rule_row.rule, '$.match.site')) = r.site)
-        AND (JSON_EXTRACT(rule_row.rule, '$.match.older_than_us') IS NULL
-             OR TIMESTAMPADD(MICROSECOND, r.program_duration_ms * 1000, r.program_start_at)
-                < TIMESTAMPADD(MICROSECOND, -CAST(JSON_EXTRACT(rule_row.rule, '$.match.older_than_us') AS SIGNED), NOW(6)))
-      ORDER BY rule_row.ord
-      LIMIT 1
-    ) ELSE ? END AS store
+    SELECT ` + desiredMediaStoreSQL("a.kind", "r.site", "TIMESTAMPADD(MICROSECOND, r.program_duration_ms * 1000, r.program_start_at)") + ` AS store
   ) d ON TRUE
   WHERE r.id = a.recording_id
     AND r.deleted_at IS NULL
