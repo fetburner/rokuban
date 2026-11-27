@@ -159,8 +159,9 @@ func workerPeriodicJobSpecs(cfg *config.Config, sites, stores []string, pruner s
 	}
 	specs = append(specs, jobq.PeriodicJobSpec{Interval: config.DeleteReconcileInterval, Args: jobs.StorageTransferReconcileArgs{}})
 	if pruner != nil {
-		// 通知表の掃除は、通知表を持つ構成（契約がある構成）だけが投入する。間隔は保持期間以下にして、行数の上限を
-		// 保持期間と間隔の和に抑える（TestNotifyPruneIntervalWithinRetention が検査する）。
+		// 通知表の掃除は、通知表を持つ構成（契約がある構成）だけが投入する。
+		// 間隔は保持期間以下にして、行数の上限を保持期間と間隔の和に抑える
+		// （TestNotifyPruneIntervalWithinRetention が検査する）。
 		specs = append(specs, jobq.PeriodicJobSpec{Interval: notifyPruneInterval, Args: jobs.NotifyPruneArgs{}})
 	}
 	return specs

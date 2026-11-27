@@ -487,11 +487,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	var workerAdapter workerQueue
 	if slices.Contains(roles, "worker") {
-		workerCfg := newWorkerClientConfig(cfg, bound, mounted, pool.NotificationPruner(), queues, once, softStopTimeout)
 		base, deferred, err := newWorkerDeps(ctx, cfg, storagePolicy, bound, mounted, roots, queues, pool, webhookClient, ingestStorageProbed)
 		if err != nil {
 			return err
 		}
+		// 投入の契約は登録に渡した base.NotificationPruner と同じ値を使う。
+		workerCfg := newWorkerClientConfig(cfg, bound, mounted, base.NotificationPruner, queues, once, softStopTimeout)
 		adapter, closeAdapter, err := newJobAdapter(ctx, cfg, pool, base, workerCfg)
 		if err != nil {
 			return err

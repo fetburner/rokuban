@@ -1,9 +1,12 @@
 package main
 
 import (
+	"database/sql"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -49,7 +52,7 @@ func TestDefaultDialectIsPostgres(t *testing.T) {
 	if cfg.DB.Dialect != config.DBDialectPostgres {
 		t.Fatalf("db.dialect = %q for a config without the key, want %q", cfg.DB.Dialect, config.DBDialectPostgres)
 	}
-	if hasNotifyPruneSpec(cfg, nil) {
+	if hasNotifyPruneSpec(cfg, pgContract()) {
 		t.Fatal("PostgreSQL worker specs must not schedule notify_prune")
 	}
 }
@@ -72,7 +75,7 @@ func TestNotifyPruneIntervalWithinRetention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	spec, ok := notifyPruneSpec(cfg, notifyContract)
+	spec, ok := notifyPruneSpec(cfg, myContract())
 	if !ok {
 		t.Fatal("MySQL worker specs do not schedule notify_prune")
 	}
@@ -84,11 +87,24 @@ func TestNotifyPruneIntervalWithinRetention(t *testing.T) {
 	}
 }
 
-// notifyContract は MySQL 構成が登録と投入に渡す通知表の掃除の契約。DB には接続しない。
-var notifyContract store.NotificationPruner = mysqlstore.NewNotifications(nil)
+// pgContract は PostgreSQL 構成の dbHandle から得た掃除の契約。接続は開かない。
+// 登録と投入が使う値をそのまま得るため、テストでも dbHandle のメソッドを通す。
+func pgContract() store.NotificationPruner {
+	return (&dbHandle{pg: new(pgxpool.Pool)}).NotificationPruner()
+}
+
+// myContract は MySQL 構成の dbHandle から得た掃除の契約。接続は開かない。
+func myContract() store.NotificationPruner {
+	return (&dbHandle{my: new(sql.DB)}).NotificationPruner()
+}
+
+// fakeContract は契約の有無だけを見る行で使う、DB に接続しない契約。
+// PostgreSQL 方言に契約を与えても投入されることで、判定が方言ではなく契約で決まることを示す。
+var fakeContract store.NotificationPruner = mysqlstore.NewNotifications(nil)
 
 // TestNotifyPruneFollowsContract は、notify_prune の投入が方言ではなく掃除の契約の有無で決まることを確かめる。
-// 方言と契約の組み合わせを両方向に置く。
+// dbHandle から得た契約（両方言）と、契約だけを与える行の両方向を置く。
+// 両方向とは、契約が有れば投入し、無ければ投入しないこと。
 func TestNotifyPruneFollowsContract(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -96,7 +112,9 @@ func TestNotifyPruneFollowsContract(t *testing.T) {
 		pruner  store.NotificationPruner
 		want    bool
 	}{
-		{"PostgreSQL 方言で契約が有る", asynqDialectBaseConfig, notifyContract, true},
+		{"PostgreSQL 方言で dbHandle の契約（無し）", asynqDialectBaseConfig, pgContract(), false},
+		{"MySQL 方言で dbHandle の契約（有り）", mysqlDialectConfig, myContract(), true},
+		{"PostgreSQL 方言で契約が有る", asynqDialectBaseConfig, fakeContract, true},
 		{"MySQL 方言で契約が無い", mysqlDialectConfig, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -112,8 +130,9 @@ func TestNotifyPruneFollowsContract(t *testing.T) {
 }
 
 // notifyPruneSpec は定期投入の仕様から notify_prune を探す。pruner は構成の根が渡す契約（nil なら投入しない）。
+// server.go と同じ入口（newWorkerClientConfig）を通し、pruner の受け渡しも検査対象にする。
 func notifyPruneSpec(cfg *config.Config, pruner store.NotificationPruner) (jobq.PeriodicJobSpec, bool) {
-	for _, spec := range workerPeriodicJobSpecs(cfg, nil, nil, pruner) {
+	for _, spec := range newWorkerClientConfig(cfg, nil, nil, pruner, nil, false, 0).Spec.PeriodicJobs {
 		if _, ok := spec.Args.(jobs.NotifyPruneArgs); ok {
 			return spec, true
 		}
