@@ -44,7 +44,7 @@ func TestNewJobAdapterSelectsEngine(t *testing.T) {
 			}
 			cfg.Worker.RedisURL = "redis://localhost/0"
 			cfg.Worker.PeriodicJobs = false
-			startup := newWorkerClientConfig(cfg, cfg.Registry(), cfg.Storage.FSStoreNames(), []string{"ruler"}, true, 5*time.Second)
+			startup := newWorkerClientConfig(cfg, cfg.Registry(), cfg.Storage.FSStoreNames(), nil, []string{"ruler"}, true, 5*time.Second)
 			deps := &worker.Deps{}
 			runner, closeRunner, err := newJobAdapter(t.Context(), cfg, &dbHandle{pg: pool}, deps, startup)
 			if err != nil {

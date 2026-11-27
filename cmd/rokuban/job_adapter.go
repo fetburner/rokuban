@@ -10,6 +10,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq/asynqadapter"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
@@ -29,9 +30,9 @@ type workerClientConfig struct {
 
 // newWorkerClientConfig は DB pool に依存せず、worker の製品仕様と起動形態を組み立てる。
 // 購読・定期投入の内容は製品の仕様（workerspec.go）が決める。
-func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, mounted []string, queues []string, once bool, softStopTimeout time.Duration) workerClientConfig {
+func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, mounted []string, pruner store.NotificationPruner, queues []string, once bool, softStopTimeout time.Duration) workerClientConfig {
 	return workerClientConfig{
-		Spec:                 newWorkerSpec(cfg, bound, mounted),
+		Spec:                 newWorkerSpec(cfg, bound, mounted, pruner),
 		SchedulePeriodicJobs: cfg.Worker.PeriodicJobs,
 		Queues:               queues,
 		Once:                 once,

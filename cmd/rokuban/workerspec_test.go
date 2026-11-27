@@ -71,7 +71,7 @@ func periodicGot(spec jobq.WorkerSpec) []periodicWant {
 // 製品の仕様（並列数・物理キュー）を、実装の定数ではなくリテラルで固定する。
 func TestNewWorkerSpec_Queues(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
-	spec := newWorkerSpec(cfg, cfg.Registry(), cfg.Storage.FSStoreNames())
+	spec := newWorkerSpec(cfg, cfg.Registry(), cfg.Storage.FSStoreNames(), nil)
 	if err := spec.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestNewWorkerSpec_Queues(t *testing.T) {
 func TestNewWorkerSpec_QueuesMatchAllQueueNames(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
 	var got []string
-	for _, q := range newWorkerSpec(cfg, cfg.Registry(), cfg.Storage.FSStoreNames()).Queues {
+	for _, q := range newWorkerSpec(cfg, cfg.Registry(), cfg.Storage.FSStoreNames(), nil).Queues {
 		got = append(got, q.Logical)
 	}
 	slices.Sort(got)
@@ -117,7 +117,7 @@ func TestNewWorkerSpec_QueuesMatchAllQueueNames(t *testing.T) {
 
 func TestNewWorkerSpec_PeriodicJobs(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
-	got := periodicGot(newWorkerSpec(cfg, cfg.Registry(), cfg.Storage.FSStoreNames()))
+	got := periodicGot(newWorkerSpec(cfg, cfg.Registry(), cfg.Storage.FSStoreNames(), nil))
 	want := []periodicWant{
 		{"epg_sync", "tokyo", 7 * time.Minute, "epg"},
 		{"tuner_sync", "tokyo", 10 * time.Minute, "epg"},
@@ -189,7 +189,7 @@ func TestStoreBoundJobsAreInsertedIntoSubscribedQueues(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
 	cfg.CMDetect.Enabled = true
 	mounted := []string{"tokyo", "takamatsu"}
-	spec := newWorkerSpec(cfg, cfg.Registry(), mounted)
+	spec := newWorkerSpec(cfg, cfg.Registry(), mounted, nil)
 	subscribed := map[string]bool{}
 	for _, q := range spec.Queues {
 		for _, physical := range q.Physical {
@@ -219,7 +219,7 @@ func TestWorkerPeriodicJobSpecs_MaxAttempts(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
 	cfg.CMDetect.Enabled = true
 
-	for _, periodic := range workerPeriodicJobSpecs(cfg, []string{"tokyo", "takamatsu"}, nil) {
+	for _, periodic := range workerPeriodicJobSpecs(cfg, []string{"tokyo", "takamatsu"}, nil, nil) {
 		if got := periodic.Args.Spec().MaxAttempts; got != 1 {
 			t.Errorf("%s MaxAttempts = %d, want literal 1", periodic.Args.Kind(), got)
 		}
@@ -230,7 +230,7 @@ func TestWorkerPeriodicJobSpecs_MaxAttempts(t *testing.T) {
 func TestNewWorkerSpec_CMDetectReconcileFollowsCMDetectEnabled(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
 	has := func() bool {
-		for _, p := range newWorkerSpec(cfg, cfg.Registry(), cfg.Storage.FSStoreNames()).PeriodicJobs {
+		for _, p := range newWorkerSpec(cfg, cfg.Registry(), cfg.Storage.FSStoreNames(), nil).PeriodicJobs {
 			if p.Args.Kind() == "cm_detect_reconcile" {
 				if got := p.Args.Spec().Queue; got != "cleanup" {
 					t.Errorf("cm_detect_reconcile queue = %q, want literal cleanup", got)
@@ -290,7 +290,7 @@ func TestEncodeReconcileRunsWhileEncodeQueueIsFull(t *testing.T) {
 	}
 	store := stores[0]
 	var productSpec jobq.WorkerSpec
-	for _, queue := range newWorkerSpec(cfg, nil, []string{store}).Queues {
+	for _, queue := range newWorkerSpec(cfg, nil, []string{store}, nil).Queues {
 		if queue.Logical == "encode" || queue.Logical == "cleanup" {
 			productSpec.Queues = append(productSpec.Queues, queue)
 		}
@@ -362,7 +362,7 @@ func TestNewWorkerSpec_EpgSyncIntervalFollowsConfig(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
 	cfg.Epg.SyncInterval = 42 * time.Minute
 	found := 0
-	for _, p := range newWorkerSpec(cfg, cfg.Registry(), cfg.Storage.FSStoreNames()).PeriodicJobs {
+	for _, p := range newWorkerSpec(cfg, cfg.Registry(), cfg.Storage.FSStoreNames(), nil).PeriodicJobs {
 		if p.Args.Kind() != "epg_sync" {
 			continue
 		}
@@ -379,7 +379,7 @@ func TestNewWorkerSpec_EpgSyncIntervalFollowsConfig(t *testing.T) {
 // 0 サイト（中央プロセス）: site 単位のキューは物理名が空、site 単位の定期ジョブは無い。
 func TestNewWorkerSpec_NoSites(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
-	spec := newWorkerSpec(cfg, nil, cfg.Storage.FSStoreNames())
+	spec := newWorkerSpec(cfg, nil, cfg.Storage.FSStoreNames(), nil)
 	if err := spec.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestNewWorkerSpec_PeriodicKindsResolveInWorkerRegistry(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
 	cfg.CMDetect.Enabled = true
 	registry := worker.NewWorkers(&worker.Deps{})
-	if err := newWorkerSpec(cfg, cfg.Registry(), cfg.Storage.FSStoreNames()).CheckKinds(registry); err != nil {
+	if err := newWorkerSpec(cfg, cfg.Registry(), cfg.Storage.FSStoreNames(), nil).CheckKinds(registry); err != nil {
 		t.Fatalf("CheckKinds: %v", err)
 	}
 }
@@ -413,7 +413,7 @@ func TestNewWorkerClientConfig_StartupShape(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
 	for _, periodic := range []bool{true, false} {
 		cfg.Worker.PeriodicJobs = periodic
-		got := newWorkerClientConfig(cfg, cfg.Registry(), cfg.Storage.FSStoreNames(), []string{"ruler"}, true, 9*time.Second)
+		got := newWorkerClientConfig(cfg, cfg.Registry(), cfg.Storage.FSStoreNames(), nil, []string{"ruler"}, true, 9*time.Second)
 		if !got.Once {
 			t.Error("Once mode was not passed through")
 		}
@@ -433,7 +433,7 @@ func TestNewWorkerClientConfig_StartupShape(t *testing.T) {
 // 論理名をそのまま返す関数とは一致しない --- 両方向。
 func TestNewWorkerSpec_PeriodicJobsAreInsertedIntoSubscribedQueues(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
-	spec := newWorkerSpec(cfg, cfg.Registry(), cfg.Storage.FSStoreNames())
+	spec := newWorkerSpec(cfg, cfg.Registry(), cfg.Storage.FSStoreNames(), nil)
 	if err := spec.CheckQueueFor(jobs.PhysicalQueueFor); err != nil {
 		t.Fatalf("CheckQueueFor(jobs.PhysicalQueueFor): %v", err)
 	}

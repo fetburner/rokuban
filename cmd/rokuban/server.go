@@ -487,7 +487,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	var workerAdapter workerQueue
 	if slices.Contains(roles, "worker") {
-		workerCfg := newWorkerClientConfig(cfg, bound, mounted, queues, once, softStopTimeout)
+		workerCfg := newWorkerClientConfig(cfg, bound, mounted, pool.NotificationPruner(), queues, once, softStopTimeout)
 		base, deferred, err := newWorkerDeps(ctx, cfg, storagePolicy, bound, mounted, roots, queues, pool, webhookClient, ingestStorageProbed)
 		if err != nil {
 			return err

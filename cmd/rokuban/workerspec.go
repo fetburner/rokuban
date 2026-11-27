@@ -6,6 +6,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/tsscan"
 )
 
@@ -23,11 +24,17 @@ import (
 //
 // stores は --stores で解決したマウント済みの FS 置き場。置き場で修飾する物理キューは
 // この集合で展開する（config の名前ではなく、このプロセスが実際に持つ置き場で決める）。
-func newWorkerSpec(cfg *config.Config, bound []config.MirakcSite, stores []string) jobq.WorkerSpec {
+//
+// pruner は通知表の掃除の契約で、構成の根が DB から得た値をそのまま渡す（worker の登録に
+// 渡すのと同じ値）。定期投入するかは DB の方言ではなく、この契約が nil かで決める。
+// 登録と投入を同じ値の nil 判定にそろえ、方言の分岐を 2 か所に書かないためである。
+// 引数を bool にせず契約そのものにしたのは、bool にすると呼び出し側が `!= nil` を書き、
+// 判定が登録の側と別々に残るからである。
+func newWorkerSpec(cfg *config.Config, bound []config.MirakcSite, stores []string, pruner store.NotificationPruner) jobq.WorkerSpec {
 	sites := registryNames(bound)
 	return jobq.WorkerSpec{
 		Queues:       workerQueueSpecs(cfg, sites, stores),
-		PeriodicJobs: workerPeriodicJobSpecs(cfg, sites, stores),
+		PeriodicJobs: workerPeriodicJobSpecs(cfg, sites, stores, pruner),
 	}
 }
 
@@ -98,7 +105,7 @@ func physicalQueueNames(logical string, sites, stores []string) []string {
 // 日次の catalog_export は起動直後の 1 回で初回を確保する意味があるが、
 // 他のジョブについて、それぞれの間隔での「起動直後の 1 回」が同程度に有用かは
 // 個別に検証していない。
-func workerPeriodicJobSpecs(cfg *config.Config, sites, stores []string) []jobq.PeriodicJobSpec {
+func workerPeriodicJobSpecs(cfg *config.Config, sites, stores []string, pruner store.NotificationPruner) []jobq.PeriodicJobSpec {
 	var specs []jobq.PeriodicJobSpec
 	// site 単位の 5 種は束縛 site ごとに 1 本ずつ。0 サイト（中央プロセス）は
 	// site 単位の定期パスを持つ理由がない。ruler は mirakc に触れないが、
@@ -151,8 +158,8 @@ func workerPeriodicJobSpecs(cfg *config.Config, sites, stores []string) []jobq.P
 		specs = append(specs, jobq.PeriodicJobSpec{Interval: 15 * time.Minute, Args: jobs.CMDetectReconcileArgs{}})
 	}
 	specs = append(specs, jobq.PeriodicJobSpec{Interval: config.DeleteReconcileInterval, Args: jobs.StorageTransferReconcileArgs{}})
-	if cfg.DB.Dialect == config.DBDialectMySQL {
-		// 通知表の掃除は MySQL だけが持つ表の掃除。間隔は保持期間以下にして、行数の上限を
+	if pruner != nil {
+		// 通知表の掃除は、通知表を持つ構成（契約がある構成）だけが投入する。間隔は保持期間以下にして、行数の上限を
 		// 保持期間と間隔の和に抑える（TestNotifyPruneIntervalWithinRetention が検査する）。
 		specs = append(specs, jobq.PeriodicJobSpec{Interval: notifyPruneInterval, Args: jobs.NotifyPruneArgs{}})
 	}
