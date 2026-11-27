@@ -74,10 +74,7 @@ AS incoming ON DUPLICATE KEY UPDATE
 func (s *EPG) UpsertPrograms(ctx context.Context, programs []store.EPGProgramUpsert) error {
 	return upsertEPGBatch(ctx, s.db, "programs", programs, 18, upsertEPGPrograms, updateEPGPrograms,
 		func(args []any, p store.EPGProgramUpsert, mark time.Time) ([]any, error) {
-			var series any
-			if key, ok := serieskey.SeriesKey(p.Name); ok {
-				series = key
-			}
+			series := seriesKeyValue(p.Name)
 			return append(args, p.Site, p.ProgramID, p.NetworkID, p.ServiceID, p.EventID, p.StartAt,
 				p.DurationMs, p.EndAt, p.IsFree, p.Name, p.Description, nullableJSON(p.Extended),
 				nullableJSON(p.Genres), nullableJSON(p.Video), nullableJSON(p.Audios), epgGenreLevels(p.Genres), series, mark), nil
@@ -128,6 +125,18 @@ func nullableJSON(value json.RawMessage) any {
 		return nil
 	}
 	return string(value)
+}
+
+// seriesKeyValue は題名または番組名から series_key の値を求める。キーが無ければ nil（SQL の NULL）を返す。
+// Postgres では series_key が題名から作られる生成列なので、MySQL ではこの関数がその代わりになる。
+// 題名・番組名を書く文は、同じ文でこの関数の値を series_key にも書くこと。書き漏れた行は、同じ題名の行と
+// 別の値になる（書かない INSERT は NULL、書かない UPDATE は古いキーを残す）。
+func seriesKeyValue(text string) any {
+	key, ok := serieskey.SeriesKey(text)
+	if !ok {
+		return nil
+	}
+	return key
 }
 
 // epgGenreLevels は詳細・一覧・検索が共用する、昇順で重複のない lv1 を作る。

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/serieskey"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -123,14 +122,9 @@ LIMIT 1`, relPath, storeName).Scan(&row.id, &row.recordingID, &row.kind, &profil
 
 // upsertInPlaceRecording は録画の行を、同じ放送イベントの生きた行があれば更新し、無ければ作る。
 // 生きた行の同一性は active_program_start_at（ごみ箱・superseded で NULL になる生成列）で決める。
-// series_key は題名から、INSERT と UPDATE の両方でアプリが書く（MySQL では生成列でない）。
-// 計算は録画行を書く他の経路（観測・restore）と同じ serieskey.SeriesKey 1 か所に任せ、
-// ここでは NULL への変換だけを持つ。3 経路は行の寿命も書き手も違うので、変換を共通の関数にはしない。
+// series_key は題名から（seriesKeyValue）、INSERT と UPDATE の両方で書く。
 func upsertInPlaceRecording(ctx context.Context, tx *sql.Tx, r store.InPlaceRecording) (int64, error) {
-	var seriesKey any
-	if key, ok := serieskey.SeriesKey(r.Title); ok {
-		seriesKey = key
-	}
+	seriesKey := seriesKeyValue(r.Title)
 	var id int64
 	err := tx.QueryRowContext(ctx, `
 SELECT id FROM recordings
