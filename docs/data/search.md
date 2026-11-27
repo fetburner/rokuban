@@ -18,9 +18,9 @@
 
 ルールは、実質「保存された検索」である。UI 検索と ruler 評価が別エンジン（Go RE2 と Postgres）だと、「検索では出るのにルールにマッチしない」という説明不能な不整合が生まれる。そのため、両方を Postgres に寄せる。
 
-PostgreSQL 構成の正規表現の方言は、POSIX ARE である。MySQL 構成は ICU の方言を使い、構文の違いは [store-contracts.md](store-contracts.md)「正規表現の構文」にある。pg_trgm の GIN インデックスは、LIKE だけでなく正規表現マッチも加速するので、regex ルールもインデックスに乗る。Postgres の regex は UTF-8 を文字単位で扱うため、EPGStation#562（サロゲートペア等）は再現しない。
+正規表現の方言は、PostgreSQL 構成が POSIX ARE、MySQL 構成が ICU である。方言を契約で揃えない理由は [store-contracts.md](store-contracts.md)「正規表現の構文」にある。pg_trgm の GIN インデックスは、LIKE だけでなく正規表現マッチも加速するので、regex ルールもインデックスに乗る。Postgres の regex は UTF-8 を文字単位で扱うため、EPGStation#562（サロゲートペア等）は再現しない。
 
-ARE は、先読みも後読みも使える（PostgreSQL 16.2 で測定・確認）。非互換になるのは、JS の名前付きキャプチャのような、POSIX ARE に無い拡張構文である。測定では、名前付きキャプチャを使った検索が構文エラーになった。`rokuban import epgstation` は、取り込み時に各ルールの正規表現を Postgres で検証する。非互換は警告し、ユーザーに修正を促す（差分テストの allowlist にも追加する）。
+ARE は、先読みも後読みも使える（PostgreSQL 16.2 で測定・確認）。非互換になるのは、JS の名前付きキャプチャのような、POSIX ARE に無い拡張構文である。測定では、名前付きキャプチャを使った検索が構文エラーになった。`rokuban import epgstation` は、取り込み時に各ルールの正規表現を、その構成の DB で検証する。非互換は警告し、ユーザーに修正を促す（差分テストの allowlist にも追加する）。
 
 <details><summary>根拠</summary>
 

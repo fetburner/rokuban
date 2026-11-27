@@ -4,7 +4,7 @@ MySQL 構成は OCI 向けの選択肢である。PostgreSQL が既定で、オ�
 
 ## 前提
 
-MySQL 9.7（CI が回すバージョン）と Redis が要る。9.7 より新しい版への自動の引き上げを使えるかは未検証である。接続の分離レベル・sql_mode・照合順序・時刻帯は、起動時に接続ごとに強制し、違えば起動を止める。データベースは利用者が作る。migration は表だけを作る。
+MySQL 9.7（CI が回すバージョン）と Redis が要る。9.7 より新しいバージョンで動くかは未検証である。接続の分離レベル・sql_mode・照合順序・時刻帯は、起動時に接続ごとに強制し、違えば起動を止める。データベースは利用者が作る。migration は表だけを作る。
 
 ## 設定
 
@@ -23,19 +23,25 @@ worker:
   redis_url: "${REDIS_URL}"
 ```
 
-port は、書かなければ 3306 になる。engine を river のままにすると起動時に拒む。sslmode は disable 以外を、api_statement_timeout は書くことを、起動時に拒む。
+port は、書かなければ 3306 になる。engine を river のままにすると起動時に拒む。sslmode に disable 以外を書いた設定と、api_statement_timeout を書いた設定も、起動時に拒む。
 
 ## 手順
 
 最初に migration を流す。migrate up は MySQL の埋め込み migration だけを適用し、River の表は作らない。次に storage adopt で置き場の目印を書く。最後に、置き場を指定して全ロールで起動する。
 
+```sh
+rokuban migrate up --config config.yml
+rokuban storage adopt <置き場> --config config.yml
+rokuban server --all --stores <置き場> --config config.yml
+```
+
 起動したら `/readyz` が 200 を返すことを確かめる。録画ルールを作り、`/api/events` に event rules が届き、予約が現れることを確かめる。
 
 ## DB ごとの既知の差
 
-PostgreSQL 構成との差は、利用者が見る挙動と運用の挙動に分けて、次に挙げる。判断の根拠は、それぞれの節にある。
+PostgreSQL 構成との差を、利用者が見る挙動・運用・接続の設定に分けて挙げる。判断の根拠がある差には、store-contracts.md の節を添える。
 
-利用者が見る差は、次のとおり。正規表現は、PostgreSQL が POSIX ARE、MySQL が ICU を使う（[store-contracts.md](../data/store-contracts.md)「正規表現の構文」）。部分一致検索には、MySQL に pg_trgm 相当の索引が無い。性能は未計測である（未検証）。チャプターの区間の重なりは、排他制約ではなく書き手のコードで確かめる（[store-contracts.md](../data/store-contracts.md)「CM 検出（試行と結果）とチャプター編集」）。
+利用者が見る差は、次のとおり。正規表現は、PostgreSQL が POSIX ARE、MySQL が ICU を使う（[store-contracts.md](../data/store-contracts.md)「正規表現の構文」）。部分一致検索には、MySQL に pg_trgm 相当の索引が無い。性能は未計測である。チャプターの区間の重なりは、排他制約ではなく書き手のコードで確かめる（[store-contracts.md](../data/store-contracts.md)「CM 検出（試行と結果）とチャプター編集」）。
 
 運用の差は、次のとおり。通知は通知表への書き込みで届け、notifier が約 1 秒ごとに読み直す。掃除は定期ジョブが 1 分ごとに行い、5 分より古い行を消す。転送帯域のリースとリーダー選出は GET_LOCK を使い、ロック名に DB 名を含める（[store-contracts.md](../data/store-contracts.md)「直列化」）。
 
@@ -43,4 +49,4 @@ PostgreSQL 構成との差は、利用者が見る挙動と運用の挙動に分
 
 ## 撤退の条件
 
-OCI 構成を止めたら、MySQL 構成のサポートを落とす。DB 間の移行は作らない。撤退するときに、MySQL から PostgreSQL への一方向の移行を作る（未実装）。
+OCI 構成を止めたら、MySQL 構成のサポートを落とす。MySQL を足した動機が、OCI の Always Free だけだからである。PostgreSQL と MySQL の間の移行はサポートしない。撤退するときに限り、MySQL から PostgreSQL への一方向の移行を作る（未実装）。
