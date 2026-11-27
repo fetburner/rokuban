@@ -98,13 +98,9 @@ func myContract() store.NotificationPruner {
 	return (&dbHandle{my: new(sql.DB)}).NotificationPruner()
 }
 
-// fakeContract は契約の有無だけを見る行で使う、DB に接続しない契約。
-// PostgreSQL 方言に契約を与えても投入されることで、判定が方言ではなく契約で決まることを示す。
-var fakeContract store.NotificationPruner = mysqlstore.NewNotifications(nil)
-
-// TestNotifyPruneFollowsContract は、notify_prune の投入が方言ではなく掃除の契約の有無で決まることを確かめる。
-// dbHandle から得た契約（両方言）と、契約だけを与える行の両方向を置く。
-// 両方向とは、契約が有れば投入し、無ければ投入しないこと。
+// TestNotifyPruneFollowsContract は、notify_prune の投入が方言ではなく掃除の契約だけで決まることを確かめる。
+// 方言と契約を食い違わせた 2 行で、判定が契約の有無だけを見ることを示す。
+// 方言ごとの契約の値そのものは TestDefaultDialectIsPostgres と TestNotifyPruneIntervalWithinRetention が検査する。
 func TestNotifyPruneFollowsContract(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -112,9 +108,7 @@ func TestNotifyPruneFollowsContract(t *testing.T) {
 		pruner  store.NotificationPruner
 		want    bool
 	}{
-		{"PostgreSQL 方言で dbHandle の契約（無し）", asynqDialectBaseConfig, pgContract(), false},
-		{"MySQL 方言で dbHandle の契約（有り）", mysqlDialectConfig, myContract(), true},
-		{"PostgreSQL 方言で契約が有る", asynqDialectBaseConfig, fakeContract, true},
+		{"PostgreSQL 方言で契約が有る", asynqDialectBaseConfig, myContract(), true},
 		{"MySQL 方言で契約が無い", mysqlDialectConfig, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
