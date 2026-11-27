@@ -173,6 +173,7 @@ func RunMediaPublish(t *testing.T, newFixture NewMediaFixture) {
 	})
 	t.Run("thumbnail and seek tile callback failures roll back assets", func(t *testing.T) { runDerivedPublicationRollback(t, newFixture) })
 	t.Run("in-place registration is idempotent and reuses its active path", func(t *testing.T) { runInPlacePublication(t, newFixture) })
+	t.Run("in-place recordings take their series from the title on insert and update", func(t *testing.T) { runInPlaceSeries(t, newFixture) })
 	t.Run("commit failure after publish returns an error and leaves no rows", func(t *testing.T) { runPublishCommitFailure(t, newFixture) })
 	t.Run("original publication rejects an occupied rel_path without publishing", func(t *testing.T) { runOriginalRelPathConflict(t, newFixture) })
 	t.Run("thumbnail and seek tiles skip trashed recordings and existing assets", func(t *testing.T) { runDerivedPublicationSkips(t, newFixture) })
@@ -404,6 +405,78 @@ func runInPlacePublication(t *testing.T, newFixture NewMediaFixture) {
 	}
 	if got.RecordingID != liveRecording || len(got.AssetIDs) != 1 || got.AssetIDs[0] != liveAsset {
 		t.Fatalf("in-place result = %+v, want active row recording %d/asset %d", got, liveRecording, liveAsset)
+	}
+}
+
+// runInPlaceSeries は in-place 登録した録画の series_key と、シリーズ（store の読み取り）が題名から決まることを確かめる。
+// 2 回目と 3 回目は同じ放送イベントを登録し直し、UPDATE の経路で題名に追随することを確かめる。
+// 3 回目は英数字を含まない題名にし、キーが無いとき NULL になることを確かめる。
+func runInPlaceSeries(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	input := f.NewInPlaceInput(t, fmt.Sprintf("sites/%s/imported/series-%d.m2ts", f.Site, time.Now().UnixNano()))
+	input.Recording.Title = "probe series #1"
+	first, err := f.Publisher.RegisterInPlace(ctx, input)
+	if err != nil {
+		t.Fatalf("first RegisterInPlace: %v", err)
+	}
+	row, err := f.Query.Get(ctx, first.RecordingID)
+	if err != nil {
+		t.Fatalf("RecordingQuery.Get(%d) after insert: %v", first.RecordingID, err)
+	}
+	if got := ptrText(row.SeriesKey); got != "probe" {
+		t.Errorf("series_key after in-place insert = %s, want %q", got, "probe")
+	}
+	if got := ptrText(row.Series); got != "probe" {
+		t.Errorf("series after in-place insert = %s, want %q", got, "probe")
+	}
+
+	input.Recording.Title = "renamed show #2"
+	profile := "h264"
+	input.Assets = []store.InPlaceAsset{{
+		Kind: store.AssetKindEncoded, Profile: &profile,
+		RelPath: fmt.Sprintf("sites/%s/imported/renamed-%d.mp4", f.Site, time.Now().UnixNano()), SizeBytes: 1,
+	}}
+	second, err := f.Publisher.RegisterInPlace(ctx, input)
+	if err != nil {
+		t.Fatalf("second RegisterInPlace with a new title: %v", err)
+	}
+	if second.RecordingID != first.RecordingID {
+		t.Fatalf("second RecordingID = %d, want the same recording %d", second.RecordingID, first.RecordingID)
+	}
+	row, err = f.Query.Get(ctx, second.RecordingID)
+	if err != nil {
+		t.Fatalf("RecordingQuery.Get(%d) after update: %v", second.RecordingID, err)
+	}
+	if got := ptrText(row.SeriesKey); got != "renamed" {
+		t.Errorf("series_key after in-place update = %s, want %q", got, "renamed")
+	}
+	if got := ptrText(row.Series); got != "renamed" {
+		t.Errorf("series after in-place update = %s, want %q", got, "renamed")
+	}
+
+	input.Recording.Title = "♪♪♪"
+	mobile := "mobile"
+	input.Assets = []store.InPlaceAsset{{
+		Kind: store.AssetKindEncoded, Profile: &mobile,
+		RelPath: fmt.Sprintf("sites/%s/imported/keyless-%d.mp4", f.Site, time.Now().UnixNano()), SizeBytes: 1,
+	}}
+	third, err := f.Publisher.RegisterInPlace(ctx, input)
+	if err != nil {
+		t.Fatalf("third RegisterInPlace with a title that has no series key: %v", err)
+	}
+	if third.RecordingID != first.RecordingID {
+		t.Fatalf("third RecordingID = %d, want the same recording %d", third.RecordingID, first.RecordingID)
+	}
+	row, err = f.Query.Get(ctx, third.RecordingID)
+	if err != nil {
+		t.Fatalf("RecordingQuery.Get(%d) after keyless update: %v", third.RecordingID, err)
+	}
+	if row.SeriesKey != nil {
+		t.Errorf("series_key after keyless in-place update = %q, want nil", *row.SeriesKey)
+	}
+	if row.Series != nil {
+		t.Errorf("series after keyless in-place update = %q, want nil", *row.Series)
 	}
 }
 

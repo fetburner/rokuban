@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/catalogdoc"
-	"github.com/fetburner/rokuban/internal/serieskey"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -393,7 +392,7 @@ func applyRecordings(ctx context.Context, tx *sql.Tx, recordings []catalogdoc.Re
 // recordings は id 以外の一意キー（アクティブな同一番組の一意性）を持つので、ON DUPLICATE KEY UPDATE は使わない。
 // 狙わない一意キーの衝突で別の行を黙って書き換えないよう、先に行の有無を読んでから UPDATE か INSERT を選ぶ。
 // 衝突は INSERT / UPDATE のエラーとして返り、ErrConflict になる。
-// 題名から series_key を、genres から genre_lv1 を、アプリが書く（MySQL では生成列でない）。
+// 題名から series_key を（seriesKeyValue）、genres から genre_lv1 を、アプリが書く（MySQL では生成列でない）。
 func upsertRecording(ctx context.Context, tx *sql.Tx, r catalogdoc.Recording) error {
 	qe := r.QualityEvents
 	if len(qe) == 0 || bytes.Equal(bytes.TrimSpace(qe), []byte("null")) {
@@ -416,10 +415,7 @@ func upsertRecording(ctx context.Context, tx *sql.Tx, r catalogdoc.Recording) er
 		}
 		reported = &value
 	}
-	var seriesKey any
-	if key, ok := serieskey.SeriesKey(r.Title); ok {
-		seriesKey = key
-	}
+	seriesKey := seriesKeyValue(r.Title)
 	// genre_lv1 は genres から導く。規則は EPG の射影と共通の epgGenreLevels に 1 つだけ置く。
 	genreLv1 := epgGenreLevels(r.Genres)
 
