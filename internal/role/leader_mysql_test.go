@@ -3,7 +3,9 @@ package role
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,12 +22,12 @@ type electorState struct {
 	done  chan error
 }
 
-// startMySQLElector は pool を持つ elector を 1 つ起動する。roleFunc は、リーダーになったら
-// active を立て、ctx が切れるまで待つ。
-func startMySQLElector(ctx context.Context, name string, pool *sql.DB, role string, cfg *SingletonConfig) *electorState {
+// startElector は locker を持つ elector を 1 つ起動する。roleFunc は、リーダーになったら
+// leader を立て、ctx が切れるまで待つ。
+func startElector(ctx context.Context, name string, locker Locker, role string, cfg *SingletonConfig) *electorState {
 	e := &electorState{name: name, done: make(chan error, 1)}
 	go func() {
-		e.done <- RunSingletonWith(ctx, NewMySQLLocker(pool), role, func(ctx context.Context) error {
+		e.done <- RunSingletonWith(ctx, locker, role, func(ctx context.Context) error {
 			e.leader.Store(true)
 			defer func() {
 				e.leader.Store(false)
@@ -36,6 +38,20 @@ func startMySQLElector(ctx context.Context, name string, pool *sql.DB, role stri
 		}, cfg)
 	}()
 	return e
+}
+
+// gatedLocker は Checkout を止められる Locker。リーダーのプロセスが死んだ、または
+// ネットワークから切れた状態を、テストの中で再現する（死んだプロセスは再取得しない）。
+type gatedLocker struct {
+	inner Locker
+	down  atomic.Bool
+}
+
+func (g *gatedLocker) Checkout(ctx context.Context) (Session, error) {
+	if g.down.Load() {
+		return nil, errors.New("process is down (test gate)")
+	}
+	return g.inner.Checkout(ctx)
 }
 
 // mysqlWaitTimeout は、リーダーの交代や退出を待つ上限。heartbeat と poll の間隔（50ms）に比べて十分長い。
@@ -92,8 +108,8 @@ func TestMySQLLeaderElectionIsExclusive(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cfg := &SingletonConfig{PollInterval: 50 * time.Millisecond, HeartbeatInterval: 50 * time.Millisecond}
-	a := startMySQLElector(ctx, "a", poolA, role, cfg)
-	b := startMySQLElector(ctx, "b", poolB, role, cfg)
+	a := startElector(ctx, "a", NewMySQLLocker(poolA), role, cfg)
+	b := startElector(ctx, "b", NewMySQLLocker(poolB), role, cfg)
 	// 終了を待ってからプールを閉じる。GET_LOCK の名前はサーバー全体で共有されるので、
 	// 前のテストのセッションが残ったまま次のテストが同じ名前を取らないようにする。
 	t.Cleanup(func() {
@@ -114,12 +130,14 @@ func TestMySQLLeaderElectionIsExclusive(t *testing.T) {
 	}
 }
 
-// TestMySQLLeaderTakeoverAfterConnectionKill は、リーダーのロック接続を切ると、リーダーが
-// リーダーシップを手放し、別の接続がロックを引き継ぐことを確かめる。リーダーは専有したロック接続で
-// heartbeat するので、接続を切られた時点で退かなければならない。
+// TestMySQLLeaderTakeoverAfterConnectionKill は、リーダーのロック接続を切ると、リーダーが退き、
+// もう一方の elector が引き継ぐことを確かめる。リーダーのプロセスが死んだ状態を再現するため、
+// リーダー側の Locker を切る（再取得させない）。ロックは切れた接続から離れ、もう一方だけが取れる。
 //
-// 引き継ぐのは、必ずしももう一方の elector とは限らない。切られたほうも次の poll でロックを取り直せる。
-// 検査するのは「元の接続が手放され、ロックが別の接続に移ったこと」と「同時に 2 つのリーダーが無いこと」である。
+// 検査は次のとおり。元のリーダーの roleFunc が終わること、もう一方がリーダーになること、
+// 2 つのリーダーが同時に立つ時間が heartbeat の間隔（テストでは 50ms）の数倍を超えないこと。
+// 最後の点は厳密な 0 ではない。ロックは接続が切れた時点でサーバーが解放するが、古いリーダーが
+// 退いたと気付くのは次の heartbeat だからである。
 func TestMySQLLeaderTakeoverAfterConnectionKill(t *testing.T) {
 	db := mysqltest.SetupDB(t)
 	poolA := mysqltest.OpenSiblingPool(t, db)
@@ -128,44 +146,71 @@ func TestMySQLLeaderTakeoverAfterConnectionKill(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cfg := &SingletonConfig{PollInterval: 50 * time.Millisecond, HeartbeatInterval: 50 * time.Millisecond}
-	a := startMySQLElector(ctx, "a", poolA, role, cfg)
-	b := startMySQLElector(ctx, "b", poolB, role, cfg)
+	gateA := &gatedLocker{inner: NewMySQLLocker(poolA)}
+	gateB := &gatedLocker{inner: NewMySQLLocker(poolB)}
+	a := startElector(ctx, "a", gateA, role, cfg)
+	b := startElector(ctx, "b", gateB, role, cfg)
 	t.Cleanup(func() {
 		cancel()
 		<-a.done
 		<-b.done
 	})
 
-	if !waitUntil(func() bool { return a.leader.Load() != b.leader.Load() }) {
+	if !waitUntil(func() bool { return countLeaders(a, b) == 1 }) {
 		t.Fatal("no elector became leader within the timeout")
 	}
-	leader := a
+	leader, other, gate := a, b, gateA
 	if b.leader.Load() {
-		leader = b
+		leader, other, gate = b, a, gateB
 	}
+
+	// 同時に 2 つのリーダーが立っていた最長の連続時間を、標本化で測る。
+	var overlapMax, overlapStart atomic.Int64
+	stopSampling := make(chan struct{})
+	samplerDone := make(chan struct{})
+	go func() {
+		defer close(samplerDone)
+		for {
+			select {
+			case <-stopSampling:
+				return
+			default:
+			}
+			now := time.Now().UnixNano()
+			if countLeaders(a, b) == 2 {
+				if overlapStart.Load() == 0 {
+					overlapStart.Store(now)
+				}
+				if d := now - overlapStart.Load(); d > overlapMax.Load() {
+					overlapMax.Store(d)
+				}
+			} else {
+				overlapStart.Store(0)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
 	ownerID, err := leaderLockOwnerID(ctx, db, role)
 	if err != nil {
 		t.Fatal(err)
 	}
 	endedBefore := leader.ended.Load()
+	gate.down.Store(true)
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("KILL CONNECTION %d", ownerID)); err != nil {
 		t.Fatalf("killing the leader's lock connection: %v", err)
 	}
 
-	// 接続を切られたリーダーは、リーダーシップを手放さなければならない。
 	if !waitUntil(func() bool { return leader.ended.Load() > endedBefore }) {
-		t.Fatalf("leader %s kept leadership after its lock connection was killed", leader.name)
+		t.Fatalf("leader %s's roleFunc did not end after its lock connection was killed", leader.name)
 	}
-	// ロックは切れた接続から離れ、別の接続が取る。
-	if !waitUntil(func() bool {
-		id, err := leaderLockOwnerID(ctx, db, role)
-		return err == nil && id != ownerID
-	}) {
-		t.Fatal("no other connection took the lock after the leader's lock connection was killed")
+	if !waitUntil(func() bool { return other.leader.Load() }) {
+		t.Fatalf("%s did not take over after the leader's lock connection was killed", other.name)
 	}
-	// 引き継いだ後も、リーダーは 1 つだけ。ロックを取ってからリーダーの状態を立てるまでの僅かな間があるので待つ。
-	if !waitUntil(func() bool { return countLeaders(a, b) == 1 }) {
-		t.Fatalf("after takeover, leaders = %d, want exactly 1", countLeaders(a, b))
+	close(stopSampling)
+	<-samplerDone
+	if d := time.Duration(overlapMax.Load()); d > 500*time.Millisecond {
+		t.Fatalf("two leaders were active for %v; the old leader should stop within a heartbeat", d)
 	}
 }
 
@@ -178,4 +223,25 @@ func countLeaders(electors ...*electorState) int {
 		}
 	}
 	return n
+}
+
+// TestMySQLLockNameAcceptsLongRole は、サイト名が最長（53 文字）の watcher のロール名でも
+// GET_LOCK が名前を拒まず、ロックを取れることを確かめる。GET_LOCK の名前は 64 文字以内である。
+func TestMySQLLockNameAcceptsLongRole(t *testing.T) {
+	db := mysqltest.SetupDB(t)
+	role := "watcher:" + strings.Repeat("s", 53)
+
+	sess, err := NewMySQLLocker(db).Checkout(context.Background())
+	if err != nil {
+		t.Fatalf("Checkout: %v", err)
+	}
+	defer sess.Release()
+
+	acquired, err := sess.TryLock(context.Background(), role)
+	if err != nil {
+		t.Fatalf("TryLock(%d-char role): %v", len(role), err)
+	}
+	if !acquired {
+		t.Fatalf("TryLock(%d-char role) = false, want the lock to be free", len(role))
+	}
 }

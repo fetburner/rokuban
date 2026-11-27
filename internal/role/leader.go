@@ -115,8 +115,14 @@ func (l mysqlLocker) Checkout(ctx context.Context) (Session, error) {
 
 type mysqlSession struct{ conn *sql.Conn }
 
-// mysqlLockName は GET_LOCK の名前（64 文字以内）を返す。
-func mysqlLockName(role string) string { return "rokuban:" + role }
+// mysqlLockName は GET_LOCK の名前を返す。名前は 64 文字以内でなければ拒まれ、watcher のロール名は
+// サイト名（最長 53 文字）を含むので、ロール名をそのまま使うと長いサイト名で失敗する。そこで PostgreSQL の
+// 鍵と同じ 64 ビットのハッシュを固定長で使う（長さは 8 + 16 文字で、入力に依らない）。
+func mysqlLockName(role string) string {
+	h := fnv.New64a()
+	h.Write([]byte("rokuban:" + role))
+	return fmt.Sprintf("rokuban:%016x", h.Sum64())
+}
 
 func (s mysqlSession) TryLock(ctx context.Context, role string) (bool, error) {
 	var got sql.NullInt64
@@ -133,8 +139,9 @@ func (s mysqlSession) Unlock(ctx context.Context, role string) error {
 	if err == nil && got.Valid && got.Int64 == 1 {
 		return nil
 	}
-	// 解放できなかったら、ロックを持つセッションを残さない。driver.ErrBadConn を返すと
-	// database/sql は接続を閉じ、サーバー側のセッションが終わって GET_LOCK が解放される。
+	// 解放できなかったら、ロックを持つセッションを残さない。(*sql.Conn).Raw の doc comment が定める
+	// とおり、f が driver.ErrBadConn を返すと、それ以降 Conn は使えず Close で接続を捨てる。
+	// サーバー側のセッションが終わって GET_LOCK が解放される（自分で RELEASE_LOCK を重ねない）。
 	_ = s.conn.Raw(func(any) error { return driver.ErrBadConn })
 	if err != nil {
 		return fmt.Errorf("releasing GET_LOCK for %s: %w", role, err)
