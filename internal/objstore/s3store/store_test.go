@@ -539,23 +539,24 @@ func TestGetStreamsObjectAndMapsMissingKeys(t *testing.T) {
 
 func TestPresignGetUsesBoundedURLLifetime(t *testing.T) {
 	store := &Store{client: &fakeAPI{}, presigner: fakePresigner{}, bucket: "derived"}
-	if _, err := store.Presign(context.Background(), "encoded/file.mp4", "GET", DefaultURLExpiry, "video/mp4", "file.mp4"); err != nil {
+	if _, err := store.Presign(context.Background(), "encoded/file.mp4", "GET", DefaultURLExpiry, "video/mp4", "attachment; filename=file.mp4"); err != nil {
 		t.Fatalf("Presign default TTL: %v", err)
 	}
-	if _, err := store.Presign(context.Background(), "encoded/file.mp4", "GET", maxURLExpiry+time.Second, "video/mp4", "file.mp4"); err == nil {
+	if _, err := store.Presign(context.Background(), "encoded/file.mp4", "GET", maxURLExpiry+time.Second, "video/mp4", "attachment; filename=file.mp4"); err == nil {
 		t.Fatal("Presign accepted a URL lifetime longer than SigV4's maximum")
 	}
 }
 
-// TestPresignGetAttachesDownloadName は、保存名を付けた署名 URL が保存名を
-// response-content-disposition として持つことを、実際の SigV4 署名で確かめる（通信はしない）。
-func TestPresignGetAttachesDownloadName(t *testing.T) {
+// TestPresignGetPassesContentDispositionThrough は、渡した Content-Disposition の値が
+// そのまま response-content-disposition に載ることを、実際の SigV4 署名で確かめる（通信はしない）。
+// 値の組み立ては呼び出し側の判断なので、ここでは変形しないことだけを見る。
+func TestPresignGetPassesContentDispositionThrough(t *testing.T) {
 	client := s3.New(s3.Options{
 		Region:      "us-east-1",
 		Credentials: credentials.NewStaticCredentialsProvider("AKIDEXAMPLE", "secret-for-test", ""),
 	})
 	store := &Store{client: &fakeAPI{}, presigner: s3.NewPresignClient(client), bucket: "derived"}
-	target, err := store.Presign(context.Background(), "encoded/120000_番組名_1024_h264.g2.mkv", "GET", DefaultURLExpiry, "video/x-matroska", "120000_番組名_1024_h264.g2.mkv")
+	target, err := store.Presign(context.Background(), "encoded/120000_番組名_1024_h264.g2.mkv", "GET", DefaultURLExpiry, "video/x-matroska", "attachment; filename*=utf-8''120000_%E7%95%AA%E7%B5%84%E5%90%8D_1024_h264.g2.mkv")
 	if err != nil {
 		t.Fatalf("Presign: %v", err)
 	}

@@ -99,6 +99,9 @@ type RangeReader interface {
 }
 
 // SignedURL is implemented by stores that can issue browser-readable URLs.
+//
+// contentType と contentDisposition は応答に載せる値で、空なら載せない。
+// 値の組み立て（保存名・attachment の選択）は呼び出し側の配信の判断であり、置き場は渡された値をそのまま使う。
 type SignedURL interface {
-	Presign(ctx context.Context, key, method string, expires time.Duration, contentType, filename string) (string, error)
+	Presign(ctx context.Context, key, method string, expires time.Duration, contentType, contentDisposition string) (string, error)
 }

@@ -44,7 +44,7 @@ func TestS3PresignedGetReturnsDownloadName(t *testing.T) {
 	if err := store.Put(ctx, key, bytes.NewReader(data), int64(len(data)), digest, "video/x-matroska"); err != nil {
 		t.Fatalf("Put(%q): %v", key, err)
 	}
-	target, err := store.Presign(ctx, key, http.MethodGet, time.Minute, "video/x-matroska", "120000_番組名_1024_h264.g2.mkv")
+	target, err := store.Presign(ctx, key, http.MethodGet, time.Minute, "video/x-matroska", "attachment; filename*=utf-8''120000_%E7%95%AA%E7%B5%84%E5%90%8D_1024_h264.g2.mkv")
 	if err != nil {
 		t.Fatalf("Presign: %v", err)
 	}

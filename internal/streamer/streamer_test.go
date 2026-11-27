@@ -1014,14 +1014,14 @@ type signedURLTestStore struct {
 	calls []presignCall
 }
 
-type presignCall struct{ key, contentType, filename string }
+type presignCall struct{ key, contentType, contentDisposition string }
 
-func (s *signedURLTestStore) Presign(_ context.Context, key, _ string, _ time.Duration, contentType, filename string) (string, error) {
-	s.calls = append(s.calls, presignCall{key: key, contentType: contentType, filename: filename})
+func (s *signedURLTestStore) Presign(_ context.Context, key, _ string, _ time.Duration, contentType, contentDisposition string) (string, error) {
+	s.calls = append(s.calls, presignCall{key: key, contentType: contentType, contentDisposition: contentDisposition})
 	return "https://objects.example.test/signed/" + key, nil
 }
 
-// 署名 URL の経路は保存名を Presign の filename に渡し、S3 の応答に載せさせる。
+// 署名 URL の経路は保存名の値を Presign に渡し、S3 の応答に載せさせる。
 // サムネイルには保存名を渡さない。
 func TestRecordingFile_SignedURLPassesDownloadName(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -1069,8 +1069,8 @@ func TestRecordingFile_SignedURLPassesDownloadName(t *testing.T) {
 	}
 
 	want := []presignCall{
-		{key: encodedKey, contentType: "video/x-matroska", filename: "120000_番組名_1024_h264.g2.mkv"},
-		{key: thumbKey, contentType: "image/jpeg", filename: ""},
+		{key: encodedKey, contentType: "video/x-matroska", contentDisposition: "attachment; filename*=utf-8''120000_%E7%95%AA%E7%B5%84%E5%90%8D_1024_h264.g2.mkv"},
+		{key: thumbKey, contentType: "image/jpeg", contentDisposition: ""},
 	}
 	if len(objects.calls) != len(want) {
 		t.Fatalf("Presign calls = %+v, want %+v", objects.calls, want)
