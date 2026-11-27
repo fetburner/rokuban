@@ -71,12 +71,12 @@ River と asynq の adapter は構築時に、登録済みのすべての kind �
 - commit 後のヒントの投入と CLI の単発投入: `Enqueue`、合流の表示は `Result.Coalesced`
 - River への変換の閉じ込め先: `internal/jobq/riveradapter`、投入オプションは `InsertOpts`
 - 中立なレジストリ: `jobq.Registry`
-- River の零値検査: `riveradapter.Register` が登録する builder。`TestNewAdapterRejectsSiteBoundArgsWithoutQueueSite` で検査する
+- River の零値検査: `riveradapter.Bind` が預ける builder（登録の一覧は `internal/jobq/riverbind`）。`TestNewAdapterRejectsSiteBoundArgsWithoutQueueSite` で検査する
 - asynq の零値検査: `jobq.Registry.ZeroArgs`。`TestNewAdapterChecksRegisteredQueueWithoutPeriodicJobs` で検査する
 - 仕様の型と検査: `jobq.WorkerSpec` の `Validate` / `Select` / `CheckKinds` / `CheckQueueFor`
 - 仕様の組み立て: `cmd/rokuban` の `newWorkerSpec`（`tsscan` が `internal/jobs` を import するので jobs には置けない）
 - import 境界の判定: `.golangci.yml` の depguard。adapter の本番コードは `riveradapter-allowlist` と `asynqadapter-allowlist`（許可リスト）
-- import の例外: `internal/` の本番コードでは `internal/worker/worker.go` と `internal/testutil`
+- import の例外: `internal/` の本番コードでは `internal/jobq/riverbind`（River の型付き登録の一覧）と `internal/testutil`
 - 対象外にする起動コード: `cmd/`
 - SHA-256 待ち後の再開: `TestIngestWorker_CompletesUntilLateContentSHA256`
 - 古い publish 計画の再確認: `TestEncodeWorker_StaleCutPlanDoesNotRewindRow`

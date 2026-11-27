@@ -94,12 +94,25 @@ type workerTarget struct {
 	queueFor QueueFunc
 }
 
-// Register adds a jobq worker to registry and records how River should register it.
+// Register は worker を jobq の registry に登録し、River の登録も預ける。
+// worker.NewWorkers は jobq.Register と Bind に分けて呼ぶ（登録の入口に River を混ぜない）。
+// テストで worker を 1 つずつ River に載せるための便宜として残す。
 func Register[T jobq.Args](registry *jobq.Registry, worker jobq.Worker[T]) {
+	jobq.Register(registry, worker)
+	if err := Bind[T](registry); err != nil {
+		panic(fmt.Sprintf("riveradapter: registering %q: %v", zeroArgs[T]().Kind(), err))
+	}
+}
+
+// Bind は、jobq.Register で先に登録された kind T に River の worker builder を預ける。
+// builder が使うのは型 T と registry だけで、登録された worker の値は使わない。
+// T が registry に無ければ AddAdapterWorker が拒む。River の builder は NewAdapter の
+// ときに呼ばれ、投入先が決まらない Args（site 単位のキューなのに site を持たない等）は
+// そこで拒む。
+func Bind[T jobq.Args](registry *jobq.Registry) error {
 	args := zeroArgs[T]()
 	kind := args.Kind()
-	jobq.Register(registry, worker)
-	err := registry.AddAdapterWorker(adapterWorkerKey, kind, func(dst any) error {
+	return registry.AddAdapterWorker(adapterWorkerKey, kind, func(dst any) error {
 		target, ok := dst.(*workerTarget)
 		if !ok || target == nil || target.workers == nil {
 			return fmt.Errorf("expected *workerTarget, got %T", dst)
@@ -112,9 +125,6 @@ func Register[T jobq.Args](registry *jobq.Registry, worker jobq.Worker[T]) {
 		river.AddWorker(target.workers, &riverWorker[T]{registry: registry})
 		return nil
 	})
-	if err != nil {
-		panic(fmt.Sprintf("riveradapter: registering %q: %v", kind, err))
-	}
 }
 
 func buildRegistryConfig(registry *jobq.Registry, queueFor QueueFunc, cfg Config) (workerConfig, error) {

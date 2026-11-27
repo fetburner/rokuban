@@ -11,6 +11,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
+	"github.com/fetburner/rokuban/internal/jobq/riverbind"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
@@ -68,6 +69,9 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 		spec.Queues = append(spec.Queues, jobq.QueueSpec{
 			Logical: logical, Physical: []string{jobs.PhysicalQueueName(logical, "tokyo")}, MaxWorkers: 1,
 		})
+	}
+	if err := riverbind.BindAll(workers); err != nil {
+		t.Fatalf("binding River workers: %v", err)
 	}
 	adapter, err := riveradapter.NewAdapter(pool, workers, jobs.PhysicalQueueFor, riveradapter.Config{Spec: spec})
 	if err != nil {
