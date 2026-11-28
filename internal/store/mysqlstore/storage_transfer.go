@@ -1125,27 +1125,29 @@ VALUES (?, ?, ?, 1, FALSE, 0, NULL)`, copyID, owner[:], now.Add(ttl)); err != ni
 		if err != nil {
 			return fmt.Errorf("locking transfer progress for copy %d: %w", copyID, err)
 		}
-		if !current.handedOff && current.leaseExpiresAt.After(now) {
+		var uploadStore *string
+		if current.uploadStore.Valid {
+			uploadStore = &current.uploadStore.String
+		}
+		planned, ok := store.PlanTransferProgressLease(store.TransferProgressLeaseInput{
+			WriterGeneration: current.generation,
+			HandedOff:        current.handedOff,
+			Offset:           current.offset,
+			HashState:        current.hashState,
+			UploadStore:      uploadStore,
+			UploadState:      current.uploadState,
+			VerifyingSource:  current.verifyingSource,
+		}, current.leaseExpiresAt.After(now))
+		if !ok {
 			return nil
 		}
-		progress = store.TransferProgress{PrevWriterGeneration: current.generation, WriterGeneration: current.generation + 1}
-		if current.handedOff {
-			progress = store.TransferProgress{
-				PrevWriterGeneration: current.generation, WriterGeneration: current.generation,
-				Resumed: true, Offset: current.offset, HashState: current.hashState,
-			}
-			if current.uploadStore.Valid {
-				progress.UploadStore = current.uploadStore.String
-				progress.UploadState = current.uploadState
-			}
-		}
-		progress.VerifyingSource = current.verifyingSource
 		if _, err := tx.ExecContext(ctx, `UPDATE media_asset_copy_transfer_progress
 SET lease_owner = ?, lease_expires_at = ?, writer_generation = ?, handed_off = FALSE,
-    offset_bytes = ?, hash_state = ? WHERE copy_id = ?`, owner[:], now.Add(ttl), progress.WriterGeneration,
-			progress.Offset, nullBytes(progress.HashState), copyID); err != nil {
+	    offset_bytes = ?, hash_state = ? WHERE copy_id = ?`, owner[:], now.Add(ttl), planned.WriterGeneration,
+			planned.Offset, nullBytes(planned.HashState), copyID); err != nil {
 			return fmt.Errorf("claiming transfer progress for copy %d: %w", copyID, err)
 		}
+		progress = planned
 		acquired = true
 		return nil
 	})
