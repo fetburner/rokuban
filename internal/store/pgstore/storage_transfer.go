@@ -674,23 +674,18 @@ func (s *Media) AcquireMediaAssetTransferProgress(ctx context.Context, copyID in
 	if err != nil {
 		return store.TransferProgress{}, false, fmt.Errorf("locking transfer progress for copy %d: %w", copyID, mapDatabaseError(err))
 	}
-	if !cur.HandedOff && cur.LeaseLive {
+	progress, acquired := store.PlanTransferProgressLease(store.TransferProgressLeaseInput{
+		WriterGeneration: cur.WriterGeneration,
+		HandedOff:        cur.HandedOff,
+		Offset:           cur.OffsetBytes,
+		HashState:        cur.HashState,
+		UploadStore:      cur.UploadStore,
+		UploadState:      cur.UploadState,
+		VerifyingSource:  cur.VerifyingSource,
+	}, cur.LeaseLive)
+	if !acquired {
 		return store.TransferProgress{}, false, nil
 	}
-	progress := store.TransferProgress{PrevWriterGeneration: cur.WriterGeneration, WriterGeneration: cur.WriterGeneration + 1}
-	if cur.HandedOff {
-		// 前の slice が保存して lease を切った。世代と保存状態をそのまま引き継ぐ。
-		progress = store.TransferProgress{
-			PrevWriterGeneration: cur.WriterGeneration, WriterGeneration: cur.WriterGeneration, Resumed: true,
-			Offset: cur.OffsetBytes, HashState: cur.HashState,
-		}
-		if cur.UploadStore != nil {
-			progress.UploadStore = *cur.UploadStore
-			progress.UploadState = cur.UploadState
-		}
-	}
-	// 照合は、きれいな引き継ぎでもきれいでない引き継ぎでも、途中であることを返す（きれいでない引き継ぎでは offset だけ 0 に戻る）。
-	progress.VerifyingSource = cur.VerifyingSource
 	if _, err := q.ClaimMediaAssetTransferProgress(ctx, sqlcgen.ClaimMediaAssetTransferProgressParams{
 		CopyID: copyID, Owner: ownerID, TtlSeconds: ttlSeconds,
 		WriterGeneration: progress.WriterGeneration, OffsetBytes: progress.Offset, HashState: progress.HashState,

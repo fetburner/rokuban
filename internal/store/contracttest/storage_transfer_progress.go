@@ -60,6 +60,9 @@ func runTransferProgressCleanHandoffResumesSavedState(t *testing.T, newStore New
 	if !got.Resumed || got.WriterGeneration != 1 || got.PrevWriterGeneration != 1 || got.Offset != 5 || !bytes.Equal(got.HashState, state) {
 		t.Fatalf("Acquire after handoff = %+v, want resumed generation 1 at offset 5 with the saved state", got)
 	}
+	if got.UploadStore != "" || got.UploadState != nil {
+		t.Fatalf("upload state after handoff without a store = (%q, %q), want no upload state", got.UploadStore, got.UploadState)
+	}
 }
 
 func runTransferProgressExpiredLeaseStartsNewGeneration(t *testing.T, newStore NewStorageTransferStore) {

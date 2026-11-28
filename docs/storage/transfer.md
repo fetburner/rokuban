@@ -98,7 +98,7 @@ FS の staging は、書かれないまま mtime 猶予と aging を過ぎると
 
 原本の不一致（送ったバイトのサイズや SHA-256 が論理資産と合わない、既存の宛先の内容が違う）を見つけたら、失敗として数える前に照合へ入る。照合は転送元を offset から末尾まで slice ごとに読み直し、SHA-256 とサイズを求める。temp は使わず、照合に入るときに temp を消す。
 
-照合中であることは進捗の行の `verifying_source` で表す。途中経過は offset と hash state に入り、lease の引き継ぎをまたいで続く。
+進捗の行の `verifying_source` は照合中を表す。保存の有無にかかわらず、lease を引き継いでもこの値は残る。前の slice が保存して lease を手放した場合は offset と hash state も引き継いで続きから読む。保存前に lease が切れた場合は世代を上げ、offset と hash state を捨てて先頭から照合する。
 
 照合が末尾まで終わったときに、試行を 1 回だけ数える。合わなかった理由は失敗の文言にだけ出し、DB には残さない。転送元が論理資産と合うなら、宛先の temp の破損として数え、次の試行が取り直す。転送元が論理資産と合わないなら、転送元の不一致として記録し、原本は残す。
 
@@ -237,15 +237,15 @@ desired の置き場から外れた配置は、削除 reconcile の腕の 1 つ�
 - S3 の派生物の pending 予約を、FS だけを見る掃除が消さない: `TestStorageTransferS3PendingReservationIsNotObsolete`
 - FS 1 つ + S3 の派生物で、転送の後に旧い FS のコピーを配置の削除が消す: `TestStorageTransferS3CopyLetsDeleteReconcileRetireFSCopy`。宛先の集合: `TestTransferDestinationStoreNamesIncludesS3Derived`
 - 宛先キーの照合は、Head の SHA-256 があれば中身を読まず、無ければ読んで測る: `TestExistingTransferredObjectUsesHeadSHA256`
-- 照合の途中で lease が引き継がれても、続きから読む: `TestStorageTransferWorkerResumesSourceVerificationAfterHandoff`
+- 保存した位置から照合を再開する: `TestStorageTransferWorkerResumesSourceVerificationAfterHandoff`
 - 世代が変わった後の SHA-256 の観測を書かない: `TestStorageTransferWorkerDoesNotRecordSHA256AfterGenerationChanges`
-- 送信状態の引き継ぎは、きれいなときだけ続きから: `TestStorageTransferStoreContract/TransferProgressCleanHandoffResumesSavedState`
+- 保存した offset と hash state を引き継ぐ。送信先が NULL の場合は送信状態を返さない。検査は `TestStorageTransferStoreContract/TransferProgressCleanHandoffResumesSavedState` で行う。
 - 送信状態を次の試行へ返すのは、きれいな引き継ぎのときだけ: `TestStorageTransferStoreContract/TransferUploadSavedStateReturnsOnlyOnCleanHandoff`
 - 置き換えと行の削除で古い送信状態が掃除待ちに移る。置き換えの検査は `TestStorageTransferStoreContract/TransferUploadReplaceAbandonsPreviousState`。行の削除の検査は `TestStorageTransferStoreContract/TransferUploadRowDeletionAbandonsState`
 - 掃除待ちは置き場で絞り、ID 順に返す: `TestStorageTransferStoreContract/TransferUploadAbandonedListFiltersByStoreInIDOrder`
 - 送信状態の表は、置き場と状態の両方か、どちらも無いかだけを表現する: `TestTransferUploadPairCheckRejectsHalfState`
 - 観測値は NULL の行で、現在の世代のものだけ書く。検査は `TestStorageTransferStoreContract/RecordObservedMediaAssetSHA256WritesOnlyUnknownCurrentGeneration`
-- 照合の途中経過は lease の引き継ぎをまたいで残る: `TestStorageTransferStoreContract/TransferSourceVerificationSurvivesHandoffs`
+- 照合中の引き継ぎで照合を続ける位置を確かめる。検査は `TestStorageTransferStoreContract/TransferSourceVerificationSurvivesHandoffs`
 - 照合の状態は送信状態と同じ行に共存しない: `TestTransferSourceVerificationExcludesUploadState`
 
 </details>
